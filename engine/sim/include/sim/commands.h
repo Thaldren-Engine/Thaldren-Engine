@@ -94,6 +94,10 @@ void issue_to_selected(Battle& battle, int player, std::uint8_t intent, std::uin
 // Orders to every unit of the player in group `group` (0x480460).
 void issue_to_group(Battle& battle, int player, std::int32_t group, std::uint8_t intent, bool queued, Unit* target,
                     const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1);
+// A queued order equal to one in the unit's primary list cancels it, else the order is given
+// (0x43AFC0, the user interface's per-unit step).
+void issue_or_cancel(Battle& battle, std::uint8_t mission, bool queued, Unit& unit, Unit* target,
+                     const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1);
 // One order to one unit (the computer player's route: the general order routine 0x43ADC0).
 bool order_unit(Battle& battle, Unit& unit, std::uint8_t mission, bool queued, Unit* target,
                 const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1);
