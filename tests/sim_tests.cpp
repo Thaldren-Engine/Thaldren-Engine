@@ -11,7 +11,9 @@
 
 #include "sim/combat.h"
 #include "sim/fixed.h"
+#include "sim/ground_settle.h"
 #include "sim/heightmap.h"
+#include "sim/orders.h"
 #include "sim/unit.h"
 #include "sim/rng.h"
 #include "sim/script_vm.h"
@@ -20,6 +22,7 @@
 #include "sim/weapons.h"
 #include "sim/world.h"
 #include "sim/x87.h"
+#include "sim/x87_math.h"
 #include "sim/x87_trig.h"
 
 namespace {
@@ -579,6 +582,162 @@ void test_weapons() {
     CHECK_EQ(players[0].energy_stored, 100.0f);
 }
 
+// Mission behaviours scripted as a list of results; order memory from a fake heap.
+struct ScriptedOrders : sim::OrderSystems {
+    std::vector<std::int32_t> results;
+    std::size_t at = 0;
+    std::uint32_t next = 0x01000000;
+    int freed = 0, weapon_releases = 0, cleared_slots = 0;
+    std::int32_t run_mission(Unit&, MissionOrder& o, std::uint32_t&) override {
+        if (at < results.size()) return results[at++];
+        o.wait |= order_wait::kTimer;  // nothing scripted: sleep until tick 1000
+        o.wake_tick = 1000;
+        return mission_result::kContinue;
+    }
+    void clear_weapon_target(Unit&, int) override { ++cleared_slots; }
+    void release_weapon_targets(Unit&) override { ++weapon_releases; }
+    void release_attached(Unit&, MissionOrder& o) override { o.attached = 0; }
+    void broadcast_script_call(Unit&, std::int16_t) override {}
+    MissionOrder* allocate_order() override {
+        auto* o = new MissionOrder;
+        o->address = next;
+        next += 0x58;
+        return o;
+    }
+    void free_order(MissionOrder* o) override {
+        ++freed;
+        delete o;
+    }
+};
+
+void test_orders() {
+    CHECK_EQ(mission::default_flags()[mission::kParalyze], 0x24u);
+    CHECK_EQ(mission::default_flags()[mission::kBuildWeapon], 0xC0140u);
+    CHECK_EQ(mission::default_flags()[mission::kWaitForAttack], 0x204u);
+    std::vector<Unit> units(3);
+    std::vector<UnitTickState> ticks(3);
+    std::vector<PlayerSlot> players(10);
+    players[0].active = true;
+    players[0].controller = 1;
+    UnitTickTypeInfo type;
+    type.default_mission = mission::kStandby;
+    for (std::uint16_t i = 1; i <= 2; ++i) {
+        units[i].id = i;
+        ticks[i].type_index = 1;
+        ticks[i].tick_type = &type;
+    }
+    BattleRng rng;
+    rng.set_state(12345);
+    ScriptedOrders sys;
+    OrderContext c{ticks, players, rng, sys, 100};
+
+    // Construction: a target makes a link in the target's list; no position drops kHasPosition.
+    MissionOrder* a = sys.allocate_order();
+    construct_order(c, *a, mission::kAttackChase, &units[2], nullptr, 7, 0, 0);
+    CHECK_EQ(a->flags, 0x280u);
+    CHECK_EQ(units[2].referrers == &a->target, true);
+    CHECK_EQ(a->created_tick, 100u);
+    CHECK_EQ(a->wake_tick, 0xFFFFFFFFu);
+    // A kind without kHasTarget drops the target again.
+    MissionOrder* b = sys.allocate_order();
+    construct_order(c, *b, mission::kStop, &units[2], nullptr, 0, 0, 0);
+    CHECK_EQ(b->target.unit == nullptr, true);
+    prepend_order(units[1], *a);
+    b->flags |= order_flags::kIdle;
+    insert_order(units[1], *b, nullptr);  // at the end
+    CHECK_EQ(units[1].orders == a && a->next == b && b->unit == &units[1], true);
+
+    // Primary: result 3 sleeps 30 + random(15) steps; the order stays.
+    sys.results = {mission_result::kSnooze};
+    run_primary_orders(c, units[1]);
+    BattleRng check;
+    check.set_state(12345);
+    CHECK_EQ(a->wake_tick, 100u + 30u + check.next_mod(15));
+    CHECK_EQ(rng.state(), check.state());
+    // Woken by its timer, it finishes; the next order runs and sleeps (nothing scripted).
+    c.game_tick = a->wake_tick;
+    sys.results = {mission_result::kFinished};
+    sys.at = 0;
+    run_primary_orders(c, units[1]);
+    CHECK_EQ(units[1].orders == b, true);
+    CHECK_EQ(sys.freed, 1);
+    CHECK_EQ(sys.weapon_releases, 1);  // it was the current order
+    CHECK_EQ(units[2].referrers == nullptr, true);
+    CHECK_EQ(b->wake_tick, 1000u);
+    // An empty list gets the type's default mission, marked idle.
+    clear_orders(c, units[1], true);
+    run_primary_orders(c, units[1]);
+    CHECK_EQ(units[1].orders != nullptr && units[1].orders->kind == mission::kStandby, true);
+    CHECK_EQ((units[1].orders->flags & order_flags::kIdle) != 0, true);
+
+    // Paralysis adds to an existing paralyze order at the head.
+    add_paralysis(c, units[2], 40);
+    add_paralysis(c, units[2], 2);
+    CHECK_EQ(units[2].orders->kind == mission::kParalyze && units[2].orders->param0 == 42 && !units[2].orders->next, true);
+
+    // Secondary: the stale word is 15 after a random sleep and the order's address after it is destroyed.
+    MissionOrder* s = sys.allocate_order();
+    construct_order(c, *s, mission::kBuildWeapon, nullptr, nullptr, 0, 0, 0);
+    prepend_order(units[2], *s);
+    CHECK_EQ(units[2].secondary_orders == s, true);
+    std::uint32_t stale = 0xAAAA;
+    sys.results = {mission_result::kSnooze};
+    sys.at = 0;
+    run_secondary_orders(c, units[2], stale);
+    CHECK_EQ(stale, 15u);
+    c.game_tick = s->wake_tick;
+    const std::uint32_t addr = s->address;
+    sys.results = {mission_result::kFinished};
+    sys.at = 0;
+    run_secondary_orders(c, units[2], stale);
+    CHECK_EQ(stale, addr);
+    CHECK_EQ(units[2].secondary_orders == nullptr, true);
+    clear_orders(c, units[1], true);
+    clear_orders(c, units[2], true);
+}
+
+struct FlatSettle : sim::GroundSettleSystems {
+    std::int32_t motion_speed(Unit&) override { return 0; }
+    std::uint32_t motion_start_tick(Unit&) override { return 0; }
+    std::uint32_t clock_ticks() override { return 0; }
+};
+
+void test_ground_settle() {
+    HeightMap hm(8, 8);
+    for (int z = 0; z < 8; ++z)
+        for (int x = 0; x < 8; ++x) hm.at(x, z) = static_cast<std::uint8_t>(10 + 2 * x);  // slopes up along X
+    FlatSettle sys;
+    GroundSettleType type;
+    type.has_footprint = true;
+    type.footprint = {{{-8 << 16, -8 << 16}, {8 << 16, -8 << 16}, {-8 << 16, 8 << 16}, {8 << 16, 8 << 16}}};
+    Unit u;
+    u.pos = {64 << 16, 0x12345, 64 << 16};
+    u.flags = unit_flags::kAlive | settle_flags::kResettle | settle_flags::kLayerGround;
+    std::uint32_t stale = 7;
+    settle_on_ground(u, true, type, 0, 0, hm, sys, stale);
+    CHECK_EQ(stale, settle_stale::kAfterSlopeFit);
+    CHECK_EQ(u.flags & settle_flags::kResettle, 0u);
+    // Height 18 at x = 64 (cell 4); only the integer part of Y changes.
+    CHECK_EQ(u.pos[1], (18 << 16) | 0x2345);
+    CHECK_EQ(u.bank, 0);
+    CHECK_EQ(u.pitch, x87::atan2_scaled(-2, 16));  // corner 0 (17) is 2 below corner 1 (19), 16 apart
+    // Without the resettle flag (and not hovering) nothing happens.
+    stale = 7;
+    settle_on_ground(u, true, type, 0, 0, hm, sys, stale);
+    CHECK_EQ(stale, 7u);
+    // Terrain-only types take the sampled height (fraction cleared); waterline types sit below the sea.
+    u.flags |= settle_flags::kResettle;
+    type.type_flags = settle_flags::kTypeTerrainOnly;
+    settle_on_ground(u, true, type, 0, 0, hm, sys, stale);
+    CHECK_EQ(stale, settle_stale::kAfterTerrainSample);
+    CHECK_EQ(u.pos[1], 18 << 16);
+    u.flags |= settle_flags::kResettle;
+    type.type_flags = settle_flags::kTypeWaterline;
+    type.waterline = 5;
+    settle_on_ground(u, true, type, 30, 0, hm, sys, stale);
+    CHECK_EQ(u.pos[1], 25 << 16);
+}
+
 } // namespace
 
 int main() {
@@ -597,6 +756,8 @@ int main() {
     test_heightmap_and_packing();
     test_combat();
     test_weapons();
+    test_orders();
+    test_ground_settle();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

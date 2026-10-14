@@ -18,7 +18,9 @@ endif()
 
 add_library(sim STATIC
     engine/sim/src/combat.cpp
+    engine/sim/src/ground_settle.cpp
     engine/sim/src/heightmap.cpp
+    engine/sim/src/orders.cpp
     engine/sim/src/pose.cpp
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp

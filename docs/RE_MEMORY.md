@@ -654,6 +654,93 @@ All 278 unit types are used, including the 22 whose script has no `Killed` funct
     - type index = 0; clear alive and bits 0x30; the def becomes the game state's blank def (GS+0x1439B);
     - owner alive count −1. At 0, the network/AI announcements run (provider types 3/2).
 
+### Unit orders (mission order lists) — differential-tested: 3,000 scenarios, 300,000 unit passes, 366,066 order operations, 734,124 behaviour steps, 0 differences
+Implementation: `engine/sim/src/orders.cpp` (`sim/orders.h`). Checked by `tools/orig_harness/orders_harness`. It builds the mission table with the original registration code, then a battle like `combat_harness` (real types, scripts, models, Moon Quartet terrain). The original order processing, constructor, insertion, removal, clearing, paralysis path, ground settle and slope fit run for real. Every table entry's behaviour is replaced by one logging stub that plays back a scripted list of results, wait bits, wake ticks and event-slot writes; the engine's behaviour hook plays back the same list. Each step applies random order operations and direct calls (create/insert, primary, secondary, settle, clear, remove, paralysis damage, kill, state changes), then one unit pass. After each one it compares:
+- the stub log (behaviour calls with unit, order address, event and kind; weapon-target clears/releases; goal/attached-object calls; frees of orders; network notices);
+- every field of every order of both lists, by address (the harness engine allocator hands out the same addresses as the original's bump heap);
+- each unit's target-link list, unit flags, pending events, position, pitch/heading/bank, scripts, the battle RNG, the clock reads and the stale word.
+
+**Mission table** (`MissionTable_RegisterBuiltins` `0x0043C050`, a vector at `0x00512344`/`0x00512348`, entries 0x19 bytes): the Ready entry, then three static blocks (22 Standby-family, 22 air, 23 Stop-family entries), each append followed by an introsort by the lookup name (+0x15, case-insensitive). The names are unique, so the result is simply sorted: 68 entries, index = mission kind (`sim::mission::Kind`; `ta::UnitDefContext::default_mission_names` has the names). Entry fields: +0 display name, +4 behaviour (stdcall `(unit, order, event)` → result), +8 a drawing callback, +0xC draw mask, +0x10 a byte, **+0x11 the default order flags** (`sim::mission::default_flags`), +0x15 lookup name. Verified entry by entry against the engine table (names, flags, behaviour addresses).
+
+**Order object** (0x56 bytes, from `0x004B4F10`, freed with `0x004B4F20`):
+| Offset | Field |
+|---|---|
+| +0 | vtable (not state) |
+| +4 | kind (u8) |
+| +5 | step counter (u8) |
+| +6 | wait mask: bit 0 timer, bit 1 run the behaviour once more with event 2 when destroyed; any bit can be woken by an event (primary list) |
+| +0xA | wake tick (u32, −1 = none) |
+| +0xE | the unit whose list holds it |
+| +0x12 | target link {vtable, unit, next link, owner order} (16 bytes) |
+| +0x22 | position (3 × 16.16) |
+| +0x2E, +0x32 | behaviour state, zeroed by the constructor |
+| +0x36, +0x3A, +0x3E | parameters (+0x36 = amount for paralysis) |
+| +0x42 | flags: 0x4 kept by a partial clear, 0x200 has target, 0x400 has position, 0x4000 idle (made because the unit had nothing to do; inherited from the order it is put in front of), 0x10000 destroyed while not the primary head, 0x40000 lives in the secondary list, 0x400000 building (stop the building script when destroyed), 0x800000 set by result 9 |
+| +0x46 | creation tick |
+| +0x4A | next order |
+| +0x4E | events received (bit 0 = timer fired) |
+| +0x52 | movement goal object attached by the behaviour (owned; deleted on destroy) |
+
+**Unit fields:** +0x5C primary list, +0x60 secondary list, +0xA2 head of the list of target links pointing at the unit (newest first), +0xBA pending event bits (u16, the same word as the script SET "dirty" bits), +0xAA hover bob phase.
+
+**Target links** (`UnitLink_Init` `0x004895C0`, `UnitLink_Release` `0x00489650`, `UnitLink_Set` `0x00489690`): a link to a unit is pushed on the unit's +0xA2 list only if the unit's table slot is occupied (type index ≠ 0); release walks that list to unlink it.
+
+**Construct** (`MissionOrder_Construct` `0x0043A0C0`, thiscall `(kind, target, pos*, p0, p1, p2)`): link the target; zero +0x2E/+0x32; params; creation tick = game tick; link owner = the order; step, wait, events = 0; wake = −1; position = *pos or 0; unit = 0; flags = table default; next = 0; attached = 0. No target argument → clear 0x200; no position → clear 0x400; then without 0x200 the target link is dropped again (so kinds without 0x200 never keep a target).
+
+**Insert** (`Unit_InsertMissionOrder` `0x0043AC60`, `(unit, order, before)`): in the list chosen by the order's 0x40000 flag, walk to the link pointing at `before` (null = end), link the order there, set its unit and next, and OR in `before`'s 0x4000. **Prepend** (`0x0043ACB0`) inserts before the current head.
+
+**Destroy** (`MissionOrder_Destroy` `0x0043A1F0`, then free), in order:
+1. wait bit 1 → behaviour(unit, order, 2), result ignored;
+2. flag 0x400000 → start the unit script's `StopBuilding` (by index, not run now, no arguments), network notice `0x00456190`(unit, function index), clear the flag;
+3. if the unit has a motion object: its goal object (motion +0) is asked; if the goal's current attachment (goal +4) is the order's +0x52, the goal's method +4 is called with 0 first; then the attached object is deleted (virtual destructor, 1) and +0x52 = 0. Engine hook `release_attached`;
+4. without flag 0x10000: release the weapon targets the order gave (`0x00489800`(unit, 3), weapon slots; hook);
+5. unlink the target link.
+
+**Remove** (`Unit_RemoveMissionOrder` `0x00439F80`): search the list named by the order's own 0x40000 flag; if found, unlink, flag 0x10000 unless it is the current primary head, destroy. Not found → nothing.
+**Clear** (`Unit_ClearMissionOrders` `0x00439EB0`, `(unit, all)`): every primary order (or only those without 0x4 when `all` = 0) is unlinked, flagged 0x10000 unless it was the first, destroyed; with `all`, then remove the secondary head until the list is empty (an order whose 0x40000 flag is clear is never found there, which would loop forever, as in the original). Called with 1 on death and for unknown behaviour results.
+
+**Primary orders** (`Unit_ProcessPrimaryMissionOrders` `0x0043B7C0`), looping on the current head:
+1. if game tick ≥ wake (unsigned): wake = −1, events |= 1;
+2. woken = (events | pending u16) & wait; if wait ≠ 0 and woken = 0, return;
+3. pending &= ~woken (16 bits), wait = 0, events &= ~woken;
+4. woken bit 0x10000 → clear the targets of weapon slots 0, 1, 2 (`0x0048A0F0`, hook);
+5. result = behaviour(order's unit, order, woken), then:
+   - 0: step = 0; 1: step + 1; 2, 4: nothing;
+   - 3: sleep: r = random(15) (battle RNG), wait |= 1, wake = tick + r + 30;
+   - 5, 8: remove (as Remove, but the head check uses the head read before unlinking). An order whose 0x40000 flag sends the search to the other list stays and runs again;
+   - 6: move the order to the back of the primary list;
+   - 7: destroy every primary order (0x10000 for all but the first), remove every secondary order, return;
+   - 9: flag 0x800000; if it is the last order: step = 0 and sleep 30 + random(30); else remove;
+   - anything else (unsigned > 9): clear all and return.
+
+   The loop continues with the (new) head, so a behaviour that neither sleeps nor finishes runs again at once.
+6. Empty list: if the owner (unit +0x96 player) is active with controller 1|2 and the type's default mission (def +0x230) ≠ 0, a new order of that kind (no target, no position, params 0) gets flag 0x4000 and goes in front of the head of its list (the secondary head if its default flags say so).
+
+**Secondary orders** (`Unit_ProcessSecondaryMissionOrders` `0x0043BAD0`): walk the list; an order with wait ≠ 0 and tick < wake is skipped. Otherwise wait = 0, result = behaviour(order's unit, order, 0), and after handling the result the walk **restarts from the head**. Results: 0/1/2/3/4 as above (3 = sleep 30 + random(15)); 5, 8, 9 and unknown: remove if found; 6, 7: remove if found, then return.
+
+**Paralysis order** (from the damage packet, kind 2): kind = `MissionOrder_FindByName("PARALYZE")` = 27; if the primary head is that kind, its +0x36 += amount; else construct (27, no target, no position, amount, 0, 0) and prepend. Engine: `sim::add_paralysis` (the combat `add_paralysis` hook calls it). Verified through the real damage routine.
+
+**Behaviours (hooked; `OrderSystems::run_mission`).** Handler addresses by kind: 0 Ready `0x439EA0` (returns 5), 1 Activate `0x403010`, 2 AirStrike `0x411F50`, 3 AirToAir `0x412D40`, 4 AirToGround `0x412710`, 5 AirToGroundHover `0x413470`, 6 Attack_Chase `0x4034A0`, 7 Attack_Kamikaze `0x403260`, 8 Attack_NoMove `0x402160`, 9 AttackSpecial `0x403190`, 10 AttackUType `0x401E00`, 11 BeCarried `0x402FC0`, 12 BuildingBuild `0x402640`, 13 BuildWeapon `0x402B70`, 14 Capture `0x404270`, 15 Cloak_Off `0x4030A0`, 16 Cloak_On `0x403070`, 17 Deactivate `0x403040`, 18 Follow_Ground `0x406300`, 19 GetBuilt `0x402DA0`, 20 Ground_Pickup `0x406780`, 21 Ground_Unload `0x406900`, 22 Guard_NoMove `0x4021F0`, 23 HelpBuild `0x403F70`, 24 MakeSelectable `0x401CC0`, 25 MobileBuild `0x403A20`, 26 Move_Ground `0x4031D0`, 27 Paralyze `0x402D10`, 28 Park `0x4061A0`, 29 Patrol `0x4033A0`, 30 QMove and 31 QPatrol `0x403160`, 32 Reclaim `0x404AD0`, 33 ReclaimUnit `0x404730`, 34 RepairPatrol `0x405980`, 35 RepairUnit `0x405300`, 36 RepairUnitNoMove `0x405740`, 37 Resurrect `0x404DB0`, 38 SelfDestruct and 39 SelfDestructFG `0x402010`, 40 SelfRepair `0x402430`, 41 Standby `0x405FE0`, 42 Standby_Mine `0x406090`, 43 Standing_FireOrder `0x403100`, 44 Standing_MoveOrder `0x4030D0`, 45 Stop `0x401C20`, 46 Suppress `0x4038A0`, 47 Teleport `0x406AA0`, 48 VTOL_Evade `0x413BC0`, 49 VTOL_Follow `0x40FBE0`, 50 VTOL_GetRepaired `0x415250`, 51 VTOL_HelpBuild `0x414380`, 52 VTOL_LandIfCan `0x40F2A0`, 53 VTOL_Landing `0x4118E0`, 54 VTOL_MobileBuild `0x413D80`, 55 VTOL_Move `0x40FA20`, 56 VTOL_Patrol `0x410E70`, 57 VTOL_Pickup `0x4111B0`, 58 VTOL_Reclaim `0x414770`, 59 VTOL_ReclaimUnit `0x414A80`, 60 VTOL_RepairPatrol `0x4152F0`, 61 VTOL_RepairUnit `0x414E70`, 62 VTOL_SeekAttack `0x4103E0`, 63 VTOL_SeekGuard `0x410850`, 64 VTOL_Standby `0x40F7D0`, 65 VTOL_Unload `0x411560`, 66 Wait `0x401CE0`, 67 WaitForAttack `0x401FD0`. None is implemented yet. Common helpers seen in them: set a deadline (`0x00439E80`: wait |= 1, wake = tick + n), attach a goal object (`0x004388D0`).
+- **Event slot reuse (stale word):** a static scan of the decompiled behaviours shows these reuse their third argument as a local and so change what the secondary list leaves behind: BuildingBuild, GetBuilt, MobileBuild, Park, VTOL_Follow, VTOL_MobileBuild and VTOL_RepairPatrol (a stack address there; run-varying). Teleport's decompile was not checked. Their implementations must write the slot like the original.
+- Real-time inputs: none in the list code itself.
+
+### Ground settle — differential-tested within the orders harness: 52,577 direct settles (11,169 slope fits, all paths) plus every unit pass, 0 differences
+Implementation: `engine/sim/src/ground_settle.cpp` (`sim::settle_on_ground`, `sim::fit_to_slope`), footprint import `ta::selection_footprint` (`ta_compat/src/model3do.cpp`).
+
+**Settle** (`Unit_UpdateGroundHeight` `0x0048A870`, called after the motion step):
+- Runs only if unit flags bit 16 (resettle) is set **or** type flags bit 12 (hover). It clears flags bit 16, then continues only with a motion object and (flags & 3) = 1 (ground layer, using the flags before the clear).
+- Type bit 20 (terrain only): without bit 12, Y = sample(pos) << 16 (fraction cleared; −1 << 16 off the map). With bit 12: surface = sea level − waterline (def +0x22C, both as unsigned bytes, signed result); if sample > surface, Y = (second sample) << 16, else Y = surface << 16.
+- Else type bit 19 (waterline): Y = (waterline × 0xFFFF + sea level) << 16, which wraps to (sea − waterline) << 16.
+- Else the slope fit.
+
+**Slope fit** (`Unit_FitToSlope` `0x0048A490`):
+- Model = GS+0x14377[type index]; its selection primitive index (+0xC) < 0 → nothing. Its first four vertex index slots (read even if the primitive has fewer) give four corners; their X and Z (after the load-time negation) are the footprint.
+- For each corner i: rotate (x, z) by the heading (`Math_Rotate2DPoint`); world X = (short)((x + posX) >> 16), Z = (short)((posZ − z) >> 16) (32-bit wrapping). Cell = coordinate >> 4 as unsigned; if cell X ≥ width − 1 or cell Z ≥ height − 1, **stop without changing anything**. Bilinear height as in the heightmap sampler (C-truncating /16).
+- **Hover** (type bit 12, unit alive bit 28 and not dying): height = max(height, sea level) (signed); then a bob: clock = `0x004B6340` (wall-clock ms × tick rate / 1000 — **not deterministic**, an engine input), angle = (((clock & 31) + 8i) << 11) + hover phase (unit +0xAA) in 16 bits; half = max velocity (def +0x192) / 2 (C division), speed = min(motion +0x20, half); ratio = (int32)(((int64)speed << 16) / half) (the original faults if half = 0); amplitude = 2 − (int32)(((int64)ratio × 2) >> 16); t = min(tick − motion +0x2A, 60) (unsigned); height += mul_cos(angle, amplitude − (u32)(amplitude × t) / 60) (rounded multiply).
+- Result: front = (h0 + h1) / 2, back = (h2 + h3) / 2 (C division, 32-bit wrapping sums); the **integer half only** of Y (word +0x70) = (front + back) / 2; bank (+0x68) = atan2_scaled(back − front, |z0 − z3| >> 16); pitch (+0x64) = atan2_scaled(h0 − h1, |x0 − x1| >> 16), with the raw (unrotated) footprint coordinates; |INT_MIN| stays negative.
+
+**Motion object (unit +0; not built yet, learned on the way):** the pass calls `0x0043DD20` as thiscall on it with the unit pushed. +0 = goal object (vtable method +4 = attach/detach an order's goal object; +4 = the current attachment), +0x20 = current speed (16.16), +0x2A = step the current movement started. The clock `0x004B6340` calls the import at `0x004FC0DC` (wall-clock milliseconds) × display tick rate (`0x0051FBD0`+0xE8) / 1000.
+
 ### Stale stack word (the wreck level of units without a `Killed` function)
 The kill routine's wreck variable is the dword 0x10 below its entry stack pointer. Called from the unit pass, that is **0x1C below the pass's frame** (after its four register pushes). Its value is whatever the routines the pass called last left at that depth. The engine carries it as `UnitTickEnvironment::stale_word` across passes. Every hook the pass calls gets it by reference and must update it like the original routine does.
 
@@ -664,12 +751,13 @@ The kill routine's wreck variable is the dword 0x10 below its entry stack pointe
 - **Self-heal step:** a saved register, **the unit's address** in the original's unit table (`table + id × 0x118`).
 - **Kill:** the final wreck level (1 for kind 7; 0 for kinds 4, 5, 9 or hp > 0, or when not fully built; else whatever `Killed` returned or the stale value). If the unit is not alive, unchanged.
 - **Weapons `0x0049E1A0`:** the y of the last target position it resolved (or the fire routine left), else unchanged; see "Weapons: slot pass and aiming" (`weapons_harness`).
-- **Stubbed / not built yet:** weapons, orders, motion, settle, broadcast and camera. The harness stubs never reach that depth.
+- **Stubbed / not built yet:** motion, broadcast and camera. The harness stubs never reach that depth.
 
-**Traced but not yet verified** (their implementations must reproduce this):
-- **Primary orders `0x0043B7C0`:** always leaves a saved register, **the slot player's record address** (GS + 0x1B63 + slot × 0x14B).
-- **Ground settle `0x0048A870`:** leaves the return address of the last call it made at its entry − 0x10: `0x0048A8FF`, `0x0048A909`, `0x0048A92C` or `0x0048A96F`. On paths with no call, unchanged. So a dying mobile unit without `Killed` usually gets wreck level 15, 9 or 12.
-- **Secondary orders `0x0043BAD0`, motion `0x0043DD20`, weapons `0x0049E1A0`:** not traced.
+**Verified in `orders_harness`** (word compared after every pass and every direct call; 300,000 passes, 0 differences). For a one-argument routine the word is its entry − 0x14:
+- **Primary orders `0x0043B7C0`:** always the saved EDI, which in the pass is **the slot player's record address** (GS + 0x1B63 + slot × 0x14B, the slot whose unit range is being walked, not the unit's owner). Engine: the hook sets `addresses.player(env.pass_slot)`.
+- **Secondary orders `0x0043BAD0`:** unchanged with nothing due. Otherwise the last of: the behaviour's third argument slot after it returns (pushed as 0; behaviours that reuse that slot as a local leave their value, see Unit orders), 15 after a random snooze, **the order's heap address** after destroying one (the argument of the free call). Heap addresses vary between runs; the engine gives each order an `address` from its allocator hook.
+- **Ground settle `0x0048A870`:** the return address of the last call it made: `0x0048A8FF` (water-level sample, sample ≤ surface), `0x0048A909` (second sample), `0x0048A92C` (terrain-only sample) or `0x0048A96F` (slope fit). Unchanged on paths with no call. So a dying mobile unit without `Killed` usually gets wreck level 15, 9 or 12.
+- **Motion `0x0043DD20`, weapons `0x0049E1A0`:** not traced.
 
 **The original is not deterministic here.** The game state block is a heap allocation, and its address varies between runs on the same machine: two skirmishes on Windows 11 measured 0x025F818E and 0x025E86AB (unit table 0x0E7C9020 and 0x0E6FD020; its low 12 bits look stable). The value left by primary orders depends on that address.
 - The engine keeps both addresses in `OriginalAddresses`; the defaults are the first measurement.
@@ -799,6 +887,8 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 |---|---|---|---|
 | 2026-10-14 | Weapon ballistic pitch solver + C runtime acos (FPATAN at PC53, double rounded) — **1,428,570 solver calls identical; acos 1,000,009 calls, 10 CPU knife-edge cases** | `0x0049A890`, `0x004E67F0`, `0x004E680D` | `engine/sim/src/{weapons,x87_math}.cpp`, `tools/orig_harness/ballistic_check.cpp` |
 | 2026-10-14 | Weapon slot pass + aiming (target position, veteran lead, sweet spot, aim-from/query pieces, direct and ballistic aim, aim scripts and sink, broadcast, range check, tolerance, reload, stockpile, shot payment, stale word) — **3,000 scenarios / 300,000 unit passes + 69,483 direct slot passes / 242,937 helper calls / 15,025 shots identical** | `0x0049E1A0`, `0x0048A1E0`, `0x0048A190`, `0x0043E3C0`, `0x0043E0B0`, `0x0043E2E0`, `0x0043E240`, `0x0049E570`, `0x0049D910`, `0x0049AA80`, `0x0049D880`, `0x00456200`, `0x004012A0`, `0x004B07C0`, `0x004B0A70`, `0x004B0BC0`, `0x00481490`, `0x0049E070` | `engine/sim/src/weapons.cpp`, `engine/sim/include/sim/weapon_slot.h`, `tools/orig_harness/weapons_harness.cpp`, `tests/sim_tests.cpp` |
+| 2026-10-14 | Unit order lists: mission table, order construct/insert/prepend/remove/clear/destroy, target links, primary and secondary processing, default missions, paralysis orders, stale-word effects (behaviours hooked) — **3,000 scenarios / 300,000 unit passes / 366,066 operations / 734,124 behaviour steps / 248,743 orders freed identical** | `0x0043B7C0`, `0x0043BAD0`, `0x0043A0C0`, `0x0043A1F0`, `0x0043AC60`, `0x0043ACB0`, `0x00439F80`, `0x00439EB0`, `0x0043C050`, `0x00438760`, `0x004895C0`, `0x00489650`, `0x00489690`, table `0x00512344` | `engine/sim/src/orders.cpp`, `tools/orig_harness/orders_harness.cpp`, `tests/sim_tests.cpp` |
+| 2026-10-14 | Ground settle + slope fit (terrain/water/waterline heights, footprint slope pitch/bank, hover bob) — **52,577 direct settles (11,169 slope fits) + every pass identical** | `0x0048A870`, `0x0048A490`, `0x004B6340` (clock, input) | `engine/sim/src/ground_settle.cpp`, `ta_compat/src/model3do.cpp` (`selection_footprint`) |
 | 2026-10-14 | Stale stack word as the wreck level of units without `Killed` (wind, script step, water damage, heal, kill effects; original heap addresses) — **3,000 scenarios incl. all 22 Killed-less types, word compared after every pass/kill: 0 differences** | `0x004864B0`, `0x0048AD30`, `0x00437910`, `0x004B0D60`, `0x004B1C00`, `0x00489BB0`, `0x0041BD10`, `0x0043B7C0`, `0x0048A870` | `engine/sim/src/{combat,unit_tick,script_vm}.cpp`, `tools/orig_harness/combat_harness.cpp`, `tools/capture/capture.cpp` |
 | 2026-10-14 | Damage, repair/self-heal, kills (packets, veterancy, severity/wreck, statistics, reclaim, teardown) — **3,000 scenarios / 600,000 unit passes / 656,853 combat operations / 26,934 kills identical** | `0x00489BB0`, `0x00489CE0`, `0x0041BD10`, `0x004864B0`, `0x004866D0`, `0x00467950`, `0x0044FDB0`, `0x0044FE40`, `0x0044FFD0` | `engine/sim/src/combat.cpp`, `tools/orig_harness/combat_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Per-step unit pass (wind, script step, timers, selection, health %, water damage, self-heal gates; subsystems as ordered hooks) — **1,000 scenarios / 253,024 passes / 65,843 script calls with real scripts identical** | `0x0048AD30`, `0x00437910`, `0x0048B090` (activation side calls `0x0047F780`, `0x0041C110`, `0x00451DF0`) | `engine/sim/src/unit_tick.cpp`, `tools/orig_harness/unitloop_harness.cpp` |

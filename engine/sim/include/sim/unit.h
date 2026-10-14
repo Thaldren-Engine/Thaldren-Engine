@@ -28,6 +28,9 @@ constexpr std::uint32_t kAlive = 0x10000000u;                                   
 constexpr std::uint16_t kNetScriptState = 4;                                                       // net dirty
 }  // namespace unit_flags
 
+struct MissionOrder;
+struct UnitLink;
+
 struct Unit {
     std::uint16_t id = 0;
     std::array<std::int32_t, 3> pos{};   // 16.16 world position
@@ -39,7 +42,11 @@ struct Unit {
     std::uint8_t script_flags = 0;
     std::uint32_t flags = 0;             // bits 18-19 move orders, 20-21 fire orders, 28 alive
     float build_fraction_left = 0.0f;
-    std::uint16_t net_dirty = 0;
+    std::uint16_t net_dirty = 0;         // also the events a sleeping primary order waits for (sim/orders.h)
+    MissionOrder* orders = nullptr;            // primary order list (sim/orders.h)
+    MissionOrder* secondary_orders = nullptr;  // secondary order list
+    UnitLink* referrers = nullptr;             // links (order targets) pointing at this unit, newest first
+    std::uint16_t hover_phase = 0;             // hover bob phase (sim/ground_settle.h)
     const UnitTypeInfo* type = nullptr;
     Unit* carrier = nullptr;     // transport carrying this unit
     Unit* cargo_head = nullptr;  // first unit carried

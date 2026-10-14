@@ -138,6 +138,36 @@ add_executable(combat_harness
 target_include_directories(combat_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(combat_harness PRIVATE /W4 /permissive- /fp:precise)
 
+# Unit order lists and ground settle (with the unit pass, damage and death) vs sim/orders.h and sim/ground_settle.h.
+add_executable(orders_harness
+    orders_harness.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/tnt.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/ground_settle.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(orders_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(orders_harness PRIVATE /W4 /permissive- /fp:precise)
+
 # Weapon ballistics (C runtime acos + pitch solver) vs sim/weapons.h.
 add_executable(ballistic_check ballistic_check.cpp
     ${ROOT}/engine/sim/src/weapons.cpp

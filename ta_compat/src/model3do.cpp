@@ -192,4 +192,29 @@ sim::PoseModel to_pose_model(const Model3doPiece* root) {
     return m;
 }
 
+bool selection_footprint(const std::vector<std::uint8_t>& file, const Model3doPiece* root,
+                         std::array<std::array<std::int32_t, 2>, 4>& out) {
+    if (!root || root->selection_primitive < 0 || root->primitives.empty()) return false;
+    const auto& prim = root->primitives[static_cast<std::size_t>(root->selection_primitive)];
+    std::uint32_t idx_off = 0, vert_off = 0;
+    std::memcpy(&idx_off, &prim.raw[12], 4);
+    if (file.size() >= kPieceSize) std::memcpy(&vert_off, &file[0x24], 4);
+    auto rd32 = [&](std::size_t off) {
+        std::uint32_t v = 0;
+        if (off + 4 <= file.size()) std::memcpy(&v, &file[off], 4);
+        return static_cast<std::int32_t>(v);
+    };
+    for (std::size_t k = 0; k < 4; ++k) {
+        // The game reads four index slots even when the primitive has fewer.
+        std::uint16_t idx = 0;
+        if (idx_off + k * 2 + 2 <= file.size()) std::memcpy(&idx, &file[idx_off + k * 2], 2);
+        if (idx < root->vertices.size()) {
+            out[k] = {root->vertices[idx][0], root->vertices[idx][2]};
+        } else {  // past the vertex list: the following file bytes, not negated
+            out[k] = {rd32(vert_off + idx * 12u), rd32(vert_off + idx * 12u + 8)};
+        }
+    }
+    return true;
+}
+
 } // namespace ta

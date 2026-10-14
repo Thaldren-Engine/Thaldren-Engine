@@ -23,6 +23,7 @@ struct UnitTickTypeInfo {
     float build_cost_energy = 0.0f;
     float build_cost_metal = 0.0f;
     std::string name;                       // unit name, matched against the side's commander
+    std::uint8_t default_mission = 0;       // mission kind given when the unit has no orders (0 = none)
 };
 
 // State of a unit only the unit pass touches.
@@ -88,6 +89,9 @@ struct UnitTickEnvironment {
     // routines called from the pass leave there is what a dying unit without a
     // Killed script gets as its wreck level. It carries over between passes.
     std::uint32_t stale_word = 0;
+    // Player slot whose units the pass is visiting (set by the pass; the primary
+    // orders hook leaves addresses.player(pass_slot) in the stale word).
+    int pass_slot = 0;
 };
 
 // Systems the unit pass calls into, in this order per unit. Each one that the
