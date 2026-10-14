@@ -82,6 +82,17 @@ Sources: `/Thaldren_TotalA.exe`, checked 2026-10-13. Not yet written to `/TotalA
    - Callers that keep only EAX get the **low 32 bits** (wraps; it does *not* saturate to `0x80000000`).
    - The engine has `ftol64()` plus `ftol32() = (uint32)ftol64()`. A plain C++ cast is undefined behaviour here.
 4. `atan2`/`asin` use a correctly rounded implementation (for example CORE-MATH, MIT), which matches `FPATAN` rounded to double in all but vanishingly rare cases. Each such site is recorded with a test.
+5. **FSINCOS (the only site): `Math_Rotate2DPoint` `0x004B7173`** (cdecl `(short angle, int* xy)`), verified 2026-10-13 by `tools/orig_harness/x87_check`.
+   - Angle 0 is skipped.
+   - The argument is `a = (double)angle × 0x3F1921FB54442C5A`, a slightly-off 2π/65536, with the product rounded to 53 bits.
+   - Then `FSINCOS`, giving 64-bit mantissas.
+   - `x' = x·cos − y·sin`, `y' = y·cos + x·sin`. Each product and sum is rounded to 53 bits (PC53).
+   - The result is stored with round-to-nearest-even `FISTP`.
+   - **FSINCOS is not correctly rounded.** On the reference CPU (Intel i7-13700K), 11,093 of 131,070 values differ from correct rounding, some by many units near the zeros.
+   - Model: reduce the argument exactly by the FPU's **66-bit π** (`0xC90FDAA22168C234C·2⁻⁶⁶`), then round correctly. That leaves 3,620 one-unit exceptions, stored in `engine/sim/src/x87_sincos_exceptions.inc`. With the table, the emulation equals the hardware for all 65,535 angles.
+   - Our `sim::x87::rotate_point_2d` equals the original routine on 524,288 calls (every angle, 8 points each).
+   - Other CPUs (e.g. AMD) may compute different last bits, as the original game itself would.
+   - `Math_RotatePointByAngles` (`0x004B6CC0`): (x,y) rotated by angles[0], then (y,z) by angles[2], then (x,z) by angles[1].
 
 **Trig table** (static checks done 2026-10-13; awaiting engine test before writing to `/TotalA.exe`)
 - `0x00509F00`: static `.data`, never written. **640** `int16` entries (the reference program typed it as 512; that is wrong). Entries 0–511 cover one full circle and 512–639 repeat the first quarter, so cosine can read `index + 128` without wrapping.

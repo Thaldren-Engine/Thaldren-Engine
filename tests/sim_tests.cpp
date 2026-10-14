@@ -16,6 +16,7 @@
 #include "sim/trig.h"
 #include "sim/world.h"
 #include "sim/x87.h"
+#include "sim/x87_trig.h"
 
 namespace {
 
@@ -215,6 +216,24 @@ struct TestHost : sim::ScriptHost {
     std::uint32_t random_mod(std::uint32_t) override { return 0; }
 };
 
+void test_x87_rotation() {
+    std::int32_t x = 1000, y = -7;
+    sim::x87::rotate_point_2d(0, x, y);  // angle 0: untouched
+    CHECK_EQ(x, 1000);
+    CHECK_EQ(y, -7);
+    x = 1000, y = 0;
+    sim::x87::rotate_point_2d(16384, x, y);  // quarter turn
+    CHECK_EQ(x, 0);
+    CHECK_EQ(y, 1000);
+    CHECK_EQ(sim::x87::fist_nearest(2.5), 2);    // round half to even
+    CHECK_EQ(sim::x87::fist_nearest(-3.5), -4);
+    CHECK_EQ(sim::x87::fist_nearest(3e9), INT32_MIN);  // integer indefinite
+    // The FPU's pi is 66 bits: sin of the "half turn" is not 0 at extended precision.
+    sim::x87::Ext80 s, c;
+    sim::x87::sincos_for_angle(-32768, s, c);
+    CHECK_EQ(s.mantissa != 0, true);
+}
+
 void test_script_vm() {
     using sim::ScriptOp;
     sim::ScriptProgram prog;
@@ -273,6 +292,7 @@ int main() {
     test_world_stage_order();
     test_step_budget();
     test_script_vm();
+    test_x87_rotation();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
