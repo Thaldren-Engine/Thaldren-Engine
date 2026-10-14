@@ -140,6 +140,10 @@ Written to `/TotalA.exe` (name + prototype + plate comment) once verified.
 |---|---|---|---|
 | `0x0051FC88` | `g_dwBattleRngState` | `uint` | Battle RNG state |
 | `0x00509F00` | `g_awSinTableQ13` | `short[640]` | Q13 sine table (512 + 128 tail) |
+| `0x00511DE8` | `g_pGameState` | `void *` | Game state: `+0x38A3B` steps pending, `+0x38A47` game tick (runtime verified) |
+| `0x0051FBD0` | `g_pDisplayContext` | `void *` | `+0xE8` tick rate Hz = 30 (runtime verified) |
+
+Also applied: `0x00495490` `Game_RunSimulationStep` (runtime verified).
 
 ## Structs
 _(name, size, field offsets)_
