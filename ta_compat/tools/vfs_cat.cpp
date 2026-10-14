@@ -2,6 +2,10 @@
 // Usage: vfs_cat <game_dir> <path-inside-vfs>
 
 #include <cstdio>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -21,6 +25,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::fprintf(stderr, "[%s, %zu bytes]\n", source.c_str(), data.size());
+#ifdef _WIN32
+    _setmode(_fileno(stdout), _O_BINARY);  // no CRLF translation of binary data
+#endif
     std::fwrite(data.data(), 1, data.size(), stdout);
     return 0;
 }

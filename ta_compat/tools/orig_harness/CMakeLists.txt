@@ -21,3 +21,17 @@ add_executable(orig_harness
 )
 target_include_directories(orig_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(orig_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Unit script VM: original interpreter vs sim::ScriptInstance on every game script.
+add_executable(cob_harness
+    cob_harness.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+)
+target_include_directories(cob_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(cob_harness PRIVATE /W4 /permissive- /fp:precise)

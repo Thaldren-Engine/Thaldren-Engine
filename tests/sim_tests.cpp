@@ -11,6 +11,7 @@
 
 #include "sim/fixed.h"
 #include "sim/rng.h"
+#include "sim/script_vm.h"
 #include "sim/step_budget.h"
 #include "sim/trig.h"
 #include "sim/world.h"
@@ -190,6 +191,74 @@ void test_step_budget() {
     CHECK_EQ(p.hysteresis, std::int16_t{0});
 }
 
+// Minimal host: remembers piece turns, records calls.
+struct TestHost : sim::ScriptHost {
+    std::int32_t turn[4][3] = {};
+    int calls = 0;
+    void set_piece_move(std::int32_t, std::int32_t, std::int32_t) override { ++calls; }
+    void set_piece_turn(std::int32_t p, std::int32_t a, std::int32_t v) override { turn[p][a] = v; ++calls; }
+    void set_piece_visible(std::int32_t, std::int32_t) override {}
+    void set_piece_cached(std::int32_t, std::int32_t) override {}
+    void set_piece_shaded(std::int32_t, std::int32_t) override {}
+    std::int32_t get_piece_move(std::int32_t, std::int32_t) override { return 0; }
+    std::int32_t get_piece_turn(std::int32_t p, std::int32_t a) override { return turn[p][a]; }
+    void legacy_explode(std::int32_t, std::int32_t, std::int32_t) override {}
+    void play_sound(std::int32_t) override {}
+    void emit_sfx(std::int32_t, std::int32_t) override {}
+    void explode_piece(std::int32_t, std::int32_t) override {}
+    void attach_unit(std::int32_t, std::int32_t, std::int32_t) override {}
+    void drop_unit(std::int32_t) override {}
+    void set_value(std::int32_t, std::int32_t) override {}
+    std::int32_t get_value(std::int32_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t) override { return 0; }
+    std::int32_t get_transporting(std::int32_t) override { return 0; }
+    std::int32_t get_carrier() override { return 0; }
+    std::uint32_t random_mod(std::uint32_t) override { return 0; }
+};
+
+void test_script_vm() {
+    using sim::ScriptOp;
+    sim::ScriptProgram prog;
+    auto emit = [&](ScriptOp op, std::initializer_list<std::uint32_t> operands) {
+        prog.code.push_back(0);
+        prog.ops.push_back(op);
+        for (std::uint32_t w : operands) {
+            prog.code.push_back(w);
+            prog.ops.push_back(ScriptOp::Invalid);
+        }
+    };
+    prog.piece_names = {"base", "turret"};
+    prog.function_names = {"Create"};
+    prog.entry = {0};
+    // turn turret around y-axis to 4000 speed 30000 (1000 per tick); wait-for-turn; sleep 100; return
+    emit(ScriptOp::PushConst, {30000});
+    emit(ScriptOp::PushConst, {4000});
+    emit(ScriptOp::Turn, {1, 1});
+    emit(ScriptOp::WaitTurn, {1, 1});
+    emit(ScriptOp::PushConst, {100});
+    emit(ScriptOp::Sleep, {});
+    emit(ScriptOp::Return, {});
+
+    TestHost host;
+    sim::ScriptInstance vm(prog, host, 30);
+    CHECK_EQ(vm.call("Create", nullptr, true), true);
+    CHECK_EQ(vm.thread_word(0, sim::ScriptInstance::kState), sim::ScriptInstance::kWaitingTurn);
+    CHECK_EQ(vm.piece_anims()[sim::ScriptInstance::kPieceWords + sim::ScriptInstance::kTurnSpeed + 1], 1000);
+    for (int k = 1; k <= 4; ++k) {
+        vm.tick(1);
+        CHECK_EQ(host.turn[1][1], k * 1000);  // last step snaps exactly onto the target
+    }
+    vm.tick(1);  // wakes (speed 0), sleeps 100 ms = 3 ticks
+    CHECK_EQ(vm.thread_word(0, sim::ScriptInstance::kState), sim::ScriptInstance::kSleeping);
+    CHECK_EQ(vm.thread_word(0, sim::ScriptInstance::kSleep), 3u);
+    vm.tick(1);
+    vm.tick(1);
+    CHECK_EQ(vm.thread_count(), 1);
+    vm.tick(1);  // sleep reaches 0: runs and returns
+    CHECK_EQ(vm.thread_count(), 0);
+    CHECK_EQ(vm.call("create", nullptr, true), false);  // names are case-sensitive
+    CHECK_EQ(vm.fault().empty(), true);
+}
+
 } // namespace
 
 int main() {
@@ -203,6 +272,7 @@ int main() {
     test_fixed();
     test_world_stage_order();
     test_step_budget();
+    test_script_vm();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

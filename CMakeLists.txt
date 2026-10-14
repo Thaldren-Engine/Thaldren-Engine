@@ -18,6 +18,7 @@ endif()
 
 add_library(sim STATIC
     engine/sim/src/rng.cpp
+    engine/sim/src/script_vm.cpp
     engine/sim/src/step_budget.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/world.cpp
@@ -28,6 +29,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 # TA compatibility layer (importers for the original game's data). Kept apart
 # from the engine; the engine never depends on it.
 add_library(ta_compat STATIC
+    ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp
     ta_compat/src/gaf.cpp

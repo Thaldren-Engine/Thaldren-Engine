@@ -154,6 +154,14 @@ Written to `/TotalA.exe` (name + prototype + plate comment) once verified.
 | `0x004BCB50` | `Hapi_EnumerateTree` | `void (char* dir, char* pattern, vector*, int source, bool all)` | Recursive file enumeration | Verified: feature library |
 | `0x004B8C60` | `Gaf_LoadAndRelocate` | `GafFile* (char* path)` | Load a GAF and relocate offsets | Verified (sequence names) |
 | `0x004B8D40` | `Gaf_FindSequenceByName` | `GafSeq* (GafFile*, char*)` | Linear stricmp lookup | Verified |
+| `0x004B2450` | `UnitScript_LoadCob` | `Cob* (char* path)` | Load + relocate a COB, cache its checksum | Verified (harness layout) |
+| `0x004B08C0` | `UnitScript_StartThread` | `int __thiscall (int fn)` | First free thread; returns it or −1 | Verified: differential |
+| `0x004B0940` | `UnitScript_CallNamed` | `int __thiscall (char*, Sink*, int run_now)` | Start by name | Verified: differential |
+| `0x004B0B00` | `UnitScript_InvokeByIndex` | `int __thiscall (int, Sink*, int run_now, int argc, int a, int b, int c, int d)` | Start with 4 args | Verified: differential |
+| `0x004B0C40` | `UnitScript_CallInOut` | `int __thiscall (int, int*, int*, int*, int*)` | Run now, copy locals 0–3 back | Verified: differential |
+| `0x004B0D60` | `UnitScript_Tick` | `void __thiscall (int ticks)` | Run threads, then animate | Verified: differential |
+| `0x004B0DA0` | `UnitScript_ExecSlot` | `void __thiscall (int thread, int ticks)` | The interpreter | Verified: differential |
+| `0x004B1C00` | `UnitScript_AdvancePieceAnims` | `void __thiscall (int ticks)` | Piece move/turn/spin stepping | Verified: differential |
 | `0x0042A2C0` | `Model3d_LoadObjectByName` | `Model* (char*)` | objects3d\<name>.3DO, flip, register | Verified (feature models) |
 
 ## Globals
@@ -363,6 +371,59 @@ The table is built per battle and grows by appending (realloc). Implementation: 
 - **Piece count** (`Model3d_CountTreeNodes` `0x0045AE80`): 1 + child count + sibling count.
 - **Model table entry 0** ("None") is never written. The game leaves its pointer as uninitialised heap memory.
 
+### Unit script VM (scripts\*.cob) — differential-tested against the original interpreter
+Verified 2026-10-13 with `ta_compat/tools/orig_harness/cob_harness`:
+- The tool runs the original routines inside a suspended TotalA.exe with logging callbacks; our `sim::ScriptInstance` gets identical callback return values.
+- Real scripts: all 278 stock scripts × 3 seeds, 580,539 operations.
+- Synthetic: 3,000 random programs that use every opcode, 164,145 operations.
+- After every operation it compares the thread block, the animation table, statics, the callback log and the RNG state: **0 differences**.
+- Implementation: engine VM `engine/sim/src/script_vm.cpp` (own op enum); importer `ta_compat/src/cob.cpp` (every code word decoded, so jumps into operands behave the same).
+- **COB file** (`UnitScript_LoadCob` `0x004B2450`, loaded in place, offsets relocated):
+  - u32 header: version (4), function count, piece count, code length (words), static count, sound count.
+  - Then file offsets of: entry table (u32 code-word index per function), function name offsets, piece name offsets, code, and the sound table (8 bytes per entry, name offset in the second u32).
+  - The game caches a simple checksum of the file.
+- **Script object** (0x544): vtable, tick rate (display context +0xE8 = 30), COB, checksum, statics (u32 × count), piece anim table (19 u32 per piece), dirty flag, 8 threads × 41 u32 at +0x1C, then the live-thread count at +0x53C, **directly after the threads**. A stack overrun of thread 7 therefore writes the count.
+- **Thread** (41 u32):
+  - Header: state, pc, sp (−1 = empty), sleep ticks, wait piece, wait axis, thread being waited for, signal mask, return-sink pointer.
+  - Then 32 stack words. The stack top is word 9+sp; locals are words 9+i, sharing the stack.
+  - **States:** 0 free; 0x01000000 running; 0x021/0x022/0x024/0x028xxxxx waiting for turn / move / sleep / a called thread.
+- **Start** (`0x004B08C0`): the first free thread gets state running, pc = entry, sp = −1, sink 0, signal mask 1, and the count goes up by one.
+  - **Locals are not cleared** (stale values from the previous occupant).
+  - Function index bounds-checked; −1 if no thread is free.
+  - Name lookups are case-sensitive `strcmp`.
+- **Entry points:**
+  - `CallNamed` (`0x004B0940`, name, sink, run_now): run_now runs all 8 threads once with 0 elapsed ticks.
+  - `InvokeByIndex` (`0x004B0B00`): a failed start returns 0 to the sink. Pushes 4 args, then sp = argc−1.
+  - `CallInOut` (`0x004B0C40`): pushes 4 args, sp = 3, runs only that thread, then copies locals 0–3 back. It copies them even if the thread has ended.
+  - `Tick` (`0x004B0D60`, ticks): if the count ≠ 0, run threads 0..7, then animate.
+- **Run** (`UnitScript_ExecSlot` `0x004B0DA0`):
+  - Waiting threads wake when the turn speed (or move speed) of their piece/axis reaches 0, or when sleep − ticks ≤ 0.
+  - A woken thread runs in the same call. It runs until it sleeps, waits, returns or is killed.
+  - Opcodes are matched on `word & 0x100FF000`. Push/pop kind = `word & 7`: 1 const, 2 local, 4 static. Other push kinds push a stale local of the interpreter; other pop kinds pop nothing.
+  - **Opcodes:** 01 move, 02 turn, 03 spin, 04 stop-spin, 05/06 show/hide, 07/08 cache/don't, 09 legacy explode (piece + 2 pops), 0A play sound, 0B move-now, 0C turn-now, 0D/0E shade/don't, 0F emit sfx, 11/12 wait turn/move, 13 sleep, 21 push, 22 create local (sp+1, no init), 23 pop, 24 drop top.
+  - 31–38 add, sub, mul, signed div (div by 0 crashes), and, or, xor, not.
+  - 41 rand → `BattleRng_NextMod(hi−lo+1)+lo`. 42 get value(x,0,0,0,0); 43 get value with 4 args; 44 get transporting(x); 45 get carrier.
+  - 51–56 `< <= > >= == !=` (signed). 57/58 logical and/or. **59 = bitwise xor (not logical).** 5A logical not.
+  - 61 start-script (fn, argc). 62 call-script. 63 drop argc args. 64 jump. 65 return. 66 jump-if-zero. 67 signal. 68 set signal mask. 71 explode piece. 82 set value. 83 attach (3 pops). 84 drop.
+  - Anything else: the thread is freed; waiters are **not** woken.
+  - **Start/call args:** popped into the callee's locals argc−1..0, and the callee inherits the caller's signal mask. If no thread is free, **the args are not popped**, and a call-script waits on thread −1 forever.
+  - **Return:** if the sink is nonzero, pop the value and pass it to the sink. Free the thread and wake every thread waiting on it.
+  - **Signal:** frees every live thread whose mask & signal ≠ 0, and wakes their waiters. The caller may kill itself.
+  - **Speeds and timing:**
+    - Speeds and accelerations are divided by the tick rate (C truncation).
+    - Sleep ticks = (int)(rate × ms) / 1000.
+  - **Turn:** target &= 0xFFFF and accel is cleared. The speed sign follows the shortest path: d = target − current; negate when (|d| > 0x8000) ≠ (d < 0); speed 0 when d = 0.
+  - **Move:** speed negated when target < current.
+  - **Spin:** turn target = −1. Speed set immediately if accel = 0.
+  - **Stop-spin:** spin target 0, accel = −(decel/rate). It does **not** mark the piece active or the table dirty.
+  - **Program counter after an instruction:** most instructions re-read the pc after their stack traffic and add their length. Wait, sleep, create-local, drop-top, drop-args, set-signal-mask and jump-if-zero use the pc they started at. This matters when a stack underrun overwrites header words.
+- **Animate** (`UnitScript_AdvancePieceAnims` `0x004B1C00`): only with ticks ≠ 0 and the dirty flag set. Clear dirty, then for each active piece, clear its active flag and, per axis 0–2:
+  - **move:** new = cur + ticks×speed. Keep moving (active) while new is short of the target in the speed's direction, else snap to the target and set speed 0.
+  - **spin accel:** speed += accel, clamped at the spin target (then accel = 0).
+  - **turn:** if target = −1, spin forever (active). Otherwise r = remaining distance (target−cur, or cur−target, +0x10000, magnitude & 0xFFFF with its sign). If r > ticks×|speed|, keep going (active), else snap and set speed 0. The value is passed & 0xFFFF.
+  - A piece still active sets dirty again.
+- **Unit callback table** (vtable `0x004FD698`): +00 set move, +04 set turn, +08 visible, +0C cached, +10 shaded, +14 get move, +18 get turn, +28 legacy explode (no-op), +2C play sound (no-op), +30 emit sfx, +34 explode, +38 attach, +3C drop, +40 set value, +44 get value, +48 transporting, +4C carrier.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -386,6 +447,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | Unit script VM + COB importer — **differential vs original interpreter: 278 stock scripts (580,539 ops) + 3,000 synthetic programs (164,145 ops, every opcode), 0 differences** | `0x004B2450`, `0x004B0610`, `0x004B0720`, `0x004B08C0`, `0x004B0940`, `0x004B0B00`, `0x004B0C40`, `0x004B0D60`, `0x004B0DA0`, `0x004B1C00`, `0x00485D40`, vtable `0x004FD698` | `engine/sim/src/script_vm.cpp`, `ta_compat/src/cob.cpp`, `tools/orig_harness/cob_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-13 | Feature definitions + unit corpse indices + recursive VFS enumeration — **exact vs live game: 434 features, 8,307 fields (incl. model trees and GAF sequence names), 279 corpse indices** | `0x004917D0`, `0x004222E0`, `0x00483610`, `0x00421F20`, `0x00423160`, `0x00436C30`, `0x00422E40`, `0x004224B0`, `0x00422EA0`, `0x004BCB50`, `0x004BC4B0`, `0x004BC640`, `0x004B8C60`, `0x004B8D40`, `0x0042A2C0`, `0x004C4760` | `ta_compat/src/featuredefs.cpp`, `gaf.cpp`, `hpi.cpp` (`enumerate_tree`), `tools/feature_check.cpp` |
 | 2026-10-13 | 3DO model loader + unit model height — **exact vs live game: 278 unit + 74 weapon model trees; unit table now 25,617 fields** | `0x004CB560`, `0x004CB4C0`, `0x004CB370`, `0x004CB590`, `0x004CB5F0`, `0x0045AE80` | `ta_compat/src/model3do.cpp`, `tools/model_check.cpp` |
 | 2026-10-13 | Weapon definition table — **exact vs live game: all 256 slots, 9,141 fields** | `0x0042E310`, `0x0042E440`, `0x0049E010`, `0x00429470`, `0x0042F7E0` | `ta_compat/src/weapondefs.cpp`, `tools/weapondef_check.cpp` |
