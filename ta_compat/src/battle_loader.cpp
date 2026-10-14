@@ -113,7 +113,8 @@ void read_meteors(Vfs& vfs, const TdfSection* schema, sim::MeteorShower& m, std:
 
 }  // namespace
 
-std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, sim::BattleOutside& outside, std::string& error) {
+std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, sim::BattleOutside& outside, std::string& error,
+                                          const std::function<void(sim::Battle&)>& before_start) {
     auto lb = std::make_unique<LoadedBattle>();
     if (!vfs.read("maps\\" + req.map + ".tnt", lb->tnt)) {
         error = "map not found: " + req.map;
@@ -213,6 +214,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
         p.commander_type = lb->type_index(com);
         if (p.commander_name.empty()) p.commander_name = com;
     }
+    if (before_start) before_start(b);
     if (!sim::start_battle(b, start, error)) return nullptr;
     return lb;
 }

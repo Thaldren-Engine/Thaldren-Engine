@@ -9,6 +9,7 @@
 //
 // Usage: game_flow <game_dir> [steps] [seed] [map]
 
+#define _CRT_SECURE_NO_WARNINGS
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -125,10 +126,99 @@ struct Commander {
 
 }  // namespace
 
+// Battle start against a capture of the original (ta_compat/tools/capture, e.g.
+// golden_skirmish_moonquartet_300.jsonl: Moon Quartet, 1 human + 3 computer players, hard,
+// 1000/1000, battle seed overridden). The computer players' draws (not built here) are
+// replayed from the capture in their hooks; everything else draws by itself. Compared: the
+// battle generator after every recorded draw up to step 1, and at the start of step 1.
+namespace {
+std::uint64_t json_u(const std::string& line, const char* key) {
+    const std::string k = std::string("\"") + key + "\":";
+    const auto at = line.find(k);
+    return at == std::string::npos ? ~0ull : std::strtoull(line.c_str() + at + k.size(), nullptr, 10);
+}
+struct ReplayAi : sim::QuietBattleOutside {
+    sim::Battle* battle = nullptr;
+    std::deque<std::pair<std::uint32_t, std::uint32_t>> ai_draws;  // (caller, n) of the computer players' draws, in order
+    int mismatches = 0;
+    void draw_ai(int count) {
+        for (int k = 0; k < count && !ai_draws.empty(); ++k) {
+            battle->battle_rng().next_mod(ai_draws.front().second);
+            ai_draws.pop_front();
+        }
+    }
+    void ai_player_setup(int) override { draw_ai(8); }   // 0x40A150
+    void ai_controller_step(int) override { draw_ai(2); }  // 0x407AE0, 0x407E90
+};
+int check_start(ta::Vfs& vfs, const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::printf("start: cannot open %s\n", path.c_str());
+        return 1;
+    }
+    std::vector<std::string> lines;
+    char buf[4096];
+    while (std::fgets(buf, sizeof buf, f)) lines.emplace_back(buf);
+    std::fclose(f);
+    std::uint32_t seed = 0, tick1_rng = 0;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> engine_draws;  // (n, state after) the engine must make itself
+    ReplayAi out;
+    for (const std::string& l : lines) {
+        if (l.find("\"ev\":\"setup\"") != std::string::npos) seed = static_cast<std::uint32_t>(json_u(l, "battle_seed_override"));
+        if (l.find("\"ev\":\"randmod\"") != std::string::npos && json_u(l, "tick") == 0) {
+            const auto caller = static_cast<std::uint32_t>(json_u(l, "caller"));
+            const auto n = static_cast<std::uint32_t>(json_u(l, "n"));
+            if (caller >= 0x407000 && caller < 0x40B000) out.ai_draws.push_back({caller, n});
+            else engine_draws.push_back({n, static_cast<std::uint32_t>(json_u(l, "state"))});
+        }
+        if (l.find("\"ev\":\"step\"") != std::string::npos && json_u(l, "tick") == 1) tick1_rng = static_cast<std::uint32_t>(json_u(l, "battle_rng"));
+    }
+    const std::size_t ai_total = out.ai_draws.size();
+    ta::BattleRequest req;
+    req.sides = {"ARM", "CORE", "ARM", "CORE"};
+    for (int p = 0; p < 4; ++p) {
+        sim::StartPlayer& sp = req.start.players[static_cast<std::size_t>(p)];
+        sp.kind = p == 0 ? sim::PlayerKind::Local : sim::PlayerKind::Computer;
+        sp.net_id = p + 1;
+        sp.energy = sp.metal = 1000;
+    }
+    req.start.ai_difficulty = 2;
+    req.start.commander_mode = 1;
+    req.start.true_sight = true;
+    req.start.fog_of_war = true;
+    req.start.battle_rng_seed = seed;
+    req.start.unit_limit = 250;
+    std::string err;
+    out.ai_draws.clear();
+    struct Hooked : ReplayAi {
+    } hooked;
+    for (const std::string& l : lines)
+        if (l.find("\"ev\":\"randmod\"") != std::string::npos && json_u(l, "tick") == 0) {
+            const auto caller = static_cast<std::uint32_t>(json_u(l, "caller"));
+            if (caller >= 0x407000 && caller < 0x40B000) hooked.ai_draws.push_back({caller, static_cast<std::uint32_t>(json_u(l, "n"))});
+        }
+    auto lb = ta::load_battle(vfs, req, hooked, err, [&](sim::Battle& b) { hooked.battle = &b; });
+    if (!lb) {
+        std::printf("start: %s\n", err.c_str());
+        return 1;
+    }
+    std::printf("start: computer-player draws replayed %zu of %zu; battle generator at step 1: engine %08x, original %08x (%s)\n",
+                ai_total - hooked.ai_draws.size(), ai_total, lb->battle->battle_rng().state(), tick1_rng,
+                lb->battle->battle_rng().state() == tick1_rng ? "identical" : "DIFFERENT");
+    std::printf("start: the original's own draws at step 0 (unit creation): %zu\n", engine_draws.size());
+    return lb->battle->battle_rng().state() == tick1_rng && hooked.ai_draws.empty() ? 0 : 1;
+}
+}  // namespace
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "usage: game_flow <game_dir> [steps] [seed] [map]\n");
         return 2;
+    }
+    if (argc > 3 && std::string(argv[2]) == "start") {
+        ta::Vfs v;
+        v.mount_game_dir(argv[1]);
+        return check_start(v, argv[3]);
     }
     const int steps = argc > 2 ? std::atoi(argv[2]) : 300;
     const std::uint32_t seed = argc > 3 ? static_cast<std::uint32_t>(std::strtoul(argv[3], nullptr, 0)) : 1u;

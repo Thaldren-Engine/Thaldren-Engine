@@ -187,6 +187,13 @@ public:
     // outgoing flush); the per-frame work after a frame's steps besides lingering sight.
     virtual void network_input() {}
     virtual void network_flush() {}
+    // Battle start (sim/battle_start.h): a player record with a controller is set up
+    // (0x464700, in slot order): after its economy and sight counts, a record that is not a
+    // watched one (active with controller 3) gets its computer-player state and unit table
+    // (the original draws the battle generator 8 times there, 0x40A150). Then, after the
+    // commanders, the computer players' metal-site survey (0x4649D0).
+    virtual void ai_player_setup(int /*player*/) {}
+    virtual void ai_battle_ready() {}
 };
 
 class Battle final : UnitWorld,
@@ -269,6 +276,14 @@ public:
     // Economy setup for a player at battle start (after its slot's state is set): everything
     // zero, its first 30-step turn at the current step (0x464700's economy part).
     void init_player_economy(int player);
+    // Battle start: the whole player set-up of one record (economy, then the computer-player
+    // part through BattleOutside::ai_player_setup), and the end of the set-up.
+    void setup_player(int player) {
+        init_player_economy(player);
+        const PlayerSlot& p = players[static_cast<std::size_t>(player)];
+        if (!p.active || p.controller != 3) outside_.ai_player_setup(player);
+    }
+    void battle_ready() { outside_.ai_battle_ready(); }
     // The economy context (construction, reclaim, transfers and tests use it with sim/economy.h).
     Economy& economy() {
         sync_settings();

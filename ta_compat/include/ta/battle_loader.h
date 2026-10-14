@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -54,7 +55,10 @@ struct LoadedBattle {
 };
 
 // Loads the game data and the map and starts the battle. `outside` must outlive the result.
+// `before_start` (optional) sees the battle once its data is loaded, just before the set-up
+// runs (for hooks that need the battle during the set-up).
 std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& request, sim::BattleOutside& outside,
-                                          std::string& error);
+                                          std::string& error,
+                                          const std::function<void(sim::Battle&)>& before_start = {});
 
 }  // namespace ta

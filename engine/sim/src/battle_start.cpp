@@ -146,7 +146,7 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
     b.step_wind();
     b.meteors.reset(b.meteors.weapon);
     for (int s = 0; s < 10; ++s)
-        if (b.players[static_cast<std::size_t>(s)].controller != 0) b.init_player_economy(s);
+        if (b.players[static_cast<std::size_t>(s)].controller != 0) b.setup_player(s);
     b.start_players();
     b.end_game.flags = static_cast<std::uint16_t>(b.end_game.flags & ~(end_game_flags::kEnding | end_game_flags::kWon |
                                                                        end_game_flags::kWonMovie | end_game_flags::kLost));
@@ -208,6 +208,7 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
     // One players' stage at step 0, then the stored amounts are set again.
     b.players_stage();
     init_resources(b, start);
+    b.battle_ready();  // the computer players' metal-site survey
     // From here on the simulation thread's rand() is used.
     b.crt_rand.set_state(start.crt_rand_state);
     return true;
