@@ -32,7 +32,7 @@ Addresses are identical in both Ghidra programs.
 12. `Minimap_TickBlinkDirtyFlag` (not sim)
 13. Networked: `Share_AutoAllyResourcesAndMap` + `Net_FlushPendingFrames`
 
-After all steps in a frame: `Los_ExpireDeferredSightEntries`, chat HUD index.
+After all steps in a frame: `Los_ExpireLingeringSight` (`0x00482130`, built: `Battle::expire_lingering_sight`), chat HUD index.
 
 ---
 
@@ -133,7 +133,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Weapons / projectiles** | Weapon 23, WeaponDef 9, WeaponFire 4, Projectile 12, Explosion 4 | Ballistic aim `0x0049A9xx`, area damage `0x0049A388` |
 | **Damage / death** | (Unit) | `Unit_ApplyDamageAndBroadcast` `0x00489BB0`, `Unit_CreateFromDefId` `0x00485F50` |
 | **Economy** | Player 39, UnitResourceSlot 7 | `Player_AccumulateUnitResourceRates` `0x00401360`, extractor rate `0x00437840` |
-| **Line of sight / radar / cloak** | Los 28, Sensor 3 | `Los_UpdateUnitFromPosition` `0x004827B0`, `Unit_UpdateSensorRadarAndCloak` `0x00467440` |
+| **Line of sight / radar / cloak** | Los 28, Sensor 3 | Built: see RE_MEMORY "Line of sight and radar" (`sim/sight.h`; sight updates `0x004827B0`, sensor pass `0x00467440`, rebuild `0x004816A0`, lingering sight `0x00482910`/`0x00482130`). The cloak itself is applied by the economy pass `0x00401360`. |
 | **AI** | Ai 63, AiSearch 23, AiPlan 6 | `Ai_TickBehaviorController` `0x00408C40`, `AiSearch_Tick` `0x0040EB70` |
 | **Features** | Feature 13, FeatureDef 4 | Animation, reproduce, tree fire, reclaim, wreckage |
 | **Map / terrain** | Map 35, MapInfo 33, HeightMap 10, SpatialBucket 2 | Heights, footprints, passability |
