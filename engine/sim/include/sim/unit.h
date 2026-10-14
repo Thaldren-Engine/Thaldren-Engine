@@ -10,6 +10,7 @@
 #include "sim/heightmap.h"
 #include "sim/pose.h"
 #include "sim/script_vm.h"
+#include "sim/weapon_slot.h"
 
 namespace sim {
 
@@ -45,6 +46,7 @@ struct Unit {
     Unit* cargo_next = nullptr;  // next unit in the carrier's cargo list
     PoseState pose;
     std::unique_ptr<ScriptInstance> script;
+    std::array<WeaponSlot, 3> weapons{};
 };
 
 // What unit values need from the rest of the world.
