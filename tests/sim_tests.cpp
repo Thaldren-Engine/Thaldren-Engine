@@ -1123,6 +1123,159 @@ void test_motion() {
     CHECK_EQ(sys.forgets >= 2, true);
 }
 
+// Map features through the battle: a tree catches fire, burns out into its burnt
+// type, a wreck lands on dry ground and another sinks; a script blows a piece off
+// (battle RNG draws, the debris cache) and shatters another into a shard.
+void test_features_and_effects() {
+    sim::HeightMap hm(16, 16);
+    for (int z = 0; z < 16; ++z)
+        for (int x = 0; x < 16; ++x) hm.at(x, z) = static_cast<std::uint8_t>(x < 10 ? 50 : 5);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(4242);
+    sim::Battle b(outside, hm, rng);
+    b.map.width = 16;
+    b.map.height = 16;
+    b.map.cells.resize(256);
+    for (int i = 0; i < 256; ++i) b.map.cells[static_cast<std::size_t>(i)].height = hm.at(i % 16, i / 16);
+    sim::refresh_height_range(b.map, 0, 0, 16, 16);
+    b.settings.sea_level = 20;
+    b.settings.gravity = 112;
+    b.settings.damage_options = 8;
+    // A three-frame burning animation (shown 1, 2 and 1 steps), not looping.
+    sim::AnimSequence burn;
+    for (int d : {1, 2, 1}) burn.frames.push_back({static_cast<std::uint16_t>(d), 20, 30, 10, 25});
+    const std::uint32_t burn_seq = b.anims.add(burn);
+    b.features.resize(3);
+    sim::FeatureTypeInfo& tree = b.features[0];  // 2D, flammable, burns into a stump
+    tree.footprint_x = tree.footprint_z = 1;
+    tree.flags = sim::feature_type_flags::kFlat | sim::feature_type_flags::kFlammable;
+    tree.spark_time = 4;
+    tree.damage = 100;
+    tree.burnt = 1;
+    tree.sequences[sim::kSeqBurn] = burn_seq;
+    sim::FeatureTypeInfo& stump = b.features[1];
+    stump.footprint_x = stump.footprint_z = 1;
+    stump.flags = sim::feature_type_flags::kFlat;
+    stump.damage = 50;
+    sim::FeatureTypeInfo& heap = b.features[2];  // 3D, 2 x 2
+    heap.footprint_x = heap.footprint_z = 2;
+    heap.damage = 300;
+    heap.dead = 1;
+    heap.model = 7;
+    b.reset_features_and_effects();
+    sim::FeatureWorld& fw = b.feature_world();
+    const int passability = outside.passability;
+    CHECK_EQ(sim::place_feature(fw, 3 * 16 + 3, 0, nullptr, nullptr, 10), -1);  // 2D: no slot
+    CHECK_EQ(b.map.cells[3 * 16 + 3].feature, 0);
+    CHECK_EQ((b.map.cells[3 * 16 + 3].flags >> 3) & 0xF, 10);
+    CHECK_EQ(outside.passability, passability + 1);
+    // Weapon damage below its strength accumulates in the cell.
+    sim::WeaponType gun;
+    gun.default_damage = 40;
+    sim::damage_feature(fw, b.map.cells[3 * 16 + 3], 3, 3, gun);
+    CHECK_EQ(b.map.cells[3 * 16 + 3].feature_aux, 40);
+    // A fire starter sets it alight: slot 0, burning, spreads after 2 or 3 steps.
+    gun.fire_starter = 50;
+    const std::uint32_t before = rng.state();
+    sim::damage_feature(fw, b.map.cells[3 * 16 + 3], 3, 3, gun);
+    CHECK_EQ(b.map.cells[3 * 16 + 3].flags & 1, 1);
+    CHECK_EQ(b.map.cells[3 * 16 + 3].feature_aux, 0);
+    const sim::FeatureSlot& slot = b.feature_state.slots[0];
+    CHECK_EQ(slot.get<std::uint8_t>(sim::FeatureSlot::kFlags) & sim::feature_slot_flags::kBurning, 1);
+    CHECK_EQ(slot.get<std::uint8_t>(sim::FeatureSlot::kFireCountdown) >= 2, true);
+    CHECK_EQ(rng.state() != before, true);  // the countdown's draw
+    CHECK_EQ(b.feature_state.active, 0);
+    CHECK_EQ(b.feature_state.free, 1);
+    // It burns for 4 steps, then the stump replaces it and the slot is free again.
+    for (int k = 0; k < 4; ++k) {
+        b.advance_tick();
+        b.step_features();
+    }
+    CHECK_EQ(b.map.cells[3 * 16 + 3].feature, 1);
+    CHECK_EQ(b.map.cells[3 * 16 + 3].flags & 1, 0);
+    CHECK_EQ(b.feature_state.active, -1);
+    CHECK_EQ(b.feature_state.free, 0);
+    CHECK_EQ(b.feature_state.fault.empty(), true);
+
+    // Wrecks: a 3D corpse at the unit's cells, place and attitude; it comes to rest at once on
+    // dry ground and sinks in the deep water (x >= 10 is below the sea).
+    sim::UnitTypeInfo dead_type;
+    dead_type.corpse = 2;
+    b.types.resize(2);
+    b.init_unit_table(4);
+    b.assign_unit_range(0, 1, 3);
+    sim::Unit& u = b.units[1];
+    u.type = &dead_type;
+    u.cell_x = 5;
+    u.cell_z = 6;
+    u.pos = {(5 * 16 + 16) << 16, 50 << 16, (6 * 16 + 16) << 16};
+    u.heading = 0x4000;
+    sim::spawn_wreck(fw, u, {2, false, 0}, 1, false);
+    CHECK_EQ(b.map.cells[6 * 16 + 5].feature, 2);
+    CHECK_EQ(b.map.cells[6 * 16 + 6].feature, sim::kFeaturePart);
+    CHECK_EQ(b.map.cells[6 * 16 + 5].feature_aux, 0);
+    CHECK_EQ(b.feature_state.slots[0].get<std::uint16_t>(sim::FeatureSlot::kAngles + 2), 0x4000);
+    CHECK_EQ(b.feature_state.slots[0].pos()[0], u.pos[0]);
+    // Level 2 skips one stage down the dead chain: the stump.
+    sim::Unit& v = b.units[2];
+    v.type = &dead_type;
+    v.cell_x = 2;
+    v.cell_z = 10;
+    v.pos = {(2 * 16 + 8) << 16, 50 << 16, (10 * 16 + 8) << 16};
+    sim::spawn_wreck(fw, v, {2, false, 0}, 2, false);
+    CHECK_EQ(b.map.cells[10 * 16 + 2].feature, 1);
+    sim::Unit& w = b.units[3];
+    w.type = &dead_type;
+    w.cell_x = 12;
+    w.cell_z = 4;
+    w.pos = {(12 * 16 + 16) << 16, 30 << 16, (4 * 16 + 16) << 16};
+    sim::spawn_wreck(fw, w, {2, false, 0}, 1, true);
+    const int sunk = b.map.cells[4 * 16 + 12].feature_aux;
+    CHECK_EQ(b.feature_state.slots[static_cast<std::size_t>(sunk)].vel()[1], -0x2CCC);
+    b.advance_tick();
+    b.step_features();
+    CHECK_EQ(b.feature_state.idle, 0);  // the dry one is at rest
+    CHECK_EQ(b.feature_state.slots[static_cast<std::size_t>(sunk)].pos()[1], (30 << 16) - 0x2CCC);
+
+    // Script explode: a falling piece (6 draws, the piece is hidden, the debris cache is used).
+    b.settings.gravity = 0x8000;  // strong gravity: everything lands within the test's steps
+    sim::PoseModel pm;
+    pm.root = 0;
+    pm.nodes.emplace_back();
+    pm.nodes[0].vertices = {{-(4 << 16), 0, -(4 << 16)}, {4 << 16, 0, -(4 << 16)}, {4 << 16, 0, 4 << 16}, {-(4 << 16), 0, 4 << 16}};
+    pm.nodes[0].primitives.push_back({{0, 1, 2, 3}, false});
+    u.pose.build(pm, {});
+    u.pose.pieces[0].flags = sim::pose_flags::kVisible;
+    u.pose.sync(0, 0, 0);
+    sim::BattleRng ref;
+    ref.set_state(rng.state());
+    sim::EffectsWorld& ew = b.effects_world();
+    sim::explode_piece(ew, u, 0, 0x04 | 0x02);  // fall, explode on landing
+    for (int k = 0; k < 6; ++k) ref.next_mod(3000);
+    CHECK_EQ(rng.state(), ref.state());
+    CHECK_EQ(u.pose.pieces[0].flags & sim::pose_flags::kVisible, 0);
+    CHECK_EQ(b.effects.debris_block[0], 8);
+    CHECK_EQ(b.effects.cache.cursor, 8 + 4 * 12 + 0x66);
+    CHECK_EQ(b.effects.debris[0].flags, sim::debris_flags::kFall | sim::debris_flags::kExplodeOnLanding);
+    // Shattered: one shard (6 more draws per quad plus 2 for its facing).
+    ref.set_state(rng.state());
+    sim::explode_piece(ew, u, 0, 0x01 | 0x20);  // bitmap only: no debris, no draws
+    CHECK_EQ(rng.state(), ref.state());
+    sim::explode_piece(ew, u, 0, 0x01);
+    for (int k = 0; k < 6 + 6 + 2; ++k) ref.next_mod(3000);
+    CHECK_EQ(rng.state(), ref.state());
+    CHECK_EQ(b.effects.count, 1);
+    CHECK_EQ(b.effects.effects[0].shard, 0);
+    CHECK_EQ(b.effects.shards[0].free, 0);
+    // The shard falls and lands; the debris piece bounces and lands, leaving an explosion.
+    for (int k = 0; k < 200 && (b.effects.debris_block[0] != -1 || b.effects.count > 0); ++k) b.step_effects();
+    CHECK_EQ(b.effects.debris_block[0], -1);
+    CHECK_EQ(b.effects.shards[0].free, 0xFF);
+    CHECK_EQ(b.effects.count, 0);
+    CHECK_EQ(b.effects.fault.empty(), true);
+}
+
 } // namespace
 
 int main() {
@@ -1147,6 +1300,7 @@ int main() {
     test_battle();
     test_unit_create();
     test_motion();
+    test_features_and_effects();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
