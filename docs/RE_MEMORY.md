@@ -676,6 +676,40 @@ The kill routine's wreck variable is the dword 0x10 below its entry stack pointe
 
 **Other callers of the kill routine** each have their own stale word: `0x00486F10` (kill a player's units), `0x004861D0`, `0x00485980`. They are not built yet.
 
+### Weapon ballistics (pitch solver `0x0049A890`) — differential-tested: 1,428,570 calls (519,193 solvable), 0 differences
+Implementation: `sim::ballistic_pitch` (`engine/sim/src/weapons.cpp`), `sim::x87::crt_acos` / `fpatan(double, double, bits)` / `compare` (`x87_math.cpp`). Checked by `tools/orig_harness/ballistic_check`, which batches the original solver and the C runtime acos inside the suspended exe. Gravities tested: 1, 50, 112, 300 and 4000.
+
+**Inputs:** stdcall (dx, dy, dz, speed, float min_angle). Gravity g (int) is read from GS+0x14263. Returns a pitch in half-turns of 32768, or 0x8000 in AX when there is no solution (the upper half of EAX is garbage).
+
+**Evaluation** (every operation rounded to a double, PC53):
+- h = C-runtime hypot(dx, dz). Then:
+  - H2 = h², V2 = speed², D2 = dy², H4 = H2²;
+  - G2 = (int32)(g·g) with 32-bit wrap;
+  - S = D2 + H2.
+- disc = ((V2 − (g·dy)·(−2))·V2 + D2·G2)·H4 − (H4·G2)·S.
+  - Fails if not ≥ 0 (NaN fails too).
+- R = √disc, B = (V2 + g·dy)·H2.
+- Two candidates: Q_flat = (R + B)/(S + S) and Q_steep = (B − R)/(S + S).
+- Each angle = acos(√Q / speed). Q ≤ 0 (or NaN) gives the constant `0x3FF921FB54442D11` (π/2, stored slightly low).
+- The flat angle is stored as a double. The steep one stays on the FPU stack; at PC53 it is a double anyway.
+- **Choice:**
+  - Take the flat angle if min_angle < flat (NaN counts as true) and !(flat > `0x3FE921FB54442D11`) (π/4, stored low).
+  - Otherwise the steep angle, if steep > min_angle and steep ≤ π/4.
+  - Otherwise fail.
+- **Result:** truncate(angle × 32768 × `0x3FD45F306DC9C889`) (1/π, stored slightly high).
+  - **A NaN angle yields pitch 0** (integer indefinite truncated to 16 bits), not a failure.
+  - Speed 0 gives an infinite cosine, so acos is NaN, so pitch 0.
+
+**C runtime acos (`0x004E67F0` → `0x004E680D`):**
+- For |c| < 1: FPATAN(√((1 + c)(1 − c)), c), with each step rounded to a double.
+- c = 1 gives 0; c = −1 gives FLDPI.
+- |c| > 1, infinity and NaN give NaN, plus the CRT error path (errno/matherr).
+  - That path crashes in the suspended harness, where the C runtime is uninitialised, so gravity 0 and inputs beyond ±1 are not tested.
+- **Under precision control 53, FPATAN (and FLDPI) results are rounded to 53 bits.**
+  - The best model is double rounding: the correctly rounded 64-bit value is rounded again to 53 bits. Single rounding: 271 per million differ; double rounding: 10 per million.
+  - All 10 remaining are knife-edge cases. The exact angle lies within ⅛ unit of a 64-bit halfway point that also decides the 53-bit result. There the CPU's own FPATAN rounding decides (Intel guarantees < 1 ulp, not correct rounding), as with FSINCOS. The harness classifies them separately.
+  - A last-bit difference in the angle cannot change the pitch unless angle × 32768/π is also within ~10⁻¹² of an integer.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -699,6 +733,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Weapon ballistic pitch solver + C runtime acos (FPATAN at PC53, double rounded) — **1,428,570 solver calls identical; acos 1,000,009 calls, 10 CPU knife-edge cases** | `0x0049A890`, `0x004E67F0`, `0x004E680D` | `engine/sim/src/{weapons,x87_math}.cpp`, `tools/orig_harness/ballistic_check.cpp` |
 | 2026-10-14 | Stale stack word as the wreck level of units without `Killed` (wind, script step, water damage, heal, kill effects; original heap addresses) — **3,000 scenarios incl. all 22 Killed-less types, word compared after every pass/kill: 0 differences** | `0x004864B0`, `0x0048AD30`, `0x00437910`, `0x004B0D60`, `0x004B1C00`, `0x00489BB0`, `0x0041BD10`, `0x0043B7C0`, `0x0048A870` | `engine/sim/src/{combat,unit_tick,script_vm}.cpp`, `tools/orig_harness/combat_harness.cpp`, `tools/capture/capture.cpp` |
 | 2026-10-14 | Damage, repair/self-heal, kills (packets, veterancy, severity/wreck, statistics, reclaim, teardown) — **3,000 scenarios / 600,000 unit passes / 656,853 combat operations / 26,934 kills identical** | `0x00489BB0`, `0x00489CE0`, `0x0041BD10`, `0x004864B0`, `0x004866D0`, `0x00467950`, `0x0044FDB0`, `0x0044FE40`, `0x0044FFD0` | `engine/sim/src/combat.cpp`, `tools/orig_harness/combat_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Per-step unit pass (wind, script step, timers, selection, health %, water damage, self-heal gates; subsystems as ordered hooks) — **1,000 scenarios / 253,024 passes / 65,843 script calls with real scripts identical** | `0x0048AD30`, `0x00437910`, `0x0048B090` (activation side calls `0x0047F780`, `0x0041C110`, `0x00451DF0`) | `engine/sim/src/unit_tick.cpp`, `tools/orig_harness/unitloop_harness.cpp` |
