@@ -435,6 +435,30 @@ Verified 2026-10-13 with `ta_compat/tools/orig_harness/cob_harness`:
   - A piece still active sets dirty again.
 - **Unit callback table** (vtable `0x004FD698`): +00 set move, +04 set turn, +08 visible, +0C cached, +10 shaded, +14 get move, +18 get turn, +28 legacy explode (no-op), +2C play sound (no-op), +30 emit sfx, +34 explode, +38 attach, +3C drop, +40 set value, +44 get value, +48 transporting, +4C carrier.
 
+### Piece pose (per-unit object state) — differential-tested: 278 units, 110,000 operations, 0 differences
+Verified 2026-10-13 with `tools/orig_harness/pose_harness`. It runs the original builder, the script piece callbacks and the sync inside the suspended exe, with `Mem_MallocSafe_IgnoreTag` patched to a bump allocator. It compares every piece field and every transformed vertex. Implementation: `engine/sim/src/pose.cpp`, plus `ta::to_pose_model`.
+- **State** (0x22 header + 54 bytes per piece):
+  - Header: piece count, cache-draw count, anim-dirty flag, owner, 2 draw-frame pointers, base angles **Z (pitch), Y (heading), X (bank)** at +0x18/+0x1A/+0x1C, root piece.
+  - Piece: model node, move xyz (int), turn xyz (short), xform xyz (int), point list, skip flag (u16), flags (bit0 visible, bit1 cached, bit2 shaded), sibling, child, parent.
+- **Build** (`Object_AllocCloneAndReorderByCob` `0x0045A950`):
+  - Clone the model depth-first: node, its child subtree, then its sibling (`0x0045AEC0`). Each piece gets a copy of its vertices. Flags = cached|shaded, plus visible iff ≥3 vertices. Anim dirty = 1.
+  - Then for each script piece i: take the first piece at index ≥ i whose model name matches (stricmp) and **swap** it into slot i. If no piece matches, slot i keeps whatever piece is there, so script index i addresses that piece.
+  - Relink the tree (`0x0045AF90`): each model node's piece is found by searching from the **last** index down.
+- **Callbacks** (unit script vtable):
+  - set move/turn: if the value changed, store it, clear skip, set dirty, and reset the cache-draw count if the piece is cached.
+  - set visible: if (flags&1) ≠ value, set bit0 = value&1, clear skip, and reset the cache count if cached.
+  - set cached/shaded: set the bit and drop the draw frame (render only).
+  - get move: int.
+  - **get turn is zero-extended (0..65535)**. The reference program typed it as `short`, which is wrong.
+- **Sync** (`Unit_SyncObjectStateAnimTree` `0x0045AB10`):
+  - If any of |(short)(baseX−bank)|, |(short)(baseY−heading)|, |(short)(baseZ−pitch)| is > 7, store the new base angles and mark dirty.
+  - When dirty: reset the vertices/xforms of the whole tree from the model (`0x0045B030`). Then transform child-first (`0x0045B0A0`).
+    - Each piece uses angles (turnZ, turnY, turnX), plus the base angles **for the root only**, and translation move + model offset.
+    - `0x0045B150` rotates the piece's xform and its vertices (last to first) with `Math_RotatePointByAngles` and adds the translation. It does the same for the whole subtree of descendants.
+  - Clear dirty.
+- **Skip flag:** never set nonzero anywhere in the exe. Every recompute is full.
+- **Render coupling (open question):** `Unit_UpdateAndDrawModel` (`0x0045AC20`) performs the same base-angle check and recompute when a unit is *drawn*. The base angles a later simulation query sees can therefore depend on whether the unit was on screen in between (difference of at most 7 angle units). The engine syncs only at simulation query points.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -458,6 +482,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | Piece pose (object state build, script piece callbacks, transform sync) + bit-exact x87 FSINCOS rotation — **pose: 278 units / 110,000 ops identical; rotation: 524,288 calls identical; FSINCOS emulation = hardware on all 65,535 angles** | `0x0045A950`, `0x0045AEC0`, `0x0045AF90`, `0x0045AB10`, `0x0045B030`, `0x0045B0A0`, `0x0045B150`, `0x004B6CC0`, `0x004B7173`, `0x00480C30`–`0x00480DF0`, `0x0045AC20` | `engine/sim/src/pose.cpp`, `x87_trig.cpp`, `ta_compat/src/model3do.cpp` (`to_pose_model`), `tools/orig_harness/{pose_harness,x87_check,remote.h}` |
 | 2026-10-13 | Unit script VM + COB importer — **differential vs original interpreter: 278 stock scripts (580,539 ops) + 3,000 synthetic programs (164,145 ops, every opcode), 0 differences** | `0x004B2450`, `0x004B0610`, `0x004B0720`, `0x004B08C0`, `0x004B0940`, `0x004B0B00`, `0x004B0C40`, `0x004B0D60`, `0x004B0DA0`, `0x004B1C00`, `0x00485D40`, vtable `0x004FD698` | `engine/sim/src/script_vm.cpp`, `ta_compat/src/cob.cpp`, `tools/orig_harness/cob_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-13 | Feature definitions + unit corpse indices + recursive VFS enumeration — **exact vs live game: 434 features, 8,307 fields (incl. model trees and GAF sequence names), 279 corpse indices** | `0x004917D0`, `0x004222E0`, `0x00483610`, `0x00421F20`, `0x00423160`, `0x00436C30`, `0x00422E40`, `0x004224B0`, `0x00422EA0`, `0x004BCB50`, `0x004BC4B0`, `0x004BC640`, `0x004B8C60`, `0x004B8D40`, `0x0042A2C0`, `0x004C4760` | `ta_compat/src/featuredefs.cpp`, `gaf.cpp`, `hpi.cpp` (`enumerate_tree`), `tools/feature_check.cpp` |
 | 2026-10-13 | 3DO model loader + unit model height — **exact vs live game: 278 unit + 74 weapon model trees; unit table now 25,617 fields** | `0x004CB560`, `0x004CB4C0`, `0x004CB370`, `0x004CB590`, `0x004CB5F0`, `0x0045AE80` | `ta_compat/src/model3do.cpp`, `tools/model_check.cpp` |

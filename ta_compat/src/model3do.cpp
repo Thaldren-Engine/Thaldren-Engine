@@ -171,4 +171,25 @@ int model_piece_count(const Model3doPiece* p) {
     return 1 + model_piece_count(p->child.get()) + model_piece_count(p->sibling.get());
 }
 
+namespace {
+int add_pose_nodes(const Model3doPiece* p, sim::PoseModel& m) {
+    const int index = static_cast<int>(m.nodes.size());
+    m.nodes.emplace_back();
+    m.nodes.back().name = p->name;
+    m.nodes.back().offset = p->offset;
+    m.nodes.back().vertices = p->vertices;
+    const int child = p->child ? add_pose_nodes(p->child.get(), m) : -1;
+    const int sibling = p->sibling ? add_pose_nodes(p->sibling.get(), m) : -1;
+    m.nodes[static_cast<std::size_t>(index)].child = child;
+    m.nodes[static_cast<std::size_t>(index)].sibling = sibling;
+    return index;
+}
+} // namespace
+
+sim::PoseModel to_pose_model(const Model3doPiece* root) {
+    sim::PoseModel m;
+    if (root) m.root = add_pose_nodes(root, m);
+    return m;
+}
+
 } // namespace ta

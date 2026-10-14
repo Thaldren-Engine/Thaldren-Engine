@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "sim/pose.h"
 #include "ta/hpi.h"
 
 namespace ta {
@@ -47,5 +48,9 @@ std::int32_t model_height(const Model3doPiece* root);
 
 // Number of pieces in the tree.
 int model_piece_count(const Model3doPiece* root);
+
+// Engine pose model of the tree. Node indices follow a depth-first walk:
+// node, its child subtree, then its next sibling.
+sim::PoseModel to_pose_model(const Model3doPiece* root);
 
 } // namespace ta

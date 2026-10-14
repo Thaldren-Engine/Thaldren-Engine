@@ -1,4 +1,4 @@
-# 32-bit Windows differential tester that runs routines from the original
+﻿# 32-bit Windows differential tester that runs routines from the original
 # executable in-process. Configure separately with a 32-bit toolchain:
 #   cmake -S ta_compat/tools/orig_harness -B build-harness   (from a vcvars32 prompt)
 cmake_minimum_required(VERSION 3.24)
@@ -40,3 +40,22 @@ target_compile_options(cob_harness PRIVATE /W4 /permissive- /fp:precise)
 add_executable(x87_check x87_check.cpp ${ROOT}/engine/sim/src/x87_trig.cpp)
 target_include_directories(x87_check PRIVATE ${ROOT}/engine/sim/include)
 target_compile_options(x87_check PRIVATE /W4 /permissive- /fp:precise)
+
+# Piece pose: original state builder, piece setters and transform sync vs sim::PoseState.
+add_executable(pose_harness
+    pose_harness.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(pose_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(pose_harness PRIVATE /W4 /permissive- /fp:precise)
