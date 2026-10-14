@@ -114,5 +114,12 @@ int main(int argc, char** argv) {
                     world->defs().units[b.ticks[i].type_index].unit_name.c_str(), u.pos[0] >> 16, u.pos[2] >> 16, u.hit_points, u.flags,
                     static_cast<double>(1.0f - u.build_fraction_left), u.orders ? u.orders->kind : -1);
     }
+    for (std::int32_t k = 0; k < b.projectiles.count; ++k) {
+        const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(k)];
+        if (p.flags & sim::projectile_flags::kDeleted) continue;
+        const int wi = p.weapon ? p.weapon->index : -1;
+        std::printf("  shot %d: %s at (%d, %d, %d) from player slot %d\n", k, wi >= 0 ? world->weapon_name(wi).c_str() : "?",
+                    p.pos[0] >> 16, p.pos[1] >> 16, p.pos[2] >> 16, p.owner_slot);
+    }
     return rc;
 }

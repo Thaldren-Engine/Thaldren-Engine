@@ -72,6 +72,7 @@ public:
     // Start position of a player (world units), for the camera.
     std::array<int, 2> start_position(int player) const;
     const UnitDefTable& defs() const { return defs_; }
+    const std::string& weapon_name(int slot) const { return weapons_.slots[static_cast<std::size_t>(slot & 0xFF)].name; }
 
     // Implementation parts (client_battle_setup.cpp / client_content.cpp / client_scene.cpp).
     bool setup_battle(std::string& error);

@@ -117,6 +117,8 @@ private:
     void give_order(Action mode, const InputEvent& e);
     void scroll_step(std::uint32_t dt_ticks);
     void minimap_jump(int x, int y);
+    bool on_minimap(int x, int y);
+    sim::Vec3i minimap_world(int x, int y);
     void play_ui(int sample);
     void speak(const sim::Unit& u, std::uint32_t id);
 

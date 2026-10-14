@@ -530,9 +530,24 @@ bool GameClient::press_button(const Button& btn, const InputEvent& e) {
 
 // ---- commands ----------------------------------------------------------------------------------
 
+bool GameClient::on_minimap(int x, int y) {
+    if (!prepared_) prepare_drawing();
+    return x >= mm_x_ && x < mm_x_ + mm_w_ && y >= mm_y_ && y < mm_y_ + mm_h_;
+}
+
+sim::Vec3i GameClient::minimap_world(int x, int y) {
+    // The map point a minimap pixel stands for, on the ground.
+    const int wx = std::clamp((x - mm_x_) * map_width_px() / std::max(1, mm_w_), 0, std::max(0, map_width_px() - 1));
+    const int wz = std::clamp((y - mm_y_) * map_height_px() / std::max(1, mm_h_), 0, std::max(0, map_height_px() - 1));
+    const int h = b_.map.cells.empty() ? 0 : b_.map.cells[static_cast<std::size_t>((wz >> 4) * b_.map.width + (wx >> 4))].height;
+    return {wx << 16, h << 16, wz << 16};
+}
+
 void GameClient::give_order(Action mode, const InputEvent& e) {
-    const sim::Vec3i pos = world_at(e.x, e.y);
-    sim::Unit* target = hover_ ? &b_.units[hover_] : nullptr;
+    // Orders on the minimap go to the map point it shows (no target unit).
+    const bool mm = on_minimap(e.x, e.y);
+    const sim::Vec3i pos = mm ? minimap_world(e.x, e.y) : world_at(e.x, e.y);
+    sim::Unit* target = !mm && hover_ ? &b_.units[hover_] : nullptr;
     std::uint8_t intent = sim::intent::kDefault;
     switch (mode) {
     case Action::Move: intent = sim::intent::kMove; break;
@@ -651,7 +666,7 @@ void GameClient::handle(const InputEvent& e) {
         if (left_down_ && !dragging_ && in_view(press_x_, press_y_) && mode_ != Action::BuildUnit &&
             (std::abs(e.x - press_x_) > 3 || std::abs(e.y - press_y_) > 3))
             dragging_ = true;
-        if (left_down_ && press_x_ < 128 && press_y_ < 128) minimap_jump(e.x, e.y);
+        if (left_down_ && on_minimap(press_x_, press_y_) && mode_ == Action::None) minimap_jump(e.x, e.y);
         break;
     case InputEvent::Type::MouseDown: mouse_down(e); break;
     case InputEvent::Type::MouseUp: mouse_up(e); break;
@@ -677,7 +692,7 @@ void GameClient::mouse_down(const InputEvent& e) {
         if (const Panel* p = current_panel())
             for (const Button& btn : p->buttons)
                 if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h && button_enabled(btn)) held_button_ = &btn;
-        if (e.x < 128 && e.y < 128) minimap_jump(e.x, e.y);
+        if (on_minimap(e.x, e.y) && mode_ == Action::None) minimap_jump(e.x, e.y);
     } else if (e.button == 3) {
         right_down_ = true;
         if (const Panel* p = current_panel())
@@ -708,9 +723,15 @@ void GameClient::mouse_up(const InputEvent& e) {
             return;
         }
         if (in_view(e.x, e.y) && in_view(press_x_, press_y_)) left_click_map(e);
+        else if (on_minimap(e.x, e.y) && mode_ != Action::None && mode_ != Action::BuildUnit) {
+            give_order(mode_, e);
+            if (!e.shift) mode_ = Action::None;
+        }
     } else if (e.button == 3) {
         right_down_ = false;
         if (in_view(e.x, e.y)) right_click_map(e);
+        else if (on_minimap(e.x, e.y) && mode_ == Action::None && opt_.right_click_orders && selected_count() > 0)
+            give_order(Action::None, e);
     }
 }
 
