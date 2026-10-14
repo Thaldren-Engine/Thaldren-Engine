@@ -453,3 +453,12 @@ add_executable(fx_harness fx_harness.cpp
 )
 target_include_directories(fx_harness PRIVATE ${ROOT}/engine/sim/include)
 target_compile_options(fx_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Meteor showers and the camera shake (stage 8 of a step) vs sim/sky.h.
+add_executable(flow_harness flow_harness.cpp
+    ${ROOT}/engine/sim/src/sky.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+)
+target_include_directories(flow_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(flow_harness PRIVATE /W4 /permissive- /fp:precise)
