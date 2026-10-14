@@ -796,7 +796,9 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         o.attached = 0;
     }
     // ConstructionSystems (the original's matching routines are logging stubs)
-    u32 defs_base = 0, gs_base = 0;
+    u32 defs_base = 0, gs_base = 0, bucket_base = 0;
+    u32 bucket_addr(int k) const { return bucket_base + static_cast<u32>(k) * 16; }
+    bool tick_has_motion(int k) const { return (*ticks)[static_cast<std::size_t>(k)].has_motion; }
     sim::Unit* create_unit(int player, std::uint16_t type, const std::array<i32, 3>& pos, bool built, u32 layer) override {
         rec(100, 0, {static_cast<u32>(player) & 0xFF, type, static_cast<u32>(pos[0]), static_cast<u32>(pos[1]), static_cast<u32>(pos[2]),
                      built ? 1u : 0u, layer, 0});
@@ -832,6 +834,27 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     void build_menu_refresh(sim::Unit& u) override { rec(107, 0, {gs_base + kGs519, tok(u)}); }
     void orders_panel_changed() override {}
     i32 network_provider() override { return 0; }
+    // Transport attach applied directly: one spatial bucket list per unit (Unit::bucket = its index).
+    struct Links final : sim::TransportLinks {
+        World& w;
+        std::vector<sim::Unit*> heads;
+        explicit Links(World& world) : w(world) {}
+        void bucket_unlink(sim::Unit& u) override {
+            sim::Unit** link = &heads[static_cast<std::size_t>(u.bucket)];
+            while (*link && *link != &u) link = &(*link)->cargo_next;
+            if (*link) *link = u.cargo_next;
+            u.cargo_next = nullptr;
+        }
+        void bucket_prepend(sim::Unit& u) override {
+            u.cargo_next = heads[static_cast<std::size_t>(u.bucket)];
+            heads[static_cast<std::size_t>(u.bucket)] = &u;
+        }
+        std::uint32_t type_flags(const sim::Unit& u) override {
+            const sim::UnitTickTypeInfo* t = (*w.ticks)[u.id].tick_type;
+            return t ? t->type_flags : 0;
+        }
+        void selection_changed() override {}
+    } links{*this};
     // GroundSettleSystems
     std::int32_t motion_speed(sim::Unit& u) override { return motions[u.id].speed; }
     std::uint32_t motion_start_tick(sim::Unit& u) override { return motions[u.id].start; }
@@ -845,7 +868,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
 struct Stats {
     std::size_t scenarios = 0, ticks = 0, ops = 0, handler_calls = 0, orders_made = 0, orders_freed = 0, settles = 0,
                 deaths = 0, paralysis = 0, mismatches = 0, failures = 0, faults = 0, placements = 0, placements_ok = 0,
-                reclaimed_features = 0, nano_streams = 0, nano_steps = 0;
+                reclaimed_features = 0, nano_streams = 0, nano_steps = 0, transports = 0;
     std::map<std::string, std::size_t> by_op, secondary_stale, pass_stale;
     std::map<u32, std::size_t> settle_paths;
 };
@@ -1168,6 +1191,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     missions.construction = &con;
     world.defs_base = L.defs;
     world.gs_base = L.gs;
+    world.bucket_base = L.attached + 0x30000;
+    world.links.heads.assign(units.size(), nullptr);
     world.crt.set_state(static_cast<u32>(g()));
     r.w32(L.rand_state, world.crt.state());
     world.units_base = L.units;
@@ -1301,6 +1326,16 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(at + uEnergyMake, &t.energy_make, 4);
         r.write(at + uScriptFlags, &u.script_flags, 1);
         put_features_around(u.pos[0] >> 16, u.pos[2] >> 16);
+        // Each unit alone in a spatial bucket list of its own; motion layer bits on the ground.
+        r.w32(at + 0x82, world.bucket_addr(i));
+        r.w32(world.bucket_addr(i) + 6, at);
+        r.w32(at + 0x8E, 0);
+        u.bucket = i;
+        world.links.heads[static_cast<std::size_t>(i)] = &u;
+        if (t.has_motion) {
+            const std::uint8_t one = 1;
+            r.write(m.block + 0x2E, &one, 1);
+        }
         // Weapon slot targets and flags (the weapon-target routines run for real).
         for (int s = 0; s < 3; ++s) {
             sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
@@ -1648,7 +1683,11 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                     break;
                 }
                 case qResources: v.push_back(g() % 4 ? 1u : 0u); break;
-                case qCreate: v.push_back(g() % 4 == 0 || newborn.empty() ? 0u : unit_addr(newborn[g() % newborn.size()])); break;
+                case qCreate: {  // a live stand-in (a real creation always gives a live unit with a script)
+                    const int nb = newborn.empty() ? 0 : newborn[g() % newborn.size()];
+                    v.push_back(g() % 4 == 0 || !nb || !alive(nb) || !units[static_cast<std::size_t>(nb)].script ? 0u : unit_addr(nb));
+                    break;
+                }
                 case qPlace: v.push_back(g() % 3 ? 1u : 0u); break;
                 default: {
                     const u32 count = targets.empty() ? 0u : g() % 4;
@@ -1857,7 +1896,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 r.write(unit_addr(x.id) + uHp, &x.hit_points, 2);
             }
         };
-        const int op = static_cast<int>(g() % 10);
+        const int op = static_cast<int>(g() % 12);
         if (std::getenv("OH_TRACE")) std::printf("  construction op %d (units %d, %d)\n", op, i, j);
         u32 res = 0;
         switch (op) {
@@ -1950,6 +1989,57 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             sim::transfer_ownership(missions, u, to);
             if (!r.call(kTransfer, 0, {unit_addr(i), L.gs + 0x1B63 + static_cast<u32>(to) * kPlayerSize, 0})) return fail("transfer");
             what = "transfer ownership";
+            break;
+        }
+        case 10: {  // transport attach / detach packet applied (the factory pad, finishing)
+            if (!world.tick_has_motion(i)) return true;  // the original writes through the motion pointer
+            // Attach (or detach), then always detach again so the other systems find no cargo lists.
+            for (int pass = 0; pass < 2; ++pass) {
+            sim::Unit* t = pass || g() % 3 == 0 ? nullptr : &v;
+            const std::uint8_t piece = static_cast<std::uint8_t>(pass || g() % 4 == 0 ? 0xFF : g() % 6);
+            const std::uint8_t layer = static_cast<std::uint8_t>(pass ? 1 : g() % 4);
+            std::uint8_t pk[8] = {0x0A, static_cast<std::uint8_t>(u.id), static_cast<std::uint8_t>(u.id >> 8),
+                                  static_cast<std::uint8_t>(t ? t->id : 0), static_cast<std::uint8_t>(t ? t->id >> 8 : 0), piece, layer, 0};
+            r.write(L.names + 0x400, pk, 8);
+            sim::apply_transport_attach(missions, world.links, u, t, piece, layer);
+            if (!missions.fault.empty()) return true;
+            if (!r.call(0x0048AB70, 0, {L.names + 0x400})) return fail("transport attach");
+            for (int k : present) {
+                const sim::Unit& x = units[static_cast<std::size_t>(k)];
+                const u32 at = unit_addr(k);
+                u32 carrier = r.r32(at + uCarrier), cargo = r.r32(at + uCargoHead), next = r.r32(at + 0x8E);
+                norm_ptr(carrier);
+                norm_ptr(cargo);
+                norm_ptr(next);
+                const std::uint8_t tp = r.rd<std::uint8_t>(at + 0xF9);
+                const u32 head = r.r32(world.bucket_addr(k) + 6);
+                u32 head_n = head;
+                norm_ptr(head_n);
+                const sim::Unit* mine_head = world.links.heads[static_cast<std::size_t>(k)];
+                bool ok = carrier == (x.carrier ? World::tok(*x.carrier) : 0u) && cargo == (x.cargo_head ? World::tok(*x.cargo_head) : 0u) &&
+                          next == (x.cargo_next ? World::tok(*x.cargo_next) : 0u) && tp == x.transport_piece &&
+                          head_n == (mine_head ? World::tok(*mine_head) : 0u);
+                if (world.tick_has_motion(k)) ok = ok && r.rd<std::uint8_t>(world.motions[static_cast<std::size_t>(k)].block + 0x2E) == tstate[static_cast<std::size_t>(k)].motion.flags;
+                if (!ok) {
+                    std::printf("scenario %u: transport links of unit %d differ\n", seed, k);
+                    ++st.mismatches;
+                    return true;
+                }
+            }
+            }
+            ++st.transports;
+            what = "transport attach";
+            break;
+        }
+        case 11: {  // a factory's build queue changes (command input)
+            static const std::uint8_t kinds[] = {sim::mission::kBuildingBuild, sim::mission::kMobileBuild, sim::mission::kBuildWeapon};
+            const std::uint8_t kind = kinds[g() % 3];
+            const i32 type = static_cast<i32>(g() % 3);
+            const i32 delta = static_cast<i32>(g() % 13) - 6;
+            sim::adjust_build_count(missions, u, kind, type, delta);
+            if (!missions.fault.empty()) return true;
+            if (!r.call(0x0043B0B0, 0, {kind, unit_addr(i), static_cast<u32>(type), static_cast<u32>(delta)})) return fail("build count");
+            what = "build count";
             break;
         }
         default: {  // a nano stream: start, then the effect sweep for a few steps
@@ -2288,6 +2378,7 @@ int main(int argc, char** argv) {
     std::printf("real behaviour steps that changed their event argument: %zu\n", g_event_slot_writes);
     std::printf("construction: placements %zu (%zu fit), features reclaimed %zu, nano streams %zu (%zu sweep steps)\n", st.placements,
                 st.placements_ok, st.reclaimed_features, st.nano_streams, st.nano_steps);
+    std::printf("transport packets applied %zu\n", st.transports);
     std::printf("mismatching scenarios %zu, engine faults %zu, original failures %zu\n", st.mismatches, st.faults, st.failures);
     return st.mismatches || st.failures ? 1 : 0;
 }
