@@ -179,9 +179,36 @@ Verified 2026-10-13: `hpi_check` decodes all 7,890 files in all 30 archives of t
   - Opening a file: a loose file on disk wins; otherwise the first mounted archive containing it.
   - **On the Steam install, `totala3.hpi`, `totala4.hpi` and `worlds.hpi` are never mounted.**
 
+### TDF text format (.tdf / .fbi / .ota / .gui)
+Verified 2026-10-13: `tdf_check` parses 2,311 files (55k keys in FBIs, 573k in OTAs). The only 2 failures are files the game never loads: `gamedata\UNITVIEW.TDF` (Unit Viewer data, stray `};`) and `guis\SCORE.GUI` (unbalanced braces, no string reference in the exe). Implementation: `ta_compat/src/tdf.cpp`.
+- **Load** (`Tdf_Load` `0x004C2F60`): read the whole file, NUL-terminate (an embedded NUL ends the text), blank comments, parse into a root section named `root`.
+- **Comments** (`0x004C33A0`): `//` up to (not including) `\n`, and `/* … */`. Blanked characters become spaces.
+  - The close check uses the raw previous character, so `/*/` does not close the comment.
+  - In an unterminated block, the last character before NUL is not blanked.
+- **Parse** (`Tdf_Parse` `0x004C3E40`):
+  - Skip space/tab/CR/LF.
+  - NUL: ends the root; inside a child section it's an error.
+  - `[name]` (name trimmed), optional whitespace, then `{` starts a child section. Children keep file order.
+  - `}` ends a section.
+  - Otherwise: key = trimmed text up to the **next `=` anywhere ahead**; value = trimmed text up to the next `;`.
+- **Key storage:** a vector kept sorted by `stricmp`; each key is inserted at the lower bound. A case-sensitive exact match replaces the value. A case variant is inserted **before** the existing key, so lookups return it.
+- **Errors** are fatal message boxes in the game.
+- **Lookups:**
+  - Key: binary-search lower bound by `stricmp`; a hit means the key does not sort below the found entry.
+  - Child section: linear search, first case-insensitive match.
+- **Getters:**
+  - `GetInt` = `atoi` (C-locale space skip, sign, digits; wraps on overflow).
+  - `GetFloat` = `atof`.
+  - `GetFixed` = `ftol(atof(v) × 65536.0)`, low 32 bits.
+  - `GetString` = `strncpy` to the buffer size with forced NUL (keeps at most size−1 chars); falls back to the default value.
+- **`stricmp`** (`0x004F8A70`, C locale): on a mismatch, fold only `A`–`Z` to lowercase, then compare unsigned.
+- **Section checksum:** `Hash_ComputeSimpleChecksum` (`0x004B6BA0`) over `[sectionStart, end − 2)`. The mix is four 8-bit accumulators: Σb, ⊕b, Σ(i⊕b), ⊕(i+b).
+- **OPEN:** `atof` is the 1998 MSVC CRT conversion (`0x004E4560` → `Crt_Atoldbl`). The engine uses correctly rounded `from_chars`. Not yet proven identical for every string. Check by comparing captured in-game UnitDef values (next step).
+
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | TDF parser | `0x004C2F60`, `0x004C3120`, `0x004C33A0`, `0x004C3410`, `0x004C3E40`, `0x004C4340`, `0x004C4470`, `0x004C4630`–`0x004C48C0`, `0x004E4560`, `0x004E4ED0`, `0x004F8A70`, `0x004B6BA0` | `ta_compat/src/tdf.cpp`, `tools/tdf_check.cpp`, `tests/compat_tests.cpp` |
 | 2026-10-13 | HPI archives + game VFS | `0x0041D4C0`, `0x004BB2E0`, `0x004BB4E0`, `0x004BB7C0`, `0x004BDD70`, `0x004BE010`, `0x004BE0B0`, `0x004BE400`, `0x004D1480`, `0x004D1970`, `0x004D1D20` | `ta_compat/src/hpi.cpp`, `inflate.cpp`, `tools/hpi_check.cpp` |
 | 2026-10-13 | Step scheduler + frame budget | `0x00495230`, `0x00495490`, `0x004E5050` | `engine/sim/src/world.cpp`, `step_budget.cpp` |
 | 2026-10-13 | Numeric core: trig, RNGs, ftol, fixed point | `0x004B6C30`–`0x004B7159`, `0x004E4860`, `0x004E4870`, `0x004E43A0`, `0x00509F00`, `0x0051FC88` | `engine/sim/*`, `tests/sim_tests.cpp` (1316 checks pass, MSVC) |

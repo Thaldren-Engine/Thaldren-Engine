@@ -30,13 +30,17 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 add_library(ta_compat STATIC
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp
+    ta_compat/src/tdf.cpp
 )
 target_include_directories(ta_compat PUBLIC ta_compat/include)
-target_compile_options(ta_compat PRIVATE ${WARN_FLAGS})
+target_link_libraries(ta_compat PUBLIC sim)
+target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-add_executable(hpi_check ta_compat/tools/hpi_check.cpp)
-target_link_libraries(hpi_check PRIVATE ta_compat)
-target_compile_options(hpi_check PRIVATE ${WARN_FLAGS})
+foreach(tool hpi_check tdf_check vfs_cat)
+    add_executable(${tool} ta_compat/tools/${tool}.cpp)
+    target_link_libraries(${tool} PRIVATE ta_compat)
+    target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
+endforeach()
 
 enable_testing()
 add_executable(sim_tests tests/sim_tests.cpp)
@@ -46,8 +50,14 @@ target_compile_definitions(sim_tests PRIVATE
     FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures")
 add_test(NAME sim_tests COMMAND sim_tests)
 
+add_executable(compat_tests tests/compat_tests.cpp)
+target_link_libraries(compat_tests PRIVATE ta_compat)
+target_compile_options(compat_tests PRIVATE ${WARN_FLAGS})
+add_test(NAME compat_tests COMMAND compat_tests)
+
 # Tests that need an installed copy of the original game (not redistributable).
 set(TA_GAME_DIR "" CACHE PATH "Path to an installed Total Annihilation 3.1 directory (optional)")
 if(TA_GAME_DIR)
     add_test(NAME hpi_decode_all COMMAND hpi_check "${TA_GAME_DIR}")
+    add_test(NAME tdf_parse_all COMMAND tdf_check "${TA_GAME_DIR}")
 endif()
