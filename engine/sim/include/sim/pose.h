@@ -66,6 +66,7 @@ public:
     std::array<std::int16_t, 3> base_angle{};  // z (pitch), y (heading), x (bank)
     int root = -1;
     const std::string& fault() const { return fault_; }
+    const PoseModel* model() const { return model_; }
 
 private:
     int clone(int node, int parent);

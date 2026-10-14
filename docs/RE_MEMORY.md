@@ -486,6 +486,53 @@ Verified 2026-10-13 with `tools/orig_harness/pose_harness`. It runs the original
 - **Skip flag:** never set nonzero anywhere in the exe. Every recompute is full.
 - **Render coupling (open question):** `Unit_UpdateAndDrawModel` (`0x0045AC20`) performs the same base-angle check and recompute when a unit is *drawn*. The base angles a later simulation query sees can therefore depend on whether the unit was on screen in between (difference of at most 7 angle units). The engine syncs only at simulation query points.
 
+### Heightmap (TNT terrain heights)
+Implementation: `engine/sim/src/heightmap.cpp`, `ta_compat/src/tnt.cpp`. Verified through `GROUND_HEIGHT` in `unitvalue_harness`, using Moon Quartet's real heights.
+- **TNT header** (u32): version (**0x2000** for TA maps; 0x1020 is also accepted), width and height in **height cells** (16 world units each; Moon Quartet is 610×616), map-data offset, attribute offset, tile-graphics offset, tile count, feature count, feature-table offset. For 0x2000 the header continues with sea level, minimap offset and flags.
+- **Attributes:** 4 bytes per cell in 0x2000 maps (height byte, u16 feature index, pad) and 8 bytes in 0x1020 maps (height first).
+- **Loading** (`Map_LoadTnt`): copies each height byte into the 13-byte map cell, at +4 (cells at GameState+0x14287, width +0x14233, height +0x14237).
+- **Sampling** (`HeightMap_SampleAtWorldPos` `0x00485070`): takes the world X/Z integer parts as shorts.
+  - cell = v>>4 (arithmetic), frac = v&15.
+  - The cell and its +1 neighbours must be inside the map, else −1.
+  - top = (h10−h00)·fx/16 + h00, bottom = (h11−h01)·fx/16 + h01, result = (bottom−top)·fz/16 + top, using C-truncating division.
+
+### Unit values (script GET/SET, vtable +0x40/+0x44/+0x48/+0x4C) — differential-tested: 116,867 GET, 33,341 SET, 16,592 transport calls on all 278 units, 0 differences
+Implementation: `engine/sim/src/unit.cpp` (`unit_get_value`, `unit_set_value`, `unit_set_activate`, `piece_local_offset`, `UnitScriptHost`). Checked by `tools/orig_harness/unitvalue_harness`, which uses a fake game state, real models and scripts, and the original builder.
+- **Packed XZ** (ids 7, 9, 12, 13, 16): the X integer part goes in the high 16 bits and the Z integer part (`z>>16`, arithmetic) is added to the low half, so a negative Z borrows from X. Unpack: X = v & 0xFFFF0000, plus 0x10000 if (v<<16) < 0; Z = v<<16.
+- **GET by id:**
+  - **1** activation bit0.
+  - **2/3** flags bits 18-19 / 20-21.
+  - **4** health: (u32)(hp·100 as int32) / max_damage, an *unsigned* divide; division by 0 crashes.
+  - **5/6** script flags bit0/bit1.
+  - **7/8** piece X/Z packed, and piece Y.
+  - **9/10/11** another unit's XZ, Y, and model height. Lookup: (short)arg = 0 → none; the table is indexed by arg&0xFFFF without a bound; the unit must have flags bit28 (alive); else 0.
+  - **12** (u16)(atan2_scaled(X, Z) − heading).
+  - **13** hypot(X, Z), truncated.
+  - **14** atan2_scaled(a, b) & 0xFFFF.
+  - **15** hypot(a, b), truncated.
+  - **16** sample(X, Z) << 16 (−1 << 16 when outside the map).
+  - **17** 0 if the build fraction == 0.0f, else 1 − trunc(fraction × −99.0f): 100 when fully unbuilt.
+  - **18/19** script flags bit2/bit3.
+  - **20** activate flags bit1.
+  - Any other id gives 0.
+- **Piece position** (`Unit_GetPieceLocalOffset` `0x0043DEF0` + `Unit_GetPieceWorldPos` `0x0043E060`):
+  - Computed from the parent chain, **not** from the cached transforms.
+  - Start with the piece's offset + move. For each ancestor: rotate by the ancestor's turn (the top ancestor also adds unit pitch/heading/bank to Z/Y/X), then add the ancestor's offset + move.
+  - The piece's own turn is ignored, and a root piece is never rotated.
+  - Z is negated on output, then the unit position is added.
+  - An out-of-range piece gives (0,0,0), so only the unit position remains.
+- **SET by id** (`0x00480B20`); every path sets net-dirty bit 4:
+  - **1** activation (mask 1) and **20** armored (mask 2) go through `Unit_SetActivateState` (`0x0048B090`). It sets or clears the bits, then starts (without running) `Activate`/`Deactivate`/`StartBuilding`/`StopBuilding` for gained/lost bit0/bit3 in that order. It also queues speech, notifies path orders on gaining cloak, marks the HUD and broadcasts packet 0x11. Not harness-tested, because it needs the full game; written from the disassembly.
+  - **5/6/19** set bit0/bit1/bit3 of the script flags.
+  - **18** yard open (`Unit_SetYardOpen` `0x0047DAC0`):
+    - Occupancy test with value≠0.
+    - On success, flag bit2 = value&1 (so 2 tests "open" but stores closed), flags |= 0x08000000, claim cells, update passability. Occupancy is not built yet, so this is an engine hook.
+  - Other ids only mark the unit dirty.
+- **Transport queries:**
+  - +0x48 `0x00481430`: 1 if any cargo-list unit's u16 id equals the full 32-bit argument.
+  - +0x4C `0x00481470`: carrier id (zero-extended), or 0.
+- Sound (+0x2C) and the legacy explode (+0x28) are `RET` no-ops.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -509,6 +556,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Unit state, script unit values (GET/SET/transport), heightmap + TNT heights — **116,867 GET / 33,341 SET / 16,592 transport calls on all 278 units identical** | `0x00480770`, `0x00480B20`, `0x00481430`, `0x00481470`, `0x00485070`, `0x0043DEF0`, `0x0043E060`, `0x0048B090`, `0x0047DAC0`, `0x00483610` | `engine/sim/src/{unit,heightmap}.cpp`, `ta_compat/src/tnt.cpp`, `tools/orig_harness/unitvalue_harness.cpp` |
 | 2026-10-13 | Piece pose (object state build, script piece callbacks, transform sync) + bit-exact x87 FSINCOS rotation — **pose: 278 units / 110,000 ops identical; rotation: 524,288 calls identical; FSINCOS emulation = hardware on all 65,535 angles** | `0x0045A950`, `0x0045AEC0`, `0x0045AF90`, `0x0045AB10`, `0x0045B030`, `0x0045B0A0`, `0x0045B150`, `0x004B6CC0`, `0x004B7173`, `0x00480C30`–`0x00480DF0`, `0x0045AC20` | `engine/sim/src/pose.cpp`, `x87_trig.cpp`, `ta_compat/src/model3do.cpp` (`to_pose_model`), `tools/orig_harness/{pose_harness,x87_check,remote.h}` |
 | 2026-10-13 | Unit script VM + COB importer — **differential vs original interpreter: 278 stock scripts (580,539 ops) + 3,000 synthetic programs (164,145 ops, every opcode), 0 differences** | `0x004B2450`, `0x004B0610`, `0x004B0720`, `0x004B08C0`, `0x004B0940`, `0x004B0B00`, `0x004B0C40`, `0x004B0D60`, `0x004B0DA0`, `0x004B1C00`, `0x00485D40`, vtable `0x004FD698` | `engine/sim/src/script_vm.cpp`, `ta_compat/src/cob.cpp`, `tools/orig_harness/cob_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-13 | Feature definitions + unit corpse indices + recursive VFS enumeration — **exact vs live game: 434 features, 8,307 fields (incl. model trees and GAF sequence names), 279 corpse indices** | `0x004917D0`, `0x004222E0`, `0x00483610`, `0x00421F20`, `0x00423160`, `0x00436C30`, `0x00422E40`, `0x004224B0`, `0x00422EA0`, `0x004BCB50`, `0x004BC4B0`, `0x004BC640`, `0x004B8C60`, `0x004B8D40`, `0x0042A2C0`, `0x004C4760` | `ta_compat/src/featuredefs.cpp`, `gaf.cpp`, `hpi.cpp` (`enumerate_tree`), `tools/feature_check.cpp` |

@@ -17,11 +17,13 @@ else()
 endif()
 
 add_library(sim STATIC
+    engine/sim/src/heightmap.cpp
     engine/sim/src/pose.cpp
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp
     engine/sim/src/step_budget.cpp
     engine/sim/src/trig.cpp
+    engine/sim/src/unit.cpp
     engine/sim/src/world.cpp
     engine/sim/src/x87_math.cpp
     engine/sim/src/x87_trig.cpp
@@ -40,6 +42,7 @@ add_library(ta_compat STATIC
     ta_compat/src/inflate.cpp
     ta_compat/src/model3do.cpp
     ta_compat/src/tdf.cpp
+    ta_compat/src/tnt.cpp
     ta_compat/src/unitdefs.cpp
     ta_compat/src/weapondefs.cpp
 )

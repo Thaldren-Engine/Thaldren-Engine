@@ -10,6 +10,8 @@
 #include <string>
 
 #include "sim/fixed.h"
+#include "sim/heightmap.h"
+#include "sim/unit.h"
 #include "sim/rng.h"
 #include "sim/script_vm.h"
 #include "sim/step_budget.h"
@@ -254,6 +256,23 @@ void test_x87_rotation() {
     sim::x87::set_fpu_profile(sim::x87::FpuProfile::Model66Pi);
 }
 
+void test_heightmap_and_packing() {
+    sim::HeightMap hm(3, 3);
+    hm.at(0, 0) = 0;
+    hm.at(1, 0) = 16;
+    hm.at(0, 1) = 32;
+    hm.at(1, 1) = 48;
+    CHECK_EQ(hm.sample(0, 0), 0);
+    CHECK_EQ(hm.sample(8, 0), 8);     // halfway along x
+    CHECK_EQ(hm.sample(8, 8), 24);    // centre of the cell
+    CHECK_EQ(hm.sample(-1, 0), -1);   // outside
+    CHECK_EQ(hm.sample(32, 0), -1);   // the +1 neighbour would be outside
+    CHECK_EQ(hm.cell_height(5, 5), 0u);
+    // X integer part high, Z integer part low; a negative Z borrows from X.
+    CHECK_EQ(sim::pack_xz(10 << 16, 3 << 16), (10 << 16) + 3);
+    CHECK_EQ(sim::pack_xz(10 << 16, -(3 << 16)), (10 << 16) - 3);
+}
+
 void test_script_vm() {
     using sim::ScriptOp;
     sim::ScriptProgram prog;
@@ -313,6 +332,7 @@ int main() {
     test_step_budget();
     test_script_vm();
     test_x87_rotation();
+    test_heightmap_and_packing();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
