@@ -1426,6 +1426,82 @@ void test_features_and_effects() {
 
 } // namespace
 
+// Economy: one player's settlement with a solar plant, a metal maker and a builder's
+// request; then the stall that follows a shortfall, and the wind stage.
+void test_economy() {
+    sim::HeightMap hm(16, 16);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(777);
+    sim::Battle b(outside, hm, rng);
+    b.types.resize(4);
+    b.types[1].economy.energy_make = 20.0f;   // solar plant
+    b.types[1].economy.energy_storage = 1000.0f;
+    b.types[2].economy.energy_use = 60.0f;    // metal maker
+    b.types[2].economy.makes_metal = 1;
+    b.types[3].economy.metal_storage = 500.0f;  // builder
+    b.units.resize(4);
+    b.ticks.resize(4);
+    sim::PlayerSlot& p = b.players[0];
+    p.active = true;
+    p.controller = 1;
+    p.first_unit = 1;
+    p.last_unit = 3;
+    for (std::uint16_t id = 1; id <= 3; ++id) {
+        b.units[id].id = id;
+        b.units[id].flags = sim::unit_flags::kAlive | (id < 3 ? 0x20000000u : 0u);
+        b.units[id].activate_flags = sim::unit_flags::kActivated;
+        b.ticks[id].type_index = id;
+        b.ticks[id].owner = 0;
+    }
+    b.init_player_economy(0);
+    CHECK_EQ(b.player_economy[0].next_update_tick, 0u);
+    sim::set_storage_bonus(p, b.player_economy[0], 100, 100);  // raised to the minimum of 200
+    p.energy_stored = 50.0f;
+    sim::settle_player(b.economy(), 0);
+    const sim::PlayerEconomy& a = b.player_economy[0];
+    CHECK_EQ(a.energy_storage, 1200.0f);
+    CHECK_EQ(a.metal_storage, 700.0f);
+    CHECK_EQ(a.energy_income, 20.0f);
+    CHECK_EQ(a.energy_usage, 60.0f);
+    CHECK_EQ(a.metal_income, 1.0f);
+    CHECK_EQ(p.energy_stored, 10.0f);  // 50 + 20 - 60
+    CHECK_EQ(p.metal_stored, 1.0f);
+    CHECK_EQ(b.ticks[2].energy_use_prev, 60.0f);
+    CHECK_EQ(b.ticks[2].energy_stall, 0.0f);
+    // The builder asks for 100 energy: booked and paid now, settled later.
+    CHECK_EQ(sim::add_use_if_not_stalled(b.ticks[3], 100.0f, 0.0f), true);
+    sim::settle_player(b.economy(), 0);
+    // 30 available for 160 of paid use: 3/16 paid, the rest becomes each slot's stall.
+    CHECK_EQ(p.energy_stored, 0.0f);
+    CHECK_EQ(b.ticks[2].energy_stall, 48.75f);
+    CHECK_EQ(b.ticks[3].energy_stall, 81.25f);
+    // A stalled slot books its request as use but makes no progress.
+    CHECK_EQ(!sim::add_use_if_not_stalled(b.ticks[3], 5.0f, 0.0f), true);
+    CHECK_EQ(b.ticks[3].energy_use, 5.0f);
+    CHECK_EQ(b.ticks[3].energy_use_paid, 0.0f);
+    // The metal maker stalls too: no metal from it until its backlog is paid.
+    sim::settle_player(b.economy(), 0);
+    CHECK_EQ(a.metal_income, 0.0f);
+    // Transfers: a received one is credited to the player's own slot.
+    CHECK_EQ(sim::transfer_metal(b.economy(), 1, 0, 25.0f, false), 25.0f);
+    CHECK_EQ(b.player_economy[0].own.metal_make, 25.0f);
+    CHECK_EQ(sim::transfer_metal(b.economy(), 10, 0, 25.0f, false), 0.0f);
+    // Wind: calm until the first change, then a change every 150..420 steps.
+    b.wind.min_speed = 100;
+    b.wind.max_speed = 2000;
+    b.advance_tick();
+    b.step_wind();
+    CHECK_EQ(b.wind.changed, true);
+    CHECK_EQ(b.wind.speed >= 100 && b.wind.speed < 2000, true);
+    CHECK_EQ(b.wind.next_change_tick >= 150 && b.wind.next_change_tick <= 420 && b.wind.next_change_tick % 30 == 0, true);
+    CHECK_EQ(b.wind.fraction, static_cast<float>(b.wind.speed / 5000.0));
+    CHECK_EQ(b.settings.wind_drift[0], b.wind.velocity[0]);
+    b.advance_tick();
+    b.step_wind();
+    CHECK_EQ(!b.wind.changed, true);
+}
+
 int main() {
     test_sin_table_matches_fixture();
     test_sin_table_formula();
@@ -1451,6 +1527,7 @@ int main() {
     test_motion();
     test_route_search();
     test_features_and_effects();
+    test_economy();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

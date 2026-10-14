@@ -25,12 +25,12 @@ Addresses are identical in both Ghidra programs.
 5. `Game_TickPlayersAndWatchMode` `0x00464F80`
 6. `Feature_TickAnimsReproduceAndFire` `0x00424050`
 7. `Gaf_AdvanceAllFrameCursors` `0x00415B30` (visual; check whether it affects sim state)
-8. `Game_UpdateRandomWindState` `0x00490C40`
+8. `Game_UpdateRandomWindState` `0x00490C40` (built: `Wind_Step`, `Battle::step_wind`)
 9. `Meteor_TickShower` `0x00437DE0`
 10. `Camera_TickFollowEaseShakeClamp` (not sim; keep out of the engine sim)
 11. `Fx_SweepAndPruneListenerSlots`
 12. `Minimap_TickBlinkDirtyFlag` (not sim)
-13. Networked: `Share_AutoAllyResourcesAndMap` + `Net_FlushPendingFrames`
+13. Networked: `Share_AutoAllyResourcesAndMap` (built: `Share_AutoShareResources`, `Battle::auto_share_resources`) + `Net_FlushPendingFrames`
 
 After all steps in a frame: `Los_ExpireDeferredSightEntries`, chat HUD index.
 
@@ -132,7 +132,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Pathfinding** | PathGoal 44, PathOrder 22, PathOrderAttach 3 | The route search `RouteSearch_Step` `0x0040EB70` (the reference program's "AiSearch": a pathfinder, not AI) and the movement classes' passability: built, see RE_MEMORY "Route search" |
 | **Weapons / projectiles** | Weapon 23, WeaponDef 9, WeaponFire 4, Projectile 12, Explosion 4 | Ballistic aim `0x0049A9xx`, area damage `0x0049A388` |
 | **Damage / death** | (Unit) | `Unit_ApplyDamageAndBroadcast` `0x00489BB0`, `Unit_CreateFromDefId` `0x00485F50` |
-| **Economy** | Player 39, UnitResourceSlot 7 | `Player_AccumulateUnitResourceRates` `0x00401360`, extractor rate `0x00437840` |
+| **Economy** | Player 39, UnitResourceSlot 7 | Built, see RE_MEMORY "Economy": settlement `0x00401360` (the reference program's `Player_AccumulateUnitResourceRates`), slot bookings and spends `0x00401180`-`0x00401260`, transfers `0x00464B30`/`0x00464C60`, sharing `0x00457D30`, wind `0x00490C40`; extractor rate `0x00437840` with unit creation. `0x00401320` is dead code. Player getters (`0x00464AB0`..) are UI |
 | **Line of sight / radar / cloak** | Los 28, Sensor 3 | `Los_UpdateUnitFromPosition` `0x004827B0`, `Unit_UpdateSensorRadarAndCloak` `0x00467440` |
 | **AI** | Ai 63, AiSearch 23, AiPlan 6 | `Ai_TickBehaviorController` `0x00408C40`, `AiSearch_Tick` `0x0040EB70` |
 | **Features** | Feature 13, FeatureDef 4 | Animation, reproduce, tree fire, reclaim, wreckage |

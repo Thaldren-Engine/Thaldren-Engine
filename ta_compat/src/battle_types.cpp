@@ -157,6 +157,19 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     route.max_water_depth = d.max_water_depth;
     route.min_water_depth = d.min_water_depth;
 
+    sim::EconomyType& eco = out.economy;
+    eco.energy_make = d.energy_make;
+    eco.energy_use = d.energy_use;
+    eco.metal_make = d.metal_make;
+    eco.extracts_metal = d.extracts_metal;
+    eco.makes_metal = d.makes_metal;
+    eco.wind_generator = d.wind_generator;
+    eco.tidal_generator = d.tidal_generator;
+    eco.cloak_cost = d.cloak_cost;
+    eco.cloak_cost_moving = d.cloak_cost_moving;
+    eco.energy_storage = d.energy_storage;
+    eco.metal_storage = d.metal_storage;
+
     out.mission.abilities = d.can_do_flags;
     out.mission.worker_time = static_cast<std::uint16_t>(d.worker_time);
 

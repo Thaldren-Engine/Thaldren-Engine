@@ -140,6 +140,8 @@ void Battle::init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& t
     t.metal_make = 0.0f;
     t.energy_use = 0.0f;
     t.metal_use = 0.0f;
+    t.energy_make = t.energy_use_paid = t.energy_stall = t.energy_make_prev = t.energy_use_prev = 0.0f;
+    t.metal_use_paid = t.metal_stall = t.metal_make_prev = t.metal_use_prev = 0.0f;
     u.transport_piece = 0xFF;
     u.hover_phase = static_cast<u16>(rng_.next_mod(0x10000));
     outside_.join_group(u, 0);

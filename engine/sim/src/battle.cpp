@@ -19,8 +19,10 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_},
       targeting_{units, ticks, players, alliances, targeting_types_, mission_types_, map, 0, missions_, targeting_env_,
                  targeting_hooks_, targeting_state_},
-      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}} {
+      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}},
+      economy_{units, ticks, players, player_economy, economy_types_, economy_env_, economy_hooks_} {
     alliances.resize(kPlayerRecords);
+    player_economy.resize(kPlayerRecords);
     feature_state.reset();
     effects.reset();
     types[0].info.max_damage = 0;  // the blank type of empty slots
@@ -115,6 +117,12 @@ void Battle::sync_settings() {
     route_.env.sea_level = s.sea_level;
     route_.env.player_count = s.player_count;
     route_.env.units_per_player = s.units_per_player;
+    economy_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) economy_types_[k] = types[k].economy;
+    economy_env_.game_tick = unit_env_.game_tick;
+    economy_env_.ai_difficulty = s.ai_difficulty;
+    economy_env_.wind_fraction = wind.fraction;
+    economy_env_.tidal_strength = s.tidal_strength;
 }
 
 void Battle::start_players() {
@@ -138,8 +146,41 @@ void Battle::players_stage() {
         for (int id = p.first_unit; id <= p.last_unit && id < static_cast<int>(units.size()); ++id)
             if (id > 0 && (units[static_cast<std::size_t>(id)].flags & unit_flags::kAlive)) outside_.update_sight(units[static_cast<std::size_t>(id)]);
         outside_.player_stage_rest(slot);
+        // The player's 30-step turn: victory checks, the economy settlement, sensors.
+        PlayerEconomy& account = player_economy[static_cast<std::size_t>(slot)];
+        if (account.next_update_tick > unit_env_.game_tick) continue;
+        account.next_update_tick += 30;
+        outside_.player_victory_turn(slot);
+        if (settlement_allowed(players[static_cast<std::size_t>(slot)], end_game)) {
+            sync_settings();
+            settle_player(economy_, slot);
+        }
+        outside_.player_sensor_turn(slot);
     }
     outside_.players_stage_end();
+}
+
+void Battle::init_player_economy(int player) {
+    sync_settings();
+    sim::init_player_economy(economy_, player);
+}
+
+void Battle::step_wind() {
+    sim::step_wind(wind, unit_env_.game_tick, rng_, crt_rand);
+    // What the other systems read: the drift of shots and fires, and the generators' scripts.
+    settings.wind_drift = wind.velocity;
+    unit_env_.wind_changed = wind.changed;
+    unit_env_.wind_heading = wind.heading;
+    unit_env_.wind_speed = wind.speed;
+}
+
+void Battle::auto_share_resources() {
+    sync_settings();
+    const int local = settings.local_player;
+    auto_share(
+        economy_, local, alliances,
+        [&](int kind, int to, float amount) { outside_.resources_shared(kind, players[static_cast<std::size_t>(local)].state, to, amount); },
+        [&](int to) { outside_.explored_map_shared(local, to); });
 }
 
 std::int32_t Battle::TargetingHooks::intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) {

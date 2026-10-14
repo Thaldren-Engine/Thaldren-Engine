@@ -266,7 +266,6 @@ struct Outside : sim::QuietBattleOutside {
     void drop_unit(sim::Unit&, i32 a) override { rec(13, {static_cast<u32>(a)}); }
     void detach_from_carrier(sim::Unit&) override {}
     void release_unit(sim::Unit&) override {}
-    bool pay_energy(sim::Unit&, float) override { return true; }
     void emit_sfx(sim::Unit&, i32 piece, i32 type) override { rec(10, {static_cast<u32>(piece), static_cast<u32>(type)}); }
     void reveal_dead_unit(sim::Unit&) override {}
     void forget_fog(sim::Unit&) override {}
