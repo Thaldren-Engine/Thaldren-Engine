@@ -143,7 +143,7 @@ void unit_set_value(Unit& self, UnitWorld& world, i32 id, i32 value) {
         break;
     case UnitValue::YardOpen:
         // The occupancy test uses value != 0, the stored flag value & 1 (2 tests "open" but stores closed).
-        if (world.yard_cells_free(self, value != 0)) {
+        if (world.yard_cells_free(self, value)) {
             self.script_flags = static_cast<std::uint8_t>((self.script_flags & ~unit_flags::kYardOpen) | ((value & 1) << 2));
             self.flags |= unit_flags::kYardClaimPending;
             world.claim_yard_cells(self);

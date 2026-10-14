@@ -111,6 +111,7 @@ public:
     std::uint32_t& thread_word(int thread, int word) { return mem_[static_cast<std::size_t>(thread * kThreadWords + word)]; }
     std::int32_t thread_count() const { return static_cast<std::int32_t>(mem_[kThreads * kThreadWords]); }
     const std::array<std::uint32_t, kThreads * kThreadWords + 1>& thread_memory() const { return mem_; }
+    const ScriptProgram& program() const { return program_; }
     std::vector<std::int32_t>& statics() { return statics_; }
     std::vector<std::int32_t>& piece_anims() { return anims_; }  // kPieceWords per piece
     bool anim_dirty() const { return dirty_; }

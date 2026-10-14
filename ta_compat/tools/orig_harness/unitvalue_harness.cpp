@@ -83,7 +83,7 @@ struct World : sim::UnitWorld {
     const sim::HeightMap* hm = nullptr;
     sim::Unit* unit_by_id(std::uint16_t id) override { return id < units->size() ? &(*units)[id] : nullptr; }
     const sim::HeightMap& heightmap() override { return *hm; }
-    bool yard_cells_free(sim::Unit&, bool) override { return false; }
+    bool yard_cells_free(sim::Unit&, i32) override { return false; }
     void claim_yard_cells(sim::Unit&) override {}
     void on_activate_flags_changed(sim::Unit&, std::uint8_t, std::uint8_t) override {}
     std::uint32_t random_mod(std::uint32_t) override { return 0; }

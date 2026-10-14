@@ -24,6 +24,7 @@ add_library(sim STATIC
     engine/sim/src/step_budget.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/unit.cpp
+    engine/sim/src/unit_tick.cpp
     engine/sim/src/world.cpp
     engine/sim/src/x87_math.cpp
     engine/sim/src/x87_trig.cpp

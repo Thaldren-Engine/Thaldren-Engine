@@ -54,10 +54,10 @@ public:
     // Unit by id (any id, as the original indexes its table without a bound); nullptr if none.
     virtual Unit* unit_by_id(std::uint16_t id) = 0;
     virtual const HeightMap& heightmap() = 0;
-    // Yard opening needs the occupancy grid: whether the cells the open (or
-    // closed) yard map occupies hold no other unit; then, after the flag
-    // changed, claiming them and updating passability.
-    virtual bool yard_cells_free(Unit& unit, bool open) = 0;
+    // Yard opening needs the occupancy grid: whether the cells the open
+    // (value != 0) or closed yard map occupies hold no other unit; then, after
+    // the flag changed, claiming them and updating passability.
+    virtual bool yard_cells_free(Unit& unit, std::int32_t value) = 0;
     virtual void claim_yard_cells(Unit& unit) = 0;
     // Side effects outside the simulation's state (speech, HUD, network) and
     // the cloak notification to path orders.

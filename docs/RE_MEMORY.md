@@ -533,6 +533,38 @@ Implementation: `engine/sim/src/unit.cpp` (`unit_get_value`, `unit_set_value`, `
   - +0x4C `0x00481470`: carrier id (zero-extended), or 0.
 - Sound (+0x2C) and the legacy explode (+0x28) are `RET` no-ops.
 
+### Unit tick (per-step unit pass `Unit_TickAllPlayersScriptsAndWeapons` `0x0048AD30`) — differential-tested: 1,000 scenarios, 253,024 passes with real scripts, 0 differences
+Implementation: `engine/sim/src/unit_tick.cpp` (`run_unit_pass`). Checked by `tools/orig_harness/unitloop_harness`, which builds in the suspended exe:
+- three players and up to 16 units of random real types (models, scripts, object states, the original unit callback table);
+- logging stubs for every subsystem not built yet;
+- random wind/environment/tick values and random script calls.
+
+After every step it compares the stub call log, all touched unit fields, every unit's script threads/animations/statics, piece poses, the RNG and the live count. 285 of the 1,000 scenarios ended early on endless script loops caused by random arguments; the original would hang the same way.
+
+**Structure:**
+- Live count (GameState+0x14353) is reset to 0.
+- Player slots 0..9 (0x14B bytes at GameState+0x1B63) are visited in order. A slot is skipped unless active (+0) **and** its controller (+0x73) is 1/2/3 **and** its state (+0x146) ≠ 10.
+- Its units are walked by address, from +0x67 to +0x6B inclusive (stride 0x118). Units with type index (+0xA6) = 0 are skipped.
+
+**Per unit, in this order (every callee is callee-cleaned):**
+1. Count it.
+2. **Wind** (`Wind_NotifyUnitScript` `0x00437910`): if the type's wind generator > 0.0f and wind changed (GS+0x37EE2), queue `SetDirection(heading u16)` then `SetSpeed(speed << 4)`. These are by-name calls with 1 argument; they run in this step's script pass.
+3. Weapons (`0x0049E1A0`), only if the *slot* player is active with controller 1|2.
+4. **Script step** `UnitScript_Tick(1)`, if the unit has a script.
+5. Damaged timer (+0xFA, u8) and transfer hold-off (+0xFB, u32) count down to 0.
+6. **Selection** bit 0x10 is kept only if bit 0x20 is set, the build fraction == 0.0f, the hold-off (after its decrement) is 0, and there is either no carrier or the carrier has flag 0x40000000. Otherwise it is cleared.
+7. **Health %**, if tick % 30 == 0: (u64)(u32)(hp·100) / max damage (unsigned). A result negative as signed becomes 0; above 100 becomes 100. Previous (+0xF7) = old value; current goes to +0xF6.
+8. If the *owner* player (+0x96) is active with controller 1|2:
+   - **Water damage** (kind 0xB, from no attacker): applies when the schema's water-does-damage (+0xD4C) and water damage (+0xD50) are set, tick % 30 == 0, (short)(posY >> 16) ≤ the sea-level byte (signed word compare), and type flags bit 12 is clear.
+   - **Self-heal**: when heal time (+0x200) ≠ 0, (u32)hp < max damage (an *unsigned* compare, so negative hp never heals) and tick & 7 == 0: heal(unit, unit, (float)(heal·8/30)) with C division.
+   - Primary orders `0x0043B7C0`, then secondary orders `0x0043BAD0`.
+   - If the unit has a motion object: motion tick `0x0043DD20` (thiscall on it), then ground settle `0x0048A870`.
+9. If flags bit 14 (dying): `0x004864B0`(unit, last damage kind +0xF5).
+
+**After each slot's units:** if GS+0x2A44 bit0 is set and the slot player is active with controller 1|2, broadcast its units (`0x0048B710`).
+
+**After all slots:** camera auto-follow, every 90 steps while GS+0x14373 bit1 is set (UI; it reads the keyboard for Shift).
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -556,6 +588,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Per-step unit pass (wind, script step, timers, selection, health %, water damage, self-heal gates; subsystems as ordered hooks) — **1,000 scenarios / 253,024 passes / 65,843 script calls with real scripts identical** | `0x0048AD30`, `0x00437910`, `0x0048B090` (activation side calls `0x0047F780`, `0x0041C110`, `0x00451DF0`) | `engine/sim/src/unit_tick.cpp`, `tools/orig_harness/unitloop_harness.cpp` |
 | 2026-10-14 | Unit state, script unit values (GET/SET/transport), heightmap + TNT heights — **116,867 GET / 33,341 SET / 16,592 transport calls on all 278 units identical** | `0x00480770`, `0x00480B20`, `0x00481430`, `0x00481470`, `0x00485070`, `0x0043DEF0`, `0x0043E060`, `0x0048B090`, `0x0047DAC0`, `0x00483610` | `engine/sim/src/{unit,heightmap}.cpp`, `ta_compat/src/tnt.cpp`, `tools/orig_harness/unitvalue_harness.cpp` |
 | 2026-10-13 | Piece pose (object state build, script piece callbacks, transform sync) + bit-exact x87 FSINCOS rotation — **pose: 278 units / 110,000 ops identical; rotation: 524,288 calls identical; FSINCOS emulation = hardware on all 65,535 angles** | `0x0045A950`, `0x0045AEC0`, `0x0045AF90`, `0x0045AB10`, `0x0045B030`, `0x0045B0A0`, `0x0045B150`, `0x004B6CC0`, `0x004B7173`, `0x00480C30`–`0x00480DF0`, `0x0045AC20` | `engine/sim/src/pose.cpp`, `x87_trig.cpp`, `ta_compat/src/model3do.cpp` (`to_pose_model`), `tools/orig_harness/{pose_harness,x87_check,remote.h}` |
 | 2026-10-13 | Unit script VM + COB importer — **differential vs original interpreter: 278 stock scripts (580,539 ops) + 3,000 synthetic programs (164,145 ops, every opcode), 0 differences** | `0x004B2450`, `0x004B0610`, `0x004B0720`, `0x004B08C0`, `0x004B0940`, `0x004B0B00`, `0x004B0C40`, `0x004B0D60`, `0x004B0DA0`, `0x004B1C00`, `0x00485D40`, vtable `0x004FD698` | `engine/sim/src/script_vm.cpp`, `ta_compat/src/cob.cpp`, `tools/orig_harness/cob_harness.cpp`, `tests/sim_tests.cpp` |
