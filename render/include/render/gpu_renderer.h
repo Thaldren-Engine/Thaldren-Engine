@@ -28,6 +28,11 @@ public:
     // Draws the list and resolves it through `palette` on the GPU, reading
     // back RGBA8 pixels (width * height * 4).
     bool render_rgba(const DrawList& list, const Palette& palette, std::vector<std::uint8_t>& rgba);
+    // Window output: opens a window (frame size x scale) on first use and
+    // shows each drawn list there, resolved through the palette on the GPU.
+    // Returns false when the window was closed or on error.
+    bool present_window(const DrawList& list, const Palette& palette, int scale, const char* title);
+
     // Name of the GPU driver in use ("direct3d12", "vulkan", "metal").
     std::string driver() const;
 

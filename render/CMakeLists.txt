@@ -39,7 +39,7 @@ endif()
 add_executable(battle_view tools/battle_view.cpp)
 target_link_libraries(battle_view PRIVATE ta_compat_render)
 if(TARGET render_gpu)
-    target_link_libraries(battle_view PRIVATE render_gpu)
+    target_link_libraries(battle_view PRIVATE render_gpu SDL3::SDL3-static)
 endif()
 target_compile_options(battle_view PRIVATE ${WARN_FLAGS})
 

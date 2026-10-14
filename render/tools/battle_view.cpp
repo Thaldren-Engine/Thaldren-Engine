@@ -2,8 +2,9 @@
 // installed copy of the original game, runs their scripts for a while and
 // writes 640x480 8-bit BMP frames of the battle view.
 //
-// Usage: battle_view <game_dir> <out_prefix> [--gpu] [--map NAME] [--scroll X Y] [--frames N] [--step K]
+// Usage: battle_view <game_dir> <out_prefix> [--gpu] [--window S] [--map NAME] [--scroll X Y] [--frames N] [--step K]
 //   --gpu      also render through the GPU backend (if built) and compare with the CPU reference.
+//   --window S afterwards show the view live in a window for S seconds (GPU backend).
 
 #include <cstdio>
 #include <cstdlib>
@@ -28,6 +29,8 @@
 #include "ta/weapondefs.h"
 
 #ifdef RENDER_HAVE_GPU
+#include <SDL3/SDL_timer.h>
+
 #include "render/gpu_renderer.h"
 #endif
 
@@ -82,9 +85,11 @@ int main(int argc, char** argv) {
     std::string map_name = "Moon Quartet";
     int scroll_x = 1200, scroll_y = 1600, frames = 3, step = 15;
     bool use_gpu = false;
+    int window_seconds = 0;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--gpu") use_gpu = true;
+        else if (a == "--window" && i + 1 < argc) window_seconds = std::atoi(argv[++i]);
         else if (a == "--map" && i + 1 < argc) map_name = argv[++i];
         else if (a == "--scroll" && i + 2 < argc) {
             scroll_x = std::atoi(argv[++i]);
@@ -267,35 +272,37 @@ int main(int argc, char** argv) {
     if (use_gpu) std::printf("built without the GPU backend\n");
 #endif
 
-    render::BmpPresenter out(prefix);
-    std::uint32_t tick = 0;
-    for (int f = 0; f < frames; ++f) {
-        if (f > 0)
-            for (int k = 0; k < step; ++k, ++tick)
-                for (auto& u : units) u->script->tick(1);
+    auto build_frame = [&](std::uint32_t at_tick) {
         scene.units.clear();
         for (const auto& [u, tc] : placed) {
             render::UnitInstance ui;
             ui.unit = u;
             ui.model = &tc.first->model;
             ui.params.team_colour = tc.second;
-            ui.params.animation_frame = tick;
-            ui.ground = (tc.first->def->type_flags & (1u << 11)) == 0;
+            ui.params.animation_frame = at_tick;
+            ui.ground = (tc.first->def->type_flags & (1u << 11)) == 0;  // canfly
             ui.ground_height = std::max(0, hm.sample(static_cast<std::int16_t>(u->pos[0] >> 16), static_cast<std::int16_t>(u->pos[2] >> 16)));
-            ui.shadow = (tc.first->def->type_flags & (1u << 25)) == 0;
+            ui.shadow = (tc.first->def->type_flags & (1u << 25)) == 0;  // noshadow
             scene.units.push_back(ui);
         }
-        // A sample beam and shell so the projectile paths show up.
+        // A sample beam so the projectile path shows up.
         scene.projectiles.clear();
-        {
-            render::ProjectileInstance beam;
-            beam.look = render::ProjectileLook::Line;
-            beam.pos = {1560 << 16, 40 << 16, 1870 << 16};
-            beam.tail = {1500 << 16, 50 << 16, 1820 << 16};
-            beam.colour = 0xE0;
-            scene.projectiles.push_back(beam);
-        }
-        render::DrawList list = render::build_draw_list(scene);
+        render::ProjectileInstance beam;
+        beam.look = render::ProjectileLook::Line;
+        beam.pos = {1560 << 16, 40 << 16, 1870 << 16};
+        beam.tail = {1500 << 16, 50 << 16, 1820 << 16};
+        beam.colour = 0xE0;
+        scene.projectiles.push_back(beam);
+        return render::build_draw_list(scene);
+    };
+
+    render::BmpPresenter out(prefix);
+    std::uint32_t tick = 0;
+    for (int f = 0; f < frames; ++f) {
+        if (f > 0)
+            for (int k = 0; k < step; ++k, ++tick)
+                for (auto& u : units) u->script->tick(1);
+        render::DrawList list = build_frame(tick);
         const render::Image8 frame = render::execute(list, blend);
         out.present(frame, palette);
         std::printf("frame %d (tick %u): %zu draw commands, %zu transient sprites\n", f, tick, list.cmds.size(), list.transient.size());
@@ -325,6 +332,29 @@ int main(int argc, char** argv) {
         }
 #endif
     }
+#ifdef RENDER_HAVE_GPU
+    // Live view: run the scripts at 30 steps per second and show every step.
+    if (window_seconds > 0) {
+        if (!gpu) gpu = render::GpuRenderer::create(blend);
+        if (!gpu) {
+            std::printf("GPU backend unavailable: %s\n", render::GpuRenderer::last_error().c_str());
+            return 1;
+        }
+        const std::uint64_t start = SDL_GetTicks();
+        for (int n = 0; SDL_GetTicks() - start < static_cast<std::uint64_t>(window_seconds) * 1000u; ++n) {
+            for (auto& u : units) u->script->tick(1);
+            ++tick;
+            render::DrawList list = build_frame(tick);
+            render::lines_to_sprites(list);
+            if (!gpu->present_window(list, palette, 2, "battle_view")) break;
+            const std::uint64_t due = start + static_cast<std::uint64_t>(n + 1) * 1000u / 30u;
+            const std::uint64_t now = SDL_GetTicks();
+            if (now < due) SDL_Delay(static_cast<std::uint32_t>(due - now));
+        }
+    }
+#else
+    if (window_seconds > 0) std::printf("built without the GPU backend (no window output)\n");
+#endif
     for (const auto& [u, tc] : placed)
         if (!u->script->fault().empty()) std::printf("script fault (%s): %s\n", tc.first->def->unit_name.c_str(), u->script->fault().c_str());
     return 0;

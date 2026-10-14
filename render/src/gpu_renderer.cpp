@@ -42,9 +42,21 @@ struct GpuRenderer::Impl {
     // Persistent sprite textures (terrain tiles, feature frames, ...).
     std::unordered_map<const Sprite8*, SDL_GPUTexture*> cache;
     BlendTable blend;
+    // Window output.
+    SDL_GPUShader* quad_vs = nullptr;
+    SDL_GPUShader* resolve_fs = nullptr;
+    SDL_Window* window = nullptr;
+    SDL_GPUGraphicsPipeline* window_resolve = nullptr;
 
     ~Impl() {
         if (!dev) return;
+        if (window_resolve) SDL_ReleaseGPUGraphicsPipeline(dev, window_resolve);
+        if (window) {
+            SDL_ReleaseWindowFromGPUDevice(dev, window);
+            SDL_DestroyWindow(window);
+        }
+        if (quad_vs) SDL_ReleaseGPUShader(dev, quad_vs);
+        if (resolve_fs) SDL_ReleaseGPUShader(dev, resolve_fs);
         for (auto& [k, t] : cache) SDL_ReleaseGPUTexture(dev, t);
         for (SDL_GPUTexture* t : {table, dummy, palette, frame, frame_copy, rgba})
             if (t) SDL_ReleaseGPUTexture(dev, t);
@@ -306,9 +318,9 @@ std::unique_ptr<GpuRenderer> GpuRenderer::create(const BlendTable& blend) {
     }
     im->blit = im->pipeline(vs, bs, SDL_GPU_TEXTUREFORMAT_R8_UNORM);
     im->resolve = im->pipeline(vs, rs, SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM);
-    SDL_ReleaseGPUShader(im->dev, vs);
     SDL_ReleaseGPUShader(im->dev, bs);
-    SDL_ReleaseGPUShader(im->dev, rs);
+    im->quad_vs = vs;
+    im->resolve_fs = rs;
     if (!im->blit || !im->resolve) {
         fail("SDL_CreateGPUGraphicsPipeline");
         return nullptr;
@@ -394,6 +406,62 @@ bool GpuRenderer::render_rgba(const DrawList& list, const Palette& palette, std:
     SDL_UnmapGPUTransferBuffer(m.dev, tb);
     SDL_ReleaseGPUTransferBuffer(m.dev, tb);
     return true;
+}
+
+bool GpuRenderer::present_window(const DrawList& list, const Palette& palette, int scale, const char* title) {
+    Impl& m = *impl_;
+    scale = std::max(scale, 1);
+    if (!m.window) {
+        m.window = SDL_CreateWindow(title, list.width * scale, list.height * scale, 0);
+        if (!m.window) return fail("SDL_CreateWindow");
+        if (!SDL_ClaimWindowForGPUDevice(m.dev, m.window)) return fail("SDL_ClaimWindowForGPUDevice");
+        m.window_resolve = m.pipeline(m.quad_vs, m.resolve_fs, SDL_GetGPUSwapchainTextureFormat(m.dev, m.window));
+        if (!m.window_resolve) return fail("SDL_CreateGPUGraphicsPipeline (window)");
+    }
+    SDL_Event e;
+    while (SDL_PollEvent(&e))
+        if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
+    if (!m.ensure_frame(list.width, list.height)) return false;
+    std::uint8_t pal[256 * 4];
+    for (int i = 0; i < 256; ++i) {
+        pal[i * 4] = palette[static_cast<std::size_t>(i)].r;
+        pal[i * 4 + 1] = palette[static_cast<std::size_t>(i)].g;
+        pal[i * 4 + 2] = palette[static_cast<std::size_t>(i)].b;
+        pal[i * 4 + 3] = 255;
+    }
+    if (!m.upload({{m.palette, 256, 1, 4, pal}})) return false;
+    std::vector<SDL_GPUTexture*> transient;
+    SDL_GPUCommandBuffer* cb = SDL_AcquireGPUCommandBuffer(m.dev);
+    if (!cb) return fail("SDL_AcquireGPUCommandBuffer");
+    if (!m.record(cb, list, transient)) {
+        SDL_CancelGPUCommandBuffer(cb);
+        return false;
+    }
+    SDL_GPUTexture* swap = nullptr;
+    Uint32 sw = 0, sh = 0;
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(cb, m.window, &swap, &sw, &sh)) {
+        SDL_CancelGPUCommandBuffer(cb);
+        return fail("SDL_WaitAndAcquireGPUSwapchainTexture");
+    }
+    if (swap) {
+        SDL_GPUColorTargetInfo target{};
+        target.texture = swap;
+        target.load_op = SDL_GPU_LOADOP_CLEAR;
+        target.store_op = SDL_GPU_STOREOP_STORE;
+        target.clear_color = {0, 0, 0, 1};
+        SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cb, &target, 1, nullptr);
+        SDL_BindGPUGraphicsPipeline(pass, m.window_resolve);
+        const float w = static_cast<float>(list.width * scale), h = static_cast<float>(list.height * scale);
+        const float vu[8] = {0, 0, w, h, static_cast<float>(sw), static_cast<float>(sh), 0, 0};
+        SDL_PushGPUVertexUniformData(cb, 0, vu, sizeof vu);
+        const std::int32_t fu[4] = {scale, scale, 0, 0};
+        SDL_PushGPUFragmentUniformData(cb, 0, fu, sizeof fu);
+        const SDL_GPUTextureSamplerBinding b[2] = {{m.frame, m.sampler}, {m.palette, m.sampler}};
+        SDL_BindGPUFragmentSamplers(pass, 0, b, 2);
+        SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
+        SDL_EndGPURenderPass(pass);
+    }
+    return m.finish(cb, nullptr, transient);
 }
 
 std::string GpuRenderer::driver() const {
