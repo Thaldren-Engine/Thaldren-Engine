@@ -18,6 +18,8 @@
 #include "sim/heightmap.h"
 #include "sim/orders.h"
 #include "sim/projectile.h"
+#include "sim/missions.h"
+#include "sim/route_search.h"
 #include "sim/unit.h"
 #include "sim/rng.h"
 #include "sim/script_vm.h"
@@ -859,8 +861,7 @@ void test_projectiles() {
 
 // Records what reaches the outside of a battle; everything else does nothing.
 struct NullOutside : sim::QuietBattleOutside {
-    int sounds = 0, explosions = 0, passability = 0, packets = 0;
-    void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override { ++passability; }
+    int sounds = 0, explosions = 0, packets = 0;
     void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override { ++packets; }
     void play_sound(std::uint16_t, const sim::Vec3i&) override { ++sounds; }
     void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override { ++explosions; }
@@ -1060,6 +1061,11 @@ void test_unit_create() {
     mt.create.movement = 1;
     mt.create.footprint_x = mt.create.footprint_z = 1;
     mt.create.build_angle = 0x4000;
+    // One movement class of 1 x 1 cells: its grid is built from the empty flat map.
+    b.move_classes[0].named = true;
+    b.move_classes[0].footprint_x = b.move_classes[0].footprint_z = 1;
+    b.init_routes();
+    CHECK_EQ(b.move_classes[0].grade(5, 3), 3u);
 
     const std::int32_t x = (100 << 16), z = (60 << 16);
     Unit* s = b.create_unit(0, 1, x, 0, z, true, 1);
@@ -1077,7 +1083,8 @@ void test_unit_create() {
     CHECK_EQ(s->metal_extraction, 0.5f * 16.0f);  // four cells of metal 3 (+1 each)
     CHECK_EQ(s->bucket, 0);
     CHECK_EQ(b.buckets.heads[0] == s, true);
-    CHECK_EQ(outside.passability, 1);
+    CHECK_EQ(b.move_classes[0].grade(5, 3), 0u);  // the structure's cells block the class now
+    CHECK_EQ(b.move_classes[0].grade(4, 2), 1u);  // next to it: rough
     CHECK_EQ(b.players[0].alive_count, 1);
     CHECK_EQ(b.players[0].units_created, 1u);
     // A second structure on the same spot: the first keeps the cells (its owner is not watched).
@@ -1125,6 +1132,70 @@ struct TestMotionSystems : sim::MotionSystems {
     }
     void free_object(std::uint32_t) override {}
 };
+
+// A unit ordered to move to the far side of a wall: the route search gives it a
+// route of corners around the wall and the unit drives there and finishes the order.
+void test_route_search() {
+    constexpr int kW = 48;
+    sim::HeightMap hm(kW, kW);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(4242);
+    sim::Battle b(outside, hm, rng);
+    b.map.width = b.map.height = kW;
+    b.map.cells.resize(kW * kW);
+    b.feature_blocks = {1};  // feature type 0 blocks
+    for (int z = 6; z <= 40; ++z) b.map.cells[static_cast<std::size_t>(z * kW + 24)].feature = 0;
+    b.init_buckets();
+    b.init_unit_table(10);
+    b.assign_unit_range(0, 1, 4);
+    b.players[0].active = true;
+    b.players[0].controller = 1;
+    b.settings.player_count = 1;
+    b.settings.units_per_player = 4;
+    sim::MoveClass& mc = b.move_classes[3];
+    mc.named = true;
+    mc.footprint_x = mc.footprint_z = 2;
+    b.types.resize(2);
+    sim::BattleUnitType& t = b.types[1];
+    t.info.max_damage = 100;
+    t.create.type_flags = sim::create_flags::kLoadable;
+    t.create.movement = 1;
+    t.create.footprint_x = t.create.footprint_z = 2;
+    t.motion.max_velocity = 0x20000;
+    t.motion.acceleration = 0x2000;
+    t.motion.brake_rate = 0x4000;
+    t.motion.turn_rate = 0x800;
+    t.motion.has_move_class = true;
+    t.route.move_class = 3;
+    b.init_routes();
+    CHECK_EQ(mc.grade(10, 20), 3u);
+    CHECK_EQ(mc.grade(23, 20), 0u);  // a 2 x 2 footprint at x 23 covers the wall
+    CHECK_EQ(mc.grade(22, 20), 1u);  // next to it: rough
+    sim::Unit* u = b.create_unit(0, 1, (10 * 16 + 16) << 16, 0, (20 * 16 + 16) << 16, true, 1);
+    CHECK_EQ(u != nullptr, true);
+    if (!u) return;
+    CHECK_EQ(b.ticks[u->id].has_motion, true);
+    const std::int32_t goal[3] = {(38 * 16 + 16) << 16, 0, (20 * 16 + 16) << 16};
+    CHECK_EQ(sim::enqueue_order(b.order_context(), *u, sim::mission::kMoveGround, false, nullptr, goal, 0, 0), true);
+    std::int32_t most_points = 0, steps = 0;
+    bool crossed_wall = false;
+    for (; steps < 2000 && u->orders; ++steps) {
+        b.advance_tick();
+        b.step_units_and_projectiles();
+        b.run_route_search();
+        auto* rg = dynamic_cast<sim::RouteGoal*>(b.ticks[u->id].motion.goal.get());
+        if (rg && rg->count > most_points) most_points = rg->count;
+        if (u->cell_x <= 24 && u->cell_x + u->footprint_x > 24 && u->cell_z >= 6 && u->cell_z <= 40) crossed_wall = true;
+    }
+    CHECK_EQ(b.route_context().fault.empty(), true);
+    CHECK_EQ(u->orders == nullptr, true);   // the move finished
+    CHECK_EQ(most_points >= 3, true);       // a route with corners around the wall
+    CHECK_EQ(crossed_wall, false);          // never stood on the wall
+    CHECK_EQ(u->cell_x, 38);
+    CHECK_EQ(u->cell_z, 20);
+    std::printf("route search test: arrived after %d steps, longest route %d points\n", static_cast<int>(steps), static_cast<int>(most_points));
+}
 
 void test_motion() {
     using sim::footprint_cell;
@@ -1227,6 +1298,7 @@ int main() {
     test_targeting();
     test_unit_create();
     test_motion();
+    test_route_search();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

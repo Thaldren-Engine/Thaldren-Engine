@@ -126,6 +126,7 @@ const Stub kStubs[] = {
     {0x004011C0, 2, 84, 0, StubRet::Queue, qResources},    // use resources if not stalled(float e, float m) [thiscall]
     {0x0041C150, 1, 85},                                   // build menu counts(unit)
     {0x0041BCD0, 2, 87},                                   // unfinished unit decay(unit, steps)
+    {0x00438930, 2, 88},                                   // attach circle goal(&order pos, radius) [thiscall on the order]
 };
 constexpr int kGoalDetachId = 63, kAttachedDtorId = 64, kHandlerId = 65;
 constexpr int kEnemiesId = 80, kResolveId = 83, kNanoId = 86;
@@ -625,7 +626,11 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
             return 7;
         }
         const std::uint32_t event_in = event;
+        const std::uint8_t step_in = o.step;
         const std::int32_t res = sim::run_mission_behaviour(*missions, u, o, event);
+        if (std::getenv("OH_TRACE"))
+            std::printf("    unit %u order %08x kind %u step %u event %x -> %d (wait %x events %x)\n", u.id, o.address, kind, step_in, event_in, res,
+                        o.wait, o.events);
         if (event != event_in && sim::mission_implemented(kind)) ++g_event_slot_writes;
         if (sim::mission_implemented(kind)) ++g_real_runs[kind][static_cast<u32>(res) < 10 ? static_cast<std::size_t>(res) : 10];
         return res;
@@ -715,6 +720,9 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         for (i32 v : from) log.push_back(static_cast<u32>(v));
         for (i32 v : box) log.push_back(static_cast<u32>(v));
         log.push_back(6);
+    }
+    void attach_circle_goal(sim::Unit&, sim::MissionOrder& o, const std::array<i32, 3>&, i32 radius) override {
+        rec(88, o.address, {o.address + 0x22, static_cast<u32>(radius)});  // (always the order's own position)
     }
     void drop_goal_object(sim::Unit& u, sim::MissionOrder& o) override {
         rec(kGoalDetachId, 0x7D000000u | u.id, {0});
@@ -1126,7 +1134,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             i += n;
             const u32 id = rec[0];
             if (remote && id != 6 && id != kHandlerId && (id < 10 || id > 13) && id != 61 && id != kGoalDetachId && id != kAttachedDtorId &&
-                id != 84)
+                id != 84 && id != 88)
                 rec[1] = 0;
             if (id == static_cast<u32>(kEnemiesId)) rec[3] = rec[6] = 0;  // stack addresses
             if (id == static_cast<u32>(kResolveId)) rec[2] = rec[6] = 0;  // out and position pointers
@@ -1314,6 +1322,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     };
     auto fail = [&](const std::string& what) {
         std::printf("scenario %u: the original failed during %s\n", seed, what.c_str());
+        if (std::getenv("OH_TRACE")) {  // the original's last stub calls before it failed
+            const u32 end = r.r32(L.log_ptr);
+            std::vector<u32> lg((end - L.log_base) / 4);
+            if (!lg.empty()) r.read(L.log_base, lg.data(), lg.size() * 4);
+            for (std::size_t k = lg.size() > 60 ? lg.size() - 60 : 0; k < lg.size(); ++k) std::printf("    orig log %zu: %x\n", k, lg[k]);
+        }
         return false;
     };
     // A fresh script of behaviour steps for both sides.
@@ -1357,6 +1371,9 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 case qResolve: {  // never AttackSpecial itself (it would resolve again at once, forever)
                     u32 kd = g() % 3 == 0 ? 0u : g() % sim::mission::kCount;
                     if (kd == sim::mission::kAttackSpecial) kd = sim::mission::kAttackNoMove;
+                    // Nor AttackUType: the order it makes has type 0 to look for, which matches the empty
+                    // table entries, and the original crashes on their missing owner.
+                    if (kd == sim::mission::kAttackUnitType) kd = sim::mission::kAttackNoMove;
                     // An attack never resolves to a background kind; one would leave an order
                     // in a list its flags do not name, and clearing it would never end.
                     if (sim::mission::default_flags()[kd] & sim::order_flags::kSecondary) kd = sim::mission::kAttackChase;
@@ -1563,6 +1580,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                     r.w32(o->address + oEvents, o->events);
                 }
                 missions.caller = sim::MissionCaller::Primary;
+                if (std::getenv("OH_TRACE")) {
+                    std::printf("  direct primary orders of unit %d (remote list before):\n", i);
+                    for (u32 a = r.r32(unit_addr(i) + uOrders), n = 0; a && n < 40; a = r.r32(a + oNext), ++n)
+                        std::printf("    %08x kind %u step %u wait %x wake %u events %x flags %x\n", a, r.rd<std::uint8_t>(a + oKind),
+                                    r.rd<std::uint8_t>(a + oStep), r.r32(a + oWait), r.r32(a + oWake), r.r32(a + oEvents), r.r32(a + oFlags));
+                }
                 sim::run_primary_orders(octx, u);
                 if (engine_faulted()) return true;
                 if (!call_one(kPrimary, unit_addr(i), edi, stale)) return fail("primary orders");

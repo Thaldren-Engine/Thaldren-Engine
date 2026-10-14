@@ -23,6 +23,7 @@
 #include "sim/projectile.h"
 #include "sim/rng.h"
 #include "sim/targeting.h"
+#include "sim/route_search.h"
 #include "sim/unit.h"
 #include "sim/unit_create.h"
 #include "sim/unit_tick.h"
@@ -39,6 +40,7 @@ struct BattleUnitType {
     MotionType motion;
     MissionTypeInfo mission;
     TargetingTypeInfo targeting;
+    RouteType route;  // movement class and placement limits (footprint and movement come from `create`)
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -60,6 +62,8 @@ struct BattleSettings {
     std::uint16_t unit_limit = 250;      // units per player (the weapon-target pass visits limit/30 + 1 per step)
     bool target_everything = false;      // game option: units without "shoot me" are targets for everyone
     std::int32_t command_mode = 0;       // game option: 1 = the alternative default-command rules
+    std::uint16_t player_count = 0;      // players in the game (the route search shares its budget by it)
+    std::uint16_t units_per_player = 0;  // size of a player's part of the unit table
     OriginalAddresses addresses;
 };
 
@@ -68,13 +72,11 @@ struct BattleSettings {
 class BattleOutside {
 public:
     virtual ~BattleOutside() = default;
-    // Not built yet: motion.
-    // Motion: the placement check of a move into new cells (0x47DB70), the highest
-    // terrain of a unit's spatial bucket, the route search (pathfinder) and sight.
-    virtual bool can_place(Unit& unit, std::int16_t cell_x, std::int16_t cell_z, std::uint32_t layer) = 0;
+    // Motion: the highest terrain of a unit's spatial bucket and sight.
     virtual std::uint8_t bucket_height(const Unit& unit) = 0;
-    virtual void route_search_forget(MotionGoal& goal) = 0;
     virtual void update_sight(Unit& unit) = 0;
+    // Placement of a structure by its yard map (0x47D2E0; the rest of the placement check is built).
+    virtual bool structure_fits(std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z) = 0;
     // Mission behaviours: construction decay.
     virtual void unfinished_decay(Unit& unit, std::int32_t ticks) = 0;
     // Targeting (sim/targeting.h): line of sight (0x465AC0), the explored state of a map spot for
@@ -84,21 +86,16 @@ public:
     virtual std::uint8_t feature_flags(std::uint16_t feature) = 0;
     virtual void ai_own_unit(int table, Unit& unit) = 0;
     virtual void ai_rescore(int table) = 0;
-    // Players' stage (0x464F80): the route search's turn (0x40EB70) at its start; an AI player's
+    // Players' stage (0x464F80; its route search turn at the start is built in): an AI player's
     // own controller work (0x408C40 before its weapon-target pass); after each player's sight
     // updates the rest of its turn (view sight, watch mode and victory checks, economy,
     // sensors); the end-of-stage checks.
-    virtual void route_search_tick() = 0;
     virtual void ai_controller_step(int player) = 0;
     virtual void player_stage_rest(int player) = 0;
     virtual void players_stage_end() = 0;
     virtual bool use_resources_if_not_stalled(Unit& unit, float energy, float metal) = 0;
     // Unit creation and footprints (sim/unit_create.h, sim/footprint.h): the parts owned by
-    // other systems. Motion object of a new mobile unit (0x43DC00; the battle has already set
-    // has_motion), its footprint step when it claims cells, the movement classes' passability.
-    virtual void update_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) = 0;
-    virtual void passability_after_release(Unit& unit) = 0;
-    // Group list membership (0x480250, group 0 for a new unit), line of sight (0x482AC0) and
+    // other systems. Group list membership (0x480250, group 0 for a new unit), line of sight (0x482AC0) and
     // the victory conditions' unit-created notification (0x490580).
     virtual void join_group(Unit& unit, std::int32_t group) = 0;
     virtual void stamp_line_of_sight(Unit& unit) = 0;
@@ -174,12 +171,21 @@ public:
     MapGrid map;
     UnitBuckets buckets;  // sized by init_buckets() once the map is set
     BattleSettings settings;
+    // Movement classes and their passability grids, the route search (sim/route_search.h).
+    std::array<MoveClass, kMoveClasses> move_classes{};
+    std::vector<std::uint8_t> feature_blocks;  // by feature type: nonzero when it blocks movement
+    std::vector<std::uint16_t> explored;       // per 2 x 2 cells: bit p = player p has seen it
+    RouteSearch route_search;
 
     // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
     // inclusive range of them (the entries' owner is fixed by it).
     void init_unit_table(std::size_t count);
     void assign_unit_range(int player, int first, int last);
     void init_buckets() { buckets.resize_for_map(map.width, map.height); }
+    // Once the map (heights, features) and the unit ranges are set, before units are made:
+    // builds the movement classes' grids and sets up the route search (the original does
+    // this while loading the battle). An `explored` map of the wrong size becomes all seen.
+    void init_routes();
 
     // Creates a unit of type `type` for `player` at (x, y, z) (16.16) in the first free
     // entry of the player's range, or exactly entry `wanted_id` when nonzero (the original's
@@ -207,6 +213,12 @@ public:
     // stages 2 and 3; the caller advances the tick first and runs the other stages).
     void step_units_and_projectiles();
     void advance_tick() { ++unit_env_.game_tick; }
+    // The route search's step: the first thing the players stage (0x464F80) does, after
+    // the effects stage and before the players' own updates.
+    void run_route_search();
+    // Cells of a footprint changed (a feature placed or removed): every movement class
+    // recomputes them (0x440A40).
+    void refresh_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h);
 
     // Contexts for direct calls (tests, other stages).
     Combat& combat() { return combat_; }
@@ -214,6 +226,7 @@ public:
     ProjectileWorld& projectile_world() { return projectile_world_; }
     OrderContext& order_context() { return orders_; }
     FootprintWorld& footprint_world() { return footprint_; }
+    RouteContext& route_context() { return route_; }
     UnitWorld& unit_world() { return *this; }  // for unit_get_value / unit_set_value / unit_set_activate
 
 private:
@@ -296,9 +309,9 @@ private:
 
     // FootprintSystems
     void update_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) override {
-        outside_.update_passability(x, z, w, h);
+        sim::update_passability(route_, x, z, w, h);
     }
-    void passability_after_release(Unit& u) override { outside_.passability_after_release(u); }
+    void passability_after_release(Unit& u) override { sim::passability_after_release(route_, u); }
     void motion_cells_claimed(Unit& u) override;
 
     // GroundSettleSystems
@@ -309,13 +322,15 @@ private:
     struct MotionHooks final : MotionSystems {
         Battle& b;
         explicit MotionHooks(Battle& battle) : b(battle) {}
-        bool can_place(Unit& u, std::int16_t x, std::int16_t z, std::uint32_t layer) override { return b.outside_.can_place(u, x, z, layer); }
+        bool can_place(Unit& u, std::int16_t x, std::int16_t z, std::uint32_t layer) override {  // 0x47DB70
+            return can_place_footprint(b.route_, b.ticks[u.id].type_index, u.id, x, z, layer);
+        }
         void clear_footprint(Unit& u) override { release_cells(b.footprint_, u); }  // 0x47D0E0
         void claim_footprint(Unit& u) override { sim::claim_footprint(b.footprint_, u); }
         void update_sight(Unit& u) override { b.outside_.update_sight(u); }
         bool off_map(const Unit& u) override { return u.bucket == kOffMapBucket; }
         std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
-        void route_search_forget(MotionGoal& g) override { b.outside_.route_search_forget(g); }
+        void route_search_forget(MotionGoal& g) override { sim::route_search_forget(b.route_search, g); }
         void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
         std::uint32_t allocate_object(std::uint32_t) override { return 0; }
         void free_object(std::uint32_t) override {}
@@ -339,6 +354,14 @@ private:
         void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
         void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override { b.outside_.nano_beam(from, box); }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
+        void attach_circle_goal(Unit&, MissionOrder& o, const std::array<std::int32_t, 3>& pos, std::int32_t radius) override {
+            sim::attach_circle_goal(b.motion_, o, pos, radius);
+        }
+    };
+    struct RouteHooks final : RouteSystems {
+        Battle& b;
+        explicit RouteHooks(Battle& battle) : b(battle) {}
+        bool structure_fits(std::uint16_t type, std::int16_t x, std::int16_t z) override { return b.outside_.structure_fits(type, x, z); }
     };
     struct TargetingHooks final : TargetingSystems {
         Battle& b;
@@ -378,6 +401,9 @@ private:
     TargetingState targeting_state_;
     TargetingHooks targeting_hooks_{*this};
     Targeting targeting_;
+    RouteHooks route_hooks_{*this};
+    std::vector<RouteType> route_types_;  // by type index
+    RouteContext route_;
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;

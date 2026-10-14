@@ -16,7 +16,8 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       motion_{units, ticks, players, motion_types_, heights_, motion_hooks_, {}, {}},
       missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_},
       targeting_{units, ticks, players, alliances, targeting_types_, mission_types_, map, 0, missions_, targeting_env_,
-                 targeting_hooks_, targeting_state_} {
+                 targeting_hooks_, targeting_state_},
+      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}} {
     alliances.resize(kPlayerRecords);
     types[0].info.max_damage = 0;  // the blank type of empty slots
     types[0].tick.damage_modifier = 0;
@@ -89,6 +90,17 @@ void Battle::sync_settings() {
     targeting_env_.target_everything = s.target_everything;
     targeting_env_.command_mode = s.command_mode;
     targeting_.feature_count = static_cast<std::uint32_t>(features.size());
+    route_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) {
+        route_types_[k] = types[k].route;
+        route_types_[k].footprint_x = types[k].create.footprint_x;
+        route_types_[k].footprint_z = types[k].create.footprint_z;
+        route_types_[k].movement = types[k].create.movement;
+    }
+    route_.env.game_tick = unit_env_.game_tick;
+    route_.env.sea_level = s.sea_level;
+    route_.env.player_count = s.player_count;
+    route_.env.units_per_player = s.units_per_player;
 }
 
 void Battle::start_players() {
@@ -98,7 +110,7 @@ void Battle::start_players() {
 
 void Battle::players_stage() {
     sync_settings();
-    outside_.route_search_tick();
+    sim::run_route_search(route_);  // the route search runs first
     for (int slot = 0; slot < 10; ++slot) {
         const PlayerSlot& p = players[static_cast<std::size_t>(slot)];
         if (!p.active || p.controller < 1 || p.controller > 3 || p.state == 10) continue;
@@ -122,6 +134,24 @@ std::int32_t Battle::TargetingHooks::intercept_target(Unit& u, int slot, std::ar
     return i;
 }
 
+void Battle::init_routes() {
+    sync_settings();
+    const std::size_t blocks = static_cast<std::size_t>(map.width >> 1) * static_cast<std::size_t>(map.height >> 1);
+    if (explored.size() != blocks) explored.assign(blocks, 0xFFFF);
+    build_passability(route_);
+    init_route_search(route_);
+}
+
+void Battle::run_route_search() {
+    sync_settings();
+    sim::run_route_search(route_);
+}
+
+void Battle::refresh_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) {
+    sync_settings();
+    sim::update_passability(route_, x, z, w, h);
+}
+
 void Battle::step_units_and_projectiles() {
     sync_settings();
     run_unit_pass(units, ticks, players, unit_env_, *this, camera_countdown_);
@@ -133,7 +163,7 @@ Unit* Battle::unit_by_id(std::uint16_t id) { return id < units.size() ? &units[i
 void Battle::claim_yard_cells(Unit& u) {
     // Yard opening (0x47DAC0) after the cells were found free and the yard flag changed.
     claim_wanted_cells(footprint_, u);
-    outside_.update_passability(u.cell_x, u.cell_z, u.footprint_x, u.footprint_z);
+    sim::update_passability(route_, u.cell_x, u.cell_z, u.footprint_x, u.footprint_z);
 }
 
 void Battle::weapons(Unit& unit, std::uint32_t& stale_word) { process_weapon_slots(weapons_, unit, stale_word); }

@@ -87,6 +87,24 @@ bool load_unit_assets(Vfs& vfs, const UnitDefRecord& d, UnitTypeAssets& out, std
     return true;
 }
 
+std::array<sim::MoveClass, sim::kMoveClasses> to_move_classes(const UnitDefContext& ctx) {
+    std::array<sim::MoveClass, sim::kMoveClasses> out{};
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const UnitDefContext::MoveInfo& m = ctx.movement_classes[i];
+        sim::MoveClass& c = out[i];
+        c.named = !ctx.movement_class_names[i].empty();
+        c.footprint_x = m.footprint_x;
+        c.footprint_z = m.footprint_z;
+        c.max_water_depth = m.max_water_depth;
+        c.min_water_depth = m.min_water_depth;
+        c.max_slope = m.max_slope;
+        c.bad_slope = m.bad_slope;
+        c.max_water_slope = m.max_water_slope;
+        c.bad_water_slope = m.bad_water_slope;
+    }
+    return out;
+}
+
 void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, const std::vector<sim::WeaponType>& weapons,
                          sim::BattleUnitType& out) {
     sim::UnitTypeInfo& info = out.info;
@@ -126,6 +144,16 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     m.waterline = d.waterline;
     m.model_height = static_cast<std::int16_t>(static_cast<std::uint32_t>(d.model_max_y) >> 16);
     m.has_move_class = d.movement_class >= 0;
+
+    sim::RouteType& route = out.route;
+    route.move_class = static_cast<std::int8_t>(d.movement_class);
+    route.footprint_x = d.footprint_x;
+    route.footprint_z = d.footprint_z;
+    route.movement = d.bm_code;
+    route.max_slope = d.max_slope;
+    route.max_water_slope = d.max_water_slope;
+    route.max_water_depth = d.max_water_depth;
+    route.min_water_depth = d.min_water_depth;
 
     out.mission.abilities = d.can_do_flags;
     out.mission.worker_time = static_cast<std::uint16_t>(d.worker_time);

@@ -388,6 +388,8 @@ struct World : sim::UnitWorld, sim::CombatSystems, sim::OrderSystems, sim::Missi
     void build_counts_changed(sim::Unit&) override {}
     void nano_beam(const std::array<i32, 3>&, const std::array<i32, 6>&) override {}
     void drop_goal_object(sim::Unit&, sim::MissionOrder& o) override { o.attached = 0; }
+    // Movement behaviours are not run by this harness (no motion goals).
+    void attach_circle_goal(sim::Unit&, sim::MissionOrder&, const std::array<i32, 3>&, i32) override {}
     // TargetingSystems
     bool unit_visible(int player, sim::Unit& u) override {
         rec(kVisibleId, 0, {0x20000000u | static_cast<u32>(player), tok(u)});

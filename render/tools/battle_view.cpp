@@ -295,6 +295,10 @@ int main(int argc, char** argv) {
                 b.map.cells[static_cast<std::size_t>(z * b.map.width + x)].height = hm.at(x, z);
         sim::refresh_height_range(b.map, 0, 0, static_cast<std::int16_t>(b.map.width), static_cast<std::int16_t>(b.map.height));
         b.init_buckets();
+        b.settings.player_count = 2;
+        b.settings.units_per_player = 50;
+        b.move_classes = ta::to_move_classes(ctx);
+        b.init_routes();
         auto battle_type = [&](const std::string& name) -> std::uint16_t {
             for (std::size_t k = 1; k < btypes.size(); ++k)
                 if (ta::stricmp_c(btypes[k]->def->unit_name, name) == 0) return static_cast<std::uint16_t>(k);
@@ -338,6 +342,13 @@ int main(int argc, char** argv) {
                 std::printf("could not create %s\n", s.name);
         }
         b.start_players();  // the players' weapon-target controllers and enemy lists
+        // Routing: the raider drives over to the far side of the other camp (route search + motion).
+        for (std::size_t i = 1; i < b.units.size(); ++i) {
+            if (b.ticks[i].type_index == 0 || !b.ticks[i].has_motion || b.ticks[i].type_index >= btypes.size()) continue;
+            if (ta::stricmp_c(btypes[b.ticks[i].type_index]->def->unit_name, "CORRAID") != 0) continue;
+            const std::int32_t to[3] = {1250 << 16, 0, 1640 << 16};
+            sim::enqueue_order(b.order_context(), b.units[i], sim::mission::kMoveGround, false, nullptr, to, 0, 0);
+        }
     }
 
     render::BattleScene scene;

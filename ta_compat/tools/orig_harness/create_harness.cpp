@@ -258,13 +258,6 @@ struct Outside : sim::QuietBattleOutside {
         log.push_back(0);
         for (u32 a : args) log.push_back(a);
     }
-    void update_passability(i16 x, i16 z, i16 w, i16 h) override {
-        rec(5, {static_cast<u32>(static_cast<u16>(x)) | static_cast<u32>(static_cast<u16>(z)) << 16,
-                static_cast<u32>(static_cast<u16>(w)) | static_cast<u32>(static_cast<u16>(h)) << 16});
-    }
-    void passability_after_release(sim::Unit& u) override {
-        rec(6, {tok(u)});  // (the original routine also restamps the motion object; it is a stub here too)
-    }
     void join_group(sim::Unit& u, i32 group) override { rec(4, {tok(u), static_cast<u32>(group)}); }
     void stamp_line_of_sight(sim::Unit& u) override { rec(2, {tok(u)}); }
     void victory_unit_created(sim::Unit& u) override { rec(3, {tok(u)}); }
@@ -614,6 +607,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             rec[1] = 0;
             // The engine builds a real motion object where the original's constructor is a stub here.
             if (rec[0] == 1) continue;
+            // Passability updates (5, 6) are engine work now, verified by route_harness.
+            if (rec[0] == 5 || rec[0] == 6) continue;
             for (std::size_t k = 2; k < rec.size(); ++k) rec[k] = token(rec[k]);
             if (rec[0] >= 10 && rec[0] <= 13) {  // script requests: the unit is in ECX, not compared
             }

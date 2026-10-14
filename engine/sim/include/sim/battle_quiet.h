@@ -10,10 +10,9 @@ namespace sim {
 
 class QuietBattleOutside : public BattleOutside {
 public:
-    // Moves are always allowed (the placement check is not built yet); flat buckets.
-    bool can_place(Unit&, std::int16_t, std::int16_t, std::uint32_t) override { return true; }
+    // Flat buckets; structures fit anywhere.
     std::uint8_t bucket_height(const Unit&) override { return 0; }
-    void route_search_forget(MotionGoal&) override {}
+    bool structure_fits(std::uint16_t, std::int16_t, std::int16_t) override { return true; }
     void update_sight(Unit&) override {}
     // No line of sight system: every unit is in sight and the whole map explored; no features.
     bool unit_visible(int, Unit&) override { return true; }
@@ -21,7 +20,6 @@ public:
     std::uint8_t feature_flags(std::uint16_t) override { return 0; }
     void ai_own_unit(int, Unit&) override {}
     void ai_rescore(int) override {}
-    void route_search_tick() override {}
     void ai_controller_step(int) override {}
     void player_stage_rest(int) override {}
     void players_stage_end() override {}
@@ -36,8 +34,6 @@ public:
     void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
     void drop_unit(Unit&, std::int32_t) override {}
     void detach_from_carrier(Unit&) override {}
-    void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override {}
-    void passability_after_release(Unit&) override {}
     void join_group(Unit&, std::int32_t) override {}
     void stamp_line_of_sight(Unit&) override {}
     void victory_unit_created(Unit&) override {}
