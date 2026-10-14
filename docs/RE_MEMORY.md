@@ -137,6 +137,12 @@ Written to `/TotalA.exe` (name + prototype + plate comment) once verified.
 | `0x00495230` | `SpeedCtrl_BudgetSimSteps` | `void (void)` | Frame step budget; full spec in the plate comment and `engine/sim/src/step_budget.cpp` | Verified: disasm + tests + capture (cap 5) |
 | `0x00495490` | `Game_RunSimulationStep` | `void (int networked)` | Step loop + stage order; Los deferred expiry runs once per frame **after** the loop (even with 0 steps) | Verified: runtime |
 | `0x004E5050` | `Crt_floor` | `double (double)` | CRT floor (x87 CW `0x173F`) | Verified (disasm) |
+| `0x004CB560` | `Model3d_Load` | — | Relocate the 3DO tree in place, then flip X/Z; see 3DO models | Verified: live model dump |
+| `0x004CB4C0` | `Model3d_RelocatePointers` | — | File offsets → pointers; sibling, then child, then sort | Verified: live model dump |
+| `0x004CB370` | `Model3d_SortPrimitivesByDepth` | — | Selection primitive to [0]; bubble sort by average Y | Verified: live model dump |
+| `0x004CB590` | `Model3d_NegateAxesXZ` | — | Negate X/Z of vertices and offsets | Verified: live model dump |
+| `0x004CB5F0` | `Model3d_GetHeight` | — | Max Y over the tree, ≥ 0 | Verified: unit table Y extents |
+| `0x0045AE80` | `Model3d_CountTreeNodes` | — | Piece count | Disasm |
 
 ## Globals
 | Address | Name | Type | Meaning |
@@ -230,7 +236,7 @@ Implementation: `ta_compat/src/unitdefs.cpp`. Checked with `ta_compat/tools/unit
   - `scaled_max_velocity` = (int64)(maxvel << 16) / ((maxslope + 1) << 16).
   - Weapons are found by linear name search over 256 slots; not found → slot 0. HASWEAPONS is set if any weapon1-3 ≠ 0.
   - YardMap is read only when bmcode = 0. Unknown characters are skipped, and the last character repeats when the string runs out. A **missing** YardMap reads stale stack data (modelled; no stock unit hits it).
-  - Model X/Z extents come from the footprint; Y comes from the 3DO height (not yet).
+  - Model X/Z extents come from the footprint; Y: min 0, max = 3DO height of `objects3d\<objectname>.3DO`, size = max (see 3DO models).
 - **Build menus:**
   - `HAS_GUI0` if `guis\<name>0.GUI` exists with nonzero size. Pages = 1 + count of consecutive `<name>1..N.GUI`; if none, 1 when HAS_GUI0, else 0.
 - **Build options** (sidedata.tdf `[CANBUILD]\[<unit>]` canbuild1..N, counter increments even when a name is unknown): written into **one shared, never-cleared 30-entry scratch list**, copied whole to each builder, so stale entries from earlier builders persist.
@@ -289,6 +295,18 @@ Implementation: `ta_compat/src/weapondefs.cpp`. Checked with `tools/weapondef_ch
 - **Sounds:** soundstart, soundhit and soundwater register their paths in the global sound bank (`SoundBank_EnsureNamed` `0x00429470`, appended after `allsound.tdf`). No key → −1.
 - **Damage:** `[DAMAGE]` `default` gives the default damage. The other keys are walked in the section's sorted key order and inserted into a stricmp-sorted vector of {name, damage}. The value is looked up by name, so the first case variant wins.
 
+### 3DO models (objects3d\*.3DO) — exact vs live game: 278 unit + 74 weapon model trees
+- **Layout:** the file is loaded whole and used in place; every stored offset is file-relative and becomes a pointer (`Model3d_RelocatePointers` `0x004CB4C0`).
+  - Piece header, 0x34 bytes: version, vertex count, primitive count, selection primitive (−1 = none), offset x/y/z, then file offsets of name, (unused), vertices, primitives, sibling, child.
+  - Vertex = 3 × int32 (16.16). Primitive, 0x20 bytes: colour index, index count, (unused), file offset of u16 indices, file offset of texture name, then 12 more bytes.
+- **Per-piece order:** relocate the sibling first, then the child, then sort this piece's primitives (`Model3d_SortPrimitivesByDepth` `0x004CB370`).
+  - If a selection primitive exists, swap it into slot 0 and set the selection index to 0.
+  - Bubble-sort primitives 1..n−1, ascending by average vertex Y. The average is the int32 sum divided by the index count, with C truncation. Only runs when n ≥ 3; a primitive with no indices would divide by zero.
+- **Axis flip** (`Model3d_NegateAxesXZ` `0x004CB590`): negate X and Z of every vertex and every piece offset, across the whole tree. Applied to all unit and weapon models.
+- **Height** (`Model3d_GetHeight` `0x004CB5F0`): over the piece and its siblings, take the max of (vertex Y + own Y offset) and (child-tree height + own Y offset). Starts at 0, so it is never negative. Wrapping int32 arithmetic.
+- **Piece count** (`Model3d_CountTreeNodes` `0x0045AE80`): 1 + child count + sibling count.
+- **Model table entry 0** ("None") is never written. The game leaves its pointer as uninitialised heap memory.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -312,6 +330,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | 3DO model loader + unit model height — **exact vs live game: 278 unit + 74 weapon model trees; unit table now 25,617 fields** | `0x004CB560`, `0x004CB4C0`, `0x004CB370`, `0x004CB590`, `0x004CB5F0`, `0x0045AE80` | `ta_compat/src/model3do.cpp`, `tools/model_check.cpp` |
 | 2026-10-13 | Weapon definition table — **exact vs live game: all 256 slots, 9,141 fields** | `0x0042E310`, `0x0042E440`, `0x0049E010`, `0x00429470`, `0x0042F7E0` | `ta_compat/src/weapondefs.cpp`, `tools/weapondef_check.cpp` |
 | 2026-10-13 | Unit definition table (all fields except 3DO height / COB) — **exact vs live game: 24,780 fields, 279 units, 56 category masks** | `0x0042A8D0`, `0x0042D2E0`, `0x0042BF40`, `0x0042DCF0`, `0x0042BE30`, `0x00440340`, `0x004402E0`, `0x00440420`, `0x0049E5B0`, `0x00488B10`, `0x00488C50`, `0x00488E70`, `0x00438760`, `0x004290F0`, `0x004BCA30`, `0x004BC4B0`, `0x004BC640`, `0x004BC370`, `0x004C58A0`, `0x004BB0F0`, `0x0042F580`, `0x0042E310` | `ta_compat/src/unitdefs.cpp`, `tools/unitdef_check.cpp`, capture `--dump-defs` |
 | 2026-10-13 | Bit-exact atof/atoi | `0x004E4560`, `0x004EAF00`, `0x004F3D10`, `0x004F8C40`, `0x004F9390`, `0x004F90D0`, `0x004F37C0`, `0x004F3610`, tables `0x005116F0`/`0x00511850` | `ta_compat/src/crt_strtod.cpp`, `tools/gen_pow10_table.py`, `ta_compat/tools/orig_harness` |

@@ -31,6 +31,7 @@ add_library(ta_compat STATIC
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp
+    ta_compat/src/model3do.cpp
     ta_compat/src/tdf.cpp
     ta_compat/src/unitdefs.cpp
     ta_compat/src/weapondefs.cpp
@@ -39,7 +40,7 @@ target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
@@ -68,5 +69,7 @@ if(TA_GAME_DIR)
     add_test(NAME unitdefs_match_game COMMAND unitdef_check "${TA_GAME_DIR}"
              "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin")
     add_test(NAME weapondefs_match_game COMMAND weapondef_check "${TA_GAME_DIR}"
+             "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin")
+    add_test(NAME models_match_game COMMAND model_check "${TA_GAME_DIR}"
              "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin")
 endif()

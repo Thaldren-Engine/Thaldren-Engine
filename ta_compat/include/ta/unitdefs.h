@@ -70,6 +70,7 @@ struct UnitDefRecord {
     std::uint32_t type_flags = 0;
     std::uint32_t can_do_flags = 0;
     std::string source_file;  // FBI file name found during enumeration
+    int model_pieces = 0;     // piece count of objects3d\<objectname>.3DO
 };
 
 // Named 512-bit unit masks keyed case-insensitively; keeps the first spelling.

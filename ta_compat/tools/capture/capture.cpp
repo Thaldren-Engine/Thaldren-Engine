@@ -54,6 +54,7 @@ constexpr DWORD kMoveInfoArray = 0x00512358;    // MoveInfo[32], 0x20 bytes each
 constexpr DWORD kCategoryTableBegin = 0x0051E6B4;
 constexpr DWORD kMissionTableBegin = 0x00512344;  // MissionOrderTableEntry*, 0x19 bytes each
 constexpr DWORD kTranslateLanguage = 0x0051FDC0;  // char[64]
+constexpr DWORD kOffUnitModels = 0x14377;        // Model3do** (one per unit def)
 constexpr DWORD kOffSoundBank = 0x33A0B;          // {int count; ptr slots[256]; char names[256][32]; char paths[256][32]}
 
 struct Options {
@@ -140,6 +141,40 @@ void put_u32(std::vector<std::uint8_t>& v, std::uint32_t x) {
 void put_str(std::vector<std::uint8_t>& v, const std::string& s) {
     v.insert(v.end(), s.begin(), s.end());
     v.push_back(0);
+}
+
+// Serializes a loaded 3DO piece tree: node, then its child subtree, then its sibling chain.
+void dump_model(std::vector<std::uint8_t>& out, DWORD node, int depth) {
+    while (node && depth < 64) {
+        std::uint8_t h[0x34] = {};
+        if (!read_block(node, h, sizeof h)) return;
+        std::uint32_t v[13];
+        std::memcpy(v, h, sizeof v);
+        put_u32(out, 1);  // node marker
+        put_str(out, read_cstr(v[7]));
+        for (int k : {0, 1, 2, 3, 4, 5, 6}) put_u32(out, v[k]);
+        const std::uint32_t nverts = v[1] < 100000 ? v[1] : 0, nprims = v[2] < 100000 ? v[2] : 0;
+        std::vector<std::uint8_t> verts(nverts * 12u);
+        if (!verts.empty()) read_block(v[9], verts.data(), verts.size());
+        out.insert(out.end(), verts.begin(), verts.end());
+        for (std::uint32_t p = 0; p < nprims; ++p) {
+            std::uint8_t ph[0x20] = {};
+            read_block(v[10] + p * 0x20u, ph, sizeof ph);
+            std::uint32_t color = 0, nidx = 0, pidx = 0;
+            std::memcpy(&color, ph, 4);
+            std::memcpy(&nidx, ph + 4, 4);
+            std::memcpy(&pidx, ph + 12, 4);
+            if (nidx > 1000) nidx = 0;
+            put_u32(out, color);
+            put_u32(out, nidx);
+            std::vector<std::uint8_t> idx(nidx * 2u);
+            if (!idx.empty()) read_block(pidx, idx.data(), idx.size());
+            out.insert(out.end(), idx.begin(), idx.end());
+        }
+        if (v[12]) dump_model(out, v[12], depth + 1);  // child
+        node = v[11];                                  // sibling
+    }
+    put_u32(out, 0);  // end of chain
 }
 
 bool dump_defs(const std::string& path) {
@@ -269,6 +304,30 @@ bool dump_defs(const std::string& path) {
     }
     write_chunk(f, "WDMG", wdmg);
     write_chunk(f, "WSEQ", wseq);
+
+    // Models: one tree per unit def (index order), then one per weapon slot.
+    {
+        std::vector<std::uint8_t> modl;
+        std::uint32_t models = 0;
+        read_u32(gs + kOffUnitModels, models);
+        put_u32(modl, ud_count);
+        for (std::uint32_t i = 0; i < ud_count; ++i) {
+            std::uint32_t m = 0;
+            // Entry 0 ("None") is never written by the game: its pointer is uninitialised heap memory.
+            if (models && i > 0) read_u32(models + i * 4, m);
+            put_u32(modl, m);
+            if (m) dump_model(modl, m, 0);
+        }
+        write_chunk(f, "MODL", modl);
+        std::vector<std::uint8_t> wmdl;
+        for (std::uint32_t i = 0; i < 256; ++i) {
+            std::uint32_t m = 0;
+            std::memcpy(&m, &wd[i * kWeaponDefSize + 116], 4);
+            put_u32(wmdl, m);
+            if (m) dump_model(wmdl, m, 0);
+        }
+        write_chunk(f, "WMDL", wmdl);
+    }
 
     std::vector<std::uint8_t> sbnk(8 + 256 * 4 + 256 * 32 * 2);  // +4 count, +8 slots, +0x408 names, +0x2408 paths
     read_block(gs + kOffSoundBank, sbnk.data(), sbnk.size());

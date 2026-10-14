@@ -235,6 +235,9 @@ int main(int argc, char** argv) {
         }
         chk_i("max_this_unit", i32(g + 346), o.max_this_unit);
         chk_i("model_min_x", i32(g + 350), o.model_min_x);
+        chk_i("model_min_y", i32(g + 354), o.model_min_y);
+        chk_i("model_max_y", i32(g + 366), o.model_max_y);
+        chk_i("model_size_y", i32(g + 378), o.model_size_y);
         chk_i("model_min_z", i32(g + 358), o.model_min_z);
         chk_i("model_max_x", i32(g + 362), o.model_max_x);
         chk_i("model_max_z", i32(g + 370), o.model_max_z);
@@ -344,6 +347,6 @@ int main(int argc, char** argv) {
     std::printf("\nfields checked: %zu, units with differences: %zu / %zu\n", checked_fields, bad_units, n);
     for (const auto& [field, count] : bad_fields) std::printf("  %-26s %zu units\n", field.c_str(), count);
     std::printf("category masks: %zu checked, %zu differ\n", cat_checked, cat_bad);
-    std::printf("(not compared yet: model Y extent from 3DO, COB script pointer)\n");
+    std::printf("(not compared: COB script pointer)\n");
     return (bad_units == 0 && cat_bad == 0 && ctx_bad == 0 && d.ud_count == table.units.size()) ? 0 : 1;
 }

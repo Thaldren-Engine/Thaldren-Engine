@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "sim/x87.h"
+#include "ta/model3do.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -537,6 +538,21 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx) {
         UnitDefRecord& u = kept[i];
         const std::string path = virtual_path("units", u.unit_name, "FBI");
         if (vfs.size_or_zero(path) != 0) load_properties(vfs, ctx, table.categories, path, u, yard_buffer);
+        {
+            // Model: objects3d\<objectname>.3DO; height becomes the Y extent.
+            const std::string model_path = virtual_path("objects3d", truncate(u.object_name, 0x20), "3DO");
+            std::vector<std::uint8_t> data;
+            if (vfs.read(model_path, data)) {
+                const auto m = load_3do(data, true);
+                if (!m.error.empty()) table.notes.push_back("model " + model_path + ": " + m.error);
+                u.model_min_y = 0;
+                u.model_max_y = m.root ? model_height(m.root.get()) : 0;
+                u.model_size_y = u.model_max_y - u.model_min_y;
+                u.model_pieces = m.root ? model_piece_count(m.root.get()) : 0;
+            } else {
+                table.notes.push_back("missing model (the game aborts): " + model_path);
+            }
+        }
         const std::string base = strip_extension(u.unit_name);
         const bool gui0 = vfs.size_or_zero(virtual_path("guis", base + "0", "GUI")) != 0;
         u.type_flags = gui0 ? (u.type_flags | unit_flags::kHasGui0) : (u.type_flags & ~unit_flags::kHasGui0);
