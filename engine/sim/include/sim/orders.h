@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include "sim/rng.h"
@@ -71,6 +72,7 @@ constexpr std::uint32_t kClearWeapons = 0x10000; // clear the three weapon targe
 }  // namespace order_wait
 
 struct MissionOrder;
+class OrderGoal;
 
 // A link from an order to a unit. Every unit keeps the list of links pointing
 // at it (`Unit::referrers`), newest first.
@@ -78,6 +80,7 @@ struct UnitLink {
     Unit* unit = nullptr;
     UnitLink* next = nullptr;  // next link pointing at the same unit
     MissionOrder* owner = nullptr;
+    OrderGoal* goal = nullptr;  // set instead of owner for links held by an order goal (sim/motion.h)
 };
 
 struct MissionOrder {
@@ -96,6 +99,7 @@ struct MissionOrder {
     MissionOrder* next = nullptr;
     std::uint32_t events = 0;           // events that arrived for the order
     std::uint32_t attached = 0;         // movement goal object owned by the order (opaque handle, 0 = none)
+    std::shared_ptr<OrderGoal> goal;    // that goal object, when sim/motion.h made it (attached = its address)
 };
 
 // Systems the order lists reach outside this module.

@@ -23,6 +23,7 @@ add_library(sim STATIC
     engine/sim/src/footprint.cpp
     engine/sim/src/ground_settle.cpp
     engine/sim/src/heightmap.cpp
+    engine/sim/src/motion.cpp
     engine/sim/src/orders.cpp
     engine/sim/src/pose.cpp
     engine/sim/src/projectile.cpp

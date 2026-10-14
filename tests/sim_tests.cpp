@@ -11,6 +11,7 @@
 
 #include "sim/battle.h"
 #include "sim/combat.h"
+#include "sim/motion.h"
 #include "sim/fixed.h"
 #include "sim/ground_settle.h"
 #include "sim/heightmap.h"
@@ -1069,6 +1070,102 @@ void test_unit_create() {
     CHECK_EQ(sim::yard_cells_free(b.footprint_world(), b.units[3], 0), true);
 }
 
+struct TestMotionSystems : sim::MotionSystems {
+    int forgets = 0, claims = 0;
+    bool place = true;
+    std::uint32_t next = 0x1000;
+    bool can_place(sim::Unit&, std::int16_t, std::int16_t, std::uint32_t) override { return place; }
+    void clear_footprint(sim::Unit&) override {}
+    void claim_footprint(sim::Unit&) override { ++claims; }
+    void update_sight(sim::Unit&) override {}
+    bool off_map(const sim::Unit&) override { return false; }
+    std::uint8_t bucket_height(const sim::Unit&) override { return 10; }
+    void route_search_forget(sim::MotionGoal&) override { ++forgets; }
+    void set_activated(sim::Unit&, bool) override {}
+    std::uint32_t allocate_object(std::uint32_t size) override {
+        const std::uint32_t a = next;
+        next += (size + 3) & ~3u;
+        return a;
+    }
+    void free_object(std::uint32_t) override {}
+};
+
+void test_motion() {
+    using sim::footprint_cell;
+    // Corner cell of a 2-cell footprint centred at x = 100.
+    CHECK_EQ(footprint_cell(100 << 16, 2), 5);
+    std::vector<sim::Unit> units(3);
+    std::vector<sim::UnitTickState> ticks(3);
+    std::vector<sim::PlayerSlot> players(1);
+    players[0].active = true;
+    players[0].controller = 1;
+    std::vector<sim::MotionType> types(2);
+    types[1].max_velocity = 0x20000;
+    types[1].brake_rate = 0x1000;
+    types[1].acceleration = 0x800;
+    types[1].turn_rate = 0x400;
+    sim::HeightMap hm(8, 8);
+    TestMotionSystems sys;
+    sim::MotionContext c{units, ticks, players, types, hm, sys, {}, {}};
+    for (int i = 1; i < 3; ++i) {
+        units[static_cast<std::size_t>(i)].id = static_cast<std::uint16_t>(i);
+        ticks[static_cast<std::size_t>(i)].type_index = 1;
+        units[static_cast<std::size_t>(i)].footprint_x = units[static_cast<std::size_t>(i)].footprint_z = 2;
+        units[static_cast<std::size_t>(i)].pos = {40 << 16, 20 << 16, 40 << 16};
+    }
+    sim::Unit& u = units[1];
+    sim::create_motion(c, u);
+    CHECK_EQ(ticks[1].has_motion, true);
+    auto* route = dynamic_cast<sim::RouteGoal*>(ticks[1].motion.goal.get());
+    CHECK_EQ(route != nullptr, true);
+    // Speed is capped by the max velocity, scaled down on slopes and halved under water.
+    sim::accelerate(c, u, 0x30000);
+    CHECK_EQ(ticks[1].motion.speed, 0x20000);
+    CHECK_EQ(ticks[1].velocity[2], -0x20000);  // heading 0 moves toward -z
+    u.bank = 0x3000;  // past the steepest slope entry: 15%
+    sim::accelerate(c, u, 0);
+    CHECK_EQ(ticks[1].motion.speed, 19660);
+    c.env.sea_level = 30;
+    sim::accelerate(c, u, 0);
+    CHECK_EQ(ticks[1].motion.speed, 9830);
+    // Stale stack word left by the motion step.
+    sim::UnitTickEnvironment env;
+    env.addresses.game_state = 0x100;
+    CHECK_EQ(sim::motion_stale_word(env), 0x100u + 0x14353u);
+    env.water_damage_enabled = true;
+    env.water_damage = 5;
+    CHECK_EQ(sim::motion_stale_word(env), 30u);
+    // Routes keep at most 20 waypoints; reaching the next one drops the previous one.
+    std::vector<std::uint32_t> pts;
+    for (int k = 0; k < 25; ++k) pts.push_back(static_cast<std::uint32_t>(40 + k) | (40u << 16));
+    route->set_route(c, pts.data(), 25);
+    CHECK_EQ(route->count, 20);
+    CHECK_EQ(route->has_route(), true);
+    u.pos[0] = 41 << 16;  // at waypoint 1
+    route->step(c);
+    CHECK_EQ(route->count, 19);
+    CHECK_EQ(route->points[0], pts[1]);
+    route->set_route(c, pts.data(), 0);
+    CHECK_EQ(route->has_route(), false);
+    // Order goals report to their order.
+    sim::MissionOrder order;
+    order.unit = &u;
+    u.cell_x = 10;
+    u.cell_z = 10;
+    auto circle = sim::make_circle_goal(c, order, (10 * 16 + 16) << 16, (10 * 16 + 16) << 16, 50);
+    CHECK_EQ(circle->radius_cells_sq, 9);
+    CHECK_EQ(circle->contains_cell(circle->cell_x + 3, circle->cell_z), true);
+    CHECK_EQ(circle->contains_cell(circle->cell_x + 3, circle->cell_z + 1), false);
+    CHECK_EQ(circle->distance(circle->cell_x + 10, circle->cell_z), 130);
+    sim::attach_order_goal(c, order, circle);
+    CHECK_EQ(order.goal.get() == circle.get(), true);
+    CHECK_EQ(route->attached == circle.get(), true);
+    sim::release_order_goal(c, u, order);
+    CHECK_EQ(order.attached, 0u);
+    CHECK_EQ(order.events & sim::goal_events::kReplaced, sim::goal_events::kReplaced);
+    CHECK_EQ(sys.forgets >= 2, true);
+}
+
 } // namespace
 
 int main() {
@@ -1092,6 +1189,7 @@ int main() {
     test_projectiles();
     test_battle();
     test_unit_create();
+    test_motion();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

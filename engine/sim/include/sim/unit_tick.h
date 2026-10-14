@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,21 @@ struct UnitTickTypeInfo {
     std::uint8_t default_mission = 0;       // mission kind given when the unit has no orders (0 = none)
 };
 
+class MotionGoal;
+
+// The motion object of a mobile unit besides its velocity (sim/motion.h).
+struct MotionState {
+    std::shared_ptr<MotionGoal> goal;
+    std::array<std::int32_t, 3> tilt{};   // decaying lean of aircraft (16.16)
+    std::int32_t speed = 0;               // 16.16 per step
+    std::int16_t turn = 0;                // heading change of this step
+    std::uint32_t claim_tick = 0;         // step the unit last claimed its footprint
+    std::uint32_t move_tick = 0;          // step the unit last moved
+    std::uint8_t flags = 1;               // bits 0-1 layer (1 ground, 2 air), bit 2 blocked
+    bool has_move_class = false;          // the type's movement class (route search)
+    std::uint32_t address = 0;            // the original's heap address (tests)
+};
+
 // State of a unit only the unit pass touches.
 struct UnitTickState {
     std::uint16_t type_index = 0;        // 0 = empty table slot
@@ -43,6 +59,7 @@ struct UnitTickState {
     float metal_make = 0.0f;                 // metal income of the unit's resource slot
     std::array<std::int32_t, 3> velocity{};  // of the motion object (16.16 per tick), when has_motion
     float energy_use = 0.0f, metal_use = 0.0f;  // spent by the unit's resource slot (weapon shots)
+    MotionState motion;                         // when has_motion
 };
 
 namespace unit_tick_flags {
