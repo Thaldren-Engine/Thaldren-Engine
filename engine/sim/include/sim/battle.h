@@ -4,7 +4,7 @@
 //
 // The systems built so far call each other directly here; everything else —
 // systems not built yet (motion, mission behaviours, transport, economy,
-// occupancy, features), presentation, network and user interface — goes to
+// features, line of sight), presentation, network and user interface — goes to
 // one BattleOutside interface.
 
 #include <cstdint>
@@ -13,12 +13,14 @@
 
 #include "sim/combat.h"
 #include "sim/fire.h"
+#include "sim/footprint.h"
 #include "sim/ground_settle.h"
 #include "sim/heightmap.h"
 #include "sim/orders.h"
 #include "sim/projectile.h"
 #include "sim/rng.h"
 #include "sim/unit.h"
+#include "sim/unit_create.h"
 #include "sim/unit_tick.h"
 #include "sim/weapons.h"
 
@@ -29,6 +31,7 @@ struct BattleUnitType {
     UnitTypeInfo info;
     UnitTickTypeInfo tick;
     GroundSettleType settle;
+    UnitCreateType create;
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -46,6 +49,7 @@ struct BattleSettings {
     std::uint16_t damage_options = 0;  // bit 7 double damage, bit 8 half damage
     bool no_sea_level_trigger = false;
     Vec3i wind_drift{};               // per-step drift of ballistic and dropped shots (from the wind stage)
+    std::int32_t script_tick_rate = 30;  // steps per second unit scripts are built with
     OriginalAddresses addresses;
 };
 
@@ -60,15 +64,24 @@ public:
     virtual std::uint32_t motion_start_tick(const Unit& unit) = 0;
     virtual void release_motion(Unit& unit) = 0;
     virtual void release_attached(Unit& unit, MissionOrder& order) = 0;
-    // Not built yet: mission behaviours, attack retargeting, transport, occupancy, economy, features.
+    // Unit creation and footprints (sim/unit_create.h, sim/footprint.h): the parts owned by
+    // other systems. Motion object of a new mobile unit (0x43DC00; the battle has already set
+    // has_motion), its footprint step when it claims cells, the movement classes' passability.
+    virtual void create_motion(Unit& unit) = 0;
+    virtual void motion_cells_claimed(Unit& unit) = 0;
+    virtual void update_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) = 0;
+    virtual void passability_after_release(Unit& unit) = 0;
+    // Group list membership (0x480250, group 0 for a new unit), line of sight (0x482AC0) and
+    // the victory conditions' unit-created notification (0x490580).
+    virtual void join_group(Unit& unit, std::int32_t group) = 0;
+    virtual void stamp_line_of_sight(Unit& unit) = 0;
+    virtual void victory_unit_created(Unit& unit) = 0;
+    // Not built yet: mission behaviours, attack retargeting, transport, economy, features.
     virtual std::int32_t run_mission(Unit& unit, MissionOrder& order, std::uint32_t& event) = 0;
     virtual void retarget(Unit* attacker, Unit& victim, std::uint16_t amount) = 0;
     virtual void attach_unit(Unit& unit, std::int32_t passenger, std::int32_t piece, std::int32_t mode) = 0;
     virtual void drop_unit(Unit& unit, std::int32_t passenger) = 0;
     virtual void detach_from_carrier(Unit& unit) = 0;
-    virtual bool yard_cells_free(Unit& unit, std::int32_t value) = 0;
-    virtual void claim_yard_cells(Unit& unit) = 0;
-    virtual void clear_footprint(Unit& unit) = 0;
     virtual void release_unit(Unit& unit) = 0;
     virtual bool pay_energy(Unit& worker, float amount) = 0;
     virtual void damage_feature(MapCell& cell, std::int32_t x, std::int32_t z, const WeaponType& weapon) = 0;
@@ -103,6 +116,7 @@ public:
 };
 
 class Battle final : UnitWorld,
+                     FootprintSystems,
                      UnitTickSystems,
                      CombatSystems,
                      WeaponSystems,
@@ -125,7 +139,23 @@ public:
     std::vector<FeatureTypeInfo> features;
     ProjectileTable projectiles;
     MapGrid map;
+    UnitBuckets buckets;  // sized by init_buckets() once the map is set
     BattleSettings settings;
+
+    // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
+    // inclusive range of them (the entries' owner is fixed by it).
+    void init_unit_table(std::size_t count);
+    void assign_unit_range(int player, int first, int last);
+    void init_buckets() { buckets.resize_for_map(map.width, map.height); }
+
+    // Creates a unit of type `type` for `player` at (x, y, z) (16.16) in the first free
+    // entry of the player's range, or exactly entry `wanted_id` when nonzero (the original's
+    // Unit_CreateFromDefId 0x485F50). `layer` gives the low two unit flags (1 = ground).
+    // Unfinished units start with no hit points and the whole build fraction left.
+    // Returns nullptr when the type cannot be made, the player's limit for it is reached or
+    // there is no free entry.
+    Unit* create_unit(int player, std::uint16_t type, std::int32_t x, std::int32_t y, std::int32_t z, bool fully_built,
+                      std::uint32_t layer, std::uint16_t wanted_id = 0);
 
     // Per-step inputs the original reads from its game state.
     UnitTickEnvironment& unit_env() { return unit_env_; }
@@ -142,15 +172,20 @@ public:
     Weapons& weapon_context() { return weapons_; }
     ProjectileWorld& projectile_world() { return projectile_world_; }
     OrderContext& order_context() { return orders_; }
+    FootprintWorld& footprint_world() { return footprint_; }
+    UnitWorld& unit_world() { return *this; }  // for unit_get_value / unit_set_value / unit_set_activate
 
 private:
     void sync_settings();
+    void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
+                          std::int32_t z, bool fully_built);
+    void build_script_and_pose(Unit& u, const UnitCreateType& type);
 
     // UnitWorld
     Unit* unit_by_id(std::uint16_t id) override;
     const HeightMap& heightmap() override { return heights_; }
-    bool yard_cells_free(Unit& u, std::int32_t v) override { return outside_.yard_cells_free(u, v); }
-    void claim_yard_cells(Unit& u) override { outside_.claim_yard_cells(u); }
+    bool yard_cells_free(Unit& u, std::int32_t v) override { return sim::yard_cells_free(footprint_, u, v); }
+    void claim_yard_cells(Unit& u) override;
     void on_activate_flags_changed(Unit& u, std::uint8_t g, std::uint8_t l) override { outside_.on_activate_flags_changed(u, g, l); }
     std::uint32_t random_mod(std::uint32_t n) override { return rng_.next_mod(n); }
     void emit_sfx(Unit& u, std::int32_t p, std::int32_t t) override { outside_.emit_sfx(u, p, t); }
@@ -183,7 +218,7 @@ private:
     void leave_group(Unit& u) override { outside_.leave_group(u); }
     void remove_projectiles(Unit& unit) override;
     void detach_from_carrier(Unit& u) override { outside_.detach_from_carrier(u); }
-    void clear_footprint(Unit& u) override { outside_.clear_footprint(u); }
+    void clear_footprint(Unit& u) override { sim::clear_footprint(footprint_, u); }
     void forget_fog(Unit& u) override { outside_.forget_fog(u); }
     void kill_counted(std::uint8_t slot, Unit& v) override { outside_.kill_counted(slot, v); }
     void detonate(Unit& unit, bool self_destruct) override;
@@ -218,6 +253,13 @@ private:
     MissionOrder* allocate_order() override;
     void free_order(MissionOrder* order) override;
 
+    // FootprintSystems
+    void update_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) override {
+        outside_.update_passability(x, z, w, h);
+    }
+    void passability_after_release(Unit& u) override { outside_.passability_after_release(u); }
+    void motion_cells_claimed(Unit& u) override { outside_.motion_cells_claimed(u); }
+
     // GroundSettleSystems
     std::int32_t motion_speed(Unit& u) override { return outside_.motion_speed(u); }
     std::uint32_t motion_start_tick(Unit& u) override { return outside_.motion_start_tick(u); }
@@ -234,6 +276,8 @@ private:
     Weapons weapons_;
     ProjectileWorld projectile_world_;
     OrderContext orders_;
+    FootprintWorld footprint_;
+    std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;
 };

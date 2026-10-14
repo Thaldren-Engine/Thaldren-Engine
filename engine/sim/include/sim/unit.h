@@ -24,6 +24,9 @@ struct UnitTypeInfo {
     std::int32_t model_min_x = 0, model_min_y = 0, model_min_z = 0, model_max_x = 0, model_max_z = 0;
     const WeaponType* explode_as = nullptr;       // explosion when the unit dies
     const WeaponType* self_destruct_as = nullptr; // explosion when it self-destructs
+    // Structures: one byte per footprint cell, row by row (sim/footprint.h): bit 0 marks the
+    // map cell (cell flag 2), bit 1 occupies the cell while the yard is open, bit 2 while closed.
+    std::vector<std::uint8_t> yard_map;
 };
 
 namespace unit_flags {
@@ -61,6 +64,19 @@ struct Unit {
     PoseState pose;
     std::unique_ptr<ScriptInstance> script;
     std::array<WeaponSlot, 3> weapons{};
+    // Set when the unit is created (sim/unit_create.h) and used by the footprint system
+    // (sim/footprint.h). Defaults are the original's zeroed table.
+    std::int16_t cell_x = 0, cell_z = 0;            // first map cell of the footprint
+    std::int16_t footprint_x = 0, footprint_z = 0;  // footprint size in cells
+    std::int32_t bucket = -1;                       // spatial bucket listing the unit (-1 none, -2 off the map)
+    // Spatial bucket lists link their units through cargo_next, as the original does
+    // (it shares the field with the cargo list; carried units are never in a bucket).
+    std::int16_t los_cell_x = 0, los_cell_z = 0;    // line-of-sight bookkeeping (cleared at creation)
+    std::uint8_t los_frame = 0;
+    std::uint8_t transport_piece = 0;               // 0xFF after creation
+    float metal_extraction = 0.0f;                  // metal extracted per step (from the cells under it)
+    std::uint32_t unbuilt_word = 0;                 // cleared when created unfinished (use not reverse engineered)
+    std::uint32_t draw_flags = 0;                   // bit 0: the type's z-buffer flag
 };
 
 // What unit values need from the rest of the world.

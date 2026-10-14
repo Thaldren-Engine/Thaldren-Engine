@@ -246,3 +246,40 @@ target_compile_options(projectile_harness PRIVATE /W4 /permissive- /fp:precise)
 add_executable(raster_harness raster_harness.cpp ${ROOT}/render/src/raster.cpp ${ROOT}/render/src/image.cpp)
 target_include_directories(raster_harness PRIVATE ${ROOT}/render/include ${ROOT}/engine/sim/include)
 target_compile_options(raster_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Unit creation and footprints through sim::Battle vs the original creation routine.
+add_executable(create_harness
+    create_harness.cpp
+    ${ROOT}/ta_compat/src/battle_types.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/tnt.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/fire.cpp
+    ${ROOT}/engine/sim/src/footprint.cpp
+    ${ROOT}/engine/sim/src/ground_settle.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/projectile.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/unit_create.cpp
+    ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(create_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(create_harness PRIVATE /W4 /permissive- /fp:precise)

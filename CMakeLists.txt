@@ -20,6 +20,7 @@ add_library(sim STATIC
     engine/sim/src/battle.cpp
     engine/sim/src/combat.cpp
     engine/sim/src/fire.cpp
+    engine/sim/src/footprint.cpp
     engine/sim/src/ground_settle.cpp
     engine/sim/src/heightmap.cpp
     engine/sim/src/orders.cpp
@@ -30,6 +31,7 @@ add_library(sim STATIC
     engine/sim/src/step_budget.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/unit.cpp
+    engine/sim/src/unit_create.cpp
     engine/sim/src/unit_tick.cpp
     engine/sim/src/weapons.cpp
     engine/sim/src/world.cpp
@@ -42,6 +44,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 # TA compatibility layer (importers for the original game's data). Kept apart
 # from the engine; the engine never depends on it.
 add_library(ta_compat STATIC
+    ta_compat/src/battle_types.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp

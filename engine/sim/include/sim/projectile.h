@@ -90,12 +90,13 @@ struct MapCell {
     std::uint16_t unit = 0;        // occupying unit id, 0 = none
     std::uint16_t unit2 = 0;       // second (overlapping) unit id
     std::uint8_t height = 0;
-    std::uint8_t height_max = 0, height_min = 0;
+    std::uint8_t height_max = 0, height_min = 0;  // over the cell and its +x, +z, +xz neighbours
+    std::uint8_t metal = 0;        // metal in the ground (extractors)
     std::uint16_t feature = 0xFFFF;  // feature type index; >= 0xFFFB none, 0xFFFE = part of a bigger feature
     // 0xFFFE cells: low byte = cells back in z, high byte = cells back in x to the
     // feature's own cell. Feature cells: the feature's animation slot or damage taken.
     std::uint16_t feature_aux = 0;
-    std::uint8_t flags = 0;        // bit 0: the feature has an animation slot
+    std::uint8_t flags = 0;        // bit 0: the feature has an animation slot; bit 1: marked by a structure's yard map
 };
 
 struct MapGrid {
