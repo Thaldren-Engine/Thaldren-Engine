@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "sim/x87_math.h"
 #include "sim/x87_trig.h"
 
 namespace {
@@ -76,6 +77,45 @@ bool same(const Hw80& h, const sim::x87::Ext80& e) {
     const bool neg = (h.sign_exp & 0x8000) != 0;
     const int exp = static_cast<int>(h.sign_exp & 0x7FFF) - 16383 - 63;
     return h.mantissa == e.mantissa && exp == e.exponent && neg == e.negative;
+}
+
+// Calls a cdecl routine `fn` with `nargs` dword arguments for each argument
+// tuple in `args`; collects EAX (int_result) or ST0 stored as a double.
+bool remote_batch(HANDLE proc, u32 fn, int nargs, bool int_result, const std::vector<u32>& args, std::vector<u32>& out) {
+    std::vector<std::uint8_t> c = {0x55, 0x8B, 0xEC, 0x53, 0x56, 0x57, 0x8B, 0x5D, 0x08, 0x8B, 0x33, 0x8B, 0x7B, 0x04, 0x8B, 0x5B, 0x08};
+    const std::size_t loop = c.size();
+    c.insert(c.end(), {0x85, 0xF6, 0x74, 0x00});  // test esi,esi; jz done (patched)
+    const std::size_t jz_at = c.size() - 1;
+    for (int k = nargs - 1; k >= 0; --k) c.insert(c.end(), {0xFF, 0x77, static_cast<std::uint8_t>(4 * k)});  // push [edi+4k]
+    c.push_back(0xB8);
+    for (int i = 0; i < 4; ++i) c.push_back(static_cast<std::uint8_t>(fn >> (8 * i)));
+    c.insert(c.end(), {0xFF, 0xD0, 0x83, 0xC4, static_cast<std::uint8_t>(4 * nargs)});  // call eax; add esp,4n
+    if (int_result) c.insert(c.end(), {0x89, 0x03, 0x83, 0xC3, 0x04});                // mov [ebx],eax; add ebx,4
+    else c.insert(c.end(), {0xDD, 0x1B, 0x83, 0xC3, 0x08});                           // fstp qword [ebx]; add ebx,8
+    c.insert(c.end(), {0x83, 0xC7, static_cast<std::uint8_t>(4 * nargs), 0x4E, 0xEB, 0x00});  // add edi; dec esi; jmp loop
+    c.back() = static_cast<std::uint8_t>(static_cast<int>(loop) - static_cast<int>(c.size()));
+    c[jz_at] = static_cast<std::uint8_t>(c.size() - (jz_at + 1));
+    c.insert(c.end(), {0x5F, 0x5E, 0x5B, 0x5D, 0x33, 0xC0, 0xC2, 0x04, 0x00});
+    const u32 n = static_cast<u32>(args.size() / static_cast<std::size_t>(nargs));
+    const std::size_t out_words = static_cast<std::size_t>(n) * (int_result ? 1 : 2);
+    const SIZE_T bytes = 16 + args.size() * 4 + out_words * 4;
+    auto* code = VirtualAllocEx(proc, nullptr, c.size(), MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    auto* data = static_cast<std::uint8_t*>(VirtualAllocEx(proc, nullptr, bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    if (!code || !data) return false;
+    const u32 base = static_cast<u32>(reinterpret_cast<std::uintptr_t>(data));
+    const u32 block[3] = {n, base + 16, base + 16 + static_cast<u32>(args.size() * 4)};
+    SIZE_T k = 0;
+    WriteProcessMemory(proc, code, c.data(), c.size(), &k);
+    WriteProcessMemory(proc, data, block, sizeof block, &k);
+    WriteProcessMemory(proc, data + 16, args.data(), args.size() * 4, &k);
+    HANDLE th = CreateRemoteThread(proc, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(code), data, 0, nullptr);
+    if (!th || WaitForSingleObject(th, 600000) != WAIT_OBJECT_0) return false;
+    CloseHandle(th);
+    out.resize(out_words);
+    ReadProcessMemory(proc, data + 16 + args.size() * 4, out.data(), out_words * 4, &k);
+    VirtualFreeEx(proc, code, 0, MEM_RELEASE);
+    VirtualFreeEx(proc, data, 0, MEM_RELEASE);
+    return true;
 }
 
 } // namespace
@@ -196,7 +236,6 @@ int main(int argc, char** argv) {
     }
     std::vector<std::int32_t> out(pts.size());
     ReadProcessMemory(pi.hProcess, data + 16 + n * 4ull, out.data(), n * 8ull, &k);
-    TerminateProcess(pi.hProcess, 0);
 
     std::size_t bad = 0;
     for (u32 i = 0; i < n; ++i) {
@@ -209,5 +248,99 @@ int main(int argc, char** argv) {
         }
     }
     std::printf("rotation: %u calls, %zu mismatches\n", n, bad);
-    return (bad || sign_or_exp_bad) ? 1 : 0;
+
+    // 3. Scaled atan2 (Math_Atan2Scaled 0x004B715A, cdecl (y, x) -> int).
+    auto rnd_int = [&]() -> std::int32_t {
+        const u32 r = g() % 10;
+        if (r < 1) return edge[g() % (sizeof edge / sizeof edge[0])];
+        if (r < 3) return static_cast<std::int32_t>(g() % 2001) - 1000;
+        if (r < 6) return static_cast<std::int32_t>(g() % 0x2000000) - 0x1000000;
+        return static_cast<std::int32_t>(g());
+    };
+    std::vector<u32> aargs;
+    std::size_t near_ties = 0;
+    double k_atan;
+    std::memcpy(&k_atan, &sim::x87::kAtanScaleBits, 8);
+    for (int i = 0; i < 4000000; ++i) {
+        const std::int32_t y = rnd_int(), x = rnd_int();
+        aargs.push_back(static_cast<u32>(y));
+        aargs.push_back(static_cast<u32>(x));
+    }
+    // Inputs whose scaled angle lies very close to a rounding tie (exercise the exact path).
+    for (int tries = 0; near_ties < 20000 && tries < 400000000; ++tries) {
+        const std::int32_t y = static_cast<std::int32_t>(g() % 200001) - 100000, x = static_cast<std::int32_t>(g() % 200001) - 100000;
+        const double v = std::atan2(static_cast<double>(y), static_cast<double>(x)) * k_atan;
+        if (std::fabs(v - std::floor(v) - 0.5) < 2e-7) {
+            aargs.push_back(static_cast<u32>(y));
+            aargs.push_back(static_cast<u32>(x));
+            ++near_ties;
+        }
+    }
+    std::vector<u32> aout;
+    if (!remote_batch(pi.hProcess, 0x004B715A, 2, true, aargs, aout)) {
+        std::fprintf(stderr, "remote atan2 batch failed\n");
+        TerminateProcess(pi.hProcess, 1);
+        return 1;
+    }
+    std::size_t abad = 0;
+    for (std::size_t i = 0; i < aout.size(); ++i) {
+        const std::int32_t y = static_cast<std::int32_t>(aargs[2 * i]), x = static_cast<std::int32_t>(aargs[2 * i + 1]);
+        const std::int32_t ours = sim::x87::atan2_scaled(y, x);
+        if (ours != static_cast<std::int32_t>(aout[i]) && ++abad <= 20)
+            std::printf("atan2_scaled(%d, %d): orig %d ours %d\n", y, x, static_cast<std::int32_t>(aout[i]), ours);
+    }
+    std::printf("atan2_scaled: %zu calls (%zu near rounding ties), %zu mismatches\n", aout.size(), near_ties, abad);
+
+    // 4. C runtime hypot (Math_Hypot 0x004FB440, cdecl (double x, double y) -> ST0).
+    std::vector<u32> hargs;
+    auto push_d = [&](double d) {
+        u32 w[2];
+        std::memcpy(w, &d, 8);
+        hargs.push_back(w[0]);
+        hargs.push_back(w[1]);
+    };
+    std::uniform_real_distribution<double> ur(-1.0, 1.0);
+    for (int i = 0; i < 1000000; ++i) {
+        double x, y;
+        const u32 kind = g() % 5;
+        if (kind == 0) {  // Pythagorean-style integer pairs
+            const std::int32_t a = static_cast<std::int32_t>(g() % 5000), b = static_cast<std::int32_t>(g() % 5000);
+            const std::int32_t s = static_cast<std::int32_t>(g() % 80);
+            x = static_cast<double>((a * a - b * b)) * s;
+            y = static_cast<double>(2 * a * b) * s;
+        } else if (kind == 1) {
+            x = static_cast<double>(rnd_int());
+            y = static_cast<double>(rnd_int());
+        } else if (kind == 2) {
+            x = std::ldexp(ur(g), static_cast<int>(g() % 60) - 20);
+            y = std::ldexp(ur(g), static_cast<int>(g() % 60) - 20);
+        } else if (kind == 3) {
+            x = static_cast<double>(static_cast<float>(ur(g) * 1e6));
+            y = static_cast<double>(static_cast<float>(ur(g) * 1e6));
+        } else {
+            x = static_cast<double>(rnd_int());
+            y = 0.0;
+        }
+        push_d(x);
+        push_d(y);
+    }
+    std::vector<u32> hout;
+    if (!remote_batch(pi.hProcess, 0x004FB440, 4, false, hargs, hout)) {
+        std::fprintf(stderr, "remote hypot batch failed\n");
+        TerminateProcess(pi.hProcess, 1);
+        return 1;
+    }
+    std::size_t hbad = 0;
+    for (std::size_t i = 0; i < hout.size() / 2; ++i) {
+        double x, y, orig;
+        std::memcpy(&x, &hargs[4 * i], 8);
+        std::memcpy(&y, &hargs[4 * i + 2], 8);
+        std::memcpy(&orig, &hout[2 * i], 8);
+        const double ours = sim::x87::crt_hypot(x, y);
+        if (std::memcmp(&ours, &orig, 8) != 0 && ++hbad <= 20)
+            std::printf("hypot(%.17g, %.17g): orig %.17g ours %.17g\n", x, y, orig, ours);
+    }
+    std::printf("crt_hypot: %zu calls, %zu mismatches\n", hout.size() / 2, hbad);
+    TerminateProcess(pi.hProcess, 0);
+    return (bad || sign_or_exp_bad || abad || hbad) ? 1 : 0;
 }

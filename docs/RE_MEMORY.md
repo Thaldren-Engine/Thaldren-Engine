@@ -93,6 +93,20 @@ Sources: `/Thaldren_TotalA.exe`, checked 2026-10-13. Not yet written to `/TotalA
    - Our `sim::x87::rotate_point_2d` equals the original routine on 524,288 calls (every angle, 8 points each).
    - Other CPUs (e.g. AMD) may compute different last bits, as the original game itself would.
    - `Math_RotatePointByAngles` (`0x004B6CC0`): (x,y) rotated by angles[0], then (y,z) by angles[2], then (x,z) by angles[1].
+6. **Scaled atan2: `Math_Atan2Scaled` `0x004B715A`** (cdecl `(int y, int x) → int`), with 22 callers in weapons, movement, AI and scripts.
+   - `FPATAN(y, x)` at 64-bit precision, then × `0x40C45F306DC9C78A` (≈65536/2π, slightly off), rounded to 53 bits (PC53), then `FISTP` nearest-even.
+   - Engine: `sim::x87::atan2_scaled`. A double fast path is used unless the scaled value is within 1e-7 of a .5 tie. Otherwise it computes FPATAN exactly (Newton iterations in 320-bit fixed point, rounded to 64 bits) and does the exact 53-bit product.
+   - Verified against the original on 4,000,150 calls, including 150 near-tie inputs: identical.
+7. **C runtime `_hypot`: `Math_Hypot` `0x004FB440`** (cdecl `(double, double) → ST0`), with 33 callers.
+   - It runs at **precision control 64** (`_controlfp(0x133F)`; its sqrt helper switches to 0x37F), so every step is double-rounded through a double store:
+     - m = max(|x|,|y|), with m = 0 giving 0.
+     - x' = rnd53(rnd64(x/m)), y' likewise.
+     - s = rnd53(rnd64(rnd64(x'²) + rnd64(y'²))).
+     - q = rnd53(rnd64(√s)).
+     - The result is rnd53(rnd64(mant(m)·mant(q)))·2^(e_m+e_q), which equals rnd53(rnd64(m·q)).
+   - Engine: `sim::x87::crt_hypot`, built on exact soft-float `div64/mul64/add64/sqrt64/to_double`.
+   - Verified on 1,000,000 calls (Pythagorean integer pairs, random ints, wide-exponent doubles, float-derived values, one-zero cases): identical.
+   - Callers usually `__ftol` (truncate) the result, so perfect squares that come out 1 ulp low would truncate down. The emulation reproduces that exactly.
 
 **Trig table** (static checks done 2026-10-13; awaiting engine test before writing to `/TotalA.exe`)
 - `0x00509F00`: static `.data`, never written. **640** `int16` entries (the reference program typed it as 512; that is wrong). Entries 0–511 cover one full circle and 512–639 repeat the first quarter, so cosine can read `index + 128` without wrapping.

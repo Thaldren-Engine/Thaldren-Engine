@@ -37,7 +37,7 @@ target_include_directories(cob_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}
 target_compile_options(cob_harness PRIVATE /W4 /permissive- /fp:precise)
 
 # x87 FSINCOS / rotation emulation check (inline x87 + the original rotation routine).
-add_executable(x87_check x87_check.cpp ${ROOT}/engine/sim/src/x87_trig.cpp)
+add_executable(x87_check x87_check.cpp ${ROOT}/engine/sim/src/x87_trig.cpp ${ROOT}/engine/sim/src/x87_math.cpp)
 target_include_directories(x87_check PRIVATE ${ROOT}/engine/sim/include)
 target_compile_options(x87_check PRIVATE /W4 /permissive- /fp:precise)
 

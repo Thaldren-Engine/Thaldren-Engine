@@ -23,6 +23,7 @@ add_library(sim STATIC
     engine/sim/src/step_budget.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/world.cpp
+    engine/sim/src/x87_math.cpp
     engine/sim/src/x87_trig.cpp
 )
 target_include_directories(sim PUBLIC engine/sim/include)
