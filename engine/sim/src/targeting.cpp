@@ -547,6 +547,7 @@ void refresh_unit_table(Targeting& t, int table) {
     if (!tb.exists || tb.refresh_tick + 30u > t.env.game_tick) return;
     tb.seen.clear();
     tb.radar.clear();
+    tb.air_bases.clear();
     tb.targeting_upgrade = false;
     t.systems.ai_table_begin(table);
     const PlayerSlot& me = t.players[static_cast<std::size_t>(tb.player)];
@@ -558,6 +559,8 @@ void refresh_unit_table(Targeting& t, int table) {
             if (u.flags & 0x100u) tb.radar.push_back(&u);
         } else if (owner_of(t, u).state == me.state && is_zero(u.build_fraction_left)) {
             t.systems.ai_own_unit(table, u);
+            const u32 tf = type_flags(t, u);
+            if ((tf & 0x40u) && (tf & targeting_type_flags::kAirBase) && (u.activate_flags & unit_flags::kActivated)) tb.air_bases.push_back(&u);
             if ((type_flags(t, u) & targeting_type_flags::kTargetingUpgrade) && (u.activate_flags & unit_flags::kActivated))
                 tb.targeting_upgrade = true;
         }

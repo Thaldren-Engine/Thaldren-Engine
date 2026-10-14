@@ -123,6 +123,9 @@ struct FeatureTypeInfo {
     std::array<std::uint32_t, 8> sequences{};
     std::uint32_t model = 0;          // 3D features: their model (identity for the object state)
     float metal = 0.0f, energy = 0.0f;  // what reclaiming it yields
+    // Resurrection (sim/unit_missions.h): the unit type its name names up to the first '_'
+    // (the original's case-insensitive search of the unit definitions), 0 = none.
+    std::uint16_t resurrect_type = 0;
 };
 
 struct ProjectileEnvironment {

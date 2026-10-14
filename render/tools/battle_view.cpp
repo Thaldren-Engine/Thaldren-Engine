@@ -401,6 +401,8 @@ int main(int argc, char** argv) {
             {"CORSTORM", 1, 1460, 1940},
             // Construction: a kbot lab and a construction kbot of player 0.
             {"ARMLAB", 0, 1180, 1560}, {"ARMCK", 0, 1300, 1600},
+            // Aircraft: a scout, a bomber and an air transport of player 0.
+            {"ARMPEEP", 0, 1280, 1880}, {"ARMTHUND", 0, 1230, 1660}, {"ARMATLAS", 0, 1520, 1820},
         };
         // Computer players: every definition becomes the battle type of the same index, and the
         // battle starts with the two commanders at the map's first two start positions.
@@ -469,6 +471,11 @@ int main(int argc, char** argv) {
             if (!b.create_unit(s.player, type, s.x << 16, gy << 16, s.z << 16, true, 1))
                 std::printf("could not create %s\n", s.name);
         }
+        {  // resurrection: the unit type each wreck brings back
+            std::vector<std::string> type_names(btypes.size());
+            for (std::size_t k = 1; k < btypes.size(); ++k) type_names[k] = btypes[k]->def->unit_name;
+            ta::bind_resurrect_types(b.features, fdefs, type_names);
+        }
         b.start_players();  // the players' weapon-target controllers and enemy lists (and the computer players)
         if (ai_players) {
             // The map's AI profile (its schema's aiprofile, else ai\default.txt), then the metal spots.
@@ -495,6 +502,28 @@ int main(int argc, char** argv) {
             const std::string& name = btypes[b.ticks[i].type_index]->def->unit_name;
             if (ta::stricmp_c(name, "ARMLAB") == 0) b.order_build_count(b.units[i], battle_type("ARMPW"), 2);
             if (ta::stricmp_c(name, "ARMCK") == 0) b.order_mobile_build(b.units[i], battle_type("ARMSOLAR"), {1360 << 16, 0, 1540 << 16}, false);
+        }
+        // Aircraft: the scout flies across, the bomber makes a run on the storm kbot, the
+        // transport picks up the hammer kbot and sets it down by the scout's path.
+        auto unit_named = [&](const char* name) -> sim::Unit* {
+            for (std::size_t i = 1; i < b.units.size(); ++i)
+                if (b.ticks[i].type_index != 0 && b.ticks[i].type_index < btypes.size() &&
+                    ta::stricmp_c(btypes[b.ticks[i].type_index]->def->unit_name, name) == 0)
+                    return &b.units[i];
+            return nullptr;
+        };
+        if (sim::Unit* peep = unit_named("ARMPEEP")) {
+            const std::int32_t to[3] = {1780 << 16, 0, 2040 << 16};
+            sim::enqueue_order(b.order_context(), *peep, sim::mission::kAirMove, false, nullptr, to, 0, 0);
+        }
+        sim::Unit* storm = unit_named("CORSTORM");
+        if (sim::Unit* thund = unit_named("ARMTHUND"); thund && storm)
+            sim::enqueue_order(b.order_context(), *thund, sim::mission::kAirStrike, false, storm, nullptr, 0, 0);
+        sim::Unit* ham = unit_named("ARMHAM");
+        if (sim::Unit* atlas = unit_named("ARMATLAS"); atlas && ham) {
+            sim::enqueue_order(b.order_context(), *atlas, sim::mission::kAirPickup, false, ham, nullptr, 0, 0);
+            const std::int32_t drop[3] = {1460 << 16, 0, 1880 << 16};
+            sim::enqueue_order(b.order_context(), *atlas, sim::mission::kAirUnload, true, nullptr, drop, 0, 0);
         }
     }
 
@@ -870,6 +899,14 @@ int main(int argc, char** argv) {
                     std::printf("  under construction: unit %zu (%s) %.3f left, hp %d%s\n", i, btypes[battle->ticks[i].type_index]->def->unit_name.c_str(),
                                 static_cast<double>(battle->units[i].build_fraction_left), battle->units[i].hit_points,
                                 battle->units[i].carrier ? " on a pad" : "");
+            for (std::size_t i = 1; i < battle->units.size(); ++i) {  // aircraft and transports
+                const sim::Unit& u = battle->units[i];
+                const sim::UnitTickState& t = battle->ticks[i];
+                if (t.type_index == 0 || !t.tick_type || !(t.tick_type->type_flags & 0x800u)) continue;
+                std::printf("  aircraft unit %zu (%s) at %d,%d,%d order kind %d step %d%s\n", i, btypes[t.type_index]->def->unit_name.c_str(),
+                            u.pos[0] >> 16, u.pos[1] >> 16, u.pos[2] >> 16, u.orders ? u.orders->kind : -1, u.orders ? u.orders->step : -1,
+                            u.cargo_head ? " carrying a unit" : "");
+            }
             std::printf("  nano streams %zu, particles %d, rand() state %08x%s%s\n", battle->nano.streams.size(), nano, battle->crt_rand.state(),
                         battle->missions().fault.empty() ? "" : " MISSION FAULT: ", battle->missions().fault.c_str());
             int alive = 0, wrecks = 0, burning = 0;

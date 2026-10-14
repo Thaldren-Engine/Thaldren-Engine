@@ -23,8 +23,13 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       economy_{units, ticks, players, player_economy, economy_types_, economy_env_, economy_hooks_},
       sight_world_{sight, sight_tables, explored, units, ticks, players, alliances, sight_types_, buckets, &targeting_state_, sight_env_, 0, 0},
       construction_{map, features, construction_types_, heights_, construction_hooks_, construction_env_},
-      ai_{units, ticks, players, player_economy, alliances, ai_types_, targeting_state_, map, features, rng_, ai_env_, ai_hooks_, ai_state, {}} {
+      ai_{units, ticks, players, player_economy, alliances, ai_types_, targeting_state_, map, features, rng_, ai_env_, ai_hooks_, ai_state, {}},
+      unit_missions_{targeting_types_, motion_types_, unit_mission_types_, map, features, heights_, explored, unit_mission_hooks_,
+                     unit_mission_env_} {
     missions_.construction = &construction_;
+    missions_.unit_missions = &unit_missions_;
+    unit_missions_.economy = &player_economy;
+    unit_missions_.tick_types = &tick_types_;
     alliances.resize(kPlayerRecords);
     player_economy.resize(kPlayerRecords);
     feature_state.reset();
@@ -122,6 +127,17 @@ void Battle::sync_settings() {
     construction_env_.ai_difficulty = s.ai_difficulty;
     construction_env_.sea_level = s.sea_level;
     construction_env_.build_menu_focus = s.build_menu_focus;
+    unit_mission_types_.resize(types.size());
+    tick_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) {
+        unit_mission_types_[k] = types[k].unit_missions;
+        tick_types_[k] = types[k].tick;
+    }
+    unit_mission_env_.map_width = map.width * 16 - 32;
+    unit_mission_env_.map_height = map.height * 16 - 128;
+    unit_mission_env_.sea_level = s.sea_level;
+    unit_mission_env_.gravity = s.gravity;
+    unit_mission_env_.air_repair_patrol_site_address = s.air_repair_patrol_site_address;
     route_.env.game_tick = unit_env_.game_tick;
     route_.env.sea_level = s.sea_level;
     route_.env.player_count = s.player_count;
@@ -505,5 +521,66 @@ MissionOrder* Battle::allocate_order() {
 }
 
 void Battle::free_order(MissionOrder* order) { delete order; }
+
+void Battle::attach_unit(Unit& u, std::int32_t passenger, std::int32_t piece, std::int32_t mode) {
+    sync_settings();
+    script_attach_unit(missions_, u, passenger, piece, mode);
+}
+
+void Battle::drop_unit(Unit& u, std::int32_t passenger) {
+    sync_settings();
+    script_drop_unit(missions_, u, passenger);
+}
+
+std::shared_ptr<OrderGoal> Battle::UnitMissionHooks::make_goal(Unit& u, MissionOrder& o, const GoalRequest& g) {
+    std::shared_ptr<OrderGoal> goal;
+    switch (g.kind) {
+    case GoalRequest::Kind::Point: goal = make_point_goal(b.motion_, o, g.pos); break;
+    case GoalRequest::Kind::Follow: goal = make_follow_goal(b.motion_, o, g.target); break;
+    case GoalRequest::Kind::Dock: goal = make_dock_goal(b.motion_, o, g.target, g.piece); break;
+    case GoalRequest::Kind::Face: goal = make_face_goal(b.motion_, o, g.target, g.pos); break;
+    case GoalRequest::Kind::Manoeuvre: goal = make_manoeuvre_goal(b.motion_, o, g.pos, g.vel); break;
+    }
+    for (int k = 0; k < g.set_count; ++k) adjust_goal(u, *goal, g.sets[static_cast<std::size_t>(k)].first, g.sets[static_cast<std::size_t>(k)].second);
+    return goal;
+}
+
+void Battle::UnitMissionHooks::adjust_goal(Unit&, OrderGoal& goal, GoalRequest::Set what, std::int32_t value) {
+    if (auto* p = dynamic_cast<PointGoal*>(&goal)) {
+        switch (what) {
+        case GoalRequest::Set::Altitude: p->set_altitude(b.motion_, value); break;
+        case GoalRequest::Set::Radius: p->set_radius(static_cast<std::int16_t>(value)); break;
+        case GoalRequest::Set::Heading: p->set_heading(static_cast<std::int16_t>(value)); break;
+        default: break;
+        }
+    } else if (auto* mg = dynamic_cast<ManoeuvreGoal*>(&goal)) {
+        if (what == GoalRequest::Set::TargetHeading) mg->set_target_heading(static_cast<std::uint16_t>(value));
+    }
+}
+
+void Battle::UnitMissionHooks::air_bases_in_radius(int state, const std::array<std::int32_t, 3>& pos, std::int32_t r,
+                                                   std::vector<Unit*>& out) {
+    const bool ok = state >= 0 && static_cast<std::size_t>(state) < b.targeting_state_.tables.size() &&
+                    sim::air_bases_in_radius(b.targeting_state_.tables[static_cast<std::size_t>(state)], b.ticks, pos, r, out);
+    if (!ok && b.missions_.fault.empty()) b.missions_.fault = "air base search on a player without a unit table";
+}
+
+void Battle::UnitMissionHooks::broadcast_script_call(Unit& u, const char* name, std::int32_t argc, std::int32_t a, std::int32_t c1,
+                                                     std::int32_t c2, std::int32_t c3) {
+    const int fn = u.script ? u.script->program().find_function(name) : -1;
+    b.outside_.broadcast_script_call_named(u, static_cast<std::int16_t>(fn), argc, a, c1, c2, c3);
+}
+
+void Battle::UnitMissionHooks::wreck_attitude(const MapCell& origin, Unit& u) {
+    const std::size_t slot = origin.feature_aux;
+    if (slot >= b.feature_state.slots.size()) {
+        if (b.missions_.fault.empty()) b.missions_.fault = "wreck attitude from a feature slot past the table";
+        return;
+    }
+    const FeatureSlot& f = b.feature_state.slots[slot];
+    u.pitch = f.get<std::int16_t>(FeatureSlot::kAngles);
+    u.heading = f.get<std::uint16_t>(FeatureSlot::kAngles + 2);
+    u.bank = f.get<std::int16_t>(FeatureSlot::kAngles + 4);
+}
 
 } // namespace sim

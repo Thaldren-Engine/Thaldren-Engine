@@ -47,7 +47,7 @@ constexpr std::uint32_t kBuilder = 0x40, kCanFly = 0x800, kHover = 0x1000, kFloa
 enum class MissionCaller : std::uint8_t { Primary, Secondary };
 
 // What a player's command means; resolved into a mission kind per unit.
-enum class OrderIntent : std::uint8_t { Move = 2, Attack = 3, Patrol = 9 };
+enum class OrderIntent : std::uint8_t { Move = 2, Attack = 3, Guard = 7, Repair = 8, Patrol = 9 };
 
 // Fixed texts some speech calls carry.
 enum class SpeechText : std::uint8_t {
@@ -56,6 +56,10 @@ enum class SpeechText : std::uint8_t {
     ConstructionStopped, UnableToCreate, StartingConstruction, ConstructionTerminated, CantReachSite, WaitingForArea,
     AreaBlocked, BuildingComplete, CantGetThere, Repairing, ReclamationFailed, CannotBeReclaimed, Reclaiming,
     CaptureFailed, CannotBeCaptured, CloudOfVapor, Capturing,
+    // Aircraft, transports and the other movement orders (sim/unit_missions.h).
+    Guarding, Attacking, Patrolling, TransportFailed, TooHeavy, Loading, PreparingTransport, Unloading,
+    UnableToUnload, LandingAborted, Landing, LandingFailed, PadsOccupied, NoPads, TooLarge, LoadingUnit, UnloadingSlow,
+    Building, HostileTermination, RepairFailed, ResurrectionFailed, RessurectionFailed, ResurrectionComplete,
 };
 
 // Systems the behaviours reach outside the simulation core.
@@ -99,6 +103,7 @@ public:
 };
 
 struct Construction;
+struct UnitMissions;
 
 struct MissionEnvironment {
     std::uint8_t sea_level = 0;
@@ -120,6 +125,8 @@ struct Missions {
     MissionCaller caller = MissionCaller::Primary;
     // Construction behaviours (sim/construction.h); null where they are not wired.
     Construction* construction = nullptr;
+    // Movement-driven behaviours: aircraft, transports, chases (sim/unit_missions.h); null where not wired.
+    UnitMissions* unit_missions = nullptr;
     // Set when the original would crash (or read memory the model cannot know);
     // the result of that step is then meaningless.
     std::string fault;

@@ -38,6 +38,7 @@
 #include "sim/rng.h"
 #include "sim/script_vm.h"
 #include "sim/unit.h"
+#include "sim/unit_missions.h"
 #include "sim/unit_tick.h"
 #include "sim/weapons.h"
 #include "ta/cob.h"
@@ -81,9 +82,10 @@ struct Stub {
     int extra = 0;
     StubRet ret = StubRet::Zero;
     int queue = 0;  // StubRet::Queue: which answer queue
+    int deref = 1;  // the extra words are read through this argument (0-based)
 };
 // Answer queues of the mission behaviour stubs (index into Layout::queue).
-enum : int { qFireAtWill, qIssueAttack, qResolve, qResources, qEnemies, qCreate, qPlace, kQueues };
+enum : int { qFireAtWill, qIssueAttack, qResolve, qResources, qEnemies, qCreate, qPlace, qAirBases, qRadius, kQueues };
 constexpr u32 kQueueSize = 0x2000;
 const Stub kStubs[] = {
     {0x0049E1A0, 1, 1},   // weapons(unit)
@@ -91,8 +93,6 @@ const Stub kStubs[] = {
     {0x0048B710, 1, 9},   // broadcast player units(player)
     {0x00480EB0, 2, 10},  // script emit sfx(piece, type) [thiscall]
     {0x00481140, 2, 11},  // script explode(piece, type)
-    {0x00481340, 3, 12},  // script attach(unit, piece, mode)
-    {0x004813B0, 1, 13},  // script drop(unit)
     {0x0047F780, 3, 14},  // speech(unit, event, 0)
     {0x0041C110, 1, 15},  // HUD dirty(unit)
     {0x00451DF0, 3, 16, 3},  // network send(net id, packet, size) + the first 12 packet bytes
@@ -131,14 +131,25 @@ const Stub kStubs[] = {
     {0x00485F50, 8, 100, 0, StubRet::Queue, qCreate},      // create unit(player, type, x, y, z, built, layer, wanted)
     {0x0047DB70, 4, 101, 0, StubRet::Queue, qPlace},       // can place(def, exclude, cell, mode)
     {0x00438AD0, 2, 102},                                  // attach edge goal(cell, size) [thiscall on the order]
-    {0x00438A00, 3, 103},                                  // attach ring goal(&pos, outer, inner) [thiscall on the order]
+    {0x00438A00, 3, 103, 3, StubRet::Zero, 0, 0},           // attach ring goal(&pos, outer, inner) [thiscall on the order] + pos
     {0x00456290, 7, 105},                                  // broadcast script call(unit, fn, argc, a, b, c, d)
     {0x004AB060, 2, 106},                                  // load a menu layout(gui, name) -> 0
     {0x004199B0, 2, 107},                                  // build menu counts(gui, unit)
     {0x00423550, 3, 108},                                  // destroy feature(x, z, reclaimed)
     {0x00435100, 0, 109, 0, StubRet::Silent},              // network provider type [thiscall] -> 0
     {0x00490520, 1, 110},                                  // victory: unit changes hands(unit) [thiscall]
-    {0x00438930, 2, 88},                                   // attach circle goal(&order pos, radius) [thiscall on the order]
+    {0x00438930, 2, 88, 3, StubRet::Zero, 0, 0},           // attach circle goal(&pos, radius) [thiscall on the order] + pos
+    // Aircraft, transports and the other movement orders (sim/unit_missions.h).
+    {0x0044E6C0, 1, 120},                                  // point goal: altitude(v) [thiscall on the goal]
+    {0x0044E720, 1, 121},                                  // point goal: heading(v)
+    {0x0044E730, 1, 122},                                  // point goal: radius(v)
+    {0x0044EC10, 1, 123},                                  // manoeuvre goal: altitude(v) (does nothing)
+    {0x0044EC20, 1, 124},                                  // manoeuvre goal: target heading(v)
+    {0x0043D210, 2, 125},                                  // motion layer(unit, layer) [thiscall on the motion object]
+    {0x004246B0, 2, 126},                                  // remove feature(cell, force)
+    {0x0048A9F0, 5, 127},                                  // place unit(unit, x, y, z, layer)
+    {0x00471FD0, 4, 128, 3},                               // teleport trail(&from, &to, steps, list) + to
+    {0x00456200, 7, 129},                                  // broadcast script call by name(unit, name, argc, a, b, c, d)
 };
 constexpr int kGoalDetachId = 63, kAttachedDtorId = 64, kHandlerId = 65;
 constexpr int kEnemiesId = 80, kResolveId = 83, kNanoId = 86;
@@ -148,6 +159,12 @@ const Stub kAttachedDtor{0, 1, kAttachedDtorId};  // attached object vtable +0 (
 // fills the vector from its queue; resolve attack mission(&out, intent, unit, target, pos)
 // logs 5 args and writes the queued kind to *out; nano beam(&from, &box, slot) logs both.
 const Stub kEnemies{0x0040AD80, 5, kEnemiesId, 3};
+// Air bases(state, &pos, radius, &vector) + pos: the vector gets the next queued list.
+constexpr int kAirBasesId = 130, kRadiusId = 131, kPointGoalId = 132, kFollowGoalId = 133, kDockGoalId = 134, kFaceGoalId = 135,
+              kManoeuvreGoalId = 136;
+const Stub kAirBases{0x0040B530, 4, kAirBasesId, 3};
+// Units in radius(&pos, radius, &functor) + pos: the functor's callback gets each queued unit.
+const Stub kRadius{0x0047E890, 3, kRadiusId, 3, StubRet::Zero, 0, 0};
 const Stub kResolve{0x0043F0E0, 5, kResolveId, 0, StubRet::Queue, qResolve};
 constexpr u32 kEnemiesStub = 0x0040AD80, kResolveStub = 0x0043F0E0, kNanoStub = 0x004720D0, kNanoReverseStub = 0x00472200;
 constexpr int kNanoReverseId = 104;
@@ -159,6 +176,13 @@ constexpr u32 kBuildProgress = 0x0041BA60, kDecay = 0x0041BCD0, kFinalize = 0x00
 
 std::size_t record_size(u32 id) {
     if (id == static_cast<u32>(kHandlerId)) return 5;
+    if (id == static_cast<u32>(kAirBasesId)) return 9;
+    if (id == static_cast<u32>(kRadiusId)) return 8;
+    if (id == static_cast<u32>(kPointGoalId)) return 7;
+    if (id == static_cast<u32>(kFollowGoalId)) return 4;
+    if (id == static_cast<u32>(kDockGoalId)) return 5;
+    if (id == static_cast<u32>(kFaceGoalId)) return 8;
+    if (id == static_cast<u32>(kManoeuvreGoalId)) return 11;
     if (id == static_cast<u32>(kEnemiesId)) return 10;
     if (id == static_cast<u32>(kResolveId)) return 7;
     if (id == static_cast<u32>(kNanoId) || id == static_cast<u32>(kNanoReverseId)) return 12;
@@ -198,7 +222,7 @@ void emit_stub(Emitter& e, const Stub& s, u32 log_ptr_addr, u32 ret_addr, u32 qu
             e.u8(0x89); e.u8(0x50); e.u8(static_cast<std::uint8_t>(8 + 4 * i));
         }
         if (s.extra) {
-            e.u8(0x8B); e.u8(0x54); e.u8(0x24); e.u8(0x08);
+            e.u8(0x8B); e.u8(0x54); e.u8(0x24); e.u8(static_cast<std::uint8_t>(4 + 4 * s.deref));
             for (int k = 0; k < s.extra; ++k) {
                 e.u8(0x8B); e.u8(0x4A); e.u8(static_cast<std::uint8_t>(4 * k));
                 e.u8(0x89); e.u8(0x48); e.u8(static_cast<std::uint8_t>(8 + 4 * (s.args + k)));
@@ -232,7 +256,7 @@ struct Layout {
     u32 caller_pass = 0, caller_one = 0, caller_kill = 0, heap = 0, scenario_heap = 0, bump_ptr = 0, stubs = 0, log_ptr = 0, log_base = 0,
         ret_val = 0, gs = 0, units = 0, defs = 0, models = 0, cells = 0, schema = 0, names = 0, files = 0, pinfo = 0, empty_def = 0,
         script = 0, clock = 0, motion = 0, vtables = 0, attached = 0, handler = 0, queues = 0, weapons = 0, rand_state = 0,
-        features = 0, nano = 0;
+        features = 0, nano = 0, explored = 0, feature_slots = 0, masks = 0, site_y = 0;
 };
 // ret_val block: +0 pay result, +0x10 stale in, +0x14 stale out, +0x18 kill kind, +0x1C kill unit,
 // +0x20 one-arg target function, +0x24 its argument, +0x28 EDI for the call.
@@ -241,7 +265,7 @@ constexpr u32 kStaleIn = 0x10, kStaleOut = 0x14, kKillKind = 0x18, kKillUnit2 = 
 bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string& table_report) {
     L.heap = r.alloc(128u << 20);
     L.bump_ptr = r.alloc(0x1000);
-    L.stubs = r.alloc(0x4000, PAGE_EXECUTE_READWRITE);
+    L.stubs = r.alloc(0x8000, PAGE_EXECUTE_READWRITE);
     L.log_ptr = r.alloc(0x1000);
     L.log_base = r.alloc(4u << 20);
     L.ret_val = r.alloc(0x1000);
@@ -264,7 +288,11 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
     L.rand_state = r.alloc(0x1000);
     L.features = r.alloc(0x10000);
     L.nano = r.alloc(0x1000);
-    if (!L.rand_state || !L.features || !L.nano) return false;
+    L.explored = r.alloc(static_cast<SIZE_T>(hm.width() / 2) * (hm.height() / 2) * 2 + 0x1000);
+    L.feature_slots = r.alloc(0x10000 * 0x30);
+    L.masks = r.alloc(0x1000);
+    if (!L.rand_state || !L.features || !L.nano || !L.explored || !L.feature_slots || !L.masks) return false;
+    L.site_y = L.ret_val + 0x80;
     if (!L.queues || !L.weapons) return false;
     if (!L.heap || !L.stubs || !L.log_base || !L.gs || !L.units || !L.cells || !L.files || !L.pinfo || !L.empty_def || !L.script ||
         !L.motion || !L.vtables || !L.attached)
@@ -369,6 +397,102 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
         e.align();
         if (!r.patch_jump(kNanoReverseStub, at)) return false;
     }
+    // Air bases: like the enemy list, the vector is the fourth argument.
+    {
+        const u32 at = here();
+        const u32 q = L.queues + qAirBases * kQueueSize;
+        emit_stub(e, kAirBases, L.log_ptr, L.ret_val, L.queues, false);
+        e.u8(0x8B); e.u8(0x0D); e.u32le(q);      // mov ecx,[q]
+        e.u8(0x3B); e.u8(0x0D); e.u32le(q + 4);  // cmp ecx,[q+4]
+        e.bytes({0x72, 0x06});                   // jb have
+        e.bytes({0x33, 0xC0, 0x33, 0xD2});       // xor eax,eax; xor edx,edx
+        e.bytes({0xEB, 0x17});                   // jmp store
+        e.bytes({0x8B, 0x01});                   // have: mov eax,[ecx] (count)
+        e.bytes({0x8D, 0x51, 0x04});             // lea edx,[ecx+4] (begin)
+        e.bytes({0x8D, 0x0C, 0x82});             // lea ecx,[edx+eax*4]
+        e.u8(0x89); e.u8(0x0D); e.u32le(q);      // mov [q],ecx
+        e.bytes({0x85, 0xC0, 0x75, 0x02});       // test eax,eax; jnz +2
+        e.bytes({0x33, 0xD2});                   // xor edx,edx
+        e.bytes({0x8D, 0x04, 0x82});             // lea eax,[edx+eax*4] (end)
+        e.bytes({0x8B, 0x4C, 0x24, 0x10});       // store: mov ecx,[esp+0x10]
+        e.bytes({0x89, 0x51, 0x04, 0x89, 0x41, 0x08, 0x89, 0x41, 0x0C});
+        e.bytes({0xC2, 0x10, 0x00});             // ret 0x10
+        e.align();
+        if (!r.patch_jump(kAirBases.address, at)) return false;
+    }
+    // Units in radius: the functor's callback (vtable slot 0, thiscall) gets each queued unit.
+    {
+        const u32 at = here();
+        const u32 q = L.queues + qRadius * kQueueSize;
+        emit_stub(e, kRadius, L.log_ptr, L.ret_val, L.queues, false);
+        e.bytes({0x56, 0x57});                   // push esi; push edi
+        e.u8(0x8B); e.u8(0x35); e.u32le(q);      // mov esi,[q]
+        e.u8(0x3B); e.u8(0x35); e.u32le(q + 4);  // cmp esi,[q+4]
+        e.bytes({0x73, 0x1F});                   // jae done
+        e.bytes({0x8B, 0x3E});                   // mov edi,[esi] (count)
+        e.bytes({0x83, 0xC6, 0x04});             // add esi,4
+        e.bytes({0x85, 0xFF});                   // loop: test edi,edi
+        e.bytes({0x74, 0x10});                   // jz finish
+        e.bytes({0xFF, 0x36});                   // push dword [esi]
+        e.bytes({0x8B, 0x4C, 0x24, 0x18});       // mov ecx,[esp+0x18] (functor)
+        e.bytes({0x8B, 0x01});                   // mov eax,[ecx]
+        e.bytes({0xFF, 0x10});                   // call [eax]
+        e.bytes({0x83, 0xC6, 0x04});             // add esi,4
+        e.bytes({0x4F});                         // dec edi
+        e.bytes({0xEB, 0xEC});                   // jmp loop
+        e.u8(0x89); e.u8(0x35); e.u32le(q);      // finish: mov [q],esi
+        e.bytes({0x5F, 0x5E});                   // done: pop edi; pop esi
+        e.bytes({0xC2, 0x0C, 0x00});             // ret 0xc
+        e.align();
+        if (!r.patch_jump(kRadius.address, at)) return false;
+    }
+    // Goal constructors [thiscall on the new block]: log the block, the arguments and the
+    // positions they point at; the block gets the attached-object vtable; return it.
+    struct GoalStub { u32 address; int id; int args; int ptr_a; int ptr_b; };
+    const GoalStub goal_stubs[] = {{0x0044E2D0, kPointGoalId, 2, 1, -1},  // (order, &pos)
+                                   {0x0044E190, kFollowGoalId, 2, -1, -1},  // (order, target)
+                                   {0x0044E250, kDockGoalId, 3, -1, -1},  // (order, target, piece)
+                                   {0x0044E330, kFaceGoalId, 3, 2, -1},  // (order, target, &pos)
+                                   {0x0044E740, kManoeuvreGoalId, 3, 1, 2}};  // (order, &pos, &vel)
+    for (const GoalStub& gs : goal_stubs) {
+        const u32 at = here();
+        e.u8(0xA1); e.u32le(L.log_ptr);                                    // mov eax,[log_ptr]
+        e.u8(0xC7); e.u8(0x00); e.u32le(static_cast<u32>(gs.id));         // mov [eax],id
+        e.bytes({0x89, 0x48, 0x04});                                       // mov [eax+4],ecx
+        int off = 8;
+        for (int i = 0; i < gs.args; ++i, off += 4) {
+            e.bytes({0x8B, 0x54, 0x24, static_cast<std::uint8_t>(4 + 4 * i)});  // mov edx,[esp+4+4i]
+            e.bytes({0x89, 0x50, static_cast<std::uint8_t>(off)});             // mov [eax+off],edx
+        }
+        for (int pa : {gs.ptr_a, gs.ptr_b}) {
+            if (pa < 0) continue;
+            e.bytes({0x8B, 0x54, 0x24, static_cast<std::uint8_t>(4 + 4 * pa)});  // mov edx,[esp+4+4pa]
+            for (int k = 0; k < 3; ++k, off += 4) {
+                e.bytes({0x8B, 0x4A, static_cast<std::uint8_t>(4 * k)});        // mov ecx,[edx+4k]
+                e.bytes({0x89, 0x48, static_cast<std::uint8_t>(off)});          // mov [eax+off],ecx
+            }
+        }
+        e.bytes({0x8B, 0x48, 0x04});                                       // mov ecx,[eax+4] (the block again)
+        e.u8(0x83); e.u8(0x05); e.u32le(L.log_ptr); e.u8(static_cast<std::uint8_t>(off));  // add [log_ptr],off
+        e.bytes({0xC7, 0x01}); e.u32le(L.vtables + 0x40);                  // mov dword [ecx],vtable
+        e.bytes({0x8B, 0xC1});                                             // mov eax,ecx
+        e.bytes({0xC2, static_cast<std::uint8_t>(4 * gs.args), 0x00});     // ret
+        e.align();
+        if (!r.patch_jump(gs.address, at)) return false;
+    }
+    // The reclaim site search reads a stack word it never wrote (the sites' y): it gets a
+    // known value, placed there before the routine starts.
+    {
+        const u32 at = here();
+        e.u8(0xA1); e.u32le(L.site_y);                    // mov eax,[site_y]
+        e.bytes({0x89, 0x44, 0x24, 0xF8});                // mov [esp-8],eax
+        e.bytes({0x83, 0xEC, 0x18});                      // sub esp,0x18
+        e.bytes({0x0F, 0xBF, 0x44, 0x24, 0x22});          // movsx eax,word [esp+0x22]
+        const u32 next = here() + 5;
+        e.u8(0xE9); e.u32le(0x0047EA48u - next);          // jmp 0x47EA48
+        e.align();
+        if (!r.patch_jump(0x0047EA40, at)) return false;
+    }
     // rand(): the C runtime's generator on our own state (the runtime is not initialised).
     {
         const u32 at = here();
@@ -463,7 +587,24 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
     e.u8(0xA3); e.u32le(out);
     e.u8(0xC3);
     e.align();
-    if (e.b.size() > 0x4000 || !r.write(L.stubs, e.b.data(), e.b.size())) return false;
+    if (e.b.size() > 0x8000 || !r.write(L.stubs, e.b.data(), e.b.size())) return false;
+    // Fixed game state the new behaviours read: the visible map size, the off-map bucket, the
+    // explored grid, the feature slots (attitudes of resurrected wrecks) and the unit type count.
+    r.w32(L.gs + 0x1422B, static_cast<u32>(hm.width() * 16 - 32));
+    r.w32(L.gs + 0x1422F, static_cast<u32>(hm.height() * 16 - 128));
+    r.w32(L.gs + 0x14273, L.explored);
+    r.w32(L.gs + 0x1420B, L.feature_slots);
+    {
+        std::vector<std::uint8_t> fs(0x10000 * 0x30, 0);
+        for (u32 i = 0; i < 0x10000; ++i) {
+            const std::uint16_t a = static_cast<std::uint16_t>(i * 0x1357u + 11), h = static_cast<std::uint16_t>(i * 0x2469u + 5),
+                                c = static_cast<std::uint16_t>(i * 0x9ABDu + 3);
+            std::memcpy(&fs[i * 0x30 + 0x20], &a, 2);
+            std::memcpy(&fs[i * 0x30 + 0x22], &h, 2);
+            std::memcpy(&fs[i * 0x30 + 0x24], &c, 2);
+        }
+        if (!r.write(L.feature_slots, fs.data(), fs.size())) return false;
+    }
     r.w32(L.bump_ptr, L.heap);
     r.w32(L.log_ptr, L.log_base);
     r.w32(kGameStatePtr, L.gs);
@@ -528,7 +669,7 @@ enum : u32 {
     gCommanderNames = 0x37F5F, kSideSize = 0x232,
     oKind = 0x04, oStep = 0x05, oWait = 0x06, oWake = 0x0A, oUnit = 0x0E, oLink = 0x12, oPos = 0x22, oScratch = 0x2E, oParams = 0x36,
     oFlags = 0x42, oCreated = 0x46, oNext = 0x4A, oEvents = 0x4E, oAttached = 0x52,
-    mGoal = 0x00, mSpeed = 0x20, mStart = 0x2A, mGoalObject = 0x10,
+    mGoal = 0x00, mSpeed = 0x20, mStart = 0x2A, mGoalObject = 0x30,
 };
 
 struct LoadedType {
@@ -559,8 +700,19 @@ struct MotionInfo {
     u32 start = 0;
 };
 
+// A goal object of the original's heap (its constructor is a logging stub there).
+struct HarnessGoal final : sim::OrderGoal {
+    int kind() const override { return 2; }
+    bool reached(sim::MotionContext&, sim::Unit&) override { return false; }
+    bool position(sim::MotionContext&, std::array<i32, 3>&) override { return false; }
+};
+constexpr u32 kBeginTransportName = 0x00501BA4;
+// What our side hands as the air repair patrol's stale event word (the original's is a stack
+// address, an input here); the stale-word check accepts any stack-like value for it.
+constexpr u32 kRepairPatrolSiteMarker = 0x5EED0000u;
+
 struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::OrderSystems, sim::GroundSettleSystems,
-               sim::MissionSystems, sim::ConstructionSystems {
+               sim::MissionSystems, sim::ConstructionSystems, sim::UnitMissionSystems {
     std::vector<sim::Unit>* units = nullptr;
     std::vector<sim::UnitTickState>* ticks = nullptr;
     std::vector<sim::PlayerSlot>* players = nullptr;
@@ -617,9 +769,12 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     void emit_sfx(sim::Unit& u, i32 piece, i32 type) override { rec(10, tok(u), {static_cast<u32>(piece), static_cast<u32>(type)}); }
     void explode_piece(sim::Unit& u, i32 piece, i32 type) override { rec(11, tok(u), {static_cast<u32>(piece), static_cast<u32>(type)}); }
     void attach_unit(sim::Unit& u, i32 a, i32 b, i32 c) override {
+        sim::script_attach_unit(*missions, u, a, b, c);
+    }
+    void attach_unit_old(sim::Unit& u, i32 a, i32 b, i32 c) {
         rec(12, tok(u), {static_cast<u32>(a), static_cast<u32>(b), static_cast<u32>(c)});
     }
-    void drop_unit(sim::Unit& u, i32 a) override { rec(13, tok(u), {static_cast<u32>(a)}); }
+    void drop_unit(sim::Unit& u, i32 a) override { sim::script_drop_unit(*missions, u, a); }
     // UnitTickSystems
     void weapons(sim::Unit& u, u32&) override { rec(1, 0, {tok(u)}); }
     void damage(sim::Unit* a, sim::Unit& t, i32 amount, i32 kind, i32 heading) override {
@@ -660,7 +815,9 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     }
     void reveal_dead_unit(sim::Unit& u) override {
         const auto height = static_cast<std::int16_t>(static_cast<u32>(u.type ? u.type->model_max_y : 0) >> 16);
-        rec(26, 0, {0x42000000u | u.id, 0, static_cast<u32>(static_cast<i32>(height)), 60});
+        const std::size_t ti = (*ticks)[u.id].type_index;
+        const i32 sight = tgt && ti < tgt->size() ? (*tgt)[ti].sight_distance : 0;
+        rec(26, 0, {0x42000000u | u.id, static_cast<u32>(sight), static_cast<u32>(static_cast<i32>(height)), 60});
     }
     void victory_unit_destroyed(sim::Unit& u) override { rec(27, 0, {tok(u)}); }
     void clear_orders(sim::Unit& u) override { sim::clear_orders(*orders, u, true); }
@@ -749,7 +906,11 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     void speech(sim::Unit& u, std::uint32_t id, sim::SpeechText text) override {
         static constexpr u32 kTexts[] = {0,          0x005012DC, 0x005016AC, 0x005012CC, 0x00501340, 0x00501310, 0x005012F8,
                                          0x005015A4, 0x00501580, 0x0050155C, 0x00501544, 0x00501530, 0x005015BC, 0x005010CC,
-                                         0x00501638, 0x0050164C, 0x00501388, 0x005015D0, 0x00501618, 0x005015E0, 0x005013B8};
+                                         0x00501638, 0x0050164C, 0x00501388, 0x005015D0, 0x00501618, 0x005015E0, 0x005013B8,
+                                         0x005014E8, 0x0050129C, 0x0050145C, 0x005016D8, 0x00501BDC, 0x0050144C, 0x00501BC4,
+                                         0x00501430, 0x00501BFC, 0x00501C8C, 0x00501AE8, 0x00501C7C, 0x00501C54, 0x00501C30,
+                                         0x00501714, 0x00501704, 0x00501744, 0x00501CC4, 0x00501CD0, 0x00501CFC, 0x00501698,
+                                         0x00501684, 0x0050166C};
         rec(14, 0, {tok(u), id, kTexts[static_cast<int>(text)]});
     }
     void enemies_in_radius(int player, const std::array<i32, 3>& pos, i32 radius, std::vector<sim::Unit*>& out) override {
@@ -787,8 +948,8 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         for (i32 v : box) log.push_back(static_cast<u32>(v));
         log.push_back(6);
     }
-    void attach_circle_goal(sim::Unit&, sim::MissionOrder& o, const std::array<i32, 3>&, i32 radius) override {
-        rec(88, o.address, {o.address + 0x22, static_cast<u32>(radius)});  // (always the order's own position)
+    void attach_circle_goal(sim::Unit&, sim::MissionOrder& o, const std::array<i32, 3>& pos, i32 radius) override {
+        rec(88, o.address, {0, static_cast<u32>(radius), static_cast<u32>(pos[0]), static_cast<u32>(pos[1]), static_cast<u32>(pos[2])});
     }
     void drop_goal_object(sim::Unit& u, sim::MissionOrder& o) override {
         rec(kGoalDetachId, 0x7D000000u | u.id, {0});
@@ -813,10 +974,8 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     }
     void attach_edge_goal(sim::Unit&, sim::MissionOrder& o, u32 cell, u32 size) override { rec(102, o.address, {cell, size}); }
     void attach_ring_goal(sim::Unit&, sim::MissionOrder& o, const std::array<i32, 3>& pos, i32 outer, i32 inner) override {
-        u32 at = 0;
-        for (const sim::Unit& u : *units)
-            if (&u.pos == &pos) at = 0x42000000u | u.id;
-        rec(103, o.address, {at, static_cast<u32>(outer), static_cast<u32>(inner)});
+        rec(103, o.address, {0, static_cast<u32>(outer), static_cast<u32>(inner), static_cast<u32>(pos[0]), static_cast<u32>(pos[1]),
+                             static_cast<u32>(pos[2])});
     }
     void nano_beam_reverse(const std::array<i32, 6>& box, const std::array<i32, 3>& to) override {
         log.push_back(static_cast<u32>(kNanoReverseId));
@@ -839,15 +998,16 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         World& w;
         std::vector<sim::Unit*> heads;
         explicit Links(World& world) : w(world) {}
+        std::size_t slot(const sim::Unit& u) const { return u.bucket == sim::kOffMapBucket ? heads.size() - 1 : static_cast<std::size_t>(u.bucket); }
         void bucket_unlink(sim::Unit& u) override {
-            sim::Unit** link = &heads[static_cast<std::size_t>(u.bucket)];
+            sim::Unit** link = &heads[slot(u)];
             while (*link && *link != &u) link = &(*link)->cargo_next;
             if (*link) *link = u.cargo_next;
             u.cargo_next = nullptr;
         }
         void bucket_prepend(sim::Unit& u) override {
-            u.cargo_next = heads[static_cast<std::size_t>(u.bucket)];
-            heads[static_cast<std::size_t>(u.bucket)] = &u;
+            u.cargo_next = heads[slot(u)];
+            heads[slot(u)] = &u;
         }
         std::uint32_t type_flags(const sim::Unit& u) override {
             const sim::UnitTickTypeInfo* t = (*w.ticks)[u.id].tick_type;
@@ -855,6 +1015,84 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         }
         void selection_changed() override {}
     } links{*this};
+    // UnitMissionSystems (the original's matching routines are logging stubs; its goal
+    // attaching (0x4388D0) runs for real on the logging goal objects).
+    u32 site_y = 0;
+    const std::vector<sim::TargetingTypeInfo>* tgt = nullptr;  // by type index (sight distances)
+    u32 index_tok(const sim::Unit& w) const { return 0x40000000u | static_cast<u32>(&w - units->data()); }
+    void heap_alloc(u32 size) override { next_address += (size + 3) & ~3u; }
+    std::shared_ptr<sim::OrderGoal> make_goal(sim::Unit& u, sim::MissionOrder& o, const sim::GoalRequest& g) override {
+        auto goal = std::make_shared<HarnessGoal>();
+        goal->address = next_address;
+        goal->order = &o;
+        goal->owner = &u;
+        next_address += g.kind == sim::GoalRequest::Kind::Manoeuvre ? 0x2Cu : 0x38u;
+        const u32 a = goal->address, t = g.target ? tok(*g.target) : 0u;
+        auto v = [](i32 x) { return static_cast<u32>(x); };
+        switch (g.kind) {
+        case sim::GoalRequest::Kind::Point: rec(kPointGoalId, a, {o.address, 0, v(g.pos[0]), v(g.pos[1]), v(g.pos[2])}); break;
+        case sim::GoalRequest::Kind::Follow: rec(kFollowGoalId, a, {o.address, t}); break;
+        case sim::GoalRequest::Kind::Dock: rec(kDockGoalId, a, {o.address, t, v(g.piece)}); break;
+        case sim::GoalRequest::Kind::Face: rec(kFaceGoalId, a, {o.address, t, 0, v(g.pos[0]), v(g.pos[1]), v(g.pos[2])}); break;
+        case sim::GoalRequest::Kind::Manoeuvre:
+            rec(kManoeuvreGoalId, a, {o.address, 0, 0, v(g.pos[0]), v(g.pos[1]), v(g.pos[2]), v(g.vel[0]), v(g.vel[1]), v(g.vel[2])});
+            break;
+        }
+        for (int k = 0; k < g.set_count; ++k) adjust_goal(u, *goal, g.sets[static_cast<std::size_t>(k)].first, g.sets[static_cast<std::size_t>(k)].second);
+        return goal;
+    }
+    void attach_goal(sim::Unit& u, sim::MissionOrder& o, std::shared_ptr<sim::OrderGoal> goal) override {
+        if (!(*ticks)[u.id].has_motion) return;
+        if (o.attached) {
+            rec(kGoalDetachId, 0x7D000000u | u.id, {0});
+            rec(kAttachedDtorId, o.attached, {1});
+            o.attached = 0;
+        }
+        if (!goal) return;
+        o.events &= ~0x3E0u;
+        rec(kGoalDetachId, 0x7D000000u | u.id, {goal->address});
+        o.attached = goal->address;
+        o.goal = std::move(goal);
+    }
+    void adjust_goal(sim::Unit&, sim::OrderGoal& goal, sim::GoalRequest::Set what, i32 value) override {
+        static constexpr int kIds[] = {120, 122, 121, 124, 123};  // altitude, radius, heading, target heading, manoeuvre altitude
+        rec(kIds[static_cast<int>(what)], goal.address, {static_cast<u32>(value)});
+    }
+    void set_layer(sim::Unit& u, u32 layer) override { rec(125, 0x7E000000u | u.id, {tok(u), layer}); }
+    void units_in_radius(const std::array<i32, 3>& pos, i32 radius, std::vector<sim::Unit*>& out) override {
+        rec(kRadiusId, 0, {0, static_cast<u32>(radius), 0, static_cast<u32>(pos[0]), static_cast<u32>(pos[1]), static_cast<u32>(pos[2])});
+        take_list(qRadius, out);
+    }
+    void air_bases_in_radius(int player, const std::array<i32, 3>& pos, i32 radius, std::vector<sim::Unit*>& out) override {
+        rec(kAirBasesId, 0, {static_cast<u32>(player), 0, static_cast<u32>(radius), 0, static_cast<u32>(pos[0]), static_cast<u32>(pos[1]),
+                             static_cast<u32>(pos[2])});
+        take_list(qAirBases, out);
+    }
+    void take_list(int q, std::vector<sim::Unit*>& out) {
+        const auto& v = queue[static_cast<std::size_t>(q)];
+        std::size_t& at = queue_at[static_cast<std::size_t>(q)];
+        if (at >= v.size()) return;
+        const u32 n = v[at++];
+        for (u32 k = 0; k < n; ++k) out.push_back(unit_at(v[at++]));
+    }
+    void place_unit(sim::Unit& w, const std::array<i32, 3>& pos, u32 layer) override {
+        rec(127, 0, {index_tok(w), static_cast<u32>(pos[0]), static_cast<u32>(pos[1]), static_cast<u32>(pos[2]), layer});
+    }
+    void teleport_trail(sim::Unit& w, const std::array<i32, 3>& to) override {
+        rec(128, 0, {0x42000000u | (index_tok(w) & 0xFFFFFFu), 0, 30, 5, static_cast<u32>(to[0]), static_cast<u32>(to[1]), static_cast<u32>(to[2])});
+    }
+    void remove_feature(i32 cell) override { rec(126, 0, {static_cast<u32>(cell), 0}); }
+    void wreck_attitude(const sim::MapCell& origin, sim::Unit& u) override {
+        const u32 i = origin.feature_aux;
+        u.pitch = static_cast<std::int16_t>(i * 0x1357u + 11);
+        u.heading = static_cast<std::uint16_t>(i * 0x2469u + 5);
+        u.bank = static_cast<std::int16_t>(i * 0x9ABDu + 3);
+    }
+    i32 reclaim_site_y() override { return static_cast<i32>(site_y); }
+    void broadcast_script_call(sim::Unit& u, const char* name, i32 argc, i32 a, i32 b, i32 c, i32 d) override {
+        const u32 n = std::string(name) == "BeginTransport" ? kBeginTransportName : 0u;
+        rec(129, 0, {tok(u), n, static_cast<u32>(argc), static_cast<u32>(a), static_cast<u32>(b), static_cast<u32>(c), static_cast<u32>(d)});
+    }
     // GroundSettleSystems
     std::int32_t motion_speed(sim::Unit& u) override { return motions[u.id].speed; }
     std::uint32_t motion_start_tick(sim::Unit& u) override { return motions[u.id].start; }
@@ -896,6 +1134,21 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     std::vector<sim::GroundSettleType> settle_types(ntypes + 1);
     std::vector<sim::MissionTypeInfo> mission_types(ntypes + 1);
     std::vector<sim::ConstructionTypeInfo> con_types(ntypes + 1);
+    std::vector<sim::TargetingTypeInfo> tgt_types(ntypes + 1);
+    std::vector<sim::MotionType> motion_types(ntypes + 1);
+    std::vector<sim::UnitMissionTypeInfo> extra_types(ntypes + 1);
+    std::vector<sim::UnitTickTypeInfo> tick_types(ntypes + 1);
+    std::vector<std::string> def_names(ntypes + 1);
+    {  // the blank type's category masks (index 0)
+        std::vector<std::uint8_t> z(4 * 64, 0);
+        r.write(L.masks, z.data(), z.size());
+        std::vector<std::uint8_t> ed(kDefSize, 0);
+        for (u32 m = 0; m < 4; ++m) {
+            const u32 at = L.masks + m * 64;
+            std::memcpy(&ed[0x231 + m * 4], &at, 4);
+        }
+        r.write(L.empty_def, ed.data(), ed.size());
+    }
     u32 file_at = L.files;
     for (int k = 0; k < ntypes; ++k) {
         std::size_t ti = g() % types.size();
@@ -934,6 +1187,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         if (g() % 4) t.tick_info.type_flags = (t.tick_info.type_flags & ~0x181000u) | variants[g() % 7];
         if (g() % 3 == 0) t.tick_info.type_flags ^= 0x40u;   // builder
         if (g() % 3 == 0) t.tick_info.type_flags ^= 0x800u;  // can fly
+        if (g() % 4 == 0) t.tick_info.type_flags ^= 0x200u;  // air base
         // Mission abilities (on/off, attack, cloak, self-destruct countdown) and worker time.
         sim::MissionTypeInfo& mt = mission_types[static_cast<std::size_t>(k + 1)];
         const u32 countdowns[] = {5, 5, 5, 0, 1, 3, 6, 7};
@@ -1013,11 +1267,54 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         put(dMinWaterDepth, &ct.min_water_depth, 2);
         put(dWaterline, &ct.waterline, 1);
         put(dBmCode, &ct.movement, 1);
+        // Aircraft, transport and movement order data (sim/unit_missions.h).
+        {
+            const std::size_t ki = static_cast<std::size_t>(k + 1);
+            sim::TargetingTypeInfo& tt = tgt_types[ki];
+            tt.category_bit = static_cast<std::uint16_t>(k + 1);
+            tt.sight_distance = static_cast<std::int16_t>(g() % 4 == 0 ? g() % 40 : 100 + g() % 600);
+            tt.maneuver_leash = static_cast<std::int16_t>(g() % 4 == 0 ? g() : g() % 800);
+            tt.max_water_depth = ct.max_water_depth;
+            tt.min_water_depth = ct.min_water_depth;
+            tt.footprint_x = ct.footprint_x;
+            tt.transport_size = static_cast<std::uint8_t>(g() % 5);
+            tt.transport_capacity = static_cast<std::uint8_t>(g() % 6);
+            tt.has_build_options = ct.has_build_options;
+            for (u32 m = 0; m < 4; ++m) {
+                sim::CategoryMask cm{};
+                for (auto& w : cm) w = g() % 3 == 0 ? static_cast<u32>(g()) : 0u;
+                if (g() % 2) cm[0] = static_cast<u32>(g()) & 0x1Eu;  // the scenario's types
+                (m < 3 ? tt.bad_target[m] : tt.no_chase) = cm;
+                const u32 at = L.masks + (static_cast<u32>(ki) * 4 + m) * 64;
+                r.write(at, cm.data(), 64);
+                put(0x231 + m * 4, &at, 4);
+            }
+            sim::MotionType& mo = motion_types[ki];
+            mo.type_flags = t.tick_info.type_flags;
+            mo.max_velocity = t.settle.max_velocity;
+            mo.cruise_altitude = static_cast<std::int16_t>(g() % 4 == 0 ? g() : g() % 250);
+            sim::UnitMissionTypeInfo& xt = extra_types[ki];
+            xt.attack_run_length = static_cast<std::uint16_t>(g() % 4 == 0 ? g() : g() % 300);
+            xt.kamikaze_distance = static_cast<std::uint16_t>(g() % 4 == 0 ? g() : g() % 300);
+            const std::uint16_t type_id = static_cast<std::uint16_t>(k + 1);
+            const i32 size_z = static_cast<i32>(static_cast<u32>(t.info.model_max_z) - static_cast<u32>(t.info.model_min_z));
+            put(0x202, &tt.sight_distance, 2);
+            put(0x214, &tt.maneuver_leash, 2);
+            put(0x216, &xt.attack_run_length, 2);
+            put(0x218, &xt.kamikaze_distance, 2);
+            put(0x21C, &mo.cruise_altitude, 2);
+            put(0x21E, &type_id, 2);
+            put(0x22A, &tt.transport_size, 1);
+            put(0x22B, &tt.transport_capacity, 1);
+            put(0x17E, &size_z, 4);
+            tick_types[ki] = t.tick_info;
+            std::string dn = t.tick_info.name.substr(0, 31);
+            def_names[ki] = dn;
+        }
         r.write(t.remote_def, d.data(), d.size());
         r.w32(L.models + static_cast<u32>(k + 1) * 4, t.remote_model);
     }
-    std::vector<std::uint8_t> ed(kDefSize, 0);
-    r.write(L.empty_def, ed.data(), ed.size());
+    r.w32(L.gs + 0x1438F, static_cast<u32>(ntypes + 1));  // the type count (name searches)
     sim::UnitTypeInfo empty_type;
     empty_type.max_damage = 0;
     sim::UnitTickTypeInfo empty_tick;
@@ -1025,6 +1322,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
 
     // Players: slots 0..2 playing (controllers 1, 2, 3), a few idle slots.
     std::vector<sim::PlayerSlot> players(10);
+    std::vector<sim::PlayerEconomy> economy(10);
     std::vector<std::array<std::uint8_t, 16>> allied(10);
     const int per = kMaxUnits / 3;
     std::vector<std::string> side_names(3);
@@ -1045,6 +1343,10 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             s.first_unit = 1 + p * per;
             s.last_unit = s.first_unit + per - 1;
         }
+        s.energy_stored = static_cast<float>(g() % 20000) / 3.0f;
+        s.metal_stored = static_cast<float>(g() % 4000) / 3.0f;
+        economy[static_cast<std::size_t>(p)].energy_storage = g() % 5 == 0 ? 0.0f : s.energy_stored + static_cast<float>(g() % 30000) / 7.0f;
+        economy[static_cast<std::size_t>(p)].metal_storage = g() % 5 == 0 ? 0.0f : s.metal_stored + static_cast<float>(g() % 6000) / 7.0f;
         s.units_killed = static_cast<std::uint16_t>(g() % 50);
         s.units_lost = static_cast<std::uint16_t>(g() % 50);
         s.flags = static_cast<std::uint16_t>(g());
@@ -1056,6 +1358,10 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         const std::uint8_t side_byte = static_cast<std::uint8_t>(side);
         r.write(info + 0x95, &side_byte, 1);
         r.w32(at + pActive, s.active ? 1u : 0u);
+        r.write(at + 0x8C, &s.energy_stored, 4);
+        r.write(at + 0x98, &s.metal_stored, 4);
+        r.write(at + 0xA4, &economy[static_cast<std::size_t>(p)].energy_storage, 4);
+        r.write(at + 0xA8, &economy[static_cast<std::size_t>(p)].metal_storage, 4);
         r.w32(at + pNetId, static_cast<u32>(s.net_id));
         r.w32(at + pInfo, info);
         r.write(at + pController, &s.controller, 1);
@@ -1150,6 +1456,35 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             ft.metal = static_cast<float>(g() % 3000) / 7.0f;
             ft.energy = g() % 3 == 0 ? 0.0f : static_cast<float>(g() % 9000) / 3.0f;
             std::uint8_t* d = &fd[static_cast<std::size_t>(f) * 0x100];
+            {
+                static const char* kSuffix[] = {"_dead", "_heap", "", "_DEAD2"};
+                std::string fname = g() % 5 == 0 ? std::string("rock") + std::to_string(g() % 9)
+                                                 : random_case(types[static_cast<std::size_t>(pick[g() % pick.size()])].tick_info.name, g) +
+                                                       kSuffix[g() % 4];
+                fname = fname.substr(0, 31);
+                std::memcpy(d, fname.c_str(), fname.size() + 1);
+                std::string key = fname.substr(0, fname.find('_'));
+                auto icmp = [](const std::string& a, const std::string& b2) {
+                    for (std::size_t c = 0;; ++c) {
+                        int x = c < a.size() ? static_cast<unsigned char>(a[c]) : 0, y = c < b2.size() ? static_cast<unsigned char>(b2[c]) : 0;
+                        if (x >= 'A' && x <= 'Z') x += 32;
+                        if (y >= 'A' && y <= 'Z') y += 32;
+                        if (x != y) return x - y;
+                        if (!x) return 0;
+                    }
+                };
+                int first = 1, n = ntypes;
+                while (n > 0) {
+                    const int half = n / 2, mid = first + half;
+                    if (icmp(def_names[static_cast<std::size_t>(mid)], key) < 0) {
+                        first = mid + 1;
+                        n -= half + 1;
+                    } else {
+                        n = half;
+                    }
+                }
+                ft.resurrect_type = first <= ntypes && icmp(key, def_names[static_cast<std::size_t>(first)]) == 0 ? static_cast<std::uint16_t>(first) : 0;
+            }
             std::memcpy(d + 0x94, &ft.footprint_x, 2);
             std::memcpy(d + 0x96, &ft.footprint_z, 2);
             std::memcpy(d + 0xEC, &ft.energy, 4);
@@ -1189,10 +1524,29 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     sim::ConstructionEnvironment conv;
     sim::Construction con{grid, feature_types, con_types, hm, world, conv};
     missions.construction = &con;
+    std::vector<std::uint16_t> explored(static_cast<std::size_t>(grid.width / 2) * static_cast<std::size_t>(grid.height / 2));
+    for (auto& e : explored) e = g() % 3 == 0 ? 0xFFFFu : g() % 3 == 0 ? 0u : static_cast<std::uint16_t>(g());
+    if (!explored.empty()) r.write(L.explored, explored.data(), explored.size() * 2);
+    sim::UnitMissionEnvironment umenv;
+    umenv.map_width = grid.width * 16 - 32;
+    umenv.map_height = grid.height * 16 - 128;
+    umenv.gravity = menv.gravity;
+    umenv.air_repair_patrol_site_address = kRepairPatrolSiteMarker;
+    r.w32(L.schema + 0xD3C, static_cast<u32>(menv.gravity));
+    sim::UnitMissions umc{tgt_types, motion_types, extra_types, grid, feature_types, hm, explored, world, umenv};
+    umc.economy = &economy;
+    umc.tick_types = &tick_types;
+    missions.unit_missions = &umc;
+    world.tgt = &tgt_types;
+    world.site_y = static_cast<u32>(g() % 3 == 0 ? g() : (g() % 255) << 16);
+    r.w32(L.site_y, world.site_y);
+    r.w32(L.gs + 0x142B7, L.attached + 0x30000 + static_cast<u32>(kMaxUnits + 2) * 16);
+    r.write(L.attached + 0x30000, zero.data(), static_cast<std::size_t>(kMaxUnits + 3) * 16);  // the bucket heads
+    bool offmap_taken = false;
     world.defs_base = L.defs;
     world.gs_base = L.gs;
     world.bucket_base = L.attached + 0x30000;
-    world.links.heads.assign(units.size(), nullptr);
+    world.links.heads.assign(units.size() + 1, nullptr);
     world.crt.set_state(static_cast<u32>(g()));
     r.w32(L.rand_state, world.crt.state());
     world.units_base = L.units;
@@ -1327,14 +1681,42 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(at + uScriptFlags, &u.script_flags, 1);
         put_features_around(u.pos[0] >> 16, u.pos[2] >> 16);
         // Each unit alone in a spatial bucket list of its own; motion layer bits on the ground.
-        r.w32(at + 0x82, world.bucket_addr(i));
-        r.w32(world.bucket_addr(i) + 6, at);
+        if (!offmap_taken && g() % 10 == 0) {  // the one unit in the off-map list
+            offmap_taken = true;
+            r.w32(at + 0x82, world.bucket_addr(kMaxUnits + 2));
+            r.w32(world.bucket_addr(kMaxUnits + 2) + 6, at);
+            u.bucket = sim::kOffMapBucket;
+            world.links.heads.back() = &u;
+        } else {
+            r.w32(at + 0x82, world.bucket_addr(i));
+            r.w32(world.bucket_addr(i) + 6, at);
+            u.bucket = i;
+            world.links.heads[static_cast<std::size_t>(i)] = &u;
+        }
         r.w32(at + 0x8E, 0);
-        u.bucket = i;
-        world.links.heads[static_cast<std::size_t>(i)] = &u;
         if (t.has_motion) {
-            const std::uint8_t one = 1;
-            r.write(m.block + 0x2E, &one, 1);
+            const std::uint8_t layer = static_cast<std::uint8_t>(g() % 3 == 0 ? 2 : 1);
+            r.write(m.block + 0x2E, &layer, 1);
+            t.motion.flags = layer;
+            t.motion.speed = m.speed;
+            for (int c = 0; c < 3; ++c) {
+                t.velocity[static_cast<std::size_t>(c)] = g() % 2 ? 0 : static_cast<i32>(g() % 0x40000) - 0x20000;
+                r.w32(m.block + 8 + static_cast<u32>(c) * 4, static_cast<u32>(t.velocity[static_cast<std::size_t>(c)]));
+            }
+        }
+        // The last attacker (repair patrols and aircraft answer it).
+        if (g() % 4 == 0) {
+            t.last_attacker_slot = static_cast<std::uint8_t>(g() % 4);
+            r.write(at + uLastAttackerSlot, &t.last_attacker_slot, 1);
+        }
+        if (g() % 4 == 0) {
+            t.last_damage_kind = 5;
+            r.write(at + uLastDamageKind, &t.last_damage_kind, 1);
+        }
+        if (g() % 3 == 0) {
+            const int a = present[g() % present.size()];
+            t.last_attacker = &units[static_cast<std::size_t>(a)];
+            r.w32(at + uLastAttacker, unit_addr(a));
         }
         // Weapon slot targets and flags (the weapon-target routines run for real).
         for (int s = 0; s < 3; ++s) {
@@ -1429,8 +1811,16 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             i += n;
             const u32 id = rec[0];
             if (remote && id != 6 && id != kHandlerId && (id < 10 || id > 13) && id != 61 && id != kGoalDetachId && id != kAttachedDtorId &&
-                id != 84 && id != 88 && id != 102 && id != 103)
+                id != 84 && id != 88 && id != 102 && id != 103 && !(id >= 120 && id <= 125) && !(id >= 132 && id <= 136))
                 rec[1] = 0;
+            if (id == 88 || id == 103) rec[2] = 0;  // the position pointer (the position follows)
+            if (id == 126 && remote) rec[2] = rec[2] >= L.cells ? (rec[2] - L.cells) / 13 : 0xFFFFFFFFu;  // cell → index
+            if (id == 128) rec[3] = 0;
+            if (id == static_cast<u32>(kAirBasesId)) rec[3] = rec[5] = 0;
+            if (id == static_cast<u32>(kRadiusId)) rec[2] = rec[4] = 0;
+            if (id == static_cast<u32>(kPointGoalId) || id == static_cast<u32>(kManoeuvreGoalId)) rec[3] = 0;
+            if (id == static_cast<u32>(kManoeuvreGoalId)) rec[4] = 0;
+            if (id == static_cast<u32>(kFaceGoalId)) rec[4] = 0;
             if (id == static_cast<u32>(kEnemiesId)) rec[3] = rec[6] = 0;  // stack addresses
             if (id == static_cast<u32>(kResolveId)) rec[2] = rec[6] = 0;  // out and position pointers
             if (id == 100) {  // the player and type arguments carry stale upper bits
@@ -1618,6 +2008,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     auto check_stale = [&](u32 mine, const std::string& what) {
         const u32 theirs = r.r32(L.ret_val + kStaleOut);
         if (theirs == mine) return true;
+        if (mine == kRepairPatrolSiteMarker && theirs >= 0x10000u && theirs < 0x80000000u) return true;
         std::printf("scenario %u %s: stale stack word orig %08x ours %08x\n", seed, what.c_str(), theirs, mine);
         ++st.mismatches;
         return false;
@@ -1719,6 +2110,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         o.step = static_cast<std::uint8_t>(g() % 4);
         if (o.kind == sim::mission::kGuardNoMove && o.step == 2) o.step = 1;  // step 2 needs the target found in step 1
         if (o.kind == sim::mission::kMobileBuild && o.step >= 2 && !o.target.unit) o.step = 1;  // steps 2-3 need the unit being built
+        if (o.kind == sim::mission::kAirMobileBuild && o.step >= 2 && !o.target.unit) o.step = 1;
         const u32 bits[] = {0x4, 0x4000, 0x10000, 0x400000, 0x800000, 0x200, 0x400};
         if (g() % 2) o.flags ^= bits[g() % 7];
         // (Not for real behaviours: one that always finishes would then run forever, as in the original.)
@@ -1752,8 +2144,19 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                                             sim::mission::kRepairUnit,    sim::mission::kReclaim,     sim::mission::kReclaimUnit,
                                             sim::mission::kCapture,       sim::mission::kBeCarried,   sim::mission::kPark};
         if (g() % 3 == 0) kind = kCon[g() % 9];
+        if (g() % 3 == 0)
+            do kind = static_cast<std::uint8_t>(g() % sim::mission::kCount);
+            while (!sim::unit_mission_kind(kind));
+        static const std::uint8_t kAirCon[] = {sim::mission::kAirMobileBuild, sim::mission::kAirHelpBuild, sim::mission::kAirReclaim,
+                                               sim::mission::kAirReclaimUnit, sim::mission::kAirRepairUnit, sim::mission::kResurrect};
+        if (g() % 8 == 0) kind = kAirCon[g() % 6];
         int ti = g() % 3 == 0 ? 0 : static_cast<int>(1 + g() % kMaxUnits);
-        if (sim::construction_kind(kind) && g() % 4) ti = present[g() % present.size()];
+        if ((sim::construction_kind(kind) || sim::unit_mission_kind(kind)) && g() % 4) ti = present[g() % present.size()];
+        // Orders the game only gives with a target / to a loaded transport (the original reads
+        // through the missing link otherwise).
+        if (kind == sim::mission::kAirToAir || kind == sim::mission::kAirToGroundHover) ti = present[g() % present.size()];
+        if ((kind == sim::mission::kAirUnload || kind == sim::mission::kGroundUnload) && !units[static_cast<std::size_t>(i)].cargo_head)
+            kind = sim::mission::kAirMove;
         if (kind == sim::mission::kGetBuilt && ti == i) ti = 0;  // its builder's orders are walked while it gets new ones
         sim::Unit* target = ti ? &units[static_cast<std::size_t>(ti)] : nullptr;
         std::array<i32, 3> pos = {static_cast<i32>(g()), static_cast<i32>(g()), static_cast<i32>(g())};
@@ -1774,10 +2177,18 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             break;
         }
         case sim::mission::kAttackUnitType: p0 = static_cast<i32>(1 + g() % 4); break;  // unit type index
+        case sim::mission::kAttackChase:
+        case sim::mission::kAttackKamikaze:
+        case sim::mission::kSuppress:
+        case sim::mission::kAirStrike:
+        case sim::mission::kAirToAir:
+        case sim::mission::kAirToGround:
+        case sim::mission::kAirToGroundHover: p0 = static_cast<i32>(g() % 3); break;  // weapon slot
         case sim::mission::kBuildingBuild:  // unit type, count
             p0 = static_cast<i32>(1 + g() % ntypes);
             p1 = static_cast<i32>(g() % 5) - 1;
             break;
+        case sim::mission::kAirMobileBuild:
         case sim::mission::kMobileBuild: {  // unit type, at a spot near the builder
             p0 = static_cast<i32>(1 + g() % ntypes);
             p2 = static_cast<i32>(g() % 13);
@@ -1786,6 +2197,17 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             break;
         }
         case sim::mission::kRepairUnit: p2 = g() % 3 == 0 ? static_cast<i32>(g() % 600) : 0; break;  // leash
+        case sim::mission::kAirPatrol:
+        case sim::mission::kRepairPatrol:
+        case sim::mission::kAirRepairPatrol:
+        case sim::mission::kAirMove:
+        case sim::mission::kTeleport: {  // somewhere on or near the map
+            pos = {static_cast<i32>((g() % static_cast<u32>(map_w + 200)) << 16) - (100 << 16), static_cast<i32>(g() % 255) << 16,
+                   static_cast<i32>((g() % static_cast<u32>(map_h + 200)) << 16) - (100 << 16)};
+            break;
+        }
+        case sim::mission::kResurrect:
+        case sim::mission::kAirReclaim:
         case sim::mission::kReclaim:  // at a feature cell
             if (!feature_cells.empty() && g() % 4) {
                 const int c = feature_cells[g() % feature_cells.size()];
@@ -1860,6 +2282,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         world.pay_result = g() % 4 ? 1u : 0u;
         octx.game_tick = env.game_tick;
         menv.sea_level = env.sea_level;
+        umenv.sea_level = env.sea_level;
         r.w32(L.gs + 0x38A47, env.game_tick);
         r.w32(L.gs + 0x37EE2, 0);
         r.w32(L.schema + 0xD4C, env.water_damage_enabled ? 1u : 0u);
@@ -2021,7 +2444,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                           head_n == (mine_head ? World::tok(*mine_head) : 0u);
                 if (world.tick_has_motion(k)) ok = ok && r.rd<std::uint8_t>(world.motions[static_cast<std::size_t>(k)].block + 0x2E) == tstate[static_cast<std::size_t>(k)].motion.flags;
                 if (!ok) {
-                    std::printf("scenario %u: transport links of unit %d differ\n", seed, k);
+                    std::printf("scenario %u: transport links of unit %d differ (carrier %x/%x cargo %x/%x next %x/%x piece %u/%u head %x/%x layer %u/%u)\n",
+                                seed, k, carrier, x.carrier ? World::tok(*x.carrier) : 0u, cargo, x.cargo_head ? World::tok(*x.cargo_head) : 0u,
+                                next, x.cargo_next ? World::tok(*x.cargo_next) : 0u, tp, x.transport_piece, head_n,
+                                mine_head ? World::tok(*mine_head) : 0u,
+                                world.tick_has_motion(k) ? r.rd<std::uint8_t>(world.motions[static_cast<std::size_t>(k)].block + 0x2E) : 0u,
+                                tstate[static_cast<std::size_t>(k)].motion.flags);
                     ++st.mismatches;
                     return true;
                 }
@@ -2251,6 +2679,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 MotionInfo& m = world.motions[static_cast<std::size_t>(i)];
                 if (m.block) {
                     m.speed = static_cast<i32>(g() % 0x60000) - (g() % 8 == 0 ? 0x30000 : 0);
+                    tstate[static_cast<std::size_t>(i)].motion.speed = m.speed;
                     m.start = env.game_tick - g() % 80;
                     r.w32(m.block + mSpeed, static_cast<u32>(m.speed));
                     r.w32(m.block + mStart, m.start);

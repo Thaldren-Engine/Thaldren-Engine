@@ -47,6 +47,11 @@ bool gaf_sequence_timing(const std::vector<std::uint8_t>& gaf, int seq, sim::Ani
 // `model_names`, 1-based; 0 for 2D types).
 std::vector<sim::FeatureTypeInfo> to_feature_types(const FeatureDefTable& defs, const std::vector<sim::WeaponType>& weapons,
                                                    AnimImporter& anims, std::vector<std::string>* model_names = nullptr);
+// The unit type each feature resurrects into (FeatureTypeInfo::resurrect_type): its name up to
+// the first '_' (within 63 characters) matched case-insensitively against `type_names` (the
+// battle's unit type names by type index; index 0 is never matched).
+void bind_resurrect_types(std::vector<sim::FeatureTypeInfo>& features, const FeatureDefTable& defs,
+                          const std::vector<std::string>& type_names);
 
 // Explosion sequences of the weapon types (index = weapon slot).
 void bind_weapon_explosions(const WeaponDefTable& defs, std::vector<sim::WeaponType>& weapons, AnimImporter& anims);
