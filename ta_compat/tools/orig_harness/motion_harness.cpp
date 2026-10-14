@@ -716,7 +716,14 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         }
         units[static_cast<std::size_t>(i)].script->call("Create", nullptr, true);
     }
-    // Motion objects, built by the original constructor.
+    // Motion objects, built by the original constructor. Sometimes player 2 is a
+    // watched (remote) player while they are built, so its units get the remote goals.
+    const bool remote_goals = g() % 3 == 0;
+    auto set_controller = [&](std::uint8_t c) {
+        players[2].controller = c;
+        r.write(L.gs + 0x1B63 + 2 * kPlayerSize + pController, &c, 1);
+    };
+    if (remote_goals) set_controller(3);
     world.next_address = r.r32(L.bump_ptr);  // object states took their memory before
     for (int i : present) {
         sim::Unit& u = units[static_cast<std::size_t>(i)];
@@ -734,6 +741,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         sim::create_motion(mc, u);
         r.w32(unit_addr(i) + uMotion, block);
     }
+    if (remote_goals) set_controller(2);
     // Fake mission orders (two per unit); the first is the unit's primary head.
     std::vector<std::vector<std::unique_ptr<sim::MissionOrder>>> orders(units.size());
     std::map<u32, sim::MissionOrder*> order_at;
@@ -894,7 +902,11 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                         if (static_cast<i32>(g32(0x18 + 4u * static_cast<u32>(k))) != fg->delta[static_cast<std::size_t>(k)]) bad(un + "flight delta");
                     }
                     if (g16(0x24) != fg->target_heading) bad(un + "flight heading");
-                    if ((rg[0x27] & 7) != (fg->net_flags & 7)) bad(un + "flight net flags");
+                    if (fg->local && (rg[0x27] & 7) != (fg->net_flags & 7)) bad(un + "flight net flags");
+                } else if (auto* rr = dynamic_cast<const sim::RemoteRouteGoal*>(mg)) {
+                    if (static_cast<i32>(g32(0x18)) != rr->count) bad(un + "remote route count");
+                    for (i32 k = 0; k < rr->count && k < 3; ++k)
+                        if (g32(0xC + 4u * static_cast<u32>(k)) != rr->points[static_cast<std::size_t>(k)]) bad(un + "remote route point");
                 }
             }
             // Orders and their goals.
