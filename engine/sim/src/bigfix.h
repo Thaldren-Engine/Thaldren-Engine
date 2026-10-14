@@ -86,8 +86,9 @@ inline Fix fix_from_double(double v) {
     return r;
 }
 
-// Rounds a fixed value to a 64-bit mantissa, nearest even.
-inline Ext80 fix_to_ext(Fix a) {
+// Rounds a fixed value to a `bits`-bit significand (kept left-aligned in the 64-bit
+// mantissa), nearest even.
+inline Ext80 fix_to_ext(Fix a, int bits = 64) {
     Ext80 out;
     out.negative = fix_is_neg(a);
     if (out.negative) fix_neg(a);
@@ -101,22 +102,52 @@ inline Ext80 fix_to_ext(Fix a) {
     if (top < 0) return Ext80{0, 0, false};
     auto bit = [&](int i) -> std::uint64_t { return i < 0 ? 0 : (a[static_cast<std::size_t>(i / 32)] >> (i % 32)) & 1; };
     std::uint64_t mant = 0;
-    for (int i = 0; i < 64; ++i) mant |= bit(top - i) << (63 - i);
-    const int low = top - 64;  // first discarded bit
+    for (int i = 0; i < bits; ++i) mant |= bit(top - i) << (bits - 1 - i);
+    const int low = top - bits;  // first discarded bit
     const bool half = bit(low) != 0;
     bool sticky = false;
     for (int i = low - 1; i >= 0 && !sticky; --i) sticky = bit(i) != 0;
-    int exponent = top - 63 - kFrac;
+    int exponent = top - (bits - 1) - kFrac;
     if (half && (sticky || (mant & 1))) {
         ++mant;
-        if (mant == 0) {  // carried out of 64 bits
-            mant = 0x8000000000000000ull;
+        if (bits < 64 ? mant == (1ull << bits) : mant == 0) {  // carried out of the significand
+            mant = 1ull << (bits - 1);
             ++exponent;
         }
     }
+    // Left-align in the 64-bit mantissa.
+    mant <<= 64 - bits;
+    exponent -= 64 - bits;
     out.mantissa = mant;
     out.exponent = exponent;
     return out;
+}
+
+// Rounds a fixed value to `bits` significant bits (nearest even), staying fixed point.
+inline Fix fix_round_bits(Fix a, int bits) {
+    const bool neg = fix_is_neg(a);
+    if (neg) fix_neg(a);
+    int top = -1;
+    for (int i = kLimbs * 32 - 1; i >= 0; --i)
+        if ((a[static_cast<std::size_t>(i / 32)] >> (i % 32)) & 1) {
+            top = i;
+            break;
+        }
+    const int low = top - bits;  // first discarded bit
+    if (top >= 0 && low >= 0) {
+        auto bit = [&](int i) { return i >= 0 && ((a[static_cast<std::size_t>(i / 32)] >> (i % 32)) & 1) != 0; };
+        bool sticky = false;
+        for (int i = low - 1; i >= 0 && !sticky; --i) sticky = bit(i);
+        const bool round_up = bit(low) && (sticky || bit(low + 1));
+        for (int i = 0; i <= low; ++i) a[static_cast<std::size_t>(i / 32)] &= ~(1u << (i % 32));
+        if (round_up) {
+            Fix ulp{};
+            ulp[static_cast<std::size_t>((low + 1) / 32)] = 1u << ((low + 1) % 32);
+            fix_add(a, ulp);
+        }
+    }
+    if (neg) fix_neg(a);
+    return a;
 }
 
 // sin/cos series for |x| (x as fixed-point magnitude); returns sin(|x|), cos(|x|).

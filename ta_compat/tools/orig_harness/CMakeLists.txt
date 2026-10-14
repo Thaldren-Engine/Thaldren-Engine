@@ -137,3 +137,8 @@ add_executable(combat_harness
 )
 target_include_directories(combat_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(combat_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Weapon ballistics (C runtime acos + pitch solver) vs sim/weapons.h.
+add_executable(ballistic_check ballistic_check.cpp ${ROOT}/engine/sim/src/weapons.cpp ${ROOT}/engine/sim/src/x87_math.cpp ${ROOT}/engine/sim/src/x87_trig.cpp)
+target_include_directories(ballistic_check PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(ballistic_check PRIVATE /W4 /permissive- /fp:precise)

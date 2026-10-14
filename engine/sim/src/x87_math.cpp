@@ -260,21 +260,14 @@ double crt_hypot(double x, double y) {
     return to_double(mul64(m, q));
 }
 
-Ext80 fpatan(std::int32_t y, std::int32_t x) {
+namespace {
+
+// atan2(y, x) in multi-precision fixed point (Newton iterations on f(t) = x sin t - y cos t).
+detail::Fix fpatan_fix(double y, double x) {
     using namespace detail;
-    if (y == 0 && x >= 0) return Ext80{};
-    // Newton iterations on f(t) = x sin t - y cos t, in multi-precision fixed point.
     auto fix_signed = [](double v) {
         Fix f = fix_from_double(v);
         if (v < 0) fix_neg(f);
-        return f;
-    };
-    auto fix_int = [](std::int32_t k) {
-        Fix f{};
-        const std::uint64_t mag = k < 0 ? 0ull - static_cast<std::uint64_t>(static_cast<std::int64_t>(k)) : static_cast<std::uint64_t>(k);
-        f[kFrac / 32] = static_cast<std::uint32_t>(mag);
-        f[kFrac / 32 + 1] = static_cast<std::uint32_t>(mag >> 32);
-        if (k < 0) fix_neg(f);
         return f;
     };
     auto smul = [](Fix a, Fix b) {
@@ -291,8 +284,8 @@ Ext80 fpatan(std::int32_t y, std::int32_t x) {
         const double r = std::ldexp(static_cast<double>(e.mantissa), e.exponent);
         return e.negative ? -r : r;
     };
-    Fix theta = fix_signed(std::atan2(static_cast<double>(y), static_cast<double>(x)));
-    const Fix fx = fix_int(x), fy = fix_int(y);
+    Fix theta = fix_signed(std::atan2(y, x));
+    const Fix fx = fix_signed(x), fy = fix_signed(y);
     for (int it = 0; it < 3; ++it) {
         Fix mag = theta;
         const bool neg = fix_is_neg(mag);
@@ -311,7 +304,71 @@ Ext80 fpatan(std::int32_t y, std::int32_t x) {
         fix_neg(d);
         fix_add(theta, d);
     }
-    return fix_to_ext(theta);
+    return theta;
+}
+
+} // namespace
+
+void fpatan_debug(double y, double x, std::uint64_t& hi, std::uint64_t& lo, int& top_out) {
+    using namespace detail;
+    Fix a = fpatan_fix(y, x);
+    if (fix_is_neg(a)) fix_neg(a);
+    int top = -1;
+    for (int i = kLimbs * 32 - 1; i >= 0; --i)
+        if ((a[static_cast<std::size_t>(i / 32)] >> (i % 32)) & 1) {
+            top = i;
+            break;
+        }
+    hi = lo = 0;
+    auto bit = [&](int i) -> std::uint64_t { return i < 0 ? 0 : (a[static_cast<std::size_t>(i / 32)] >> (i % 32)) & 1; };
+    for (int i = 0; i < 64; ++i) hi |= bit(top - i) << (63 - i);
+    for (int i = 0; i < 64; ++i) lo |= bit(top - 64 - i) << (63 - i);
+    top_out = top - kFrac;
+}
+
+Ext80 fpatan(std::int32_t y, std::int32_t x) { return fpatan(static_cast<double>(y), static_cast<double>(x)); }
+
+Ext80 fpatan(double y, double x, int bits) {
+    using namespace detail;
+    if (y == 0 && x >= 0) return Ext80{};
+    const Fix theta = fpatan_fix(y, x);
+    if (bits == 64) return fix_to_ext(theta, 64);
+    // Precision control: the 64-bit result is rounded again to `bits` (double rounding).
+    return fix_to_ext(fix_round_bits(theta, 64), bits);
+}
+
+std::optional<Ext80> crt_acos(double c) {
+    if (std::isnan(c)) return std::nullopt;
+    const double a = std::fabs(c);
+    if (a < 1.0) {
+        const double s = std::sqrt((1.0 + c) * (1.0 - c));  // each step rounded to a double
+        return fpatan(s, c, 53);
+    }
+    if (a == 1.0) {
+        if (c > 0) return Ext80{};
+        return Ext80{0xC90FDAA22168C000ull, -62, false};  // FLDPI rounded to 53 bits
+    }
+    return std::nullopt;
+}
+
+int compare(const Ext80& a, double b) {
+    const bool a_zero = a.mantissa == 0, b_zero = b == 0;
+    if (a_zero && b_zero) return 0;
+    const bool a_neg = !a_zero && a.negative, b_neg = !b_zero && b < 0;
+    if (a_zero) return b_neg ? 1 : -1;
+    if (b_zero) return a_neg ? -1 : 1;
+    if (a_neg != b_neg) return a_neg ? -1 : 1;
+    std::uint64_t mb;
+    int eb;
+    split(b, mb, eb);
+    while (!(mb >> 63)) {  // normalise to a 64-bit significand like a's
+        mb <<= 1;
+        --eb;
+    }
+    int mag = 0;  // compare magnitudes
+    if (a.exponent != eb) mag = a.exponent > eb ? 1 : -1;
+    else if (a.mantissa != mb) mag = a.mantissa > mb ? 1 : -1;
+    return a_neg ? -mag : mag;
 }
 
 std::int32_t atan2_scaled(std::int32_t y, std::int32_t x) {
