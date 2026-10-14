@@ -22,7 +22,8 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}},
       economy_{units, ticks, players, player_economy, economy_types_, economy_env_, economy_hooks_},
       sight_world_{sight, sight_tables, explored, units, ticks, players, alliances, sight_types_, buckets, &targeting_state_, sight_env_, 0, 0},
-      construction_{map, features, construction_types_, heights_, construction_hooks_, construction_env_} {
+      construction_{map, features, construction_types_, heights_, construction_hooks_, construction_env_},
+      ai_{units, ticks, players, player_economy, alliances, ai_types_, targeting_state_, map, features, rng_, ai_env_, ai_hooks_, ai_state, {}} {
     missions_.construction = &construction_;
     alliances.resize(kPlayerRecords);
     player_economy.resize(kPlayerRecords);
@@ -228,6 +229,56 @@ bool Battle::TargetingHooks::position_explored(int p, const std::array<std::int3
 void Battle::start_players() {
     sync_settings();
     create_player_targeting(targeting_);
+    // The computer player's part of the player set-up (0x464700), for every record with a
+    // controller type: groups, controller and roles, the table (eight random draws).
+    ai_types_.clear();
+    sync_ai();
+    for (int slot = 0; slot < 10; ++slot)
+        if (players[static_cast<std::size_t>(slot)].controller != 0) ai_create_player(ai_, slot);
+}
+
+void Battle::sync_ai() {
+    if (ai_types_.size() != types.size()) {
+        ai_types_.resize(types.size());
+        for (std::size_t k = 0; k < types.size(); ++k) ai_types_[k] = types[k].ai;
+    }
+    ai_env_.game_tick = unit_env_.game_tick;
+    ai_env_.difficulty = settings.ai_difficulty;
+    ai_env_.map_width = map.width;
+    ai_env_.map_height = map.height;
+    ai_env_.surface_metal = settings.surface_metal;
+    ai_env_.provider = settings.network_provider;
+    ai_env_.units_per_player = settings.units_per_player;
+    ai_env_.wind_fraction = wind.fraction;
+    ai_env_.wind_max_speed = wind.max_speed;
+    ai_env_.wind_denominator = wind.denominator;
+    ai_env_.tidal_strength = settings.tidal_strength;
+    ai_env_.stale_site_height = settings.ai_site_height_word;
+}
+
+Ai& Battle::ai() {
+    sync_settings();
+    sync_ai();
+    return ai_;
+}
+
+void Battle::collect_ai_metal_sites() { ai_collect_metal_sites(ai()); }
+
+void Battle::AiHooks::build_menu(Unit& u, std::uint16_t type, bool weapon_menu) {
+    // The build menu command (0x419B00, +1): the stockpile button's mission, else the
+    // factory's (or mobile builder's) build queue of the type.
+    if (weapon_menu) {
+        b.sync_settings();
+        adjust_build_count(b.missions_, u, mission::kBuildWeapon, 0, 1);
+    } else {
+        b.order_build_count(u, type, 1);
+    }
+}
+
+bool Battle::AiHooks::point_in_sight(int player, const std::array<std::int32_t, 3>& pos) {
+    if (!b.sight_ready_) return b.outside_.position_explored(player, pos);
+    b.sync_sight();
+    return sim::point_in_sight(b.sight_world_, player, pos);
 }
 
 void Battle::players_stage() {
@@ -239,7 +290,7 @@ void Battle::players_stage() {
         if (targeting_state_.controllers[static_cast<std::size_t>(slot)].exists) {
             // The player's controller: an AI player's own work, then the weapon-target pass.
             const bool ai = p.controller == 2;
-            if (ai) outside_.ai_controller_step(slot);
+            if (ai) sim::ai_controller_step(this->ai(), slot);
             weapon_target_pass(targeting_, slot, ai);
         }
         refresh_unit_table(targeting_, slot);

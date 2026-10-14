@@ -108,6 +108,9 @@ public:
     // The AI: its own units seen by a table refresh (statistics), and an occasional rescoring.
     virtual void ai_own_unit(int table, Unit& unit) = 0;
     virtual void ai_rescore(int table) = 0;
+    // The AI's part of a refresh before the units are listed and after them (sim/ai.h).
+    virtual void ai_table_begin(int) {}
+    virtual void ai_table_end(int) {}
     // User interface: the "unit under attack" notice.
     virtual void under_attack(Unit& unit) = 0;
 };

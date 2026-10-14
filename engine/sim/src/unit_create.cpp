@@ -144,6 +144,7 @@ void Battle::init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& t
     t.metal_use_paid = t.metal_stall = t.metal_make_prev = t.metal_use_prev = 0.0f;
     u.transport_piece = 0xFF;
     u.hover_phase = static_cast<u16>(rng_.next_mod(0x10000));
+    set_unit_group(ai_, u, 0);  // group 0 (0x480250; the AI later sorts it into a role)
     outside_.join_group(u, 0);
 }
 

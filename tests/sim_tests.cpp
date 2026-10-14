@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "sim/ai.h"
 #include "sim/battle.h"
 #include "sim/battle_quiet.h"
 #include "sim/combat.h"
@@ -1583,6 +1584,78 @@ void test_economy() {
     CHECK_EQ(!b.wind.changed, true);
 }
 
+// The computer player's groups, profile gate, weight/limit and build score rules (sim/ai.h).
+struct AiTestSystems : AiSystems {
+    std::uint8_t resolve(std::uint8_t, Unit&, Unit*, const std::array<std::int32_t, 3>*) override { return 0; }
+    void enqueue(std::uint8_t, bool, Unit&, Unit*, const std::array<std::int32_t, 3>*, std::int32_t, std::int32_t) override {}
+    void build_menu(Unit&, std::uint16_t, bool) override {}
+    void set_activated(Unit&, bool) override {}
+    bool can_place(std::uint16_t, std::int16_t, std::int16_t) override { return false; }
+    bool structure_fits(std::uint16_t, std::int16_t, std::int16_t) override { return false; }
+    std::int32_t last_place_metal() override { return 0; }
+    bool point_in_sight(int, const std::array<std::int32_t, 3>&) override { return false; }
+    bool weapon_in_range(Unit&, const std::array<std::int32_t, 3>&, const std::array<std::int32_t, 3>&, int) override { return false; }
+};
+
+void test_ai() {
+    std::vector<Unit> units(5);
+    std::vector<UnitTickState> ticks(5);
+    std::vector<PlayerSlot> players(11);
+    std::vector<PlayerEconomy> economy(11);
+    std::vector<std::array<std::uint8_t, 16>> allied(11);
+    std::vector<AiTypeInfo> types(3);
+    static const WeaponType none{};
+    for (auto& t : types) t.weapons = {&none, &none, &none};
+    TargetingState tstate;
+    MapGrid map;
+    std::vector<FeatureTypeInfo> features;
+    BattleRng rng;
+    rng.set_state(1);
+    AiEnvironment env;
+    env.map_width = env.map_height = 64;
+    AiTestSystems sys;
+    AiState state;
+    Ai ai{units, ticks, players, economy, allied, types, tstate, map, features, rng, env, sys, state, {}};
+    for (int i = 0; i < 5; ++i) units[static_cast<std::size_t>(i)].id = static_cast<std::uint16_t>(i);
+    // Groups: leaving swaps the last unit in.
+    for (int i = 1; i <= 4; ++i) set_unit_group(ai, units[static_cast<std::size_t>(i)], 3);
+    set_unit_group(ai, units[1], -1);
+    CHECK_EQ(state.groups[0][3].size(), 3u);
+    CHECK_EQ(state.groups[0][3][0]->id, 4);
+    CHECK_EQ(units[1].group, 0xFFFFFFFFu);
+    // The "any" word only counts as the plan's first word.
+    players[0].active = true;
+    players[0].controller = 2;
+    env.difficulty = 1;
+    ai_profile_plan(ai, {"plan", "easy", "any"});
+    CHECK_EQ(state.profile_gate, false);
+    ai_profile_plan(ai, {"plan", "any", "easy"});
+    CHECK_EQ(state.profile_gate, true);
+    ai_profile_plan(ai, {"plan", "MEDIUM"});
+    CHECK_EQ(state.profile_gate, true);
+    // Player set-up: eight draws for the site grids.
+    ai_create_player(ai, 0);
+    CHECK_EQ(state.controllers[0].exists, true);
+    CHECK_EQ(state.tables[0].exists, true);
+    BattleRng ref;
+    ref.set_state(1);
+    for (std::uint32_t n : {10u, 3u}) ref.next_mod(n);
+    CHECK_EQ(state.tables[0].land_w >= 11, true);
+    // Weights scale and clamp; a unit-name line fixes them.
+    CategoryMask m{};
+    m[0] = 0x6;  // types 1 and 2
+    ai_profile_weight(ai, m, 0.5f, true);
+    CHECK_EQ(state.tables[0].weight[1], 50);
+    ai_profile_weight(ai, m, 3.0f, false);
+    CHECK_EQ(state.tables[0].weight[1], 50);
+    ai_profile_limit(ai, m, 0, false);
+    CHECK_EQ(state.tables[0].limit[2], 0);
+    // At the limit nothing is built.
+    players[0].energy_stored = 1000.0f;
+    players[0].metal_stored = 1000.0f;
+    CHECK_EQ(ai_build_score(ai, 0, 2), 0);
+}
+
 int main() {
     test_sin_table_matches_fixture();
     test_sin_table_formula();
@@ -1610,6 +1683,7 @@ int main() {
     test_features_and_effects();
     test_economy();
     test_sight();
+    test_ai();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

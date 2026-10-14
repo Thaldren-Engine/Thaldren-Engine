@@ -548,6 +548,7 @@ void refresh_unit_table(Targeting& t, int table) {
     tb.seen.clear();
     tb.radar.clear();
     tb.targeting_upgrade = false;
+    t.systems.ai_table_begin(table);
     const PlayerSlot& me = t.players[static_cast<std::size_t>(tb.player)];
     for (std::size_t id = 1; id < t.units.size(); ++id) {
         Unit& u = t.units[id];
@@ -561,6 +562,7 @@ void refresh_unit_table(Targeting& t, int table) {
                 tb.targeting_upgrade = true;
         }
     }
+    t.systems.ai_table_end(table);
     tb.refresh_tick = t.env.game_tick;
     if (t.missions.orders.rng.next_mod(30) == 0) t.systems.ai_rescore(table);
 }
