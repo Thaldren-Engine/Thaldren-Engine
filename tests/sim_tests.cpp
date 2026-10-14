@@ -22,6 +22,7 @@
 #include "sim/rng.h"
 #include "sim/script_vm.h"
 #include "sim/step_budget.h"
+#include "sim/targeting.h"
 #include "sim/trig.h"
 #include "sim/weapons.h"
 #include "sim/world.h"
@@ -942,6 +943,84 @@ void test_battle() {
     CHECK_EQ(b.game_tick(), 21u);
 }
 
+// Target acquisition through the battle: the players' stage refreshes the enemy
+// lists every 30 steps and the weapon-target pass points a released weapon at an
+// enemy in range; an idle unit resolves and issues an attack order.
+void test_targeting() {
+    sim::HeightMap hm(16, 16);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(4242);
+    sim::Battle b(outside, hm, rng);
+    b.map.width = 16;
+    b.map.height = 16;
+    b.map.cells.resize(256);
+    b.init_unit_table(4);
+    b.assign_unit_range(0, 1, 1);
+    b.assign_unit_range(1, 2, 3);
+    b.types.resize(2);
+    sim::BattleUnitType& ty = b.types[1];
+    ty.info.max_damage = 100;
+    ty.info.model_max_y = 20 << 16;
+    ty.tick.type_flags = sim::targeting_type_flags::kShootMe | sim::targeting_type_flags::kHasWeapons;
+    ty.mission.abilities = sim::targeting_abilities::kAttack | sim::targeting_abilities::kMove;
+    ty.targeting.category_bit = 1;
+    ty.targeting.sight_distance = 300;
+    sim::WeaponType gun;
+    gun.flags = sim::weapon_flags::kLineOfSight;
+    gun.range = 250;
+    ty.targeting.first_weapon = &gun;
+    for (int p = 0; p < 2; ++p) {
+        b.players[static_cast<std::size_t>(p)].active = true;
+        b.players[static_cast<std::size_t>(p)].controller = static_cast<std::uint8_t>(1 + p);
+        b.players[static_cast<std::size_t>(p)].state = static_cast<std::uint8_t>(p);
+        b.alliances[static_cast<std::size_t>(p)][static_cast<std::size_t>(p)] = 1;  // every player is allied with itself
+    }
+    const std::int32_t xs[] = {0, 100, 300, 600};
+    for (std::uint16_t i = 1; i <= 3; ++i) {
+        Unit& u = b.units[i];
+        u.type = &b.types[1].info;
+        u.hit_points = 100;
+        u.flags = unit_flags::kAlive | 0x80000000u | 0x200000u | 0x40000u | 1u;  // weapons, fire at will, maneuver
+        u.pos = {xs[i] << 16, 0, 100 << 16};
+        u.weapons[0].type = &gun;
+        u.weapons[0].flags = sim::slot_flags::kEnabled | sim::slot_flags::kReleased;
+        b.ticks[i].type_index = 1;
+        b.ticks[i].tick_type = &b.types[1].tick;
+        b.ticks[i].has_motion = true;
+    }
+    b.settings.unit_limit = 0;  // one unit per player and step
+    b.start_players();
+    CHECK_EQ(b.targeting().state.tables[0].exists && b.targeting().state.controllers[1].exists, true);
+    // Before the first refresh the lists are empty: nothing to aim at.
+    b.players_stage();
+    CHECK_EQ(b.units[1].weapons[0].target_x, 0);
+    for (int k = 0; k < 30; ++k) b.advance_tick();
+    const std::uint32_t before = rng.state();
+    b.players_stage();
+    CHECK_EQ(rng.state() != before, true);  // the refresh draws
+    CHECK_EQ(b.targeting().state.tables[0].seen.size(), 2u);
+    // The weapon-target pass ran before this refresh; the next stage aims.
+    CHECK_EQ(b.units[1].weapons[0].target_x, 0);
+    b.advance_tick();
+    b.players_stage();
+    // Player 0's unit at x 100: unit 2 (200 away) is in range, unit 3 (500) is not.
+    CHECK_EQ(b.units[1].weapons[0].target_x, 2);
+    CHECK_EQ(b.units[1].weapons[0].target_z, sim::kUnitTarget);
+    std::vector<Unit*> near;
+    sim::enemies_in_radius(b.targeting(), 0, b.units[1].pos, 250, near);
+    CHECK_EQ(near.size(), 1u);
+    // Attack orders: a mobile unit chases; on "maneuver" a move back goes behind the attack.
+    CHECK_EQ(sim::resolve_mission(b.targeting(), sim::intent::kAttack, b.units[1], &b.units[2], nullptr), sim::mission::kAttackChase);
+    CHECK_EQ(sim::resolve_mission(b.targeting(), sim::intent::kStop, b.units[1], nullptr, nullptr), sim::mission::kStop);
+    CHECK_EQ(sim::issue_attack_order(b.targeting(), b.units[1], b.units[2], false), true);
+    const MissionOrder* head = b.units[1].orders;
+    CHECK_EQ(head != nullptr && head->kind == sim::mission::kAttackChase && head->target.unit == &b.units[2], true);
+    CHECK_EQ(head && head->next && head->next->kind == sim::mission::kMoveGround, true);
+    CHECK_EQ(head ? head->scratch0 : 0u, (100u) | (100u << 16));
+    CHECK_EQ(b.targeting().fault.empty(), true);
+}
+
 // Unit creation and footprints through the battle: a structure claims its yard
 // cells, a mobile unit its ground cells, limits and table ranges are respected,
 // and death releases the cells.
@@ -1145,6 +1224,7 @@ int main() {
     test_ground_settle();
     test_projectiles();
     test_battle();
+    test_targeting();
     test_unit_create();
     test_motion();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

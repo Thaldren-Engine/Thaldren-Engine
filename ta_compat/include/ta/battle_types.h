@@ -38,5 +38,10 @@ bool load_unit_assets(Vfs& vfs, const UnitDefRecord& d, UnitTypeAssets& out, std
 // Values are taken as the original stores them (a max damage of 0 stays 0).
 void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, const std::vector<sim::WeaponType>& weapons,
                          sim::BattleUnitType& out);
+// The targeting part of a battle unit type (sim/targeting.h): category masks by name from the
+// definition table's registry (a type's bit is its definition index), sight, leash, transport
+// and water limits.
+void to_targeting_type(const UnitDefRecord& d, const CategoryRegistry& categories, const std::vector<sim::WeaponType>& weapons,
+                       sim::TargetingTypeInfo& out);
 
 } // namespace ta

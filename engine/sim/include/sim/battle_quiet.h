@@ -1,7 +1,8 @@
 #pragma once
 // A BattleOutside that does nothing: no motion, no mission behaviours (they
-// report "continue"), energy always paid, no presentation, network or user
-// interface. Tools and tests derive from it and override what they need.
+// report "continue"), energy always paid, everything in sight, no AI, no
+// presentation, network or user interface. Tools and tests derive from it
+// and override what they need.
 
 #include "sim/battle.h"
 
@@ -14,10 +15,17 @@ public:
     std::uint8_t bucket_height(const Unit&) override { return 0; }
     void route_search_forget(MotionGoal&) override {}
     void update_sight(Unit&) override {}
-    void enemies_in_radius(int, const std::array<std::int32_t, 3>&, std::int32_t, std::vector<Unit*>&) override {}
-    Unit* fire_at_will_target(Unit&) override { return nullptr; }
-    bool issue_attack_order(Unit&, Unit&, bool) override { return false; }
-    std::uint8_t resolve_mission(OrderIntent, Unit&, Unit*, const std::array<std::int32_t, 3>*) override { return 0; }
+    // No line of sight system: every unit is in sight and the whole map explored; no features.
+    bool unit_visible(int, Unit&) override { return true; }
+    bool position_explored(int, const std::array<std::int32_t, 3>&) override { return true; }
+    std::uint8_t feature_flags(std::uint16_t) override { return 0; }
+    void ai_own_unit(int, Unit&) override {}
+    void ai_rescore(int) override {}
+    void route_search_tick() override {}
+    void ai_controller_step(int) override {}
+    void player_stage_rest(int) override {}
+    void players_stage_end() override {}
+    void under_attack_notice(Unit&) override {}
     void unfinished_decay(Unit&, std::int32_t) override {}
     bool use_resources_if_not_stalled(Unit&, float, float) override { return true; }
     void speech(Unit&, std::uint32_t, SpeechText) override {}
@@ -25,7 +33,6 @@ public:
     void build_counts_changed(Unit&) override {}
     void nano_beam(const std::array<std::int32_t, 3>&, const std::array<std::int32_t, 6>&) override {}
     std::int32_t run_mission(Unit&, MissionOrder&, std::uint32_t&) override { return mission_result::kContinue; }
-    void retarget(Unit*, Unit&, std::uint16_t) override {}
     void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
     void drop_unit(Unit&, std::int32_t) override {}
     void detach_from_carrier(Unit&) override {}
