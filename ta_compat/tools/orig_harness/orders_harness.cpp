@@ -16,6 +16,7 @@
 // Usage: orders_harness <TotalA.exe> <game_dir> [scenarios] [ticks]
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,7 @@
 #include "remote.h"
 #include "sim/combat.h"
 #include "sim/ground_settle.h"
+#include "sim/missions.h"
 #include "sim/orders.h"
 #include "sim/pose.h"
 #include "sim/rng.h"
@@ -69,14 +71,18 @@ constexpr u32 kHandlers[sim::mission::kCount] = {
     0x4152F0, 0x414E70, 0x4103E0, 0x410850, 0x40F7D0, 0x411560, 0x401CE0, 0x401FD0,
 };
 
-enum class StubRet { Zero, Variable, Silent };
+enum class StubRet { Zero, Variable, Silent, Queue };
 struct Stub {
     u32 address;
     int args;
     int id;
     int extra = 0;
     StubRet ret = StubRet::Zero;
+    int queue = 0;  // StubRet::Queue: which answer queue
 };
+// Answer queues of the mission behaviour stubs (index into Layout::queue).
+enum : int { qFireAtWill, qIssueAttack, qResolve, qResources, qEnemies, kQueues };
+constexpr u32 kQueueSize = 0x2000;
 const Stub kStubs[] = {
     {0x0049E1A0, 1, 1},   // weapons(unit)
     {0x0043DD20, 1, 6},   // motion(unit) [thiscall on the motion object]
@@ -114,13 +120,28 @@ const Stub kStubs[] = {
     {0x004B4F20, 1, 53},  // free(block) [cdecl]
     {0x00456190, 2, 62},  // broadcast script call(unit, function)
     {0x00406F00, 0, 70, 0, StubRet::Silent},  // AI plan command registration (not simulated)
+    // Called by the mission behaviours.
+    {0x0043B700, 1, 81, 0, StubRet::Queue, qFireAtWill},   // fire-at-will target(unit)
+    {0x0043B1F0, 3, 82, 0, StubRet::Queue, qIssueAttack},  // issue attack order(unit, target, forced)
+    {0x004011C0, 2, 84, 0, StubRet::Queue, qResources},    // use resources if not stalled(float e, float m) [thiscall]
+    {0x0041C150, 1, 85},                                   // build menu counts(unit)
 };
 constexpr int kGoalDetachId = 63, kAttachedDtorId = 64, kHandlerId = 65;
+constexpr int kEnemiesId = 80, kResolveId = 83, kNanoId = 86;
 const Stub kGoalDetach{0, 1, kGoalDetachId};    // goal vtable +4 (attached) [thiscall]
 const Stub kAttachedDtor{0, 1, kAttachedDtorId};  // attached object vtable +0 (flags) [thiscall]
+// Custom stubs: visible enemies(player, &pos, radius, 0, &vector) logs 5 args + pos and
+// fills the vector from its queue; resolve attack mission(&out, intent, unit, target, pos)
+// logs 5 args and writes the queued kind to *out; nano beam(&from, &box, slot) logs both.
+const Stub kEnemies{0x0040AD80, 5, kEnemiesId, 3};
+const Stub kResolve{0x0043F0E0, 5, kResolveId, 0, StubRet::Queue, qResolve};
+constexpr u32 kEnemiesStub = 0x0040AD80, kResolveStub = 0x0043F0E0, kNanoStub = 0x004720D0;
 
 std::size_t record_size(u32 id) {
     if (id == static_cast<u32>(kHandlerId)) return 5;
+    if (id == static_cast<u32>(kEnemiesId)) return 10;
+    if (id == static_cast<u32>(kResolveId)) return 7;
+    if (id == static_cast<u32>(kNanoId)) return 12;
     if (id == static_cast<u32>(kGoalDetachId) || id == static_cast<u32>(kAttachedDtorId)) return 3;
     for (const Stub& s : kStubs)
         if (static_cast<u32>(s.id) == id) return 2 + static_cast<std::size_t>(s.args + s.extra);
@@ -135,7 +156,18 @@ struct Emitter {
     void align() { while (b.size() % 16) b.push_back(0xCC); }
 };
 
-void emit_stub(Emitter& e, const Stub& s, u32 log_ptr_addr, u32 ret_addr) {
+// eax = next value of the answer queue at q ({read pointer, end, values...}), 0 when used up.
+void emit_queue_read(Emitter& e, u32 q) {
+    e.u8(0x8B); e.u8(0x0D); e.u32le(q);      // mov ecx,[q]
+    e.u8(0x3B); e.u8(0x0D); e.u32le(q + 4);  // cmp ecx,[q+4]
+    e.bytes({0x72, 0x04});                   // jb have
+    e.bytes({0x33, 0xC0});                   // xor eax,eax
+    e.bytes({0xEB, 0x09});                   // jmp done
+    e.bytes({0x8B, 0x01});                   // have: mov eax,[ecx]
+    e.u8(0x83); e.u8(0x05); e.u32le(q); e.u8(0x04);  // add dword [q],4
+}
+
+void emit_stub(Emitter& e, const Stub& s, u32 log_ptr_addr, u32 ret_addr, u32 queue_base = 0, bool emit_ret = true) {
     const bool cdecl_ret = s.address == 0x004B4F20;
     if (s.ret != StubRet::Silent) {
         e.u8(0xA1); e.u32le(log_ptr_addr);
@@ -156,9 +188,12 @@ void emit_stub(Emitter& e, const Stub& s, u32 log_ptr_addr, u32 ret_addr) {
     }
     if (s.ret == StubRet::Variable) {
         e.u8(0xA1); e.u32le(ret_addr);
+    } else if (s.ret == StubRet::Queue) {
+        emit_queue_read(e, queue_base + static_cast<u32>(s.queue) * kQueueSize);
     } else {
         e.u8(0x33); e.u8(0xC0);
     }
+    if (!emit_ret) return;
     if (cdecl_ret || s.args == 0) {
         e.u8(0xC3);
     } else {
@@ -176,7 +211,7 @@ struct Step {
 struct Layout {
     u32 caller_pass = 0, caller_one = 0, caller_kill = 0, heap = 0, scenario_heap = 0, bump_ptr = 0, stubs = 0, log_ptr = 0, log_base = 0,
         ret_val = 0, gs = 0, units = 0, defs = 0, models = 0, cells = 0, schema = 0, names = 0, files = 0, pinfo = 0, empty_def = 0,
-        script = 0, clock = 0, motion = 0, vtables = 0, attached = 0, handler = 0;
+        script = 0, clock = 0, motion = 0, vtables = 0, attached = 0, handler = 0, queues = 0, weapons = 0;
 };
 // ret_val block: +0 pay result, +0x10 stale in, +0x14 stale out, +0x18 kill kind, +0x1C kill unit,
 // +0x20 one-arg target function, +0x24 its argument, +0x28 EDI for the call.
@@ -203,6 +238,9 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
     L.motion = r.alloc(0x2000);
     L.vtables = r.alloc(0x1000);
     L.attached = r.alloc(0x40000);
+    L.queues = r.alloc(kQueues * kQueueSize);
+    L.weapons = r.alloc(0x1000);
+    if (!L.queues || !L.weapons) return false;
     if (!L.heap || !L.stubs || !L.log_base || !L.gs || !L.units || !L.cells || !L.files || !L.pinfo || !L.empty_def || !L.script ||
         !L.motion || !L.vtables || !L.attached)
         return false;
@@ -223,9 +261,66 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
     }
     for (const Stub& s : kStubs) {
         const u32 at = here();
-        emit_stub(e, s, L.log_ptr, L.ret_val);
+        emit_stub(e, s, L.log_ptr, L.ret_val, L.queues);
         e.align();
         if (!r.patch_jump(s.address, at)) return false;
+    }
+    // Visible enemies: the vector {allocator, begin, end, capacity} gets the next queued
+    // list {count, unit addresses...} (begin = end = 0 for an empty list or none left).
+    {
+        const u32 at = here();
+        const u32 q = L.queues + qEnemies * kQueueSize;
+        emit_stub(e, kEnemies, L.log_ptr, L.ret_val, L.queues, false);
+        e.u8(0x8B); e.u8(0x0D); e.u32le(q);      // mov ecx,[q]
+        e.u8(0x3B); e.u8(0x0D); e.u32le(q + 4);  // cmp ecx,[q+4]
+        e.bytes({0x72, 0x06});                   // jb have
+        e.bytes({0x33, 0xC0, 0x33, 0xD2});       // xor eax,eax; xor edx,edx
+        e.bytes({0xEB, 0x17});                   // jmp store
+        e.bytes({0x8B, 0x01});                   // have: mov eax,[ecx] (count)
+        e.bytes({0x8D, 0x51, 0x04});             // lea edx,[ecx+4] (begin)
+        e.bytes({0x8D, 0x0C, 0x82});             // lea ecx,[edx+eax*4]
+        e.u8(0x89); e.u8(0x0D); e.u32le(q);      // mov [q],ecx
+        e.bytes({0x85, 0xC0, 0x75, 0x02});       // test eax,eax; jnz +2
+        e.bytes({0x33, 0xD2});                   // xor edx,edx
+        e.bytes({0x8D, 0x04, 0x82});             // lea eax,[edx+eax*4] (end)
+        e.bytes({0x8B, 0x4C, 0x24, 0x14});       // store: mov ecx,[esp+0x14]
+        e.bytes({0x89, 0x51, 0x04, 0x89, 0x41, 0x08, 0x89, 0x41, 0x0C});
+        e.bytes({0xC2, 0x14, 0x00});             // ret 0x14
+        e.align();
+        if (!r.patch_jump(kEnemiesStub, at)) return false;
+    }
+    // Attack mission resolution: the queued kind byte goes to *out, which is returned.
+    {
+        const u32 at = here();
+        emit_stub(e, kResolve, L.log_ptr, L.ret_val, L.queues, false);
+        e.bytes({0x8B, 0x54, 0x24, 0x04});  // mov edx,[esp+4]
+        e.bytes({0x88, 0x02});              // mov [edx],al
+        e.bytes({0x8B, 0xC2});              // mov eax,edx
+        e.bytes({0xC2, 0x14, 0x00});        // ret 0x14
+        e.align();
+        if (!r.patch_jump(kResolveStub, at)) return false;
+    }
+    // Nano beam: logs the three start and six box words, then the slot.
+    {
+        const u32 at = here();
+        e.u8(0xA1); e.u32le(L.log_ptr);
+        e.u8(0xC7); e.u8(0x00); e.u32le(static_cast<u32>(kNanoId));
+        e.bytes({0x89, 0x48, 0x04});
+        e.bytes({0x8B, 0x54, 0x24, 0x04});  // mov edx,[esp+4]
+        for (int k = 0; k < 3; ++k) {
+            e.bytes({0x8B, 0x4A, static_cast<std::uint8_t>(4 * k)});
+            e.bytes({0x89, 0x48, static_cast<std::uint8_t>(8 + 4 * k)});
+        }
+        e.bytes({0x8B, 0x54, 0x24, 0x08});  // mov edx,[esp+8]
+        for (int k = 0; k < 6; ++k) {
+            e.bytes({0x8B, 0x4A, static_cast<std::uint8_t>(4 * k)});
+            e.bytes({0x89, 0x48, static_cast<std::uint8_t>(0x14 + 4 * k)});
+        }
+        e.bytes({0x8B, 0x54, 0x24, 0x0C, 0x89, 0x50, 0x2C});  // slot
+        e.u8(0x83); e.u8(0x05); e.u32le(L.log_ptr); e.u8(0x30);
+        e.bytes({0x33, 0xC0, 0xC2, 0x0C, 0x00});
+        e.align();
+        if (!r.patch_jump(kNanoStub, at)) return false;
     }
     const u32 goal_detach = here();
     emit_stub(e, kGoalDetach, L.log_ptr, L.ret_val);
@@ -339,7 +434,8 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
             ++bad;
             std::printf("mission table entry %u: %s flags %08x handler %08x\n", k, nm, r.r32(entry + 0x11), r.r32(entry + 4));
         }
-        r.w32(entry + 4, L.handler);
+        // Behaviours the engine implements run for real; the rest play back the script.
+        if (!sim::mission_implemented(static_cast<std::uint8_t>(k))) r.w32(entry + 4, L.handler);
     }
     table_report = "mission table: " + std::to_string(count) + " entries, " + std::to_string(bad) + " differences";
     r.w32(L.log_ptr, L.log_base);
@@ -360,7 +456,10 @@ enum : u32 {
     pFlags = 0x149,
     dName = 0x20, dModelMaxY = 0x16E, dEnergyCost = 0x186, dMetalCost = 0x18A, dCob = 0x18E, dMaxVelocity = 0x192,
     dDamageModifier = 0x1AA, dWindGen = 0x1D2, dBuildTime = 0x1EA, dMaxDamage = 0x1FA, dHealTime = 0x200, dWaterline = 0x22C,
-    dDefaultMission = 0x230, dTypeFlags = 0x241, kDefSize = 0x249,
+    dDefaultMission = 0x230, dTypeFlags = 0x241, kDefSize = 0x249, dCanDo = 0x245, dWorkerTime = 0x1FE, dModelMinX = 0x15E,
+    dModelMinZ = 0x166, dModelMaxX = 0x16A, dModelMaxZ = 0x172, uCloakHoldoff = 0xB0, pAllied = 0x108, gGravity = 0x14263,
+    gUnitsEnd = 0x1435B,
+    wVelocity = 0x68, wEnergy = 0xC0, wMetal = 0xC4, wMinAngle = 0xC8, wRange = 0xDC, wReload = 0xE4, wFlags = 0x111,
     gLocalPlayer = 0x2A42, gLocalView = 0x2A43, gMapFlags = 0x14281, gDifficulty = 0x37EEE, gGameMode = 0x37EF6, gFlash = 0x37F06,
     gCommanderNames = 0x37F5F, kSideSize = 0x232,
     oKind = 0x04, oStep = 0x05, oWait = 0x06, oWake = 0x0A, oUnit = 0x0E, oLink = 0x12, oPos = 0x22, oScratch = 0x2E, oParams = 0x36,
@@ -385,6 +484,9 @@ u32 fbits(float f) {
     return b;
 }
 
+// Real behaviour steps by mission kind and result (results 0..9, 10 = other).
+std::array<std::array<std::size_t, 11>, sim::mission::kCount> g_real_runs{};
+
 struct MotionInfo {
     u32 block = 0;
     u32 goal_current = 0;
@@ -392,13 +494,19 @@ struct MotionInfo {
     u32 start = 0;
 };
 
-struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::OrderSystems, sim::GroundSettleSystems {
+struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::OrderSystems, sim::GroundSettleSystems,
+               sim::MissionSystems {
     std::vector<sim::Unit>* units = nullptr;
     std::vector<sim::UnitTickState>* ticks = nullptr;
     std::vector<sim::PlayerSlot>* players = nullptr;
     sim::Combat* combat = nullptr;
     sim::OrderContext* orders = nullptr;
+    sim::Missions* missions = nullptr;
     sim::UnitTickEnvironment* env = nullptr;
+    u32 units_base = 0;  // the original's unit table (answers hold unit addresses)
+    std::array<std::vector<u32>, kQueues> queue;
+    std::array<std::size_t, kQueues> queue_at{};
+    std::size_t behaviour_calls = 0;  // since the last deal of answers
     std::vector<sim::GroundSettleType>* settle_types = nullptr;  // by type index
     const sim::HeightMap* hm = nullptr;
     sim::BattleRng rng;
@@ -453,10 +561,14 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     }
     void repair_heal(sim::Unit& w, sim::Unit& t, float rate) override { sim::repair_heal(*combat, w, t, rate); }
     void primary_orders(sim::Unit& u, u32& stale) override {
+        missions->caller = sim::MissionCaller::Primary;
         sim::run_primary_orders(*orders, u);
         stale = env->addresses.player(env->pass_slot);
     }
-    void secondary_orders(sim::Unit& u, u32& stale) override { sim::run_secondary_orders(*orders, u, stale); }
+    void secondary_orders(sim::Unit& u, u32& stale) override {
+        missions->caller = sim::MissionCaller::Secondary;
+        sim::run_secondary_orders(*orders, u, stale);
+    }
     void motion(sim::Unit& u, u32&) override { rec(6, 0x7E000000u | u.id, {tok(u)}); }
     void settle_height(sim::Unit& u, u32& stale) override { settle(u, stale); }
     void settle(sim::Unit& u, u32& stale) {
@@ -505,6 +617,17 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     }
     // OrderSystems
     std::int32_t run_mission(sim::Unit& u, sim::MissionOrder& o, std::uint32_t& event) override {
+        const std::uint8_t kind = o.kind;
+        if (++behaviour_calls > 100000) {  // an order that never sleeps: the original hangs too
+            missions->fault = "endless behaviour loop";
+            return 7;
+        }
+        const std::int32_t res = sim::run_mission_behaviour(*missions, u, o, event);
+        if (sim::mission_implemented(kind)) ++g_real_runs[kind][static_cast<u32>(res) < 10 ? static_cast<std::size_t>(res) : 10];
+        return res;
+    }
+    // MissionSystems
+    std::int32_t run_other(sim::Unit& u, sim::MissionOrder& o, std::uint32_t& event) override {
         log.insert(log.end(), {static_cast<u32>(kHandlerId), tok(u), o.address, event, o.kind});
         const Step& s = step_at < steps.size() ? steps[step_at++] : fallback;
         o.wait |= s.wait_or;
@@ -540,6 +663,57 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         rec(53, 0, {o->address});
         live.erase(o->address);
         delete o;
+    }
+    u32 next_answer(int q) {
+        const auto& v = queue[static_cast<std::size_t>(q)];
+        std::size_t& at = queue_at[static_cast<std::size_t>(q)];
+        return at < v.size() ? v[at++] : 0u;
+    }
+    sim::Unit* unit_at(u32 address) {
+        if (!address) return nullptr;
+        return &(*units)[(address - units_base) / kUnitSize];
+    }
+    void speech(sim::Unit& u, std::uint32_t id, sim::SpeechText text) override {
+        static constexpr u32 kTexts[] = {0, 0x005012DC, 0x005016AC, 0x005012CC};
+        rec(14, 0, {tok(u), id, kTexts[static_cast<int>(text)]});
+    }
+    void enemies_in_radius(int player, const std::array<i32, 3>& pos, i32 radius, std::vector<sim::Unit*>& out) override {
+        rec(kEnemiesId, 0, {static_cast<u32>(player), 0, static_cast<u32>(radius), 0, 0, static_cast<u32>(pos[0]),
+                            static_cast<u32>(pos[1]), static_cast<u32>(pos[2])});
+        const auto& v = queue[qEnemies];
+        std::size_t& at = queue_at[qEnemies];
+        if (at >= v.size()) return;
+        const u32 n = v[at++];
+        for (u32 k = 0; k < n; ++k) out.push_back(unit_at(v[at++]));
+    }
+    sim::Unit* fire_at_will_target(sim::Unit& u) override {
+        rec(81, 0, {tok(u)});
+        return unit_at(next_answer(qFireAtWill));
+    }
+    bool issue_attack_order(sim::Unit& u, sim::Unit& t, bool forced) override {
+        rec(82, 0, {tok(u), tok(t), forced ? 1u : 0u});
+        return next_answer(qIssueAttack) != 0;
+    }
+    std::uint8_t resolve_attack_mission(sim::Unit& u, sim::Unit* t) override {
+        rec(kResolveId, 0, {0, 3, tok(u), t ? tok(*t) : 0u, 0});
+        return static_cast<std::uint8_t>(next_answer(qResolve));
+    }
+    bool use_resources_if_not_stalled(sim::Unit& u, float e, float m) override {
+        rec(84, 0x41000000u | u.id, {fbits(e), fbits(m)});
+        return next_answer(qResources) != 0;
+    }
+    void build_counts_changed(sim::Unit& u) override { rec(85, 0, {tok(u)}); }
+    void nano_beam(const std::array<i32, 3>& from, const std::array<i32, 6>& box) override {
+        log.push_back(static_cast<u32>(kNanoId));
+        log.push_back(0);
+        for (i32 v : from) log.push_back(static_cast<u32>(v));
+        for (i32 v : box) log.push_back(static_cast<u32>(v));
+        log.push_back(6);
+    }
+    void drop_goal_object(sim::Unit& u, sim::MissionOrder& o) override {
+        rec(kGoalDetachId, 0x7D000000u | u.id, {0});
+        rec(kAttachedDtorId, o.attached, {1});
+        o.attached = 0;
     }
     // GroundSettleSystems
     std::int32_t motion_speed(sim::Unit& u) override { return motions[u.id].speed; }
@@ -579,6 +753,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     const int ntypes = 3;
     std::vector<int> pick;
     std::vector<sim::GroundSettleType> settle_types(ntypes + 1);
+    std::vector<sim::MissionTypeInfo> mission_types(ntypes + 1);
     u32 file_at = L.files;
     for (int k = 0; k < ntypes; ++k) {
         std::size_t ti = g() % types.size();
@@ -615,6 +790,18 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         t.tick_info.type_flags = t.def->type_flags;
         const u32 variants[] = {0, 0x1000, 0x80000, 0x100000, 0x101000, 0x81000, 0x180000};
         if (g() % 4) t.tick_info.type_flags = (t.tick_info.type_flags & ~0x181000u) | variants[g() % 7];
+        if (g() % 3 == 0) t.tick_info.type_flags ^= 0x40u;   // builder
+        if (g() % 3 == 0) t.tick_info.type_flags ^= 0x800u;  // can fly
+        // Mission abilities (on/off, attack, cloak, self-destruct countdown) and worker time.
+        sim::MissionTypeInfo& mt = mission_types[static_cast<std::size_t>(k + 1)];
+        const u32 countdowns[] = {5, 5, 5, 0, 1, 3, 6, 7};
+        mt.abilities = (g() % 2 ? 1u << 2 : 0u) | (g() % 2 ? 1u << 4 : 0u) | (g() % 2 ? 1u << 13 : 0u) |
+                       (countdowns[g() % 8] << 20) | static_cast<u32>(g() & 0x8F03u);
+        mt.worker_time = static_cast<std::uint16_t>(g() % 4 == 0 ? g() : g() % 400);
+        t.info.model_min_x = -static_cast<i32>(g() % 0x200000);
+        t.info.model_min_z = -static_cast<i32>(g() % 0x200000);
+        t.info.model_max_x = static_cast<i32>(g() % 0x200000);
+        t.info.model_max_z = static_cast<i32>(g() % 0x200000);
         t.settle.type_flags = t.tick_info.type_flags;
         t.settle.waterline = static_cast<std::uint8_t>(g() % 3 == 0 ? t.def->waterline : g() % 256);
         t.settle.max_velocity = g() % 3 == 0 ? t.def->max_velocity : static_cast<i32>(g() % 0x80000);
@@ -639,6 +826,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         put(dWaterline, &t.settle.waterline, 1);
         put(dDefaultMission, &t.tick_info.default_mission, 1);
         put(dTypeFlags, &t.tick_info.type_flags, 4);
+        put(dCanDo, &mt.abilities, 4);
+        put(dWorkerTime, &mt.worker_time, 2);
+        put(dModelMinX, &t.info.model_min_x, 4);
+        put(dModelMinZ, &t.info.model_min_z, 4);
+        put(dModelMaxX, &t.info.model_max_x, 4);
+        put(dModelMaxZ, &t.info.model_max_z, 4);
         r.write(t.remote_def, d.data(), d.size());
         r.w32(L.models + static_cast<u32>(k + 1) * 4, t.remote_model);
     }
@@ -651,6 +844,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
 
     // Players: slots 0..2 playing (controllers 1, 2, 3), a few idle slots.
     std::vector<sim::PlayerSlot> players(10);
+    std::vector<std::array<std::uint8_t, 16>> allied(10);
     const int per = kMaxUnits / 3;
     std::vector<std::string> side_names(3);
     for (int s = 0; s < 3; ++s) {
@@ -689,8 +883,37 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(at + pUnitsLost, &s.units_lost, 2);
         r.write(at + pFlags, &s.flags, 2);
         r.write(at + pSharesVision, s.shares_vision.data(), 10);
+        // Alliance bytes by the other player's state index (states 0..3 are used).
+        auto& al = allied[static_cast<std::size_t>(p)];
+        for (int k = 0; k < 4; ++k) al[static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(g() % 3 == 0 ? 1 + g() % 255 : 0);
+        r.write(at + pAllied, al.data(), 4);
         r.w32(at + pFirst, L.units + static_cast<u32>(playing ? s.first_unit : 1) * kUnitSize);
         r.w32(at + pLast, L.units + static_cast<u32>(playing ? s.last_unit : 0) * kUnitSize);
+    }
+
+    // Weapon types for the slots (range checks and stockpiles read them).
+    std::vector<sim::WeaponType> wtypes(4);
+    for (int w = 0; w < 4; ++w) {
+        sim::WeaponType& wt = wtypes[static_cast<std::size_t>(w)];
+        wt.flags = (g() % 3 == 0 ? sim::weapon_flags::kBallistic : 0u) | (g() % 4 == 0 ? sim::weapon_flags::kWaterWeapon : 0u) |
+                   (g() % 4 == 0 ? 1u << 17 : 0u) | static_cast<u32>(g() & 0x00080001u);
+        wt.velocity = static_cast<i32>(g() % 0x1000000);
+        wt.min_barrel_angle = static_cast<float>(g() % 1000) / 1000.0f - 0.3f;
+        wt.range = static_cast<i32>(g() % 8 == 0 ? g() % 0x10000 : g() % 1500);
+        wt.reload_time = static_cast<std::uint16_t>(g() % 8 == 0 ? 0 : g() % 4 == 0 ? g() : g() % 300);
+        wt.energy_per_shot = g() % 5 == 0 ? 0.0f : static_cast<float>(g() % 100000) / 7.0f;
+        wt.metal_per_shot = g() % 5 == 0 ? 0.0f : static_cast<float>(g() % 10000) / 3.0f;
+        const u32 at = L.weapons + static_cast<u32>(w) * 0x200;
+        std::vector<std::uint8_t> wd(0x200, 0);
+        auto put = [&](u32 off, const void* p, std::size_t n) { std::memcpy(&wd[off], p, n); };
+        put(wFlags, &wt.flags, 4);
+        put(wVelocity, &wt.velocity, 4);
+        put(wMinAngle, &wt.min_barrel_angle, 4);
+        put(wRange, &wt.range, 4);
+        put(wReload, &wt.reload_time, 2);
+        put(wEnergy, &wt.energy_per_shot, 4);
+        put(wMetal, &wt.metal_per_shot, 4);
+        r.write(at, wd.data(), wd.size());
     }
 
     // Units.
@@ -703,6 +926,15 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     sim::Combat combat{units, tstate, players, cenv, world};
     sim::UnitTickEnvironment env;
     sim::OrderContext octx{tstate, players, world.rng, world};
+    sim::MissionEnvironment menv;
+    menv.gravity = static_cast<i32>(g() % 3 == 0 ? 1 + g() % 4000 : 50 + g() % 200);  // 0 reaches the C runtime's error path
+    menv.addresses.game_state = L.gs;
+    menv.addresses.unit_table = L.units;
+    r.w32(L.gs + gGravity, static_cast<u32>(menv.gravity));
+    r.w32(L.gs + gUnitsEnd, L.units + static_cast<u32>(units.size() - 1) * kUnitSize);
+    sim::Missions missions{octx, units, combat, world, world, mission_types, allied, menv};
+    world.missions = &missions;
+    world.units_base = L.units;
     world.units = &units;
     world.ticks = &tstate;
     world.players = &players;
@@ -764,6 +996,10 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         u.hit_points = static_cast<std::int16_t>(g() % (lt.info.max_damage + 50));
         u.flags = sim::unit_flags::kAlive | (g() % 2 ? 0x30u : 0u) | (g() % 16 == 0 ? 0x4000u : 0u) | (g() % 2 ? 1u : g() % 4) |
                   (g() % 2 ? 0x10000u : 0u);
+        // Behaviour inputs: building/static (0x20000000), standing orders, cloak wish, activation.
+        u.flags |= (g() % 3 == 0 ? 0x20000000u : 0u) | (static_cast<u32>(g() % 16) << 18) | (g() % 4 == 0 ? 0x800u : 0u) |
+                   (g() % 8 == 0 ? 0x8000u : 0u);
+        u.activate_flags = static_cast<std::uint8_t>((g() % 2 ? 1u : 0u) | (g() % 4 == 0 ? g() & 0x1Eu : 0u));
         u.net_dirty = static_cast<std::uint16_t>(g() % 3 == 0 ? g() : 0);
         u.build_fraction_left = g() % 6 == 0 ? 0.5f : 0.0f;
         t.has_motion = g() % 5 != 0;
@@ -805,6 +1041,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(at + uBuildLeft, &u.build_fraction_left, 4);
         r.write(at + uHp, &u.hit_points, 2);
         r.w32(at + uFlags, u.flags);
+        r.write(at + uActivate, &u.activate_flags, 1);
         // Weapon slot targets and flags (the weapon-target routines run for real).
         for (int s = 0; s < 3; ++s) {
             sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
@@ -812,9 +1049,14 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             ws.target_x = kind == 0 ? 0 : static_cast<std::int16_t>(kind == 1 ? g() % 3000 : 1 + g() % kMaxUnits);
             ws.target_z = kind == 1 ? static_cast<std::int16_t>(g() % 3000) : sim::kUnitTarget;
             ws.flags = static_cast<std::uint8_t>(g() & 0x1F);
+            const u32 wi = g() % 4;
+            ws.type = &wtypes[wi];
+            ws.stockpile = static_cast<std::uint8_t>(g() % 4 == 0 ? 195 + g() % 61 : g() % 10);
             const u32 sa = at + 4 + static_cast<u32>(s) * 0x1C;
             r.write(sa + 0x00, &ws.target_x, 2);
             r.write(sa + 0x02, &ws.target_z, 2);
+            r.w32(sa + 0x0C, L.weapons + wi * 0x200);
+            r.write(sa + 0x1A, &ws.stockpile, 1);
             r.write(sa + 0x1B, &ws.flags, 1);
         }
         u32 state = 0;
@@ -875,8 +1117,11 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             std::vector<u32> rec(in.begin() + static_cast<std::ptrdiff_t>(i), in.begin() + static_cast<std::ptrdiff_t>(i + n));
             i += n;
             const u32 id = rec[0];
-            if (remote && id != 6 && id != kHandlerId && (id < 10 || id > 13) && id != 61 && id != kGoalDetachId && id != kAttachedDtorId)
+            if (remote && id != 6 && id != kHandlerId && (id < 10 || id > 13) && id != 61 && id != kGoalDetachId && id != kAttachedDtorId &&
+                id != 84)
                 rec[1] = 0;
+            if (id == static_cast<u32>(kEnemiesId)) rec[3] = rec[6] = 0;  // stack addresses
+            if (id == static_cast<u32>(kResolveId)) rec[2] = 0;
             if (id == 53 && !world.all_orders.count(rec[2])) continue;
             if (id == 16) {
                 rec[3] = 0;
@@ -905,6 +1150,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         if (!log.empty()) r.read(L.log_base, log.data(), log.size() * 4);
         r.w32(L.log_ptr, L.log_base);
         for (auto& w : log) norm_ptr(w);
+        for (auto& w : world.log) norm_ptr(w);  // undefined reads can pass unit addresses
         const std::vector<u32> theirs = normalise(log, true);
         const std::vector<u32> mine = normalise(world.log, false);
         world.log.clear();
@@ -947,6 +1193,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             if (f8(uDamagedTimer) != t.damaged_timer || f32(uHoldoff) != t.transfer_holdoff) bad(un + "timers");
             if (f8(uActivate) != u.activate_flags || f8(uScriptFlags) != u.script_flags) bad(un + "activate/script flags");
             if (f16(uNetDirty) != u.net_dirty) bad(un + "pending events");
+            if (f32(uCloakHoldoff) != u.cloak_holdoff_tick) bad(un + "decloak hold-off");
             if (static_cast<i32>(f32(uPosX)) != u.pos[0] || static_cast<i32>(f32(uPosY)) != u.pos[1] || static_cast<i32>(f32(uPosZ)) != u.pos[2])
                 bad(un + "position");
             if (static_cast<std::int16_t>(f16(uPitch)) != u.pitch || f16(uHeading) != u.heading || static_cast<std::int16_t>(f16(uBank)) != u.bank)
@@ -956,7 +1203,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 const sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
                 const u32 so = 4 + static_cast<u32>(s) * 0x1C;
                 if (static_cast<std::int16_t>(f16(so)) != ws.target_x || static_cast<std::int16_t>(f16(so + 2)) != ws.target_z ||
-                    f8(so + 0x1B) != ws.flags)
+                    f8(so + 0x1B) != ws.flags || f8(so + 0x1A) != ws.stockpile)
                     bad(un + "weapon slot " + std::to_string(s));
             }
             // Orders, both lists.
@@ -1031,6 +1278,11 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         return ok;
     };
     auto engine_faulted = [&]() {
+        if (!missions.fault.empty()) {
+            ++st.faults;
+            std::printf("scenario %u: stopped, the original would fail here: %s\n", seed, missions.fault.c_str());
+            return true;
+        }
         for (const auto& u : units)
             if (u.script && !u.script->fault().empty()) {
                 ++st.faults;
@@ -1078,6 +1330,43 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         blk[0] = L.script + 7 * 4;
         blk[1] = L.script + static_cast<u32>(blk.size()) * 4;
         r.write(L.script, blk.data(), blk.size() * 4);
+        // Answers of the systems the real behaviours call (same lists for both sides).
+        std::vector<u32> targets;
+        for (int i : present)
+            if (alive(i) && !(units[static_cast<std::size_t>(i)].flags & 0x4000u)) targets.push_back(unit_addr(i));
+        auto some_unit = [&]() { return targets.empty() ? 0u : targets[g() % targets.size()]; };
+        for (int q = 0; q < kQueues; ++q) {
+            std::vector<u32>& v = world.queue[static_cast<std::size_t>(q)];
+            v.clear();
+            world.queue_at[static_cast<std::size_t>(q)] = 0;
+            world.behaviour_calls = 0;
+            const int answers = static_cast<int>(g() % 6);
+            for (int k = 0; k < answers; ++k) {
+                switch (q) {
+                case qFireAtWill: v.push_back(g() % 3 == 0 ? 0u : some_unit()); break;
+                case qIssueAttack: v.push_back(g() % 2); break;
+                case qResolve: {  // never AttackSpecial itself (it would resolve again at once, forever)
+                    u32 kd = g() % 3 == 0 ? 0u : g() % sim::mission::kCount;
+                    if (kd == sim::mission::kAttackSpecial) kd = sim::mission::kAttackNoMove;
+                    // An attack never resolves to a background kind; one would leave an order
+                    // in a list its flags do not name, and clearing it would never end.
+                    if (sim::mission::default_flags()[kd] & sim::order_flags::kSecondary) kd = sim::mission::kAttackChase;
+                    v.push_back(kd);
+                    break;
+                }
+                case qResources: v.push_back(g() % 4 ? 1u : 0u); break;
+                default: {
+                    const u32 count = targets.empty() ? 0u : g() % 4;
+                    v.push_back(count);
+                    for (u32 c = 0; c < count; ++c) v.push_back(some_unit());
+                }
+                }
+            }
+            const u32 qa = L.queues + static_cast<u32>(q) * kQueueSize;
+            std::vector<u32> img = {qa + 8, qa + 8 + static_cast<u32>(v.size()) * 4};
+            img.insert(img.end(), v.begin(), v.end());
+            r.write(qa, img.data(), img.size() * 4);
+        }
         world.next_address = r.r32(L.bump_ptr);
         octx.game_tick = env.game_tick;
     };
@@ -1094,9 +1383,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         o.wake_tick = g() % 4 == 0 ? 0xFFFFFFFFu : env.game_tick + g() % 40 - 10;
         o.events = g() % 2 ? 0 : waits[g() % 9];
         o.step = static_cast<std::uint8_t>(g() % 4);
+        if (o.kind == sim::mission::kGuardNoMove && o.step == 2) o.step = 1;  // step 2 needs the target found in step 1
         const u32 bits[] = {0x4, 0x4000, 0x10000, 0x400000, 0x800000, 0x200, 0x400};
         if (g() % 2) o.flags ^= bits[g() % 7];
-        if (g() % 40 == 0 && &o == units[static_cast<std::size_t>(i)].orders) o.flags |= sim::order_flags::kSecondary;
+        // (Not for real behaviours: one that always finishes would then run forever, as in the original.)
+        if (g() % 40 == 0 && &o == units[static_cast<std::size_t>(i)].orders && !sim::mission_implemented(o.kind))
+            o.flags |= sim::order_flags::kSecondary;
         if (g() % 3 == 0) o.attached = g() % 3 ? new_attached() : 0;
         r.write(o.address + oStep, &o.step, 1);
         r.w32(o.address + oWait, o.wait);
@@ -1112,12 +1404,38 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     };
     // Builds a new order with the original constructor and insertion routines (and ours).
     auto create_order = [&](int i) -> bool {
-        const auto kind = static_cast<std::uint8_t>(g() % 4 == 0 ? sim::mission::kParalyze : g() % sim::mission::kCount);
+        auto kind = static_cast<std::uint8_t>(g() % 4 == 0 ? sim::mission::kParalyze : g() % sim::mission::kCount);
+        // Half of the others are behaviours that run for real.
+        if (g() % 2)
+            while (!sim::mission_implemented(kind)) kind = static_cast<std::uint8_t>(g() % sim::mission::kCount);
         const int ti = g() % 3 == 0 ? 0 : static_cast<int>(1 + g() % kMaxUnits);
         sim::Unit* target = ti ? &units[static_cast<std::size_t>(ti)] : nullptr;
         std::array<i32, 3> pos = {static_cast<i32>(g()), static_cast<i32>(g()), static_cast<i32>(g())};
         const bool has_pos = g() % 2;
-        const i32 p0 = static_cast<i32>(g() % 3 == 0 ? g() : g() % 100), p1 = static_cast<i32>(g()), p2 = static_cast<i32>(g());
+        i32 p0 = static_cast<i32>(g() % 3 == 0 ? g() : g() % 100), p1 = static_cast<i32>(g()), p2 = static_cast<i32>(g());
+        // Parameters the real behaviours can take without the original failing.
+        switch (kind) {
+        case sim::mission::kBuildWeapon:  // slot, rounds to build, progress
+            p0 = static_cast<i32>(g() % 3);
+            p1 = static_cast<i32>(g() % 8) - 2;
+            p2 = static_cast<i32>(g() % 400);
+            break;
+        case sim::mission::kSelfDestruct:
+        case sim::mission::kSelfDestructFg: {  // the countdown indexes a table on the stack
+            p0 = g() % 4 == 0 ? 1 : 0;
+            const u32 m = g() % 3;
+            p1 = static_cast<i32>(m == 0 ? 0u : m == 1 ? 0xF0000000u | g() % 10 : static_cast<u32>(g()) & 0x0FFFFFFFu);
+            break;
+        }
+        case sim::mission::kAttackUnitType: p0 = static_cast<i32>(1 + g() % 4); break;  // unit type index
+        case sim::mission::kWait:  // steps, radius
+            p0 = static_cast<i32>(g() % 400) - 50;
+            p1 = g() % 2 ? 0 : static_cast<i32>(g() % 2000);
+            break;
+        case sim::mission::kStandingFireOrder:
+        case sim::mission::kStandingMoveOrder: p0 = static_cast<i32>(g() % 3 == 0 ? g() : g() % 4); break;
+        default: break;
+        }
         r.write(L.names + 0x100, pos.data(), 12);
         sim::MissionOrder* o = world.allocate_order();
         sim::construct_order(octx, *o, kind, target, has_pos ? pos.data() : nullptr, p0, p1, p2);
@@ -1126,7 +1444,10 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         if (!r.call(kConstruct, mem, {kind, ti ? unit_addr(ti) : 0u, has_pos ? L.names + 0x100 : 0u, static_cast<u32>(p0),
                                       static_cast<u32>(p1), static_cast<u32>(p2)}))
             return fail("constructor");
-        if (g() % 3 == 0) {  // a background order (as some behaviours make them)
+        // A background order (as some behaviours make them). Not AttackSpecial: it takes the
+        // flags of the kind it becomes, and the order would then sit in a list its flags do
+        // not name (the original's clearing never ends then).
+        if (g() % 3 == 0 && kind != sim::mission::kAttackSpecial) {
             o->flags |= sim::order_flags::kSecondary;
             r.w32(mem + oFlags, o->flags);
         }
@@ -1168,6 +1489,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         world.kill_flash = false;
         world.pay_result = g() % 4 ? 1u : 0u;
         octx.game_tick = env.game_tick;
+        menv.sea_level = env.sea_level;
         r.w32(L.gs + 0x38A47, env.game_tick);
         r.w32(L.gs + 0x37EE2, 0);
         r.w32(L.schema + 0xD4C, env.water_damage_enabled ? 1u : 0u);
@@ -1223,6 +1545,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                     o->events |= g() % 3 ? o->wait : 0x10000u;
                     r.w32(o->address + oEvents, o->events);
                 }
+                missions.caller = sim::MissionCaller::Primary;
                 sim::run_primary_orders(octx, u);
                 if (engine_faulted()) return true;
                 if (!call_one(kPrimary, unit_addr(i), edi, stale)) return fail("primary orders");
@@ -1238,6 +1561,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                     }
                 u32 stale = random_stale();
                 const u32 before = stale;
+                missions.caller = sim::MissionCaller::Secondary;
                 sim::run_secondary_orders(octx, u, stale);
                 if (engine_faulted()) return true;
                 if (!call_one(kSecondary, unit_addr(i), 0, before)) return fail("secondary orders");
@@ -1357,6 +1681,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: orders_harness <TotalA.exe> <game_dir> [scenarios] [ticks]\n");
         return 2;
     }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const int scenarios = argc > 3 ? std::atoi(argv[3]) : 50;
     const int ticks = argc > 4 ? std::atoi(argv[4]) : 100;
     ta::Vfs vfs;
@@ -1421,6 +1746,16 @@ int main(int argc, char** argv) {
     for (const auto& [k, v] : st.secondary_stale) std::printf("  %s: %zu\n", k.c_str(), v);
     std::printf("unit pass, stale word left:\n");
     for (const auto& [k, v] : st.pass_stale) std::printf("  %s: %zu\n", k.c_str(), v);
+    std::printf("real behaviour steps by kind (results 0..9, other):\n");
+    const auto names = ta::UnitDefContext::default_mission_names();
+    for (int k = 0; k < sim::mission::kCount; ++k) {
+        std::size_t total = 0;
+        for (std::size_t v : g_real_runs[static_cast<std::size_t>(k)]) total += v;
+        if (!total) continue;
+        std::printf("  %-20s %7zu:", std::string(names[static_cast<std::size_t>(k)]).c_str(), total);
+        for (std::size_t v : g_real_runs[static_cast<std::size_t>(k)]) std::printf(" %zu", v);
+        std::printf("\n");
+    }
     std::printf("mismatching scenarios %zu, engine faults %zu, original failures %zu\n", st.mismatches, st.faults, st.failures);
     return st.mismatches || st.failures ? 1 : 0;
 }
