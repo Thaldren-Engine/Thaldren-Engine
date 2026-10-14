@@ -152,7 +152,7 @@ int GameClient::frame(std::uint32_t now_ms) {
     last_scaled_ = scaled;
     const int steps = budget_.update(now_ms);
     for (int k = 0; k < steps; ++k) step_battle(b_);
-    b_.expire_lingering_sight();  // once per frame, after the frame's steps (even none)
+    end_frame(b_);  // once per frame, after the frame's steps (even none)
     // Console lines expire one per frame, each (text_seconds + 1) seconds after it came.
     if (!console_.empty() && console_.front().tick + static_cast<std::uint32_t>(opt_.text_seconds + 1) * 30u < b_.game_tick())
         console_.pop_front();

@@ -12,6 +12,15 @@
 #include "sim/targeting.h"
 #include "sim/unit_tick.h"
 
+// With the game-flow agent's command layer and Battle::step present, the adapter uses them;
+// otherwise it carries its own copy of the rules (same spec).
+#if __has_include("sim/commands.h")
+#define CLIENT_GAME_FLOW 1
+#include "sim/commands.h"
+#else
+#define CLIENT_GAME_FLOW 0
+#endif
+
 namespace client {
 namespace {
 
@@ -19,6 +28,7 @@ bool selected_of(const sim::Battle& b, std::size_t i, int player) {
     return b.ticks[i].type_index != 0 && b.ticks[i].owner == player && (b.units[i].flags & sim::unit_tick_flags::kSelected);
 }
 
+#if !CLIENT_GAME_FLOW
 // Abilities bits 0 and 1 of the unit type: whether standing move / fire orders apply.
 constexpr std::uint32_t kAbilityMoveOrders = 1, kAbilityFireOrders = 2;
 
@@ -50,9 +60,11 @@ bool cancel_match(sim::Battle& b, sim::Unit& u, std::uint8_t kind, const sim::Un
     }
     return false;
 }
+#endif  // !CLIENT_GAME_FLOW
 
 } // namespace
 
+#if !CLIENT_GAME_FLOW
 int command_selected(sim::Battle& b, int player, std::uint8_t intent, sim::Unit* target, const WorldPos* pos, bool queued) {
     // Centre of the selection (whole world units), the target unit excluded.
     std::int64_t sx = 0, sz = 0;
@@ -103,6 +115,8 @@ int command_selected_kind(sim::Battle& b, int player, std::uint8_t kind, std::in
     return given;
 }
 
+#endif  // !CLIENT_GAME_FLOW
+
 void change_build_count(sim::Battle& b, sim::Unit& factory, std::uint16_t type, std::int32_t delta) {
     b.order_build_count(factory, type, delta);
 }
@@ -117,6 +131,7 @@ std::int32_t build_count(const sim::Unit& factory, std::uint16_t type) {
     return n;
 }
 
+#if !CLIENT_GAME_FLOW
 int command_build(sim::Battle& b, int player, std::uint16_t type, const WorldPos& pos, bool queued) {
     int given = 0;
     for (std::size_t i = 1; i < b.units.size(); ++i) {
@@ -134,10 +149,48 @@ int command_build(sim::Battle& b, int player, std::uint16_t type, const WorldPos
     return given;
 }
 
+#endif  // !CLIENT_GAME_FLOW
+
 bool structure_fits(sim::Battle& b, std::uint16_t type, int cell_x, int cell_z) {
     return sim::structure_fits(b.construction(), type, static_cast<std::int16_t>(cell_x), static_cast<std::int16_t>(cell_z));
 }
 
+#if CLIENT_GAME_FLOW
+namespace {
+int count_selected(const sim::Battle& b, int player, const sim::Unit* except) {
+    int n = 0;
+    for (std::size_t i = 1; i < b.units.size(); ++i) n += selected_of(b, i, player) && &b.units[i] != except;
+    return n;
+}
+}  // namespace
+
+int command_selected(sim::Battle& b, int player, std::uint8_t intent, sim::Unit* target, const WorldPos* pos, bool queued) {
+    const int n = count_selected(b, player, target);
+    sim::command::issue_to_selected(b, player, intent, 0, queued, target, pos, 0, 0);
+    return n;
+}
+
+int command_selected_kind(sim::Battle& b, int player, std::uint8_t kind, std::int32_t param, bool queued) {
+    const int n = count_selected(b, player, nullptr);
+    sim::command::issue_to_selected(b, player, 0, kind, queued, nullptr, nullptr, param, 0);
+    return n;
+}
+
+int command_build(sim::Battle& b, int player, std::uint16_t type, const WorldPos& pos, bool queued) {
+    int given = 0;
+    for (std::size_t i = 1; i < b.units.size(); ++i) {
+        if (!selected_of(b, i, player) || !b.ticks[i].has_motion) continue;
+        const std::uint16_t t = b.ticks[i].type_index;
+        if (t >= b.types.size() || !b.types[t].construction.has_build_options) continue;
+        sim::command::issue_or_cancel(b, sim::mission::kMobileBuild, queued, b.units[i], nullptr, &pos, type, 0);
+        ++given;
+    }
+    return given;
+}
+
+void step_battle(sim::Battle& b) { b.step(); }
+void end_frame(sim::Battle& b) { b.end_frame(); }
+#else
 void step_battle(sim::Battle& b) {
     b.advance_tick();
     b.step_units_and_projectiles();
@@ -147,5 +200,7 @@ void step_battle(sim::Battle& b) {
     b.step_wind();       // stage 8
     b.step_nano();       // stage 9 (the nano streams' part of the effect sweep)
 }
+void end_frame(sim::Battle& b) { b.expire_lingering_sight(); }
+#endif
 
 } // namespace client
