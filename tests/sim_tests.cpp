@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "sim/battle.h"
 #include "sim/combat.h"
 #include "sim/fixed.h"
 #include "sim/ground_settle.h"
@@ -853,6 +854,132 @@ void test_projectiles() {
     CHECK_EQ(table.count, sim::kMaxProjectiles);
 }
 
+// Records what reaches the outside of a battle; everything else does nothing.
+struct NullOutside : sim::BattleOutside {
+    int sounds = 0, explosions = 0, missions = 0;
+    void motion_step(Unit&, std::uint32_t&) override {}
+    std::int32_t motion_speed(const Unit&) override { return 0; }
+    std::uint32_t motion_start_tick(const Unit&) override { return 0; }
+    void release_motion(Unit&) override {}
+    void release_attached(Unit&, sim::MissionOrder&) override {}
+    std::int32_t run_mission(Unit&, sim::MissionOrder&, std::uint32_t&) override {
+        ++missions;
+        return sim::mission_result::kContinue;
+    }
+    void retarget(Unit*, Unit&, std::uint16_t) override {}
+    void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
+    void drop_unit(Unit&, std::int32_t) override {}
+    void detach_from_carrier(Unit&) override {}
+    bool yard_cells_free(Unit&, std::int32_t) override { return false; }
+    void claim_yard_cells(Unit&) override {}
+    void clear_footprint(Unit&) override {}
+    void release_unit(Unit&) override {}
+    bool pay_energy(Unit&, float) override { return true; }
+    void damage_feature(sim::MapCell&, std::int32_t, std::int32_t, const sim::WeaponType&) override {}
+    sim::Vec3i feature_anim_pos(std::uint16_t) override { return {}; }
+    void spawn_wreck(Unit&, std::int32_t, bool) override {}
+    void explode_piece(Unit&, std::int32_t, std::int32_t) override {}
+    void emit_sfx(Unit&, std::int32_t, std::int32_t) override {}
+    void reveal_dead_unit(Unit&) override {}
+    void forget_fog(Unit&) override {}
+    void victory_unit_destroyed(Unit&) override {}
+    void player_out_of_units(int) override {}
+    void commander_died(int) override {}
+    std::uint32_t clock_ticks() override { return 0; }
+    void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override {}
+    void broadcast_player_units(int) override {}
+    void broadcast_script_call(Unit&, std::int16_t) override {}
+    void on_activate_flags_changed(Unit&, std::uint8_t, std::uint8_t) override {}
+    void forget_speech(Unit&) override {}
+    void leave_group(Unit&) override {}
+    void stats_activity(std::int32_t) override {}
+    void kill_counted(std::uint8_t, Unit&) override {}
+    void stockpile_used(Unit&) override {}
+    void camera_follow_step() override {}
+    void play_sound(std::uint16_t, const sim::Vec3i&) override { ++sounds; }
+    void spawn_smoke(const sim::Vec3i&) override {}
+    void spawn_muzzle_smoke(const sim::Vec3i&) override {}
+    void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override { ++explosions; }
+    void camera_shake(std::int32_t, std::int32_t, std::int32_t) override {}
+};
+
+// A shooter and a target wired through a whole battle: the unit pass aims and
+// fires, the projectile update flies the shot until it hits the target.
+void test_battle() {
+    sim::HeightMap hm(16, 16);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(12345);
+    sim::Battle b(outside, hm, rng);
+    b.map.width = 16;
+    b.map.height = 16;
+    b.map.cells.resize(256);
+    b.types.resize(2);
+    b.types[1].info.max_damage = 1000;
+    b.types[1].tick.damage_modifier = 0x10000;
+    b.types[1].tick.name = "BOX";
+    // A 32-unit cube model; the target occupies its map cells (the footprint system is not built yet).
+    b.types[1].info.model_min_x = b.types[1].info.model_min_z = -(16 << 16);
+    b.types[1].info.model_max_x = b.types[1].info.model_max_z = 16 << 16;
+    b.types[1].info.model_min_y = 0;
+    b.types[1].info.model_max_y = 32 << 16;
+    for (int z = 5; z <= 7; ++z)
+        for (int x = 6; x <= 8; ++x) b.map.cells[static_cast<std::size_t>(z * 16 + x)].unit = 2;
+    b.units.resize(3);
+    b.ticks.resize(3);
+    sim::PlayerSlot& p = b.players[0];
+    p.active = true;
+    p.controller = 1;
+    p.first_unit = 1;
+    p.last_unit = 1;
+    p.alive_count = 1;
+    sim::PlayerSlot& enemy = b.players[1];  // shots pass through their own player's units
+    enemy.active = true;
+    enemy.controller = 2;
+    enemy.first_unit = 2;
+    enemy.last_unit = 2;
+    enemy.alive_count = 1;
+    for (std::uint16_t i = 1; i <= 2; ++i) {
+        Unit& u = b.units[i];
+        u.id = i;
+        u.type = &b.types[1].info;
+        u.hit_points = 1000;
+        u.flags = unit_flags::kAlive;
+        u.pos = {(i == 1 ? 40 : 120) << 16, 40 << 16, 100 << 16};
+        b.ticks[i].type_index = 1;
+        b.ticks[i].tick_type = &b.types[1].tick;
+        b.ticks[i].owner = i - 1;
+    }
+    sim::WeaponType gun;
+    gun.fire = sim::WeaponFireRoutine::LineOfSight;
+    gun.flags = sim::weapon_flags::kLineOfSight;
+    gun.range = 400;
+    gun.reload_time = 30;
+    gun.velocity = 0x80000;  // 8 units per step
+    gun.default_damage = 100;
+    gun.tolerance = 0x7FFF;  // the shooter need not turn
+    gun.pitch_tolerance = 0x7FFF;
+    gun.weapon_timer = 100;
+    sim::WeaponSlot& slot = b.units[1].weapons[0];
+    slot.type = &gun;
+    slot.flags = sim::slot_flags::kEnabled;
+    slot.target_x = 2;  // unit 2
+    slot.target_z = sim::kUnitTarget;
+    b.settings.sea_level = 0;
+    b.settings.gravity = 112;
+
+    b.advance_tick();
+    b.step_units_and_projectiles();
+    CHECK_EQ(outside.sounds >= 1, true);  // the launch sound: a shot left
+    CHECK_EQ(slot.reload > 0, true);
+    for (int k = 0; k < 20; ++k) {
+        b.advance_tick();
+        b.step_units_and_projectiles();
+    }
+    CHECK_EQ(b.units[2].hit_points < 1000, true);  // the shot arrived
+    CHECK_EQ(b.game_tick(), 21u);
+}
+
 } // namespace
 
 int main() {
@@ -874,6 +1001,7 @@ int main() {
     test_orders();
     test_ground_settle();
     test_projectiles();
+    test_battle();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

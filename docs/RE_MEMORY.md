@@ -972,6 +972,41 @@ The weapon type's routine is picked at load time (see "Weapon definitions"): tur
 - No lifetime, target, scripts or smoke of its own. Packet with the muzzle as start.
 - **The original requires a motion object** (it reads +0x20 through it). Only aircraft carry dropped weapons.
 
+### Battle step (integration) — `sim::Battle`
+`engine/sim/src/battle.cpp` holds the state of one game:
+- the unit table (index = id, entry 0 unused), per-unit states, 11 player records (ten slots plus "no owner"), unit types (entry 0 = the blank type of empty slots);
+- the projectile table, the map grid, feature types and settings.
+
+It wires the systems built so far to each other. Everything else goes through one `BattleOutside` interface:
+- systems not built yet: motion, mission behaviours, attack retargeting, transport, occupancy/footprints, economy, features, debris;
+- the network, presentation and user interface.
+
+**`Game_RunSimulationStep` (`0x00495490`), per pending step:**
+1. Increment the game tick (GS+0x38A47).
+2. Network input `0x00453D40` (when called for a network game).
+3. Unit pass `0x0048AD30`.
+4. Projectile update `0x0049B720`.
+5. Effects and debris `0x00420F30`.
+6. Players `0x00464F80`.
+7. Features `0x00424050`.
+8. Animation cursors `0x00415B30`, wind `0x00490C40`, meteors `0x00437DE0`, camera `0x0041CA10`.
+9. `0x00471EB0`, then `0x00466580`.
+10. Network flush, for a network game with `0x00506DBC` set.
+
+Between stages it adds GetTickCount deltas to profiling counters, which are not part of the simulation. After the frame's steps it runs `0x00428BD0`, `0x00428BE0`, `0x00428BF0`, `0x00463EF0` and `0x00482130`; see SIM_INVENTORY.
+
+`Battle::advance_tick()` and `Battle::step_units_and_projectiles()` cover stages 1, 3 and 4. Other stages run in the caller. Hook mapping:
+- weapons → slot pass; fire → fire routines;
+- damage, heal and kill → combat;
+- primary orders → order processing, then the stale word = the visited slot's player record;
+- secondary orders → order processing; settle → ground settle;
+- paralysis, clear orders, weapon-target release → orders;
+- projectile removal and death explosions → projectiles.
+
+Orders get stand-in heap addresses (a sequence from 0x01000000 in steps of 0x58), since the original's vary between runs.
+
+**Behaviour seen while testing:** shots pass through units of their own player (`owner_slot` equality in the hit test). Units are found only through the map cells' occupancy, which the footprint system will fill.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
