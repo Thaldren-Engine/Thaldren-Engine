@@ -9,6 +9,12 @@
 //              cloaked units translucent. Default: no fog, everything drawn.
 //   --gpu      also render through the GPU backend (if built) and compare with the CPU reference.
 //   --window S afterwards show the view live in a window for S seconds (GPU backend).
+//   --ai N     (implies --battle) a start with commanders only at the map's first two start
+//              positions; player 1 (N = 1) or both players (N = 2) are computer players that
+//              build their bases (--ai-difficulty D: 0 easy, 1 medium, 2 hard; default hard).
+//              Every unit type of the game is loaded (the computer player needs the battle's
+//              type indices to be the definition indices); unless --scroll is given the view
+//              follows the middle of the structures of player 1 (N = 1) or player 0 (N = 2).
 //   --battle   run a real battle instead of animating placed units: two players' units made
 //              by the engine's unit creation, every step run by sim::Battle; units find their
 //              targets themselves (no line of sight yet: everything is in sight) and route
@@ -29,7 +35,9 @@
 #include "sim/battle_quiet.h"
 #include "sim/rng.h"
 #include "sim/unit.h"
+#include "ta/ai_profile.h"
 #include "ta/battle_economy.h"
+#include "ta/tdf.h"
 #include "ta/battle_features.h"
 #include "ta/cob.h"
 #include "ta/featuredefs.h"
@@ -103,6 +111,9 @@ int main(int argc, char** argv) {
     bool battle_mode = false;
     int view_player = -1;   // --player N: fog of war, line of sight and radar for player N
     bool true_los = false;  // --true-los: true line of sight (else circular)
+    int ai_players = 0;     // --ai N: computer players from a start with commanders only (1: player 1, 2: both)
+    int ai_difficulty = 2;  // --ai-difficulty D: 0 easy, 1 medium, 2 hard
+    bool scroll_given = false;
     int window_seconds = 0;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -112,7 +123,12 @@ int main(int argc, char** argv) {
         else if (a == "--scroll" && i + 2 < argc) {
             scroll_x = std::atoi(argv[++i]);
             scroll_y = std::atoi(argv[++i]);
-        } else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
+            scroll_given = true;
+        } else if (a == "--ai" && i + 1 < argc) {
+            ai_players = std::atoi(argv[++i]);
+            battle_mode = true;
+        } else if (a == "--ai-difficulty" && i + 1 < argc) ai_difficulty = std::atoi(argv[++i]);
+        else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (a == "--step" && i + 1 < argc) step = std::atoi(argv[++i]);
         else if (a == "--battle") battle_mode = true;
         else if (a == "--player" && i + 1 < argc) view_player = std::atoi(argv[++i]);
@@ -297,22 +313,23 @@ int main(int argc, char** argv) {
         b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
         b.settings.gravity = 112;
         b.settings.damage_options = 8;  // weapons damage features
-        b.init_unit_table(101);
+        const int per_player = ai_players ? 150 : 50;
+        b.init_unit_table(static_cast<std::size_t>(2 * per_player + 1));
         for (int p = 0; p < 2; ++p) {
             sim::PlayerSlot& s = b.players[static_cast<std::size_t>(p)];
             s.active = true;
-            s.controller = static_cast<std::uint8_t>(p == 0 ? 1 : 2);
+            s.controller = static_cast<std::uint8_t>(p == 0 && ai_players < 2 ? 1 : 2);
             s.net_id = p + 1;
             s.state = static_cast<std::uint8_t>(p);
             b.alliances[static_cast<std::size_t>(p)][static_cast<std::size_t>(p)] = 1;  // allied with itself only
-            b.assign_unit_range(p, 1 + 50 * p, 50 + 50 * p);
+            b.assign_unit_range(p, 1 + per_player * p, per_player + per_player * p);
             // Skirmish start: 1000 of each, which is also the storage the commander brings.
             b.init_player_economy(p);
             sim::set_storage_bonus(s, b.player_economy[static_cast<std::size_t>(p)], 1000, 1000);
             s.energy_stored = 1000.0f;
             s.metal_stored = 1000.0f;
         }
-        b.settings.ai_difficulty = 2;  // hard: the AI's income is not scaled
+        b.settings.ai_difficulty = ai_players ? ai_difficulty : 2;  // hard: the AI's income is not scaled
         b.map.width = hm.width();
         b.map.height = hm.height();
         b.map.cells.assign(static_cast<std::size_t>(b.map.width) * static_cast<std::size_t>(b.map.height), sim::MapCell{});
@@ -336,7 +353,8 @@ int main(int argc, char** argv) {
                         metal_cells, b.wind.min_speed, b.wind.max_speed, static_cast<double>(b.settings.tidal_strength));
         }
         b.settings.player_count = 2;
-        b.settings.units_per_player = 50;
+        b.settings.units_per_player = static_cast<std::uint16_t>(per_player);
+        if (ai_players) b.settings.unit_limit = static_cast<std::uint16_t>(per_player);
         b.move_classes = ta::to_move_classes(ctx);
         if (view_player >= 0) {
             // Line of sight: fog, the map explored by the units, the shapes from the game files.
@@ -384,10 +402,64 @@ int main(int argc, char** argv) {
             // Construction: a kbot lab and a construction kbot of player 0.
             {"ARMLAB", 0, 1180, 1560}, {"ARMCK", 0, 1300, 1600},
         };
-        for (const Spawn& s : spawns) battle_type(s.name);  // all types first: the type table must not grow under live units
-        battle_type("ARMPW");     // built by the lab
-        battle_type("ARMSOLAR");  // built by the construction kbot
-        for (const Spawn& s : spawns) {
+        // Computer players: every definition becomes the battle type of the same index, and the
+        // battle starts with the two commanders at the map's first two start positions.
+        std::vector<Spawn> ai_spawns;
+        std::vector<std::string> ai_spawn_names;
+        if (ai_players) {
+            btypes.resize(defs.units.size());
+            b.types.resize(defs.units.size());
+            int loaded = 0;
+            for (std::size_t k = 1; k < defs.units.size(); ++k) {
+                const ta::UnitDefRecord& d = defs.units[k];
+                auto t = std::make_unique<BattleType>();
+                t->def = &d;
+                std::string err;
+                if (ta::load_unit_assets(vfs, d, t->assets, err)) {
+                    auto m = ta::load_3do(t->assets.model_file, true);
+                    if (m.root) {
+                        t->root = std::move(m.root);
+                        t->model = ta::build_render_model(t->root.get(), textures);
+                        ta::bind_pose_primitives(t->assets.pose_model, t->model);
+                        ta::to_battle_unit_type(d, t->assets, weapon_types, b.types[k]);
+                        ta::to_targeting_type(d, defs.categories, weapon_types, b.types[k].targeting);
+                        ++loaded;
+                    }
+                }
+                ta::to_ai_type(d, weapon_types, b.types[k].ai);
+                btypes[k] = std::move(t);
+            }
+            std::printf("computer players: %d of %zu unit types loaded\n", loaded, defs.units.size() - 1);
+            std::array<std::array<int, 2>, 2> start{{{1380, 1760}, {1520, 1980}}};
+            std::vector<std::uint8_t> ota;
+            if (vfs.read("maps\\" + map_name + ".ota", ota)) {
+                const ta::TdfParseResult parsed = ta::tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
+                const ta::TdfSection* gh = parsed.root ? parsed.root->child("GlobalHeader") : nullptr;
+                const ta::TdfSection* sc = gh ? gh->child("Schema 0") : nullptr;
+                const ta::TdfSection* sp = sc ? sc->child("specials") : nullptr;
+                for (int k = 0; sp && k < 10; ++k)
+                    if (const ta::TdfSection* s = sp->child("special" + std::to_string(k))) {
+                        const std::string what = s->get_string("specialwhat", 0x40, "");
+                        for (int n = 0; n < 2; ++n)
+                            if (ta::stricmp_c(what, "StartPos" + std::to_string(n + 1)) == 0)
+                                start[static_cast<std::size_t>(n)] = {s->get_int("XPos", 0), s->get_int("ZPos", 0)};
+                    }
+            }
+            ai_spawn_names = {"ARMCOM", "CORCOM"};
+            for (int n = 0; n < 2; ++n)
+                ai_spawns.push_back({ai_spawn_names[static_cast<std::size_t>(n)].c_str(), n, start[static_cast<std::size_t>(n)][0],
+                                     start[static_cast<std::size_t>(n)][1]});
+            if (!scroll_given) {  // centred on the followed player's start (the view is 512 x 416 at 128, 32)
+                const std::size_t f = ai_players >= 2 ? 0 : 1;
+                scroll_x = std::max(0, start[f][0] - 256);
+                scroll_y = std::max(0, start[f][1] - 208);
+            }
+        } else {
+            for (const Spawn& s : spawns) battle_type(s.name);  // all types first: the type table must not grow under live units
+            battle_type("ARMPW");     // built by the lab
+            battle_type("ARMSOLAR");  // built by the construction kbot
+        }
+        for (const Spawn& s : ai_players ? std::vector<Spawn>(ai_spawns) : std::vector<Spawn>(std::begin(spawns), std::end(spawns))) {
             const std::uint16_t type = battle_type(s.name);
             if (!type) {
                 std::printf("unit type %s unavailable\n", s.name);
@@ -397,7 +469,18 @@ int main(int argc, char** argv) {
             if (!b.create_unit(s.player, type, s.x << 16, gy << 16, s.z << 16, true, 1))
                 std::printf("could not create %s\n", s.name);
         }
-        b.start_players();  // the players' weapon-target controllers and enemy lists
+        b.start_players();  // the players' weapon-target controllers and enemy lists (and the computer players)
+        if (ai_players) {
+            // The map's AI profile (its schema's aiprofile, else ai\default.txt), then the metal spots.
+            std::vector<std::uint8_t> ota;
+            vfs.read("maps\\" + map_name + ".ota", ota);
+            ta::AiProfileReport rep;
+            const std::string path = ta::ai_profile_path(ota, 0);
+            const bool found = ta::load_ai_profile(vfs, path, defs, b.ai(), rep);
+            std::printf("AI profile %s%s: %zu lines (%zu plan, %zu weight, %zu limit)%s%s\n", path.c_str(), found ? "" : " (missing)", rep.lines,
+                        rep.plans, rep.weights, rep.limits, b.ai().fault.empty() ? "" : " AI FAULT: ", b.ai().fault.c_str());
+            b.collect_ai_metal_sites();
+        }
         if (view_player >= 0) b.rebuild_sight(true);  // the battle start
         // Routing: the raider drives over to the far side of the other camp (route search + motion).
         for (std::size_t i = 1; i < b.units.size(); ++i) {
@@ -716,10 +799,27 @@ int main(int argc, char** argv) {
                 }
             }
         if (battle) battle->expire_lingering_sight();  // once per frame (the original's 0x482130)
+        if (battle && ai_players && !scroll_given) {
+            // Follow the followed computer player's base: the middle of its structures.
+            const sim::PlayerSlot& fp = battle->players[ai_players >= 2 ? 0 : 1];
+            long long sx = 0, sz = 0, n = 0;
+            for (int i = fp.first_unit; i <= fp.last_unit; ++i) {
+                if (!battle->ticks[static_cast<std::size_t>(i)].type_index || !(battle->units[static_cast<std::size_t>(i)].flags & 0x20000000u)) continue;
+                const auto& p = battle->units[static_cast<std::size_t>(i)].pos;
+                sx += p[0] >> 16;
+                sz += (p[2] >> 16) - (p[1] >> 17);
+                ++n;
+            }
+            if (n) {
+                scene.camera.scroll_x = std::max(0, static_cast<int>(sx / n) - 256);
+                scene.camera.scroll_y = std::max(0, static_cast<int>(sz / n) - 208);
+            }
+        }
         render::DrawList list = build_frame(tick);
         const render::Image8 frame = render::execute(list, blend);
         out.present(frame, palette);
-        std::printf("frame %d (tick %u): %zu draw commands, %zu transient sprites\n", f, tick, list.cmds.size(), list.transient.size());
+        std::printf("frame %d (tick %u): %zu draw commands, %zu transient sprites, view at %d,%d\n", f, tick, list.cmds.size(), list.transient.size(),
+                    scene.camera.scroll_x, scene.camera.scroll_y);
         if (battle) {
             int live = 0, aimed = 0;
             for (std::size_t i = 1; i < battle->units.size(); ++i) {
@@ -736,6 +836,31 @@ int main(int argc, char** argv) {
                             static_cast<double>(a.energy_usage), static_cast<double>(s.metal_stored), static_cast<double>(a.metal_storage),
                             static_cast<double>(a.metal_income), static_cast<double>(a.metal_usage));
             }
+            for (int p = 0; p < 2 && ai_players; ++p) {
+                const auto& groups = battle->ai_state.groups[static_cast<std::size_t>(p)];
+                const auto& an = battle->ai_state.tables[static_cast<std::size_t>(p)].anchor;
+                std::printf("  player %d base centre %d,%d,%d; groups:", p, an[0] >> 16, an[1] >> 16, an[2] >> 16);
+                for (int k = 0; k < 10; ++k) std::printf(" %d:%zu", k, groups[static_cast<std::size_t>(k)].size());
+                std::map<std::string, int> kinds;
+                for (int i = battle->players[static_cast<std::size_t>(p)].first_unit; i <= battle->players[static_cast<std::size_t>(p)].last_unit; ++i)
+                    if (battle->ticks[static_cast<std::size_t>(i)].type_index) ++kinds[btypes[battle->ticks[static_cast<std::size_t>(i)].type_index]->def->unit_name];
+                std::printf("\n   ");
+                for (const auto& [n, c] : kinds) std::printf(" %s x%d", n.c_str(), c);
+                std::printf("\n");
+            }
+            if (ai_players && !battle->ai().fault.empty()) std::printf("  AI FAULT: %s\n", battle->ai().fault.c_str());
+            if (ai_players && std::getenv("AI_DEBUG"))
+                for (int p = 0; p < 2; ++p)
+                    for (sim::Unit* u : battle->ai_state.groups[static_cast<std::size_t>(p)][4]) {
+                        const sim::MissionOrder* o = u->orders;
+                        std::printf("  builder %u at %d,%d: head order kind %d step %d flags %x at %d,%d wait %x; scores:", u->id, u->pos[0] >> 16,
+                                    u->pos[2] >> 16, o ? o->kind : -1, o ? o->step : -1, o ? o->flags : 0u, o ? o->pos[0] >> 16 : 0,
+                                    o ? o->pos[2] >> 16 : 0, o ? o->wait : 0u);
+                        for (std::uint16_t t : battle->ai_state.controllers[static_cast<std::size_t>(p)].exists ? battle->types[battle->ticks[u->id].type_index].ai.build_options
+                                                                                                                 : std::vector<std::uint16_t>{})
+                            std::printf(" %s=%d", btypes[t]->def->unit_name.c_str(), sim::ai_build_score(battle->ai(), p, t));
+                        std::printf("\n");
+                    }
             std::printf("  wind speed %d (%.3f of full), heading %u\n", battle->wind.speed, static_cast<double>(battle->wind.fraction),
                         static_cast<unsigned>(battle->wind.heading));
             int nano = 0;
