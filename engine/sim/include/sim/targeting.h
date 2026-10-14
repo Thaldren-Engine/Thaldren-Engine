@@ -77,6 +77,7 @@ struct UnitTable {
     std::vector<Unit*> seen;       // enemy units in sight (last refresh), in unit table order
     std::vector<Unit*> radar;      // enemy units marked on radar (unit flag 0x100)
     bool targeting_upgrade = false;  // the player has an active targeting facility: radar dots count
+    std::vector<Unit*> air_bases;    // own finished air base builders that were activated (aircraft land there)
     std::uint32_t refresh_tick = 0;
 };
 struct TargetingState {

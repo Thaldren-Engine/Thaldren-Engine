@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "sim/economy.h"
+#include "sim/footprint.h"
 #include "sim/missions.h"
 #include "sim/motion.h"
 #include "sim/orders.h"
@@ -89,6 +90,11 @@ public:
     // where it was (0x471FD0: effect list 5, 30 steps; its particles draw the C runtime rand()).
     virtual void place_unit(Unit& unit, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) = 0;
     virtual void teleport_trail(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& to) = 0;
+    // Resurrection: the wreck feature covering map cell `cell` (index) goes (0x4246B0, not
+    // forced), and the new unit takes the attitude of the feature slot the wreck's own cell
+    // names (`origin`'s feature_aux; 0x1420B slots, not checked against their count).
+    virtual void remove_feature(std::int32_t cell) = 0;
+    virtual void wreck_attitude(const MapCell& origin, Unit& unit) = 0;
     // The y of the reclaim sites a repair patrol finds (0x47EA40 never writes it: whatever the
     // stack held there; an input).
     virtual std::int32_t reclaim_site_y() = 0;
@@ -120,6 +126,8 @@ struct UnitMissions {
     UnitMissionEnvironment& env;
     // The players' storage capacities (sim/economy.h; the repair patrols weigh them), or none.
     const std::vector<PlayerEconomy>* economy = nullptr;
+    // Unit type data by type index (resurrection reads the build time of the type it brings back).
+    const std::vector<UnitTickTypeInfo>* tick_types = nullptr;
 };
 
 // Mission kinds handled here.
@@ -131,5 +139,22 @@ std::int32_t run_unit_mission(Missions& m, Unit& unit, MissionOrder& order, std:
 // map; on cells its owner has not explored always; else no blocking feature, yard mark or
 // other unit, and the heights suit its water depth and slope limits.
 bool can_land_at(Missions& m, Unit& unit, const std::array<std::int32_t, 3>& pos);
+
+// Units filed in the spatial buckets within `radius` (16.16, horizontal) of `pos`, bucket by
+// bucket (rows of buckets in z, then x) and each bucket's list in order (0x47E890; the off-map
+// list and carried units are not visited).
+void units_in_radius(const UnitBuckets& buckets, const std::array<std::int32_t, 3>& pos, std::int32_t radius,
+                     std::vector<Unit*>& out);
+// The activated air base builders on a unit table's list within `radius` world units (0x40B530).
+// False when there is no such table (the original crashes).
+bool air_bases_in_radius(const UnitTable& table, const std::vector<UnitTickState>& ticks, const std::array<std::int32_t, 3>& pos,
+                         std::int32_t radius, std::vector<Unit*>& out);
+
+// Unit script requests of transports. ATTACH_UNIT (0x481340): a live unit not carried by
+// another transport becomes the scripted unit's cargo at `piece` (packet 0x0A with `mode` as
+// its layer). DROP_UNIT (0x4813B0): the scripted unit's cargo is set down if its footprint
+// fits where it hangs (ground layer).
+void script_attach_unit(Missions& m, Unit& carrier, std::int32_t passenger, std::int32_t piece, std::int32_t mode);
+void script_drop_unit(Missions& m, Unit& carrier, std::int32_t passenger);
 
 } // namespace sim

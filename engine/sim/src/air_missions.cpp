@@ -9,8 +9,6 @@
 #include "sim/x87_math.h"
 
 namespace sim::um {
-namespace {
-
 using Set = GoalRequest::Set;
 
 i32 cruise_altitude(Missions& m, const Unit& u) { return motion_type(m, u).cruise_altitude; }
@@ -39,8 +37,6 @@ std::int32_t head_back_onto_map(Missions& m, Unit& u, MissionOrder& o) {
     attach(m, o, point_goal(to).set(Set::Radius, 0x80));
     return mission_result::kContinue;
 }
-
-}  // namespace
 
 // --- VTOL_Move (55) -------------------------------------------------------
 // Take off, then fly to the order's position (snapped to the footprint grid).

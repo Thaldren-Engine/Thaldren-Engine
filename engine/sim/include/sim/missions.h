@@ -59,6 +59,7 @@ enum class SpeechText : std::uint8_t {
     // Aircraft, transports and the other movement orders (sim/unit_missions.h).
     Guarding, Attacking, Patrolling, TransportFailed, TooHeavy, Loading, PreparingTransport, Unloading,
     UnableToUnload, LandingAborted, Landing, LandingFailed, PadsOccupied, NoPads, TooLarge, LoadingUnit, UnloadingSlow,
+    Building, HostileTermination, RepairFailed, ResurrectionFailed, RessurectionFailed, ResurrectionComplete,
 };
 
 // Systems the behaviours reach outside the simulation core.

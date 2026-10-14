@@ -29,6 +29,8 @@ UnitMissions& ctx(Missions& m) {
             i32 reclaim_site_y() override { return 0; }
             void place_unit(Unit&, const Vec&, u32) override {}
             void teleport_trail(const Vec&, const Vec&) override {}
+            void remove_feature(i32) override {}
+            void wreck_attitude(const MapCell&, Unit&) override {}
         };
         static Null null;
         static UnitMissions none{no_targeting, no_motion, no_types, no_map, no_features, no_heights, no_explored, null, env};
@@ -377,6 +379,68 @@ bool enqueue_repair(Missions& m, Unit& u, Unit& target, bool no_standing_move) {
 }  // namespace sim::um
 
 namespace sim {
+
+void units_in_radius(const UnitBuckets& b, const std::array<std::int32_t, 3>& pos, std::int32_t radius, std::vector<Unit*>& out) {
+    using namespace um;
+    auto clamp = [](i32 v, i32 n) { return static_cast<u32>(v) < static_cast<u32>(n) ? v : (v < 0 ? 0 : n - 1); };
+    const i32 x0 = clamp(wsub(pos[0], radius) >> 23, b.width), z0 = clamp(wsub(pos[2], radius) >> 23, b.height);
+    const i32 x1 = clamp(wadd(pos[0], radius) >> 23, b.width), z1 = clamp(wadd(pos[2], radius) >> 23, b.height);
+    const i32 r2 = square_hi(radius);
+    for (i32 z = z0; z <= z1; ++z)
+        for (i32 x = x0; x <= x1; ++x) {
+            const std::size_t at = static_cast<std::size_t>(b.width) * static_cast<std::size_t>(z) + static_cast<std::size_t>(x);
+            if (at >= b.heads.size()) continue;
+            for (Unit* u = b.heads[at]; u; u = u->cargo_next)
+                if (wadd(square_hi(wsub(u->pos[0], pos[0])), square_hi(wsub(u->pos[2], pos[2]))) <= r2) out.push_back(u);
+        }
+}
+
+bool air_bases_in_radius(const UnitTable& table, const std::vector<UnitTickState>& ticks, const std::array<std::int32_t, 3>& pos,
+                         std::int32_t radius, std::vector<Unit*>& out) {
+    using namespace um;
+    if (!table.exists) return false;
+    for (Unit* u : table.air_bases) {
+        const UnitTickTypeInfo* t = ticks[u->id].tick_type;
+        const u32 tf = t ? t->type_flags : 0;
+        if (!(tf & kTypeBuilder) || !(tf & kTypeAirBase) || !(u->activate_flags & unit_flags::kActivated)) continue;
+        if (wadd(square_hi(wsub(pos[0], u->pos[0])), square_hi(wsub(pos[2], u->pos[2]))) <= static_cast<i32>(static_cast<u32>(radius) * static_cast<u32>(radius)))
+            out.push_back(u);
+    }
+    return true;
+}
+
+void script_attach_unit(Missions& m, Unit& carrier, std::int32_t passenger, std::int32_t piece, std::int32_t mode) {
+    const std::uint16_t id = static_cast<std::uint16_t>(passenger);
+    if (id == 0) return;
+    if (id >= m.units.size()) {
+        m.fault = "script attach of a unit id past the table";
+        return;
+    }
+    Unit& c = m.units[id];
+    if (!(c.flags & unit_flags::kAlive) || (c.carrier && c.carrier != &carrier)) return;
+    if (!m.construction) {
+        m.fault = "transport packet without the construction systems";
+        return;
+    }
+    m.construction->systems.transport_attach(c, &carrier, static_cast<std::uint8_t>(piece), static_cast<std::uint8_t>(mode));
+}
+
+void script_drop_unit(Missions& m, Unit& carrier, std::int32_t passenger) {
+    const std::uint16_t id = static_cast<std::uint16_t>(passenger);
+    if (id == 0) return;
+    if (id >= m.units.size()) {
+        m.fault = "script drop of a unit id past the table";
+        return;
+    }
+    Unit& c = m.units[id];
+    if (!(c.flags & unit_flags::kAlive) || c.carrier != &carrier) return;
+    if (!m.construction) {
+        m.fault = "transport packet without the construction systems";
+        return;
+    }
+    if (!m.construction->systems.can_place(m.orders.ticks[id].type_index, id, c.cell_x, c.cell_z, 1)) return;
+    m.construction->systems.transport_attach(c, nullptr, 0xFF, 1);
+}
 
 bool unit_mission_kind(std::uint8_t kind) {
     switch (kind) {

@@ -150,6 +150,10 @@ bool repair_patrol_candidate(Missions& m, const Unit& self, const Unit& c);
 bool enqueue_repair(Missions& m, Unit& u, Unit& target, bool no_standing_move);
 
 // Shared pieces of the behaviours (air_missions.cpp).
+using Set = GoalRequest::Set;
+i32 cruise_altitude(Missions& m, const Unit& u);
+void take_off(Missions& m, Unit& u, MissionOrder& o);
+std::int32_t head_back_onto_map(Missions& m, Unit& u, MissionOrder& o);
 bool answer_attacker(Missions& m, Unit& u, MissionOrder& o, Unit& followed, u32 event);
 bool seek_air_base(Missions& m, Unit& u, MissionOrder& o);
 bool beyond_leash(const Unit& u, const MissionOrder& o);

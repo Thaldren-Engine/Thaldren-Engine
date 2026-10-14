@@ -4,6 +4,9 @@
 #include <cstring>
 
 #include "sim/features.h"
+#include "sim/trig.h"
+#include "sim/unit_missions.h"
+#include "unit_missions_common.h"
 #include "sim/x87.h"
 #include "sim/x87_math.h"
 
@@ -92,6 +95,16 @@ const UnitTickTypeInfo& tick_type(Missions& m, const Unit& u) {
     return t ? *t : none;
 }
 u32 game_tick(Missions& m) { return m.orders.game_tick; }
+// Unit type data of a type index (the original indexes its definitions without a bound).
+const UnitTickTypeInfo& tick_type_of(Missions& m, u16 type) {
+    static const UnitTickTypeInfo none;
+    const std::vector<UnitTickTypeInfo>* v = m.unit_missions ? m.unit_missions->tick_types : nullptr;
+    if (!v || type >= v->size()) {
+        m.fault = "unit type outside the type table";
+        return none;
+    }
+    return (*v)[type];
+}
 bool has_motion(Missions& m, const Unit& u) { return tick_of(m, u).has_motion; }
 bool plays(const PlayerSlot& p) { return p.active && (p.controller == 1 || p.controller == 2); }
 PlayerSlot& owner_of(Missions& m, const Unit& u) { return m.orders.players[static_cast<std::size_t>(tick_of(m, u).owner)]; }
@@ -771,12 +784,441 @@ std::int32_t park(Missions& m, Unit& u, MissionOrder& o, u32& event) {
     return mission_result::kRestart;
 }
 
+
+// --- Air builders (they hover next to the work instead of walking up to it) ---
+
+// The build loop of air builders: every 150 steps a new hover point at build distance, 85
+// degrees round from the line to the work (facing back at it); then a build slice with a
+// nano spray onto the unit (box with its lowest point). True when the work is finished.
+bool air_build_slice(Missions& m, Unit& u, MissionOrder& o) {
+    Unit* t = target_of(o);
+    if (!t) {
+        m.fault = "air build step without the unit being built";
+        return false;
+    }
+    if (game_tick(m) % 150 == 0) {
+        const u16 a = static_cast<u16>(um::heading_between(u.pos, t->pos) + 0xDB6E);
+        const i32 r = static_cast<i32>(static_cast<u32>(con_type(m, u).build_distance) << 16);
+        const std::array<i32, 3> p = {wadd(t->pos[0], trig::mul_sin(a, r)), t->pos[1], wadd(t->pos[2], trig::mul_cos(a, r))};
+        um::attach(m, o, um::point_goal(p).set(um::Set::Heading, a));
+    }
+    if (apply_build_progress(m, u, *target_of(o), work_rate(m, u))) spray_onto(m, u, *target_of(o), true);
+    return is_zero(target_of(o)->build_fraction_left);
+}
+
+// VTOL_MobileBuild (54): fly to the site (the order position snapped to the type's cells,
+// within build distance), start the unit there and build it from the air. The site cell
+// lives in the event argument, as with ground builders.
+std::int32_t air_mobile_build(Missions& m, Unit& u, MissionOrder& o, u32& event) {
+    Construction& c = con(m);
+    if (event & 2) {
+        m.systems.display_changed(u);
+        return mission_result::kFinished;
+    }
+    if (event & 8) {
+        speech(m, u, 7, SpeechText::ConstructionTerminated);
+        m.systems.display_changed(u);
+        return 8;
+    }
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u) || !(type_flags(m, u) & kTypeCanFly)) return mission_result::kClearAll;
+        um::announce(m, o, SpeechText::Building);
+        um::take_off(m, u, o);
+        return mission_result::kAdvance;
+    case 1: {
+        o.param2 = 0;
+        const ConstructionTypeInfo& bt = con_type(m, static_cast<u32>(o.param0));
+        const auto cell = site_cell(o.pos, bt.footprint_x, bt.footprint_z);
+        event = pack_cell(cell[0], cell[1]);
+        o.pos[0] = static_cast<i32>(static_cast<u32>(bt.footprint_x + cell[0] * 2) << 19);
+        o.pos[2] = static_cast<i32>(static_cast<u32>(bt.footprint_z + cell[1] * 2) << 19);
+        um::attach(m, o, um::point_goal(o.pos).set(um::Set::Radius, con_type(m, u).build_distance));
+        o.wait = 0xE0;
+        return mission_result::kAdvance;
+    }
+    case 2: {
+        if (event & 0x40) return 8;
+        const ConstructionTypeInfo& bt = con_type(m, static_cast<u32>(o.param0));
+        const auto cell = site_cell(o.pos, bt.footprint_x, bt.footprint_z);
+        event = pack_cell(cell[0], cell[1]);
+        if (!c.systems.can_place(static_cast<u16>(o.param0), 0, cell[0], cell[1], 1)) {
+            if (o.param2 == 0) {
+                speech(m, u, 7, SpeechText::WaitingForArea);
+            } else if (o.param2 > 10) {
+                speech(m, u, 7, SpeechText::AreaBlocked);
+                return 8;
+            }
+            o.param2 = wadd(o.param2, 1);
+            set_deadline(m, o, 30);
+            return mission_result::kContinue;
+        }
+        snap_to_footprint(c, static_cast<u16>(o.param0), o.pos);
+        Unit* made = c.systems.create_unit(tick_of(m, u).owner, static_cast<u16>(o.param0), o.pos, false, 1);
+        relink_unit(m.orders, o.target, made);
+        if (!target_of(o)) {
+            speech(m, u, 7, SpeechText::UnableToCreate);
+            return 8;
+        }
+        speech(m, u, 9, SpeechText::StartingConstruction);
+        if (!enqueue_order(m.orders, *target_of(o), mission::kGetBuilt, true, &u, nullptr, 0, 0)) m.fault = "endless idle-order search";
+        start_building(m, u, o, relative_heading(u, target_of(o)->pos));
+        m.systems.display_changed(u);
+        return mission_result::kAdvance;
+    }
+    case 3:
+        wait_build_stance(u, o, 10);  // (its answer is ignored: the building starts anyway)
+        [[fallthrough]];
+    case 4:
+        if (air_build_slice(m, u, o)) return mission_result::kAdvance;
+        set_deadline(m, o, 1);
+        o.wait |= 0xA;
+        return mission_result::kContinue;
+    case 5:
+        speech(m, u, 8, SpeechText::BuildingComplete);
+        return mission_result::kFinished;
+    default:
+        return mission_result::kClearAll;
+    }
+}
+
+// VTOL_HelpBuild (51): help finish the order's target from the air.
+std::int32_t air_help_build(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    if (!target_of(o) || (event & 8)) {
+        speech(m, u, 7, SpeechText::HostileTermination);
+        m.systems.display_changed(u);
+        return 8;
+    }
+    if (event & 2) {
+        m.systems.display_changed(u);
+        return mission_result::kFinished;
+    }
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u) || !(type_flags(m, u) & kTypeCanFly)) return mission_result::kClearAll;
+        if (!con_type(m, u).has_build_options) return mission_result::kClearAll;
+        um::announce(m, o, SpeechText::Building);
+        um::take_off(m, u, o);
+        return mission_result::kAdvance;
+    case 1:
+        o.param2 = 0;
+        um::attach(m, o, um::point_goal(target_of(o)->pos).set(um::Set::Radius, con_type(m, u).build_distance));
+        o.wait = 0xE0;
+        return mission_result::kAdvance;
+    case 2:
+        if (event & 0x40) return 8;
+        if (is_zero(target_of(o)->build_fraction_left)) return mission_result::kFinished;
+        // (the heading passed is the absolute one, not relative to the builder's own)
+        start_building(m, u, o, um::heading_between(u.pos, target_of(o)->pos));
+        m.systems.display_changed(u);
+        return mission_result::kAdvance;
+    case 3:
+        if (air_build_slice(m, u, o)) return mission_result::kFinished;
+        set_deadline(m, o, 1);
+        o.wait |= 0xA;
+        return mission_result::kContinue;
+    default:
+        return mission_result::kClearAll;
+    }
+}
+
+// VTOL_Reclaim (58): reclaim the feature at the order's position from the air.
+std::int32_t air_reclaim(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    Construction& c = con(m);
+    u32 cell = 0, footprint = 0;
+    const u16 id = feature_at(m, o.pos, &cell, &footprint);
+    if (id == 0xFFFF) {
+        speech(m, u, 7, SpeechText::ReclamationFailed);
+        return 8;
+    }
+    if (id >= c.features.size()) {
+        m.fault = "feature type outside the feature table";
+        return mission_result::kContinue;
+    }
+    const FeatureTypeInfo& f = c.features[id];
+    if (!(f.flags & 0x80)) return 8;
+    const i16 cx = static_cast<i16>(cell & 0xFFFF), cz = static_cast<i16>(cell >> 16);
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u) || !(type_flags(m, u) & kTypeCanFly) || !(mission_type(m, u).abilities & kAbilityReclaim))
+            return mission_result::kClearAll;
+        um::announce(m, o, SpeechText::Reclaiming);
+        um::take_off(m, u, o);
+        return mission_result::kAdvance;
+    case 1:
+        um::attach(m, o, um::point_goal(o.pos));
+        o.wait = 0xE0;
+        return mission_result::kAdvance;
+    case 2:
+        if (event & 0x40) return 8;
+        // 30 + half the yield (the sum and products at double precision, constants as floats).
+        o.param0 = x87::ftol32(30.0 - (static_cast<double>(f.metal) + static_cast<double>(f.energy)) * -0.5);
+        speech(m, u, 0xB);
+        return mission_result::kAdvance;
+    case 3: {
+        set_deadline(m, o, 2);
+        o.param0 = wsub(o.param0, 2);
+        if (o.param0 <= 0) return mission_result::kAdvance;
+        u.cloak_holdoff_tick = game_tick(m) + 300;
+        if (o.param0 > 30) {
+            const auto to = nano_point(m, u);
+            const i32 x = static_cast<i32>(static_cast<u32>(static_cast<i32>(cx)) << 20);
+            const i32 z = static_cast<i32>(static_cast<u32>(static_cast<i32>(cz)) << 20);
+            const i32 ground = c.heights.sample(static_cast<i16>(hi16(x)), static_cast<i16>(hi16(z)));
+            const i32 y = static_cast<i32>(static_cast<u32>(ground) << 16);
+            const std::array<i32, 6> box = {x, y, z, wadd(x, static_cast<i32>(static_cast<u32>(static_cast<i32>(f.footprint_x)) << 20)),
+                                            wadd(y, static_cast<i32>(static_cast<u32>(f.height) << 16)),
+                                            wadd(z, static_cast<i32>(static_cast<u32>(static_cast<i32>(f.footprint_z)) << 20))};
+            c.systems.nano_beam_reverse(box, to);
+            c.systems.nano_beam_reverse(box, to);
+        }
+        return mission_result::kContinue;
+    }
+    case 4:
+        reclaim_feature(m, u, o.pos);
+        return mission_result::kFinished;
+    default:
+        return mission_result::kClearAll;
+    }
+}
+
+// VTOL_ReclaimUnit (59): reclaim the order's target from the air, within build distance.
+std::int32_t air_reclaim_unit(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    Unit* t = target_of(o);
+    if (!t || (event & 0x10008u)) return mission_result::kFinished;
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u) || !(type_flags(m, u) & kTypeCanFly)) return mission_result::kClearAll;
+        if (!(mission_type(m, u).abilities & kAbilityReclaim)) {
+            speech(m, u, 7, SpeechText::ReclamationFailed);
+            return mission_result::kClearAll;
+        }
+        if (!can_reclaim(m, u, *t)) {
+            speech(m, u, 7, SpeechText::CannotBeReclaimed);
+            return 8;
+        }
+        um::announce(m, o, SpeechText::Reclaiming);
+        um::take_off(m, u, o);
+        return mission_result::kAdvance;
+    case 1: {
+        o.param0 = reclaim_pulse(m, u, *t, 15);
+        o.param1 = 0;
+        // The order position snaps to the reclaimer's own footprint grid (never used again).
+        const auto cell = site_cell(o.pos, u.footprint_x, u.footprint_z);
+        o.pos[0] = static_cast<i32>(static_cast<u32>(u.footprint_x + cell[0] * 2) << 19);
+        o.pos[2] = static_cast<i32>(static_cast<u32>(u.footprint_z + cell[1] * 2) << 19);
+        um::attach(m, o, um::point_goal(target_of(o)->pos));
+        o.wait |= 0x100E8;
+        speech(m, u, 0xB);
+        return mission_result::kAdvance;
+    }
+    case 2: {
+        if (event & 0x40) return mission_result::kFinishOrIdle;
+        o.wait |= 0x10008;
+        const i32 dx = wsub(u.pos[0], t->pos[0]), dz = wsub(u.pos[2], t->pos[2]);
+        const i32 bd = con_type(m, u).build_distance;
+        if (wadd(square_hi(dx), square_hi(dz)) > bd * bd || !can_reclaim(m, u, *target_of(o))) {
+            set_deadline(m, o, 30);
+            return mission_result::kRestart;
+        }
+        if (o.param1 >= 15) {
+            apply_damage(m.combat, &u, *target_of(o), o.param0, 5, 0);
+            o.param1 = 0;
+        }
+        spray_from(m, *o.unit, *target_of(o));
+        set_deadline(m, o, 2);
+        o.param1 = wadd(o.param1, 2);
+        return mission_result::kContinue;
+    }
+    default:
+        return mission_result::kClearAll;
+    }
+}
+
+// VTOL_RepairUnit (61): repair the order's target (a unit on the ground) from the air.
+std::int32_t air_repair_unit(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    if (!target_of(o)) {
+        speech(m, u, 7, SpeechText::RepairsUnsuccessful);
+        return 8;
+    }
+    if (o.param2 != 0) {
+        const i32 ox = static_cast<i16>(o.scratch0 & 0xFFFF), oz = static_cast<i16>(o.scratch0 >> 16);
+        const i32 d = x87::ftol32(x87::crt_hypot(static_cast<double>(hi16(u.pos[0]) - ox), static_cast<double>(hi16(u.pos[2]) - oz)));
+        if (d >= o.param2) return mission_result::kFinished;
+    }
+    if ((target_of(o)->flags & 3u) != 1) {
+        speech(m, u, 7, SpeechText::RepairsUnsuccessful);
+        return mission_result::kFinished;
+    }
+    o.pos = target_of(o)->pos;
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u) || !(type_flags(m, u) & kTypeCanFly)) return mission_result::kClearAll;
+        if (!um::can_repair(m, u, target_of(o))) {
+            speech(m, u, 7, SpeechText::RepairFailed);
+            return 8;
+        }
+        um::announce(m, o, SpeechText::Repairing);
+        um::take_off(m, u, o);
+        return mission_result::kAdvance;
+    case 1:
+        um::attach(m, o, um::point_goal(o.pos).set(um::Set::Altitude, um::cruise_altitude(m, u)));
+        o.wait = 0xE8;
+        return mission_result::kAdvance;
+    case 2: {
+        if (event & 0x40) return 8;
+        Unit* t = target_of(o);
+        if ((t->flags & 3u) != 1) return 8;
+        if (t->flags & 0xCu) {
+            set_deadline(m, o, 15);
+            return mission_result::kRestart;
+        }
+        if (static_cast<u32>(static_cast<i32>(t->hit_points)) >= (t->type ? t->type->max_damage : 0)) return mission_result::kAdvance;
+        repair_heal(m.combat, u, *t, work_rate(m, u));
+        spray_onto(m, *o.unit, *target_of(o), false);
+        set_deadline(m, o, 1);
+        o.wait |= 8;
+        return mission_result::kContinue;
+    }
+    case 3:
+        speech(m, u, 10, SpeechText::UnitRepaired);
+        return mission_result::kFinished;
+    default:
+        return mission_result::kClearAll;
+    }
+}
+
+// Resurrect (37): bring the wreck at the order's position back as its unit (the type named
+// by the wreck's name up to the first '_'): build time x 0.3 / (worker time / 30) steps of
+// spraying, then the unit appears unfinished with 1 hit point and is repaired to health.
+std::int32_t resurrect(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    Construction& c = con(m);
+    u32 cell = 0, footprint = 0;
+    const FeatureTypeInfo* f = nullptr;
+    if (o.step < 6) {
+        const u16 id = feature_at(m, o.pos, &cell, &footprint);
+        if (id == 0xFFFF) {
+            speech(m, u, 7, SpeechText::ResurrectionFailed);
+            return 8;
+        }
+        if (id >= c.features.size()) {
+            m.fault = "feature type outside the feature table";
+            return mission_result::kContinue;
+        }
+        f = &c.features[id];
+        if (!(f->flags & 0x80)) return 8;
+    }
+    const i16 cx = static_cast<i16>(cell & 0xFFFF), cz = static_cast<i16>(cell >> 16);
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u) || !(mission_type(m, u).abilities & um::kAbilityResurrect)) return mission_result::kClearAll;
+        c.systems.attach_edge_goal(u, o, cell, footprint);
+        o.wait = 0xE0;
+        return mission_result::kAdvance;
+    case 1: {
+        if (event & 0x40) return 8;
+        const i16 fx = static_cast<i16>(footprint & 0xFFFF), fz = static_cast<i16>(footprint >> 16);
+        std::array<i32, 3> at = {static_cast<i32>(static_cast<u32>(fx + cx * 2) << 19), 0, static_cast<i32>(static_cast<u32>(fz + cz * 2) << 19)};
+        const u32 r = m.orders.rng.next_mod(f->height);
+        const i32 ground = c.heights.sample(static_cast<i16>(hi16(at[0])), static_cast<i16>(hi16(at[2])));
+        at[1] = static_cast<i32>((r + static_cast<u32>(ground)) << 16);
+        start_building(m, u, o, relative_heading(u, at));
+        return mission_result::kAdvance;
+    }
+    case 2:
+        return wait_build_stance(u, o, 0);
+    case 3: {
+        o.param0 = f->resurrect_type;
+        if (o.param0 == 0) {
+            speech(m, u, 7, SpeechText::RessurectionFailed);
+            return 8;
+        }
+        const double bt = static_cast<double>(tick_type_of(m, static_cast<u16>(o.param0)).build_time);
+        const double rate = static_cast<double>(static_cast<i32>(mission_type(m, u).worker_time) / 30);
+        o.param1 = x87::ftol32((bt * 0.3) / rate);
+        speech(m, u, 0xB);
+        return mission_result::kAdvance;
+    }
+    case 4: {
+        const i32 left = o.param1;
+        o.param1 = wsub(o.param1, 1);
+        if (left == 0) return mission_result::kAdvance;
+        const auto from = nano_point(m, u);
+        const i32 x = static_cast<i32>(static_cast<u32>(static_cast<i32>(cx)) << 20);
+        const i32 z = static_cast<i32>(static_cast<u32>(static_cast<i32>(cz)) << 20);
+        const i32 ground = c.heights.sample(static_cast<i16>(hi16(x)), static_cast<i16>(hi16(z)));
+        const i32 y = static_cast<i32>(static_cast<u32>(ground) << 16);
+        const std::array<i32, 6> box = {x, y, z, wadd(x, static_cast<i32>(static_cast<u32>(static_cast<i32>(f->footprint_x)) << 20)),
+                                        wadd(y, static_cast<i32>(static_cast<u32>(f->height) << 16)),
+                                        wadd(z, static_cast<i32>(static_cast<u32>(static_cast<i32>(f->footprint_z)) << 20))};
+        m.systems.nano_beam(from, box);
+        u.cloak_holdoff_tick = game_tick(m) + 300;
+        set_deadline(m, o, 1);
+        return mission_result::kContinue;
+    }
+    case 5: {
+        Unit* made = c.systems.create_unit(tick_of(m, u).owner, static_cast<u16>(o.param0), o.pos, false, 1);
+        relink_unit(m.orders, o.target, made);
+        if (!target_of(o)) {
+            speech(m, u, 7, SpeechText::UnableToCreate);
+            set_deadline(m, o, 300);
+            return mission_result::kContinue;
+        }
+        // The wreck's own cell (parts lead back to it); its slot's attitude goes to the unit.
+        const MapCell* origin = um::cell_at(c.map, o.pos);
+        if (origin && origin->feature == 0xFFFE) {
+            const i32 at = static_cast<i32>(origin - c.map.cells.data());
+            const i32 ox = at % c.map.width - (origin->feature_aux >> 8), oz = at / c.map.width - (origin->feature_aux & 0xFF);
+            origin = (ox >= 0 && ox < c.map.width && oz >= 0 && oz < c.map.height)
+                         ? &c.map.cells[static_cast<std::size_t>(oz) * static_cast<std::size_t>(c.map.width) + static_cast<std::size_t>(ox)]
+                         : nullptr;
+        }
+        if (!origin) {
+            m.fault = "resurrected wreck without a cell (the original reads through a null pointer)";
+            return mission_result::kContinue;
+        }
+        if (um::resolve_feature(m, c.map, *origin) >= 0xFFFB) return 8;
+        um::ctx(m).systems.wreck_attitude(*origin, *target_of(o));
+        const i32 index = static_cast<i32>(origin - c.map.cells.data());
+        const MapCell* here = um::cell_at(c.map, o.pos);
+        if (!here) {
+            m.fault = "resurrected wreck off the map";
+            return mission_result::kContinue;
+        }
+        um::ctx(m).systems.remove_feature(static_cast<i32>(here - c.map.cells.data()));
+        if (c.systems.network_provider() == 3) {
+            const i16 x = static_cast<i16>(index % c.map.width), z = static_cast<i16>(index / c.map.width);
+            const std::uint8_t packet[6] = {0x0F, 0xFF, static_cast<u8>(x & 0xFF), static_cast<u8>(static_cast<u16>(x) >> 8),
+                                            static_cast<u8>(z & 0xFF), static_cast<u8>(static_cast<u16>(z) >> 8)};
+            c.systems.network_send(owner_of(m, u).net_id, packet, 6);
+        }
+        target_of(o)->build_fraction_left = 0.0f;
+        target_of(o)->hit_points = 1;
+        m.systems.display_changed(u);
+        return mission_result::kAdvance;
+    }
+    case 6: {
+        speech(m, u, 8, SpeechText::ResurrectionComplete);
+        const u8 kind = m.systems.resolve_mission(OrderIntent::Repair, u, target_of(o), nullptr);
+        if (kind) {
+            MissionOrder* r = m.orders.systems.allocate_order();
+            construct_order(m.orders, *r, kind, target_of(o), nullptr, 0, 0, 0);
+            prepend_order(u, *r);
+        }
+        return mission_result::kFinished;
+    }
+    default:
+        return mission_result::kClearAll;
+    }
+}
 } // namespace
 
 bool construction_kind(std::uint8_t kind) {
     switch (kind) {
     case mission::kBuildingBuild: case mission::kMobileBuild: case mission::kHelpBuild: case mission::kRepairUnit:
     case mission::kReclaim: case mission::kReclaimUnit: case mission::kCapture: case mission::kBeCarried: case mission::kPark:
+    case mission::kAirMobileBuild: case mission::kAirHelpBuild: case mission::kAirReclaim: case mission::kAirReclaimUnit:
+    case mission::kAirRepairUnit: case mission::kResurrect:
         return true;
     default: return false;
     }
@@ -793,6 +1235,12 @@ std::int32_t run_construction_behaviour(Missions& m, Unit& u, MissionOrder& o, s
     case mission::kCapture: return capture(m, u, o, event);
     case mission::kBeCarried: return be_carried(m, u, o);
     case mission::kPark: return park(m, u, o, event);
+    case mission::kAirMobileBuild: return air_mobile_build(m, u, o, event);
+    case mission::kAirHelpBuild: return air_help_build(m, u, o, event);
+    case mission::kAirReclaim: return air_reclaim(m, u, o, event);
+    case mission::kAirReclaimUnit: return air_reclaim_unit(m, u, o, event);
+    case mission::kAirRepairUnit: return air_repair_unit(m, u, o, event);
+    case mission::kResurrect: return resurrect(m, u, o, event);
     default: return m.systems.run_other(u, o, event);
     }
 }

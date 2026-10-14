@@ -32,6 +32,7 @@
 #include "sim/sight.h"
 #include "sim/unit.h"
 #include "sim/unit_create.h"
+#include "sim/unit_missions.h"
 #include "sim/unit_tick.h"
 #include "sim/weapons.h"
 
@@ -50,6 +51,7 @@ struct BattleUnitType {
     EconomyType economy;  // production, upkeep and storage (sim/economy.h)
     SightType sight;  // sight, radar, sonar, jamming, cloak distance (sim/sight.h)
     ConstructionTypeInfo construction;  // building, reclaiming and placement (sim/construction.h)
+    UnitMissionTypeInfo unit_missions;  // aircraft and transport orders, kamikaze (sim/unit_missions.h)
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -81,6 +83,11 @@ struct BattleSettings {
     float tidal_strength = 0.0f;      // the map's tidal strength (tidal generators)
     std::uint16_t build_menu_focus = 0;     // unit whose build menu this machine shows (user interface)
     std::int32_t network_provider = 0;      // the map info's provider type (3: reclaims are announced)
+    // Inputs the original takes from stale stack memory (sim/unit_missions.h): the y of the
+    // reclaim sites repair patrols find, and the address the air repair patrol leaves in its
+    // event argument.
+    std::int32_t reclaim_site_y = 0;
+    std::uint32_t air_repair_patrol_site_address = 0;
     OriginalAddresses addresses;
 };
 
@@ -177,6 +184,13 @@ public:
     virtual void build_menu_refresh(Unit&) {}
     virtual void orders_panel_changed() {}
     virtual void selection_changed() {}
+    // Aircraft, transports and teleporters (sim/unit_missions.h): the network notice of a unit
+    // script function started by name with arguments (0x456200; -1 when the script has none),
+    // and the trail of dots of a teleported unit (presentation; its particles draw the C
+    // runtime rand() in the effect sweep, which is not modelled).
+    virtual void broadcast_script_call_named(Unit&, std::int16_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t,
+                                             std::int32_t) {}
+    virtual void teleport_trail(const std::array<std::int32_t, 3>&, const std::array<std::int32_t, 3>&) {}
 };
 
 class Battle final : UnitWorld,
@@ -356,8 +370,8 @@ private:
     void explode_piece(Unit& u, std::int32_t p, std::int32_t t) override {
         sim::explode_piece(effects_world_, u, p, static_cast<std::uint32_t>(t));
     }
-    void attach_unit(Unit& u, std::int32_t a, std::int32_t p, std::int32_t m) override { outside_.attach_unit(u, a, p, m); }
-    void drop_unit(Unit& u, std::int32_t a) override { outside_.drop_unit(u, a); }
+    void attach_unit(Unit& u, std::int32_t a, std::int32_t p, std::int32_t m) override;
+    void drop_unit(Unit& u, std::int32_t a) override;
 
     // UnitTickSystems
     void weapons(Unit& unit, std::uint32_t& stale_word) override;
@@ -602,6 +616,34 @@ private:
     std::vector<ConstructionTypeInfo> construction_types_;  // by type index
     ConstructionEnvironment construction_env_;
     Construction construction_;
+    // Aircraft, transports and the other movement orders (sim/unit_missions.h).
+    struct UnitMissionHooks final : UnitMissionSystems {
+        Battle& b;
+        explicit UnitMissionHooks(Battle& battle) : b(battle) {}
+        void heap_alloc(std::uint32_t) override {}
+        std::shared_ptr<OrderGoal> make_goal(Unit& u, MissionOrder& o, const GoalRequest& g) override;
+        void attach_goal(Unit&, MissionOrder& o, std::shared_ptr<OrderGoal> goal) override { attach_order_goal(b.motion_, o, std::move(goal)); }
+        void adjust_goal(Unit& u, OrderGoal& goal, GoalRequest::Set what, std::int32_t value) override;
+        void set_layer(Unit& u, std::uint32_t layer) override { set_motion_layer(b.motion_, u, layer); }
+        void units_in_radius(const std::array<std::int32_t, 3>& pos, std::int32_t r, std::vector<Unit*>& out) override {
+            sim::units_in_radius(b.buckets, pos, r, out);
+        }
+        void air_bases_in_radius(int state, const std::array<std::int32_t, 3>& pos, std::int32_t r, std::vector<Unit*>& out) override;
+        void broadcast_script_call(Unit& u, const char* name, std::int32_t argc, std::int32_t a, std::int32_t c1, std::int32_t c2,
+                                   std::int32_t c3) override;
+        std::int32_t reclaim_site_y() override { return b.settings.reclaim_site_y; }
+        void place_unit(Unit& u, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) override { sim::place_unit(b.motion_, u, pos, layer); }
+        void teleport_trail(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& to) override {
+            b.outside_.teleport_trail(from, to);
+        }
+        void remove_feature(std::int32_t cell) override { sim::remove_feature(b.feature_world_, cell, false); }
+        void wreck_attitude(const MapCell& origin, Unit& u) override;
+    };
+    UnitMissionHooks unit_mission_hooks_{*this};
+    std::vector<UnitMissionTypeInfo> unit_mission_types_;  // by type index
+    std::vector<UnitTickTypeInfo> tick_types_;             // by type index (copies, for lookups by index)
+    UnitMissionEnvironment unit_mission_env_;
+    UnitMissions unit_missions_;
 };
 
 } // namespace sim
