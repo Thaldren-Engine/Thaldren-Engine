@@ -313,3 +313,30 @@ add_executable(motion_harness
 )
 target_include_directories(motion_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(motion_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Movement classes' passability, placement checks and the route search vs sim/route_search.h.
+add_executable(route_harness
+    route_harness.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/motion.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/route_search.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(route_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(route_harness PRIVATE /W4 /permissive- /fp:precise)
