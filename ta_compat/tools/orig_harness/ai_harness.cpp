@@ -184,8 +184,9 @@ std::vector<StubSpec> stub_specs() {
         {0x00465AC0, kVisibleId, 2, {{K::Arg, 0}, {K::Arg, 1}}, qVisible},
         // the weapon-target pass at the end of the controller step: not part of this test
         {0x004089A0, 0, 1, {}, -1, -1, false, true},
-        // free (cdecl)
+        // free and the C runtime's operator delete (cdecl)
         {0x004B4F20, 0, 0, {}, -1, -1, false, true},
+        {0x004E8820, 0, 0, {}, -1, -1, false, true},
     };
 }
 
@@ -197,8 +198,31 @@ std::size_t record_words(u32 id) {
 
 struct Layout {
     u32 heap = 0, scenario_heap = 0, bump_ptr = 0, stubs = 0, log_ptr = 0, log_base = 0, gs = 0, units = 0, defs = 0, options = 0, weapons = 0,
-        cells = 0, features = 0, fog = 0, mapinfo = 0, queues = 0, out = 0, orders = 0, scout_stub = 0, scout_vtable = 0, plant = 0, line = 0;
+        cells = 0, features = 0, fog = 0, mapinfo = 0, queues = 0, out = 0, orders = 0, scout_stub = 0, scout_vtable = 0, plant = 0, line = 0,
+        text = 0;
 };
+
+// The profile commands in the original's command registry (0x406F00) and every category of
+// the definition table in its category registry (0x488C50), with the table's masks.
+bool register_commands(harness::Remote& r, Layout& L, const ta::UnitDefTable& defs, std::string& report) {
+    if (!r.call(0x00406F00, 0, {})) {
+        report = "command registration failed";
+        return false;
+    }
+    for (const auto& [key, entry] : defs.categories.all()) {
+        const std::string& name = entry.first;
+        r.write(L.line + 0x400, name.c_str(), name.size() + 1);
+        u32 mask = 0;
+        if (!r.call(0x00488C50, 0, {L.line + 0x400}, &mask) || !mask) {
+            report = "category registration failed";
+            return false;
+        }
+        r.write(mask, entry.second.data(), 64);
+    }
+    // The registrations' memory stays: scenarios start their heap after it.
+    L.scenario_heap = (r.r32(L.bump_ptr) + 0xFFF) & ~0xFFFu;
+    return true;
+}
 
 bool setup(harness::Remote& r, Layout& L, std::string& report) {
     L.heap = r.alloc(64u << 20);
@@ -219,6 +243,7 @@ bool setup(harness::Remote& r, Layout& L, std::string& report) {
     L.out = r.alloc(0x1000);
     L.orders = r.alloc(0x2000);
     L.line = r.alloc(0x1000);
+    L.text = r.alloc(0x10000);
     if (!L.heap || !L.stubs || !L.log_base || !L.gs || !L.units || !L.defs || !L.queues) {
         report = "allocation failed";
         return false;
@@ -226,9 +251,10 @@ bool setup(harness::Remote& r, Layout& L, std::string& report) {
     Emitter e;
     auto here = [&]() { return L.stubs + static_cast<u32>(e.b.size()); };
     // Bump allocators in place of the heap routines.
-    const int size_at[3] = {8, 4, 12};
-    const u32 targets[3] = {0x004D83B0, 0x004B4F10, 0x004D84A0};
-    for (int k = 0; k < 3; ++k) {
+    // (and the C runtime's operator new, which the command and category registries use)
+    const int size_at[4] = {8, 4, 12, 4};
+    const u32 targets[4] = {0x004D83B0, 0x004B4F10, 0x004D84A0, 0x004E8890};
+    for (int k = 0; k < 4; ++k) {
         const u32 at = here();
         e.u8v(0xA1); e.u32le(L.bump_ptr);
         e.u8v(0x8B); e.u8v(0x4C); e.u8v(0x24); e.u8v(static_cast<std::uint8_t>(size_at[k]));
@@ -421,7 +447,7 @@ struct Stats {
     std::map<int, std::size_t> calls, intents;  // stub calls by kind, resolutions by intent
 };
 
-bool run_scenario(harness::Remote& r, const Layout& L, const ta::UnitDefTable& defs, const std::vector<sim::WeaponType>& wtypes,
+bool run_scenario(harness::Remote& r, const Layout& L, ta::Vfs& vfs, const ta::UnitDefTable& defs, const std::vector<std::string>& profile_lines,
                   const std::vector<sim::AiTypeInfo>& ai_types, const std::vector<u16>& usable, int steps, unsigned seed, Stats& st) {
     std::mt19937 g(seed);
     r.w32(L.bump_ptr, L.scenario_heap);
@@ -567,6 +593,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, const ta::UnitDefTable& d
     auto def_addr = [&](std::size_t k) { return L.defs + static_cast<u32>(k) * kDefSize; };
     std::vector<int> present;
     std::vector<std::unique_ptr<sim::MissionOrder>> heads;
+    const bool army = g() % 3 == 0;
     for (int i = 1; i <= kMaxUnits; ++i) {
         sim::Unit& u = units[static_cast<std::size_t>(i)];
         sim::UnitTickState& t = ticks[static_cast<std::size_t>(i)];
@@ -581,9 +608,19 @@ bool run_scenario(harness::Remote& r, const Layout& L, const ta::UnitDefTable& d
         t.tick_type = &tick_types[0];
         if (g() % 5 == 0) continue;
         present.push_back(i);
-        // Builders (with build lists) more often, to reach the construction roles.
+        // Builders (with build lists) more often, to reach the construction roles; in "army"
+        // scenarios mostly armed mobile units, to fill the strike groups and the hunter.
         u16 type = usable[g() % usable.size()];
-        if (g() % 3 == 0)
+        if (army && g() % 4 != 0) {
+            for (int tries = 0; tries < 40; ++tries) {
+                const u16 c = usable[g() % usable.size()];
+                if (!ai_types[c].structure && (ai_types[c].type_flags & 0x10000u) && (ai_types[c].abilities & 0x10u) &&
+                    !(ai_types[c].type_flags & 0x840u)) {
+                    type = c;
+                    break;
+                }
+            }
+        } else if (g() % 3 == 0)
             for (int tries = 0; tries < 20; ++tries) {
                 const u16 c = usable[g() % usable.size()];
                 if (!ai_types[c].build_options.empty()) {
@@ -805,7 +842,13 @@ bool run_scenario(harness::Remote& r, const Layout& L, const ta::UnitDefTable& d
             const std::string tn = "table " + std::to_string(k) + " ";
             auto cmp_bytes = [&](u32 begin_off, const void* data, std::size_t bytes, const char* name) {
                 const std::vector<std::uint8_t> v = vec_words(r.r32(ta + begin_off), r.r32(ta + begin_off + 4), 1);
-                if (v.size() != bytes || (bytes && std::memcmp(v.data(), data, bytes) != 0)) bad(tn + name);
+                if (v.size() != bytes || (bytes && std::memcmp(v.data(), data, bytes) != 0)) {
+                    std::size_t at = 0;
+                    const auto* d8 = static_cast<const std::uint8_t*>(data);
+                    while (at < v.size() && at < bytes && v[at] == d8[at]) ++at;
+                    bad(tn + name + " (sizes " + std::to_string(v.size()) + "/" + std::to_string(bytes) + ", first byte difference at " +
+                        std::to_string(at) + ")");
+                }
             };
             cmp_bytes(tCounts, tb.counts.data(), tb.counts.size() * 2, "counts");
             cmp_bytes(tThreat, tb.threat.data(), tb.threat.size(), "threat");
@@ -969,8 +1012,9 @@ bool run_scenario(harness::Remote& r, const Layout& L, const ta::UnitDefTable& d
         plant();
         // Mix: controller step x6, a role directly x3, regroup, refresh x2, rescore, pick, score,
         // site, nearest enemy, group move, profile x2, tweaks x2.
-        static constexpr int kMix[] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12};
-        const int op = kMix[g() % (sizeof kMix / sizeof kMix[0])];
+        static constexpr int kMix[] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 13};
+        int op = kMix[g() % (sizeof kMix / sizeof kMix[0])];
+        if (const char* only = std::getenv("AI_HARNESS_ONLY_OP")) op = std::atoi(only);
         std::string what;
         // A crash the engine predicts is checked against the original: its call must fail.
         auto run_checked = [&](u32 fn, u32 self, const char* name) -> int {
@@ -1212,11 +1256,47 @@ bool run_scenario(harness::Remote& r, const Layout& L, const ta::UnitDefTable& d
                 r.w32(controller_addr[static_cast<std::size_t>(c)] + cHold, tstate.controllers[static_cast<std::size_t>(c)].ai_hold_tick);
             }
             what = "tweak";
-        } else {  // the economy switch of a metal maker
+        } else if (op == 12) {  // the economy switch of a metal maker
             const int i = any_unit();
             sim::ai_switch_by_economy(ai, units[static_cast<std::size_t>(i)]);
             if (!r.call(kSwitch, 0, {unit_addr(i)})) return fail("switch");
             what = "economy switch";
+        } else {  // profile text through the command dispatcher (0x4B7A30)
+            std::string text;
+            if (!profile_lines.empty()) {
+                const std::size_t from = g() % profile_lines.size();
+                const std::size_t n = 3 + g() % 20;
+                for (std::size_t k = from; k < from + n && k < profile_lines.size(); ++k) text += profile_lines[k] + "\n";
+            }
+            static const char* kExtra[] = {"plan any", "plan easy medium", "plan hard", "plan", "// comment weight ARMCOM 0", "# weight ARMCOM 0",
+                                           "weight", "limit", "  \tWEIGHT\tconstr  2.5  ", "Weight ALL 0.5", "limit NOTAIR 4", "weight nosuchthing 3",
+                                           "weight armcom 1.25 # trailing", "\r", ""};
+            for (int n = static_cast<int>(g() % 4); n > 0; --n) {
+                if (g() % 2) {
+                    const u16 t = usable[g() % usable.size()];
+                    text += (g() % 2 ? "weight " : "limit ") + defs.units[t].unit_name + " " + std::to_string(g() % 5) + (g() % 2 ? "\r\n" : "\n");
+                } else {
+                    text += std::string(kExtra[g() % (sizeof kExtra / sizeof kExtra[0])]) + "\n";
+                }
+            }
+            if (g() % 3 == 0 && !text.empty()) text.pop_back();  // no final line break
+            ta::AiProfileReport rep;
+            ta::run_ai_commands(text, vfs, defs, ai, rep);
+            if (engine_faulted()) return true;
+            r.write(L.text, text.data(), text.size());
+            std::vector<std::uint8_t> parent(0xD4, 0);
+            r.write(L.line + 0x800, parent.data(), parent.size());
+            if (std::getenv("AI_HARNESS_SHOW_TEXT")) std::printf("--- text ---\n%s\n---\n", text.c_str());
+            if (!r.call(0x004B7A30, 0, {L.text, static_cast<u32>(text.size()), L.line + 0x800, 0xFFFFFFFFu})) return fail("profile text");
+            const bool rg = r.r32(kGate) != 0;
+            if (rg != state.profile_gate) {
+                std::printf("scenario %u step %d: profile gate differs after text\n", seed, step);
+                ++st.mismatches;
+                return true;
+            }
+            st.profile += rep.lines;
+            what = "profile text";
+            if (std::getenv("AI_HARNESS_SHOW_TEXT")) std::printf("--- text ---\n%s\n---\n", text.c_str());
         }
         ++st.ops;
         ++st.by_op[what];
@@ -1313,17 +1393,63 @@ int main(int argc, char** argv) {
         return 1;
     }
     write_defs(r, L, defs, wdefs);
+    if (!register_commands(r, L, defs, report)) {
+        std::fprintf(stderr, "%s\n", report.c_str());
+        return 1;
+    }
+    // Lines of the stock profile, for the text operations.
+    std::vector<std::string> profile_lines;
+    {
+        std::vector<std::uint8_t> f;
+        if (vfs.read("ai\\default.txt", f)) {
+            std::string cur;
+            for (std::uint8_t c : f) {
+                if (c == '\n') {
+                    profile_lines.push_back(cur);
+                    cur.clear();
+                } else {
+                    cur.push_back(static_cast<char>(c));
+                }
+            }
+        }
+    }
+    if (std::getenv("AI_HARNESS_PROBE")) {
+        const char* probes[] = {"plan any\n", "plan any", "limit ARMCOM 3", "Limit ARMCOM 3\r\n", "\n\n", "// x\n", "weight ARMCOM 2",
+                                "Limit ARMGUARD 18\r\n\r\nLimit ARMHAM 10\r\n"};
+        for (const char* p : probes) {
+            r.w32(L.gs + gDefs, L.defs);
+            r.w32(L.gs + gDefCount, static_cast<u32>(defs.units.size()));
+            const std::string t = p;
+            r.write(L.text, t.data(), t.size() + 1);
+            std::vector<std::uint8_t> parent(0xD4, 0);
+            r.write(L.line + 0x800, parent.data(), parent.size());
+            const bool ok = r.call(0x004B7A30, 0, {L.text, static_cast<u32>(t.size()), L.line + 0x800, 0xFFFFFFFFu});
+            std::printf("probe [%s]: %s\n", p, ok ? "ok" : "FAILED");
+            if (!ok) {
+                r.stop();
+                if (!r.start(argv[1]) || !setup(r, L, report)) return 1;
+                write_defs(r, L, defs, wdefs);
+                if (!register_commands(r, L, defs, report)) return 1;
+            }
+        }
+    }
     Stats st;
+    // Categories made during a scenario (unknown names) live in its heap: a new process then.
+    auto categories = [&]() { return r.r32(0x0051E6B8) - r.r32(0x0051E6B4); };
+    u32 registered = categories();
     for (int s = first; s < first + scenarios; ++s) {
         st.restart = false;
-        if (!run_scenario(r, L, defs, wtypes, ai_types, usable, steps, static_cast<unsigned>(s * 7 + 13), st)) {
-            if (!st.restart) {
+        const bool ok = run_scenario(r, L, vfs, defs, profile_lines, ai_types, usable, steps, static_cast<unsigned>(s * 7 + 13), st);
+        if (!ok || categories() != registered) {
+            if (!ok && !st.restart) {
                 ++st.failures;
                 std::printf("scenario %d: original call failed - restarting\n", s);
             }
             r.stop();
             if (!r.start(argv[1]) || !setup(r, L, report)) return 1;
             write_defs(r, L, defs, wdefs);
+            if (!register_commands(r, L, defs, report)) return 1;
+            registered = categories();
         }
     }
     r.stop();
