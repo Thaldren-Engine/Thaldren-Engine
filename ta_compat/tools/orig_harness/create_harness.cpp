@@ -32,6 +32,7 @@
 
 #include "remote.h"
 #include "sim/battle.h"
+#include "sim/battle_quiet.h"
 #include "sim/footprint.h"
 #include "sim/unit_create.h"
 #include "ta/battle_types.h"
@@ -245,7 +246,7 @@ u32 fbits(float f) {
 }
 
 // Engine side of everything the stubs stand for.
-struct Outside : sim::BattleOutside {
+struct Outside : sim::QuietBattleOutside {
     std::vector<u32> log;
     std::vector<sim::PlayerSlot>* players = nullptr;
     std::vector<sim::UnitTickState>* ticks = nullptr;
@@ -257,13 +258,6 @@ struct Outside : sim::BattleOutside {
         log.push_back(0);
         for (u32 a : args) log.push_back(a);
     }
-    void motion_step(sim::Unit&, std::uint32_t&) override {}
-    std::int32_t motion_speed(const sim::Unit&) override { return 0; }
-    std::uint32_t motion_start_tick(const sim::Unit&) override { return 0; }
-    void release_motion(sim::Unit&) override {}
-    void release_attached(sim::Unit&, sim::MissionOrder&) override {}
-    void create_motion(sim::Unit& u) override { rec(1, {tok(u)}); }
-    void motion_cells_claimed(sim::Unit& u) override { motion_stamp[u.id] = game_tick; }
     void update_passability(i16 x, i16 z, i16 w, i16 h) override {
         rec(5, {static_cast<u32>(static_cast<u16>(x)) | static_cast<u32>(static_cast<u16>(z)) << 16,
                 static_cast<u32>(static_cast<u16>(w)) | static_cast<u32>(static_cast<u16>(h)) << 16});
@@ -275,7 +269,6 @@ struct Outside : sim::BattleOutside {
     void stamp_line_of_sight(sim::Unit& u) override { rec(2, {tok(u)}); }
     void victory_unit_created(sim::Unit& u) override { rec(3, {tok(u)}); }
     std::int32_t run_mission(sim::Unit&, sim::MissionOrder&, std::uint32_t&) override { return 2; }
-    void retarget(sim::Unit*, sim::Unit&, std::uint16_t) override {}
     void attach_unit(sim::Unit& u, i32 a, i32 b, i32 c) override { rec(12, {static_cast<u32>(a), static_cast<u32>(b), static_cast<u32>(c)}), (void)u; }
     void drop_unit(sim::Unit&, i32 a) override { rec(13, {static_cast<u32>(a)}); }
     void detach_from_carrier(sim::Unit&) override {}
@@ -619,6 +612,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             std::vector<u32> rec(in.begin() + static_cast<std::ptrdiff_t>(i), in.begin() + static_cast<std::ptrdiff_t>(i + n));
             i += n;
             rec[1] = 0;
+            // The engine builds a real motion object where the original's constructor is a stub here.
+            if (rec[0] == 1) continue;
             for (std::size_t k = 2; k < rec.size(); ++k) rec[k] = token(rec[k]);
             if (rec[0] >= 10 && rec[0] <= 13) {  // script requests: the unit is in ECX, not compared
             }
@@ -768,8 +763,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             }
             if (f32(uDraw) != u.draw_flags) bad(un + "draw flags");
             if (t.has_motion && f32(uMotion)) {
-                const auto it = out.motion_stamp.find(static_cast<u16>(i));
-                if (r.r32(f32(uMotion) + 0x26) != (it == out.motion_stamp.end() ? 0u : it->second)) bad(un + "motion footprint step");
+                if (r.r32(f32(uMotion) + 0x26) != t.motion.claim_tick) bad(un + "motion footprint step");
             }
             if (t.type_index == 0) continue;
             const u32 so = f32(uScript);
