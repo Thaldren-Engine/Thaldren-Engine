@@ -287,6 +287,27 @@ bool use_resources(PlayerSlot& owner, UnitTickState& unit, float energy, float m
     return true;
 }
 
+void clear_weapon_target(Unit& unit, int slot) {
+    WeaponSlot& s = unit.weapons[static_cast<std::size_t>(slot)];
+    if (s.target_x == 0 && s.target_z == kUnitTarget) return;
+    s.target_x = 0;
+    s.target_z = kUnitTarget;
+    // The original also looks up StartBuilding here without running it.
+    if (unit.script) unit.script->call_with_args(unit.script->program().find_function("TargetCleared"), nullptr, false, 1, slot, 0, 0, 0);
+}
+
+void release_weapon_targets(Unit& unit, int slot) {
+    if (slot == 3) {
+        release_weapon_targets(unit, 0);
+        release_weapon_targets(unit, 1);
+        slot = 2;
+    }
+    WeaponSlot& s = unit.weapons[static_cast<std::size_t>(slot)];
+    if (!(s.flags & slot_flags::kEnabled) || (s.flags & slot_flags::kReleased)) return;
+    s.flags = static_cast<std::uint8_t>(s.flags | slot_flags::kReleased);
+    clear_weapon_target(unit, slot);
+}
+
 void process_weapon_slots(Weapons& w, Unit& unit, std::uint32_t& stale_word) {
     UnitTickState& t = w.ticks[unit.id];
     // The target position lives in the original's frame; its height word is the caller's

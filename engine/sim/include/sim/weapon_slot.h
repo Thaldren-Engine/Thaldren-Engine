@@ -42,6 +42,7 @@ public:
 
 namespace slot_flags {
 constexpr std::uint8_t kAiming = 1, kEnabled = 2, kScriptIndexMask = 0x0C;  // script index = (flags >> 2) & 3
+constexpr std::uint8_t kReleased = 0x10;  // targets released by an order (set once)
 }
 
 // target_z of a slot aimed at a unit (target_x is then its id; 0 = no target).

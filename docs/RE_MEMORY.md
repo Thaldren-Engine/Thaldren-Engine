@@ -693,7 +693,7 @@ Implementation: `engine/sim/src/orders.cpp` (`sim/orders.h`). Checked by `tools/
 1. wait bit 1 → behaviour(unit, order, 2), result ignored;
 2. flag 0x400000 → start the unit script's `StopBuilding` (by index, not run now, no arguments), network notice `0x00456190`(unit, function index), clear the flag;
 3. if the unit has a motion object: its goal object (motion +0) is asked; if the goal's current attachment (goal +4) is the order's +0x52, the goal's method +4 is called with 0 first; then the attached object is deleted (virtual destructor, 1) and +0x52 = 0. Engine hook `release_attached`;
-4. without flag 0x10000: release the weapon targets the order gave (`0x00489800`(unit, 3), weapon slots; hook);
+4. without flag 0x10000: release the weapon targets the order gave (`Unit_ReleaseWeaponTargets` `0x00489800`(unit, 3): slots 0, 1 then 2; an enabled slot without flag 0x10 gets flag 0x10 and forgets its target like `0x0048A0F0`; `sim::release_weapon_targets`, verified in `orders_harness`);
 5. unlink the target link.
 
 **Remove** (`Unit_RemoveMissionOrder` `0x00439F80`): search the list named by the order's own 0x40000 flag; if found, unlink, flag 0x10000 unless it is the current primary head, destroy. Not found → nothing.
@@ -703,7 +703,7 @@ Implementation: `engine/sim/src/orders.cpp` (`sim/orders.h`). Checked by `tools/
 1. if game tick ≥ wake (unsigned): wake = −1, events |= 1;
 2. woken = (events | pending u16) & wait; if wait ≠ 0 and woken = 0, return;
 3. pending &= ~woken (16 bits), wait = 0, events &= ~woken;
-4. woken bit 0x10000 → clear the targets of weapon slots 0, 1, 2 (`0x0048A0F0`, hook);
+4. woken bit 0x10000 → clear the targets of weapon slots 0, 1, 2 (`Weapon_ClearTarget` `0x0048A0F0`: if the slot has a target, set it to none (id 0, z = −0x8000), look up `StartBuilding` without running it, and queue `TargetCleared(slot)`; `sim::clear_weapon_target`, verified in `orders_harness`);
 5. result = behaviour(order's unit, order, woken), then:
    - 0: step = 0; 1: step + 1; 2, 4: nothing;
    - 3: sleep: r = random(15) (battle RNG), wait |= 1, wake = tick + r + 30;

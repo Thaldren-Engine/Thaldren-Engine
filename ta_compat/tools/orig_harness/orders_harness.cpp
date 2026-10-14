@@ -35,6 +35,7 @@
 #include "sim/script_vm.h"
 #include "sim/unit.h"
 #include "sim/unit_tick.h"
+#include "sim/weapons.h"
 #include "ta/cob.h"
 #include "ta/hpi.h"
 #include "ta/model3do.h"
@@ -111,8 +112,6 @@ const Stub kStubs[] = {
     {0x0045AAA0, 1, 51, 0, StubRet::Silent},  // free object state
     {0x0043DD10, 0, 52, 0, StubRet::Silent},  // motion destructor [thiscall]
     {0x004B4F20, 1, 53},  // free(block) [cdecl]
-    {0x0048A0F0, 2, 60},  // clear weapon target(unit, slot)
-    {0x00489800, 1, 61},  // release weapon targets(3) [thiscall on the unit]
     {0x00456190, 2, 62},  // broadcast script call(unit, function)
     {0x00406F00, 0, 70, 0, StubRet::Silent},  // AI plan command registration (not simulated)
 };
@@ -513,8 +512,9 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         if (s.slot_mode) event = s.slot_value;
         return static_cast<std::int32_t>(s.result);
     }
-    void clear_weapon_target(sim::Unit& u, int slot) override { rec(60, 0, {tok(u), static_cast<u32>(slot)}); }
-    void release_weapon_targets(sim::Unit& u) override { rec(61, tok(u), {3}); }
+    // The original's weapon-target routines run for real (0x48A0F0, 0x489800(3)).
+    void clear_weapon_target(sim::Unit& u, int slot) override { sim::clear_weapon_target(u, slot); }
+    void release_weapon_targets(sim::Unit& u) override { sim::release_weapon_targets(u, 3); }
     void release_attached(sim::Unit& u, sim::MissionOrder& o) override {
         const MotionInfo& m = motions[u.id];
         if (m.goal_current == 0 || m.goal_current != o.attached) {
@@ -805,6 +805,18 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(at + uBuildLeft, &u.build_fraction_left, 4);
         r.write(at + uHp, &u.hit_points, 2);
         r.w32(at + uFlags, u.flags);
+        // Weapon slot targets and flags (the weapon-target routines run for real).
+        for (int s = 0; s < 3; ++s) {
+            sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
+            const u32 kind = g() % 4;
+            ws.target_x = kind == 0 ? 0 : static_cast<std::int16_t>(kind == 1 ? g() % 3000 : 1 + g() % kMaxUnits);
+            ws.target_z = kind == 1 ? static_cast<std::int16_t>(g() % 3000) : sim::kUnitTarget;
+            ws.flags = static_cast<std::uint8_t>(g() & 0x1F);
+            const u32 sa = at + 4 + static_cast<u32>(s) * 0x1C;
+            r.write(sa + 0x00, &ws.target_x, 2);
+            r.write(sa + 0x02, &ws.target_z, 2);
+            r.write(sa + 0x1B, &ws.flags, 1);
+        }
         u32 state = 0;
         if (!r.call(kBuildState, 0, {lt.remote_model, lt.remote_cob, at}, &state) || !state) {
             std::printf("build state failed\n");
@@ -940,6 +952,13 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             if (static_cast<std::int16_t>(f16(uPitch)) != u.pitch || f16(uHeading) != u.heading || static_cast<std::int16_t>(f16(uBank)) != u.bank)
                 bad(un + "pitch/heading/bank");
             if ((f32(uScript) != 0) != (u.script != nullptr) || (f32(uMotion) != 0) != t.has_motion) bad(un + "script/motion presence");
+            for (int s = 0; s < 3; ++s) {
+                const sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
+                const u32 so = 4 + static_cast<u32>(s) * 0x1C;
+                if (static_cast<std::int16_t>(f16(so)) != ws.target_x || static_cast<std::int16_t>(f16(so + 2)) != ws.target_z ||
+                    f8(so + 0x1B) != ws.flags)
+                    bad(un + "weapon slot " + std::to_string(s));
+            }
             // Orders, both lists.
             for (int list = 0; list < 2; ++list) {
                 u32 ra = f32(list ? uSecondary : uOrders);

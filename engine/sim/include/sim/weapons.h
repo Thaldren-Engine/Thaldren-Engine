@@ -78,6 +78,12 @@ bool aim_within_tolerance(const Unit& unit, const WeaponSlot& slot, std::uint16_
 // (false) if either is short; metal only if still affordable after the energy.
 bool use_resources(PlayerSlot& owner, UnitTickState& unit, float energy, float metal);
 
+// The slot forgets its target, if it has one, and the script hears TargetCleared(slot).
+void clear_weapon_target(Unit& unit, int slot);
+// An order releases the targets it gave the slots: slot 0..2, or 3 for all of them (slots
+// 0, 1, then 2). An enabled slot not yet released is marked released and forgets its target.
+void release_weapon_targets(Unit& unit, int slot);
+
 // One step of the unit's weapon slots: reload countdown, target, aim scripts, range
 // check and firing. `stale_word` is the unit pass's stack word (see "Stale stack word"):
 // the original leaves the height of the last resolved target position there.

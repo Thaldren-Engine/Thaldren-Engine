@@ -162,6 +162,7 @@ add_executable(orders_harness
     ${ROOT}/engine/sim/src/trig.cpp
     ${ROOT}/engine/sim/src/unit.cpp
     ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
     ${ROOT}/engine/sim/src/x87_math.cpp
     ${ROOT}/engine/sim/src/x87_trig.cpp
 )
