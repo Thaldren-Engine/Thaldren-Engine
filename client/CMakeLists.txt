@@ -37,3 +37,6 @@ if(TARGET render_gpu)
     target_link_libraries(ta_play PRIVATE SDL3::SDL3-static)
 endif()
 target_compile_options(ta_play PRIVATE ${WARN_FLAGS})
+if(MSVC)
+    target_link_options(ta_play PRIVATE /MAP)  # function addresses for crash reports
+endif()

@@ -34,6 +34,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: ta_play <game_dir> [--map NAME] [--side arm|core] [--headless --frames N --script F --shots a,b --out P] ...\n");
         return 2;
     }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     ta::SkirmishSetup setup;
     client::ClientOptions opt;
     client::FrontOptions front;

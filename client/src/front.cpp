@@ -182,6 +182,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         return 1;
     }
     SDL_HideCursor();
+    std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
         gpu = render::GpuRenderer::create(content.blend);

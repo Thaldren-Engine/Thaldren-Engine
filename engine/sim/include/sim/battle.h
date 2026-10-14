@@ -465,7 +465,9 @@ private:
         std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
         void route_search_forget(MotionGoal& g) override { sim::route_search_forget(b.route_search, g); }
         void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
-        std::uint32_t allocate_object(std::uint32_t) override { return 0; }
+        // Goal objects need a nonzero handle: an order with handle 0 counts as having no goal
+        // and would never detach it from the motion object (stand-in addresses, as for orders).
+        std::uint32_t allocate_object(std::uint32_t) override { return b.next_goal_address_ += 0x40; }
         void free_object(std::uint32_t) override {}
     };
     struct MissionHooks final : MissionSystems {
@@ -537,6 +539,7 @@ private:
     FeatureWorld feature_world_;
     EffectsWorld effects_world_;
     std::uint32_t next_object_ = 0x02000000;  // stand-in object state handles of 3D features
+    std::uint32_t next_goal_address_ = 0x03000000;  // stand-in addresses of motion goal objects
     MotionHooks motion_hooks_{*this};
     MissionHooks mission_hooks_{*this};
     std::vector<MotionType> motion_types_;        // by type index (copied from types each step)
