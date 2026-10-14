@@ -272,6 +272,8 @@ enum : u32 {
     mGoal = 0x00, mGoalObject = 0x10,
 };
 
+std::size_t g_intercepts = 0, g_intercept_hits = 0;  // interceptor target searches (and how many found a shot)
+
 struct LoadedType {
     const ta::UnitDefRecord* def = nullptr;
     std::vector<std::uint8_t> model_file, cob_file;
@@ -403,8 +405,10 @@ struct World : sim::UnitWorld, sim::CombatSystems, sim::OrderSystems, sim::Missi
     std::uint8_t feature_flags(std::uint16_t f) override { return f < feature_flag_bytes.size() ? feature_flag_bytes[f] : 0; }
     std::int32_t intercept_target(sim::Unit& u, int slot, std::array<i32, 3>& pos) override {
         rec(kInterceptId, 0, {tok(u), static_cast<u32>(slot)});
+        ++g_intercepts;
         const u32 a = next_answer(qIntercept);
         if (!a) return -1;
+        ++g_intercept_hits;
         const std::size_t k = (a - shots_base) / 0x40;
         pos = shot_pos[k];
         return static_cast<std::int32_t>(k);
@@ -419,7 +423,9 @@ struct Stats {
     std::map<std::string, std::size_t> by_op;
     std::size_t targets_found = 0, attack_orders = 0, resolved_nonzero = 0, retargets_aimed = 0, refreshes = 0, listed = 0, pass_changes = 0;
     std::map<int, std::size_t> resolved_kinds;
+    std::map<int, std::size_t> intents;  // resolutions by intent
 };
+
 
 bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& types, const sim::HeightMap& hm, int steps,
                   unsigned seed, Stats& st) {
@@ -1223,6 +1229,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 return true;
             }
             st.resolved_nonzero += kind != 0;
+            ++st.intents[intent];
             ++st.resolved_kinds[kind];
             what = "resolve";
         } else if (op == 7) {  // retargeting (the victim is alive and not dying, as the damage routine requires)
@@ -1347,7 +1354,9 @@ int main(int argc, char** argv) {
     std::printf("targets found %zu, units listed %zu, attack orders %zu, refreshes %zu, retargets that changed a slot %zu, "
                 "weapon-target pass slot changes %zu, nonzero resolutions %zu\n",
                 st.targets_found, st.listed, st.attack_orders, st.refreshes, st.retargets_aimed, st.pass_changes, st.resolved_nonzero);
-    std::printf("resolved kinds:");
+    std::printf("interceptor searches %zu (%zu found a shot)\nresolutions by intent:", g_intercepts, g_intercept_hits);
+    for (const auto& [k, v] : st.intents) std::printf(" %d:%zu", k, v);
+    std::printf("\nresolved kinds:");
     for (const auto& [k, v] : st.resolved_kinds) std::printf(" %d:%zu", k, v);
     std::printf("\nmismatching scenarios %zu, engine faults %zu, original failures %zu\n", st.mismatches, st.faults, st.failures);
     return st.mismatches || st.failures ? 1 : 0;
