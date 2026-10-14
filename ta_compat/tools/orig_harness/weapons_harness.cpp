@@ -516,7 +516,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         w.reload_time = static_cast<u16>(d.reload_time);
         w.tolerance = static_cast<u16>(d.tolerance);
         w.pitch_tolerance = static_cast<u16>(d.pitch_tolerance);
-        w.id = d.index;
+        w.index = d.index;
         if (g() % 3 == 0)
             for (u32 b : kFlagBits)
                 if (g() % 4 == 0) w.flags ^= b;
@@ -540,7 +540,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         put(wReload, &w.reload_time, 2);
         put(wTolerance, &w.tolerance, 2);
         put(wPitchTolerance, &w.pitch_tolerance, 2);
-        put(wId, &w.id, 1);
+        put(wId, &w.index, 1);
         put(wFlags, &w.flags, 4);
         r.write(L.wdefs + static_cast<u32>(k) * kWeaponDefStride, b.data(), b.size());
     }

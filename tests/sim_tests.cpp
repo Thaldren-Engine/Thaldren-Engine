@@ -14,6 +14,7 @@
 #include "sim/ground_settle.h"
 #include "sim/heightmap.h"
 #include "sim/orders.h"
+#include "sim/projectile.h"
 #include "sim/unit.h"
 #include "sim/rng.h"
 #include "sim/script_vm.h"
@@ -738,6 +739,120 @@ void test_ground_settle() {
     CHECK_EQ(u.pos[1], 25 << 16);
 }
 
+struct ProjectileLog : sim::ProjectileSystems {
+    std::vector<std::string> calls;
+    const sim::WeaponType* weapon = nullptr;
+    const sim::WeaponType* slot_weapon(const Unit&, int slot) override { return slot == 0 ? weapon : nullptr; }
+    std::uint16_t slot_fire_heading(const Unit&, int) override { return 0; }
+    std::int32_t motion_speed(const Unit&) override { return 0; }
+    void play_sound(std::uint16_t, const sim::Vec3i&) override { calls.push_back("sound"); }
+    void spawn_smoke(const sim::Vec3i&) override { calls.push_back("smoke"); }
+    void spawn_muzzle_smoke(const sim::Vec3i&) override { calls.push_back("muzzle smoke"); }
+    void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override { calls.push_back("explosion"); }
+    void camera_shake(std::int32_t, std::int32_t, std::int32_t) override {}
+    void damage_feature(sim::MapCell&, std::int32_t, std::int32_t, const sim::WeaponType&) override { calls.push_back("feature"); }
+    void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override { calls.push_back("network"); }
+    sim::Vec3i feature_anim_pos(std::uint16_t) override { return {}; }
+};
+
+void test_projectiles() {
+    sim::UnitTypeInfo type;
+    type.max_damage = 1000;
+    type.model_min_x = type.model_min_z = -8 << 16;
+    type.model_max_x = type.model_max_z = 8 << 16;
+    type.model_max_y = 20 << 16;
+    sim::UnitTickTypeInfo tick_type;
+    tick_type.name = "TANK";
+    std::vector<Unit> units(4);
+    std::vector<UnitTickState> ticks(4);
+    std::vector<PlayerSlot> players(11);
+    for (int p = 0; p < 2; ++p) {
+        players[static_cast<std::size_t>(p)].active = true;
+        players[static_cast<std::size_t>(p)].controller = 1;
+    }
+    const std::int32_t xs[4] = {0, 40, 100, 140};
+    for (std::uint16_t i = 1; i <= 3; ++i) {
+        units[i].id = i;
+        units[i].type = &type;
+        units[i].hit_points = 500;
+        units[i].flags = unit_flags::kAlive;
+        units[i].pos = {xs[i] << 16, 10 << 16, 100 << 16};
+        ticks[i].tick_type = &tick_type;
+        ticks[i].owner = i == 1 ? 0 : 1;
+    }
+    sim::CombatEnvironment cenv;
+    CombatLog clog;
+    sim::Combat c{units, ticks, players, cenv, clog};
+    sim::HeightMap hm(16, 16);
+    sim::MapGrid map;
+    map.width = map.height = 16;
+    map.cells.resize(256);
+    map.cells[6 * 16 + 6].unit = 2;
+    const std::vector<sim::FeatureTypeInfo> features;
+    sim::ProjectileTable table;
+    sim::ProjectileEnvironment env;
+    ProjectileLog log;
+    sim::BattleRng rng;
+    sim::ProjectileWorld w{table, c, hm, map, features, env, log, rng};
+
+    // A line-of-sight shot flies 16 units a step along +x and hits unit 2 on the fourth step.
+    sim::WeaponType gun;
+    gun.flags = sim::weapon_flags::kLineOfSight;
+    gun.velocity = 16 << 16;
+    gun.range = 1000;
+    gun.default_damage = 100;
+    log.weapon = &gun;
+    env.game_tick = 1;
+    const sim::FireSlot slot{&gun, 0, 0, 0, 0};
+    CHECK_EQ(sim::fire_directed(w, slot, units[1], units[1].pos, units[2].pos, &units[2]), true);
+    CHECK_EQ(table.count, 1);
+    CHECK_EQ(table.slots[0].yaw, 0xC000);
+    CHECK_EQ(table.slots[0].vel[0], 16 << 16);
+    CHECK_EQ(table.slots[0].expire_tick, 1u + (1000u << 16) / (16u << 16));
+    CHECK_EQ(units[1].cloak_holdoff_tick, 601u);
+    for (std::uint32_t t = 2; t <= 4; ++t) {
+        env.game_tick = t;
+        sim::update_projectiles(w);
+    }
+    CHECK_EQ(table.count, 1);
+    CHECK_EQ(units[2].hit_points, 500);
+    env.game_tick = 5;
+    sim::update_projectiles(w);
+    CHECK_EQ(table.count, 0);
+    CHECK_EQ(units[2].hit_points, 400);
+    CHECK_EQ(units[1].net_dirty, 0x4000);  // more damage to enemies than to friends
+
+    // Area damage falls off with the distance to the unit's box: 32 of a 64 radius with
+    // edge effectiveness 0.5 gives 0.25 * 0.5 + 0.5 = 0.625.
+    sim::WeaponType blast;
+    blast.area_of_effect = 128;
+    blast.default_damage = 100;
+    blast.edge_effectiveness = 0.5f;
+    sim::UnitTypeInfo bomb = type;
+    bomb.explode_as = &blast;
+    units[3].type = &bomb;
+    sim::detonate_unit_death(w, units[3], false);
+    CHECK_EQ(units[2].hit_points, 400 - 62);
+    CHECK_EQ(units[1].hit_points, 500);  // 92 units from the box: out of reach
+
+    // Compaction keeps order; a moved chaser has its chased slot renumbered, an unmoved one keeps the old slot.
+    for (int i = 0; i < 5; ++i) sim::alloc_projectile(table)->weapon = &gun;
+    table.slots[1].flags = sim::projectile_flags::kDeleted;
+    table.slots[3].flags = sim::projectile_flags::kDeleted;
+    table.slots[4].intercepted = 2;
+    table.slots[0].intercepted = 4;
+    table.slots[4].speed = 44;
+    sim::compact_projectiles(table);
+    CHECK_EQ(table.count, 3);
+    CHECK_EQ(table.slots[2].speed, 44);
+    CHECK_EQ(table.slots[2].intercepted, 1);
+    CHECK_EQ(table.slots[0].intercepted, 4);
+    // The table is full at 300.
+    while (sim::alloc_projectile(table)) {
+    }
+    CHECK_EQ(table.count, sim::kMaxProjectiles);
+}
+
 } // namespace
 
 int main() {
@@ -758,6 +873,7 @@ int main() {
     test_weapons();
     test_orders();
     test_ground_settle();
+    test_projectiles();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

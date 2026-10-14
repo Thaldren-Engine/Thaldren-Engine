@@ -3,30 +3,53 @@
 // (see docs/RE_MEMORY.md, "Weapons: slot pass and aiming").
 
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "sim/script_vm.h"
 
 namespace sim {
 
-// Weapon type flag bits (the ones the simulation reads so far).
+// Weapon type flag bits (see docs/RE_MEMORY.md, "Weapon definitions").
 namespace weapon_flags {
-constexpr std::uint32_t kLineOfSight = 0x1, kBallistic = 0x2, kVerticalLaunch = 0x10, kWaterWeapon = 0x10000,
-                        kTurret = 0x80000, kCruise = 0x2000000, kCommandFire = 0x4000000, kStockpile = 0x10000000;
+constexpr std::uint32_t kLineOfSight = 1u << 0, kBallistic = 1u << 1, kBeam = 1u << 3, kVerticalLaunch = 1u << 4,
+                        kMeteor = 1u << 5, kParalyzer = 1u << 7, kDropped = 1u << 8, kStartSmoke = 1u << 9,
+                        kEndSmoke = 1u << 10, kSoundTrigger = 1u << 11, kGuidance = 1u << 12, kTracks = 1u << 13,
+                        kUnitsOnly = 1u << 14, kGroundBounce = 1u << 15, kWaterWeapon = 1u << 16, kSmokeTrail = 1u << 18,
+                        kTurret = 1u << 19, kSelfPropelled = 1u << 20, kPropeller = 1u << 21, kNoExplode = 1u << 22,
+                        kBurnBlow = 1u << 23, kTwoPhase = 1u << 24, kCruise = 1u << 25, kCommandFire = 1u << 26,
+                        kNoAutoRange = 1u << 27, kStockpile = 1u << 28, kInterceptor = 1u << 30;
 }
 
 // Which fire routine a weapon type uses (picked from its flags when the types are loaded).
 enum class WeaponFireRoutine : std::uint8_t { None, Turret, VerticalLaunch, LineOfSight, Dropped };
 
 struct WeaponType {
-    std::uint32_t flags = 0;
+    std::uint8_t index = 0;             // definition slot (identifies the weapon in network packets)
+    std::uint32_t flags = 0;            // weapon_flags
     WeaponFireRoutine fire = WeaponFireRoutine::None;
     std::int32_t velocity = 0;          // muzzle speed per tick (16.16)
+    std::int32_t start_velocity = 0;
+    std::int32_t acceleration = 0;
     std::int32_t range = 0;             // world units
     float energy_per_shot = 0.0f, metal_per_shot = 0.0f;
     float min_barrel_angle = 0.0f;      // radians
     std::uint16_t reload_time = 0;      // ticks
     std::uint16_t tolerance = 0, pitch_tolerance = 0;  // aim tolerances (0 = defaults)
-    std::uint8_t id = 0;
+    std::uint16_t weapon_timer = 0;     // steps
+    std::uint16_t turn_rate = 0;        // angle per step
+    std::uint16_t burst = 0, burst_rate = 0, spray_angle = 0;
+    std::uint16_t duration = 0;         // beam length in steps
+    std::uint16_t random_decay = 0, smoke_delay = 0, flight_time = 0, hold_time = 0;
+    std::uint16_t area_of_effect = 0;   // diameter, world units
+    std::uint16_t default_damage = 0;
+    float edge_effectiveness = 0.0f;
+    std::int32_t shake_magnitude = 0, shake_duration = 0;
+    std::uint16_t sound_start = 0xFFFF, sound_hit = 0xFFFF, sound_water = 0xFFFF;  // 0xFFFF = none
+    // Damage by unit name, in the order of a case-insensitive sort (first spelling
+    // of a name wins); other units take default_damage.
+    std::vector<std::pair<std::string, std::int32_t>> damage;
 };
 
 // Receives the aim script's answer: any nonzero return marks the aim as done.
