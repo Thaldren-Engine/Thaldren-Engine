@@ -19,6 +19,8 @@ endif()
 add_library(sim STATIC
     engine/sim/src/anim.cpp
     engine/sim/src/battle.cpp
+    engine/sim/src/battle_start.cpp
+    engine/sim/src/commands.cpp
     engine/sim/src/effects.cpp
     engine/sim/src/features.cpp
     engine/sim/src/combat.cpp
@@ -27,6 +29,7 @@ add_library(sim STATIC
     engine/sim/src/footprint.cpp
     engine/sim/src/ground_settle.cpp
     engine/sim/src/heightmap.cpp
+    engine/sim/src/lockstep.cpp
     engine/sim/src/motion.cpp
     engine/sim/src/missions.cpp
     engine/sim/src/construction.cpp
@@ -57,6 +60,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 add_library(ta_compat STATIC
     ta_compat/src/battle_economy.cpp
     ta_compat/src/battle_features.cpp
+    ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp

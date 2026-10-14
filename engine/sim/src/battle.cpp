@@ -455,4 +455,22 @@ MissionOrder* Battle::allocate_order() {
 
 void Battle::free_order(MissionOrder* order) { delete order; }
 
+void Battle::step() {
+    // Game_RunSimulationStep 0x495490, one pending step (docs/RE_MEMORY.md "Battle step").
+    advance_tick();                  // 1
+    if (settings.net_game) outside_.network_input();  // 2
+    step_units_and_projectiles();    // 3, 4
+    step_effects();                  // 5
+    players_stage();                 // 6
+    step_features();                 // 7
+    step_wind();                     // 8 (animation cursors before it are presentation)
+    step_nano();                     // 9 (the effect sweep's nano streams)
+    if (settings.net_game) {         // 10
+        auto_share_resources();
+        outside_.network_flush();
+    }
+}
+
+void Battle::end_frame() { expire_lingering_sight(); }
+
 } // namespace sim

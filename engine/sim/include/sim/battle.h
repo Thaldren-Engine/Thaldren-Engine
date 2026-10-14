@@ -33,6 +33,7 @@
 #include "sim/unit.h"
 #include "sim/unit_create.h"
 #include "sim/unit_tick.h"
+#include "sim/victory.h"
 #include "sim/weapons.h"
 
 namespace sim {
@@ -177,6 +178,10 @@ public:
     virtual void build_menu_refresh(Unit&) {}
     virtual void orders_panel_changed() {}
     virtual void selection_changed() {}
+    // Battle::step(): stage 2 (a network game's incoming packets, 0x453D40) and stage 10 (its
+    // outgoing flush); the per-frame work after a frame's steps besides lingering sight.
+    virtual void network_input() {}
+    virtual void network_flush() {}
 };
 
 class Battle final : UnitWorld,
@@ -226,6 +231,7 @@ public:
     std::vector<PlayerEconomy> player_economy;
     WindState wind;
     EndGameState end_game;
+    VictoryState victory;  // outcome per player and the end of the game (sim/victory.h)
 
     // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
     // inclusive range of them (the entries' owner is fixed by it).
@@ -290,6 +296,8 @@ public:
     UnitTickEnvironment& unit_env() { return unit_env_; }
 
     std::uint32_t game_tick() const { return unit_env_.game_tick; }
+    BattleRng& battle_rng() { return rng_; }                 // the battle random generator
+    const HeightMap& height_map() const { return heights_; }  // the terrain heights
 
     // The unit pass and then the projectile update of one step (the original's
     // stages 2 and 3; the caller advances the tick first and runs the other stages).
@@ -315,6 +323,13 @@ public:
     // Call once the feature types and animations are set (before placing map features).
     void reset_features_and_effects();
     void advance_tick() { ++unit_env_.game_tick; }
+    // One whole step in the original's order (Game_RunSimulationStep 0x495490, see
+    // docs/RE_MEMORY.md "Battle step"): tick, network input, units and projectiles, effects,
+    // players, features, wind, meteors, the effect sweep, network flush. Commands
+    // (sim/commands.h) are applied between steps. After the frame's steps (even none) the
+    // frame loop calls end_frame().
+    void step();
+    void end_frame();
     // The route search's step: the first thing the players stage (0x464F80) does, after
     // the effects stage and before the players' own updates.
     void run_route_search();
