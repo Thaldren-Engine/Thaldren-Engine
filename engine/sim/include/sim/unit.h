@@ -53,6 +53,10 @@ struct Unit {
     MissionOrder* secondary_orders = nullptr;  // secondary order list
     UnitLink* referrers = nullptr;             // links (order targets) pointing at this unit, newest first
     std::uint16_t hover_phase = 0;             // hover bob phase (sim/ground_settle.h)
+    std::int16_t cell_x = 0, cell_z = 0;       // map cell of the footprint's corner (sim/motion.h)
+    std::int16_t footprint_x = 0, footprint_z = 0;  // footprint size in cells
+    std::int8_t transport_piece = 0;           // carrier piece a carried unit sits on
+    std::int32_t water_occupancy = 0;          // last value the script heard (sim/motion.h)
     std::uint32_t cloak_holdoff_tick = 0;  // firing keeps the unit decloaked until this tick
     const UnitTypeInfo* type = nullptr;
     Unit* carrier = nullptr;     // transport carrying this unit
