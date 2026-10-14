@@ -710,6 +710,15 @@ void detonate_unit_death(ProjectileWorld& w, Unit& unit, bool self_destruct) {
     detonate_projectile(w, p, nullptr);
 }
 
+void area_damage_at(ProjectileWorld& w, const WeaponType& weapon, const Vec3i& at) {
+    // A zeroed temporary shot: only the weapon, the position and the "no player" slot are set.
+    Projectile p;
+    p.weapon = &weapon;
+    p.owner_slot = 10;
+    p.pos = at;
+    area_damage(w, p, at);
+}
+
 void compact_projectiles(ProjectileTable& t) {
     // Moved shots that chase another shot get their chased slot renumbered, found by
     // the chased shot's pre-compaction index; other references are left as they are.

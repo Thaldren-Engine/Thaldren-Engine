@@ -13,9 +13,13 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       projectile_world_{projectiles, combat_, heights_, map, features, projectile_env_, *this, rng_},
       orders_{ticks, players, rng_, *this, 0},
       footprint_{map, buckets, units, ticks, players, *this, {}},
+      feature_world_{feature_state, map, features, heights_, anims, feature_env_, *this, rng_, crt_rand},
+      effects_world_{effects, map, anims, effect_art, *this, rng_},
       motion_{units, ticks, players, motion_types_, heights_, motion_hooks_, {}, {}},
       missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_} {
     alliances.resize(kPlayerRecords);
+    feature_state.reset();
+    effects.reset();
     types[0].info.max_damage = 0;  // the blank type of empty slots
     types[0].tick.damage_modifier = 0;
 }
@@ -64,6 +68,16 @@ void Battle::sync_settings() {
     projectile_env_.options = s.damage_options;
     projectile_env_.net_game = s.net_game;
     orders_.game_tick = unit_env_.game_tick;
+    feature_env_.game_tick = unit_env_.game_tick;
+    feature_env_.sea_level = s.sea_level;
+    feature_env_.gravity = s.gravity;
+    feature_env_.wind = s.wind_drift;
+    feature_env_.destructible = (s.damage_options & 8) != 0;
+    feature_env_.network_role = s.feature_network_role;
+    effect_art.gravity = s.gravity;
+    effect_art.sea_level = s.sea_level;
+    effect_art.no_sea_level_trigger = s.no_sea_level_trigger;
+    effect_art.lava_world = s.lava_world;
     // Motion and mission type data by type index.
     motion_types_.resize(types.size());
     mission_types_.resize(types.size());
@@ -84,6 +98,34 @@ void Battle::step_units_and_projectiles() {
     sync_settings();
     run_unit_pass(units, ticks, players, unit_env_, *this, camera_countdown_);
     update_projectiles(projectile_world_);
+}
+
+void Battle::step_effects() {
+    sync_settings();
+    sim::step_effects(effects_world_);
+}
+
+void Battle::step_features() {
+    sync_settings();
+    sim::step_features(feature_world_);
+}
+
+void Battle::reset_features_and_effects() {
+    sync_settings();
+    feature_state.reset();
+    effects.reset();
+    init_feature_type_cursors(feature_world_);
+}
+
+void Battle::spawn_wreck(Unit& u, std::int32_t level, bool burn) {
+    // The kill packet's handler (0x486360): the unit is still in its cells.
+    WreckSource src;
+    if (u.type) {
+        src.corpse = u.type->corpse;
+        src.feature_unit = u.type->is_feature;
+    }
+    src.owner = static_cast<std::uint8_t>(u.id < ticks.size() ? ticks[u.id].owner : 10);
+    sim::spawn_wreck(feature_world_, u, src, level, burn);
 }
 
 Unit* Battle::unit_by_id(std::uint16_t id) { return id < units.size() ? &units[id] : nullptr; }

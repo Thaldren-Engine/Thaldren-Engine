@@ -12,7 +12,10 @@
 #include <memory>
 #include <vector>
 
+#include "sim/anim.h"
 #include "sim/combat.h"
+#include "sim/effects.h"
+#include "sim/features.h"
 #include "sim/fire.h"
 #include "sim/footprint.h"
 #include "sim/ground_settle.h"
@@ -51,10 +54,12 @@ struct BattleSettings {
     bool fog_of_war = false;
     bool water_damage_enabled = false;
     std::int32_t water_damage = 0;
-    std::uint16_t damage_options = 0;  // bit 7 double damage, bit 8 half damage
+    std::uint16_t damage_options = 0;  // bit 3 weapons damage features, bit 7 double damage, bit 8 half damage
     bool no_sea_level_trigger = false;
     Vec3i wind_drift{};               // per-step drift of ballistic and dropped shots (from the wind stage)
     std::int32_t script_tick_rate = 30;  // steps per second unit scripts are built with
+    bool lava_world = false;          // lava instead of water splashes
+    std::uint8_t feature_network_role = 0;  // feature damage: 0 alone, 1 network host, 2 other machine
     OriginalAddresses addresses;
 };
 
@@ -96,10 +101,6 @@ public:
     virtual void detach_from_carrier(Unit& unit) = 0;
     virtual void release_unit(Unit& unit) = 0;
     virtual bool pay_energy(Unit& worker, float amount) = 0;
-    virtual void damage_feature(MapCell& cell, std::int32_t x, std::int32_t z, const WeaponType& weapon) = 0;
-    virtual Vec3i feature_anim_pos(std::uint16_t slot) = 0;
-    virtual void spawn_wreck(Unit& unit, std::int32_t level, bool burn) = 0;
-    virtual void explode_piece(Unit& unit, std::int32_t piece, std::int32_t type) = 0;  // debris (draws the battle RNG)
     virtual void emit_sfx(Unit& unit, std::int32_t piece, std::int32_t type) = 0;
     virtual void reveal_dead_unit(Unit& unit) = 0;
     virtual void forget_fog(Unit& unit) = 0;
@@ -127,11 +128,20 @@ public:
     virtual void play_sound(std::uint16_t sound, const Vec3i& pos) = 0;
     virtual void spawn_smoke(const Vec3i& pos) = 0;
     virtual void spawn_muzzle_smoke(const Vec3i& pos) = 0;
-    virtual void spawn_explosion(const Vec3i& pos, const WeaponType& weapon, bool water_art, bool in_water) = 0;
     virtual void camera_shake(std::int32_t x, std::int32_t y, std::int32_t duration) = 0;
+    // Features and effects (sim/features.h, sim/effects.h): network packet 0x0F (6 bytes;
+    // `to_host`: a non-host machine asking the host, else announced to all) and presentation.
+    virtual void feature_packet(const std::uint8_t*, bool) {}
+    virtual void feature_smoke(const Vec3i&) {}           // smoke of a burning feature (0x472810)
+    virtual void feature_steam(const Vec3i&) {}           // geothermal vent (0x472C50)
+    virtual void feature_fire_sound(std::int16_t, std::int16_t) {}  // "treeburn" at a cell
+    virtual void wreck_fire(const Vec3i&) {}              // a burning wreck (0x472630)
+    virtual void explosion_smoke(const Vec3i&) {}         // smoke after an explosion above the sea (0x472630)
 };
 
 class Battle final : UnitWorld,
+                     FeatureSystems,
+                     EffectsSystems,
                      FootprintSystems,
                      UnitTickSystems,
                      CombatSystems,
@@ -155,6 +165,11 @@ public:
     // Alliance bytes of each player record, indexed by the other player's state index.
     std::vector<std::array<std::uint8_t, 16>> alliances;
     std::vector<FeatureTypeInfo> features;
+    AnimLibrary anims;                // animation sequences of features and effects
+    FeatureState feature_state;       // feature animation slots (sim/features.h)
+    EffectsState effects;             // world effects, shards, debris (sim/effects.h)
+    EffectsEnvironment effect_art;    // effect sequences (the rest is synced from the settings)
+    Lcg15 crt_rand;                   // the C runtime rand() stream of the simulation thread
     ProjectileTable projectiles;
     MapGrid map;
     UnitBuckets buckets;  // sized by init_buckets() once the map is set
@@ -183,6 +198,13 @@ public:
     // The unit pass and then the projectile update of one step (the original's
     // stages 2 and 3; the caller advances the tick first and runs the other stages).
     void step_units_and_projectiles();
+    // Stage 4, right after the projectiles: debris pieces and world effects.
+    void step_effects();
+    // Stage 6, after the players' stage: feature animations, reproduction, fires, falling wrecks.
+    void step_features();
+    // Map setup: all feature slots free, no effects; then the type-wide feature animations.
+    // Call once the feature types and animations are set (before placing map features).
+    void reset_features_and_effects();
     void advance_tick() { ++unit_env_.game_tick; }
 
     // Contexts for direct calls (tests, other stages).
@@ -192,6 +214,14 @@ public:
     OrderContext& order_context() { return orders_; }
     FootprintWorld& footprint_world() { return footprint_; }
     UnitWorld& unit_world() { return *this; }  // for unit_get_value / unit_set_value / unit_set_activate
+    FeatureWorld& feature_world() {
+        sync_settings();
+        return feature_world_;
+    }
+    EffectsWorld& effects_world() {
+        sync_settings();
+        return effects_world_;
+    }
 
 private:
     void sync_settings();
@@ -207,7 +237,9 @@ private:
     void on_activate_flags_changed(Unit& u, std::uint8_t g, std::uint8_t l) override { outside_.on_activate_flags_changed(u, g, l); }
     std::uint32_t random_mod(std::uint32_t n) override { return rng_.next_mod(n); }
     void emit_sfx(Unit& u, std::int32_t p, std::int32_t t) override { outside_.emit_sfx(u, p, t); }
-    void explode_piece(Unit& u, std::int32_t p, std::int32_t t) override { outside_.explode_piece(u, p, t); }
+    void explode_piece(Unit& u, std::int32_t p, std::int32_t t) override {
+        sim::explode_piece(effects_world_, u, p, static_cast<std::uint32_t>(t));
+    }
     void attach_unit(Unit& u, std::int32_t a, std::int32_t p, std::int32_t m) override { outside_.attach_unit(u, a, p, m); }
     void drop_unit(Unit& u, std::int32_t a) override { outside_.drop_unit(u, a); }
 
@@ -240,7 +272,7 @@ private:
     void forget_fog(Unit& u) override { outside_.forget_fog(u); }
     void kill_counted(std::uint8_t slot, Unit& v) override { outside_.kill_counted(slot, v); }
     void detonate(Unit& unit, bool self_destruct) override;
-    void spawn_wreck(Unit& u, std::int32_t level, bool burn) override { outside_.spawn_wreck(u, level, burn); }
+    void spawn_wreck(Unit& u, std::int32_t level, bool burn) override;
     void release_unit(Unit& u) override { outside_.release_unit(u); }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
     void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
@@ -257,10 +289,31 @@ private:
     void play_sound(std::uint16_t s, const Vec3i& p) override { outside_.play_sound(s, p); }
     void spawn_smoke(const Vec3i& p) override { outside_.spawn_smoke(p); }
     void spawn_muzzle_smoke(const Vec3i& p) override { outside_.spawn_muzzle_smoke(p); }
-    void spawn_explosion(const Vec3i& p, const WeaponType& w, bool wa, bool iw) override { outside_.spawn_explosion(p, w, wa, iw); }
+    void spawn_explosion(const Vec3i& p, const WeaponType& w, bool wa, bool iw) override { spawn_impact(effects_world_, p, w, wa, iw); }
     void camera_shake(std::int32_t x, std::int32_t y, std::int32_t d) override { outside_.camera_shake(x, y, d); }
-    void damage_feature(MapCell& c, std::int32_t x, std::int32_t z, const WeaponType& w) override { outside_.damage_feature(c, x, z, w); }
-    Vec3i feature_anim_pos(std::uint16_t slot) override { return outside_.feature_anim_pos(slot); }
+    void damage_feature(MapCell& c, std::int32_t x, std::int32_t z, const WeaponType& w) override {
+        sim::damage_feature(feature_world_, c, x, z, w);
+    }
+    Vec3i feature_anim_pos(std::uint16_t slot) override { return feature_slot_pos(feature_state, slot); }
+
+    // FeatureSystems (update_passability is shared with the footprints)
+    std::uint32_t create_object(std::uint32_t) override { return next_object_ += 0x40; }
+    void free_object(std::uint32_t) override {}
+    void area_damage(const WeaponType& w, const Vec3i& at) override { area_damage_at(projectile_world_, w, at); }
+    void feature_packet(const std::uint8_t* p, bool to_host) override { outside_.feature_packet(p, to_host); }
+    void feature_smoke(const Vec3i& p) override { outside_.feature_smoke(p); }
+    void feature_steam(const Vec3i& p) override { outside_.feature_steam(p); }
+    void feature_fire_sound(std::int16_t x, std::int16_t z) override { outside_.feature_fire_sound(x, z); }
+    void wreck_fire(const Vec3i& p) override { outside_.wreck_fire(p); }
+
+    // EffectsSystems
+    bool unit_velocity(const Unit& u, Vec3i& v) override {
+        if (u.id >= ticks.size() || !ticks[u.id].has_motion) return false;
+        v = ticks[u.id].velocity;
+        return true;
+    }
+    int unit_owner(const Unit& u) override { return u.id < ticks.size() ? ticks[u.id].owner : 0; }
+    void explosion_smoke(const Vec3i& p) override { outside_.explosion_smoke(p); }
 
     // OrderSystems
     std::int32_t run_mission(Unit& u, MissionOrder& o, std::uint32_t& event) override { return run_mission_behaviour(missions_, u, o, event); }
@@ -331,6 +384,10 @@ private:
     ProjectileWorld projectile_world_;
     OrderContext orders_;
     FootprintWorld footprint_;
+    FeatureEnvironment feature_env_;
+    FeatureWorld feature_world_;
+    EffectsWorld effects_world_;
+    std::uint32_t next_object_ = 0x02000000;  // stand-in object state handles of 3D features
     MotionHooks motion_hooks_{*this};
     MissionHooks mission_hooks_{*this};
     std::vector<MotionType> motion_types_;        // by type index (copied from types each step)

@@ -862,7 +862,7 @@ struct NullOutside : sim::QuietBattleOutside {
     void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override { ++passability; }
     void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override { ++packets; }
     void play_sound(std::uint16_t, const sim::Vec3i&) override { ++sounds; }
-    void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override { ++explosions; }
+    void explosion_smoke(const sim::Vec3i&) override { ++explosions; }
 };
 
 // A shooter and a target wired through a whole battle: the unit pass aims and

@@ -100,6 +100,8 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     info.explode_as = weapon_at(weapons, d.explode_as);
     info.self_destruct_as = weapon_at(weapons, d.self_destruct_as);
     info.yard_map = d.has_yard_map ? d.yard_map : std::vector<std::uint8_t>{};
+    info.corpse = static_cast<std::uint16_t>(d.corpse_feature_id);
+    info.is_feature = (d.type_flags & (1u << 24)) != 0;
 
     sim::UnitTickTypeInfo& tick = out.tick;
     tick.wind_generator = d.wind_generator;
