@@ -31,6 +31,7 @@ add_library(sim STATIC
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp
     engine/sim/src/step_budget.cpp
+    engine/sim/src/targeting.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/unit.cpp
     engine/sim/src/unit_create.cpp

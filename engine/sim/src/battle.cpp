@@ -14,7 +14,9 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       orders_{ticks, players, rng_, *this, 0},
       footprint_{map, buckets, units, ticks, players, *this, {}},
       motion_{units, ticks, players, motion_types_, heights_, motion_hooks_, {}, {}},
-      missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_} {
+      missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_},
+      targeting_{units, ticks, players, alliances, targeting_types_, mission_types_, map, 0, missions_, targeting_env_,
+                 targeting_hooks_, targeting_state_} {
     alliances.resize(kPlayerRecords);
     types[0].info.max_damage = 0;  // the blank type of empty slots
     types[0].tick.damage_modifier = 0;
@@ -78,6 +80,46 @@ void Battle::sync_settings() {
     mission_env_.sea_level = s.sea_level;
     mission_env_.gravity = s.gravity;
     mission_env_.addresses = s.addresses;
+    targeting_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) targeting_types_[k] = types[k].targeting;
+    targeting_env_.game_tick = unit_env_.game_tick;
+    targeting_env_.sea_level = s.sea_level;
+    targeting_env_.local_player = s.local_player;
+    targeting_env_.unit_limit = s.unit_limit;
+    targeting_env_.target_everything = s.target_everything;
+    targeting_env_.command_mode = s.command_mode;
+    targeting_.feature_count = static_cast<std::uint32_t>(features.size());
+}
+
+void Battle::start_players() {
+    sync_settings();
+    create_player_targeting(targeting_);
+}
+
+void Battle::players_stage() {
+    sync_settings();
+    outside_.route_search_tick();
+    for (int slot = 0; slot < 10; ++slot) {
+        const PlayerSlot& p = players[static_cast<std::size_t>(slot)];
+        if (!p.active || p.controller < 1 || p.controller > 3 || p.state == 10) continue;
+        if (targeting_state_.controllers[static_cast<std::size_t>(slot)].exists) {
+            // The player's controller: an AI player's own work, then the weapon-target pass.
+            const bool ai = p.controller == 2;
+            if (ai) outside_.ai_controller_step(slot);
+            weapon_target_pass(targeting_, slot, ai);
+        }
+        refresh_unit_table(targeting_, slot);
+        for (int id = p.first_unit; id <= p.last_unit && id < static_cast<int>(units.size()); ++id)
+            if (id > 0 && (units[static_cast<std::size_t>(id)].flags & unit_flags::kAlive)) outside_.update_sight(units[static_cast<std::size_t>(id)]);
+        outside_.player_stage_rest(slot);
+    }
+    outside_.players_stage_end();
+}
+
+std::int32_t Battle::TargetingHooks::intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) {
+    const std::int32_t i = find_intercept_target(b.projectile_world_, u, slot);
+    if (i >= 0) pos = b.projectiles.slots[static_cast<std::size_t>(i)].pos;
+    return i;
 }
 
 void Battle::step_units_and_projectiles() {

@@ -151,4 +151,24 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     c.script = assets.has_script ? &assets.cob.program : nullptr;
 }
 
+void to_targeting_type(const UnitDefRecord& d, const CategoryRegistry& categories, const std::vector<sim::WeaponType>& weapons,
+                       sim::TargetingTypeInfo& out) {
+    auto mask = [&](const std::string& name) {
+        const auto* m = categories.find(name);
+        return m ? *m : sim::CategoryMask{};
+    };
+    out.category_bit = d.index;
+    out.bad_target = {mask(d.wpri_bad_target), mask(d.wsec_bad_target), mask(d.wspe_bad_target)};
+    out.no_chase = mask(d.no_chase);
+    out.sight_distance = d.sight_distance;
+    out.maneuver_leash = d.maneuver_leash_length;
+    out.max_water_depth = d.max_water_depth;
+    out.min_water_depth = d.min_water_depth;
+    out.footprint_x = d.footprint_x;
+    out.transport_size = d.transport_size;
+    out.transport_capacity = d.transport_capacity;
+    out.has_build_options = d.has_build_options;
+    out.first_weapon = weapon_at(weapons, d.weapon1);
+}
+
 } // namespace ta

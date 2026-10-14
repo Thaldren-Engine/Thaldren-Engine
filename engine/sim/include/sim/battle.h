@@ -22,6 +22,7 @@
 #include "sim/orders.h"
 #include "sim/projectile.h"
 #include "sim/rng.h"
+#include "sim/targeting.h"
 #include "sim/unit.h"
 #include "sim/unit_create.h"
 #include "sim/unit_tick.h"
@@ -37,6 +38,7 @@ struct BattleUnitType {
     UnitCreateType create;
     MotionType motion;
     MissionTypeInfo mission;
+    TargetingTypeInfo targeting;
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -55,6 +57,9 @@ struct BattleSettings {
     bool no_sea_level_trigger = false;
     Vec3i wind_drift{};               // per-step drift of ballistic and dropped shots (from the wind stage)
     std::int32_t script_tick_rate = 30;  // steps per second unit scripts are built with
+    std::uint16_t unit_limit = 250;      // units per player (the weapon-target pass visits limit/30 + 1 per step)
+    bool target_everything = false;      // game option: units without "shoot me" are targets for everyone
+    std::int32_t command_mode = 0;       // game option: 1 = the alternative default-command rules
     OriginalAddresses addresses;
 };
 
@@ -70,13 +75,23 @@ public:
     virtual std::uint8_t bucket_height(const Unit& unit) = 0;
     virtual void route_search_forget(MotionGoal& goal) = 0;
     virtual void update_sight(Unit& unit) = 0;
-    // Mission behaviours: targeting, attack orders, mission resolution, construction decay.
-    virtual void enemies_in_radius(int player, const std::array<std::int32_t, 3>& pos, std::int32_t radius,
-                                   std::vector<Unit*>& out) = 0;
-    virtual Unit* fire_at_will_target(Unit& unit) = 0;
-    virtual bool issue_attack_order(Unit& unit, Unit& target, bool forced) = 0;
-    virtual std::uint8_t resolve_mission(OrderIntent intent, Unit& unit, Unit* target, const std::array<std::int32_t, 3>* pos) = 0;
+    // Mission behaviours: construction decay.
     virtual void unfinished_decay(Unit& unit, std::int32_t ticks) = 0;
+    // Targeting (sim/targeting.h): line of sight (0x465AC0), the explored state of a map spot for
+    // this machine's view, a feature type's flag byte, and the AI's share of the unit table refresh.
+    virtual bool unit_visible(int player, Unit& unit) = 0;
+    virtual bool position_explored(int player, const std::array<std::int32_t, 3>& pos) = 0;
+    virtual std::uint8_t feature_flags(std::uint16_t feature) = 0;
+    virtual void ai_own_unit(int table, Unit& unit) = 0;
+    virtual void ai_rescore(int table) = 0;
+    // Players' stage (0x464F80): the route search's turn (0x40EB70) at its start; an AI player's
+    // own controller work (0x408C40 before its weapon-target pass); after each player's sight
+    // updates the rest of its turn (view sight, watch mode and victory checks, economy,
+    // sensors); the end-of-stage checks.
+    virtual void route_search_tick() = 0;
+    virtual void ai_controller_step(int player) = 0;
+    virtual void player_stage_rest(int player) = 0;
+    virtual void players_stage_end() = 0;
     virtual bool use_resources_if_not_stalled(Unit& unit, float energy, float metal) = 0;
     // Unit creation and footprints (sim/unit_create.h, sim/footprint.h): the parts owned by
     // other systems. Motion object of a new mobile unit (0x43DC00; the battle has already set
@@ -90,7 +105,6 @@ public:
     virtual void victory_unit_created(Unit& unit) = 0;
     // Not built yet: mission behaviours, attack retargeting, transport, economy, features.
     virtual std::int32_t run_mission(Unit& unit, MissionOrder& order, std::uint32_t& event) = 0;
-    virtual void retarget(Unit* attacker, Unit& victim, std::uint16_t amount) = 0;
     virtual void attach_unit(Unit& unit, std::int32_t passenger, std::int32_t piece, std::int32_t mode) = 0;
     virtual void drop_unit(Unit& unit, std::int32_t passenger) = 0;
     virtual void detach_from_carrier(Unit& unit) = 0;
@@ -115,6 +129,7 @@ public:
     // Presentation and user interface (no effect on the simulation).
     virtual void on_activate_flags_changed(Unit& unit, std::uint8_t gained, std::uint8_t lost) = 0;
     virtual void speech(Unit& unit, std::uint32_t id, SpeechText text) = 0;
+    virtual void under_attack_notice(Unit& unit) = 0;  // 0x47F850(unit, 2): spoken unless the unit is on screen
     virtual void display_changed(Unit& unit) = 0;
     virtual void build_counts_changed(Unit& unit) = 0;
     virtual void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) = 0;
@@ -175,6 +190,14 @@ public:
     Unit* create_unit(int player, std::uint16_t type, std::int32_t x, std::int32_t y, std::int32_t z, bool fully_built,
                       std::uint32_t layer, std::uint16_t wanted_id = 0);
 
+    // Battle start: the players' weapon-target controllers and unit tables (after the player
+    // slots are set up).
+    void start_players();
+    // The players' stage (stage 6 of a step): for every playing player its weapon-target pass,
+    // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
+    void players_stage();
+    Targeting& targeting() { return targeting_; }
+
     // Per-step inputs the original reads from its game state.
     UnitTickEnvironment& unit_env() { return unit_env_; }
 
@@ -224,7 +247,7 @@ private:
     void camera_follow_step(std::uint32_t&) override { outside_.camera_follow_step(); }
 
     // CombatSystems
-    void retarget(Unit* a, Unit& v, std::uint16_t amount) override { outside_.retarget(a, v, amount); }
+    void retarget(Unit* a, Unit& v, std::uint16_t) override { retarget_attack(b_targeting(), a, v); }
     void add_paralysis(Unit& victim, std::uint16_t amount) override;
     bool pay_energy(Unit& w, float amount) override { return outside_.pay_energy(w, amount); }
     void stats_activity(std::int32_t kind) override { outside_.stats_activity(kind); }
@@ -303,12 +326,12 @@ private:
         std::int32_t run_other(Unit& u, MissionOrder& o, std::uint32_t& event) override { return b.outside_.run_mission(u, o, event); }
         void speech(Unit& u, std::uint32_t id, SpeechText t) override { b.outside_.speech(u, id, t); }
         void enemies_in_radius(int p, const std::array<std::int32_t, 3>& pos, std::int32_t r, std::vector<Unit*>& out) override {
-            b.outside_.enemies_in_radius(p, pos, r, out);
+            sim::enemies_in_radius(b.targeting_, p, pos, r, out);
         }
-        Unit* fire_at_will_target(Unit& u) override { return b.outside_.fire_at_will_target(u); }
-        bool issue_attack_order(Unit& u, Unit& t, bool forced) override { return b.outside_.issue_attack_order(u, t, forced); }
+        Unit* fire_at_will_target(Unit& u) override { return sim::fire_at_will_target(b.targeting_, u); }
+        bool issue_attack_order(Unit& u, Unit& t, bool forced) override { return sim::issue_attack_order(b.targeting_, u, t, forced); }
         std::uint8_t resolve_mission(OrderIntent i, Unit& u, Unit* t, const std::array<std::int32_t, 3>* pos) override {
-            return b.outside_.resolve_mission(i, u, t, pos);
+            return sim::resolve_mission(b.targeting_, static_cast<std::uint8_t>(i), u, t, pos);
         }
         void unfinished_decay(Unit& u, std::int32_t ticks) override { b.outside_.unfinished_decay(u, ticks); }
         void display_changed(Unit& u) override { b.outside_.display_changed(u); }
@@ -317,6 +340,18 @@ private:
         void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override { b.outside_.nano_beam(from, box); }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
     };
+    struct TargetingHooks final : TargetingSystems {
+        Battle& b;
+        explicit TargetingHooks(Battle& battle) : b(battle) {}
+        bool unit_visible(int p, Unit& u) override { return b.outside_.unit_visible(p, u); }
+        bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override { return b.outside_.position_explored(p, pos); }
+        std::uint8_t feature_flags(std::uint16_t f) override { return b.outside_.feature_flags(f); }
+        std::int32_t intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) override;
+        void ai_own_unit(int table, Unit& u) override { b.outside_.ai_own_unit(table, u); }
+        void ai_rescore(int table) override { b.outside_.ai_rescore(table); }
+        void under_attack(Unit& u) override { b.outside_.under_attack_notice(u); }
+    };
+    Targeting& b_targeting() { return targeting_; }
     std::uint32_t clock_ticks() override { return outside_.clock_ticks(); }
 
     BattleOutside& outside_;
@@ -338,6 +373,11 @@ private:
     MotionContext motion_;
     MissionEnvironment mission_env_;
     Missions missions_;
+    std::vector<TargetingTypeInfo> targeting_types_;  // by type index
+    TargetingEnvironment targeting_env_;
+    TargetingState targeting_state_;
+    TargetingHooks targeting_hooks_{*this};
+    Targeting targeting_;
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;
