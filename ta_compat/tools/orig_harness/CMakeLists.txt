@@ -1,4 +1,4 @@
-﻿# 32-bit Windows differential tester that runs routines from the original
+# 32-bit Windows differential tester that runs routines from the original
 # executable in-process. Configure separately with a 32-bit toolchain:
 #   cmake -S ta_compat/tools/orig_harness -B build-harness   (from a vcvars32 prompt)
 cmake_minimum_required(VERSION 3.24)
@@ -462,3 +462,18 @@ add_executable(flow_harness flow_harness.cpp
 )
 target_include_directories(flow_harness PRIVATE ${ROOT}/engine/sim/include)
 target_compile_options(flow_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# The user interface's order routine vs sim::command::issue_to_selected.
+add_executable(cmd_harness cmd_harness.cpp
+    ${ROOT}/engine/sim/src/commands_core.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+)
+target_include_directories(cmd_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(cmd_harness PRIVATE /W4 /permissive- /fp:precise)

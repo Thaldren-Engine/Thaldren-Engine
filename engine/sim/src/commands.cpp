@@ -70,52 +70,25 @@ void issue_or_cancel(Battle& battle, std::uint8_t mission, bool queued, Unit& un
 
 void issue_to_selected(Battle& battle, int player, std::uint8_t intent, std::uint8_t mission, bool queued, Unit* hover,
                        const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1) {
-    // 0x48CF30. The unit under the cursor is the target (and is left out) when the intent
-    // takes one (all but unload, stop and build) or the mission's table flags say so.
-    bool uses_hover;
-    if (intent) uses_hover = intent != intent::kUnload && intent != intent::kStop && intent != intent::kBuild;
-    else uses_hover = (table_flags(mission) >> 9) & 1u;
-    Unit* target = uses_hover ? hover : nullptr;
-    const PlayerSlot& p = battle.players[static_cast<std::size_t>(player)];
-    auto in_range = [&](int id) { return id > 0 && id < static_cast<int>(battle.units.size()); };
-    // The selection's centre in whole units.
-    std::int32_t count = 0, sx = 0, sz = 0;
-    for (int id = p.first_unit; id <= p.last_unit; ++id) {
-        if (!in_range(id)) continue;
-        const Unit& u = battle.units[static_cast<std::size_t>(id)];
-        if (!(u.flags & kSelectedFlag) || &u == target) continue;
-        ++count;
-        sx += static_cast<std::int16_t>(u.pos[0] >> 16);
-        sz += static_cast<std::int16_t>(u.pos[2] >> 16);
-    }
-    if (count == 0) return;
-    const std::int32_t cx = static_cast<std::int32_t>(static_cast<std::uint32_t>(sx / count) << 16);
-    const std::int32_t cz = static_cast<std::int32_t>(static_cast<std::uint32_t>(sz / count) << 16);
-    const std::int32_t radius = count * 3000;
-    const std::array<std::int32_t, 3> cursor = pos ? *pos : std::array<std::int32_t, 3>{};
-    for (int id = p.first_unit; id <= p.last_unit; ++id) {
-        if (!in_range(id)) continue;
-        Unit& u = battle.units[static_cast<std::size_t>(id)];
-        if (!(u.flags & kSelectedFlag) || &u == target) continue;
-        std::uint8_t kind = mission;
-        if (intent) kind = resolve_mission(battle.targeting(), intent, u, target, &cursor);
-        if (kind == 0) continue;
-        const std::uint32_t can_do = battle.types[battle.ticks[static_cast<std::size_t>(id)].type_index].mission.abilities;
-        if (kind == mission::kStandingFireOrder && !(can_do & 0x2u)) continue;
-        if (kind == mission::kStandingMoveOrder && !(can_do & 0x1u)) continue;
-        // Point orders: units close to the centre keep their place in the group.
-        std::array<std::int32_t, 3> spread;
-        const std::array<std::int32_t, 3>* at = pos;
-        if (pos && (table_flags(kind) & 2u)) {
-            const std::int64_t dx = static_cast<std::int64_t>(u.pos[0] - cx), dz = static_cast<std::int64_t>(u.pos[2] - cz);
-            const std::int32_t d = static_cast<std::int32_t>((dx * dx) >> 32) + static_cast<std::int32_t>((dz * dz) >> 32);
-            if (d <= radius) {
-                spread = {(*pos)[0] + u.pos[0] - cx, (*pos)[1], (*pos)[2] + u.pos[2] - cz};
-                at = &spread;
-            }
+    struct Sys final : SelectedOrderSystems {
+        Battle& b;
+        explicit Sys(Battle& battle) : b(battle) {}
+        std::uint8_t resolve(std::uint8_t intent, Unit& u, Unit* target, const std::array<std::int32_t, 3>& cursor) override {
+            return resolve_mission(b.targeting(), intent, u, target, &cursor);
         }
-        issue_or_cancel(battle, kind, queued, u, target, at, param0, param1);
-    }
+        std::uint32_t abilities(const Unit& u) override { return b.types[b.ticks[u.id].type_index].mission.abilities; }
+        void issue(std::uint8_t mission, bool queued, Unit& u, Unit* target, const std::array<std::int32_t, 3>* pos, std::int32_t p0,
+                   std::int32_t p1) override {
+            issue_or_cancel(b, mission, queued, u, target, pos, p0, p1);
+        }
+    } sys(battle);
+    const PlayerSlot& p = battle.players[static_cast<std::size_t>(player)];
+    const int lo = p.first_unit < 1 ? 1 : p.first_unit;
+    const int hi = p.last_unit < static_cast<int>(battle.units.size()) ? p.last_unit : static_cast<int>(battle.units.size()) - 1;
+    if (lo > hi) return;
+    const std::array<std::int32_t, 3> cursor = pos ? *pos : std::array<std::int32_t, 3>{};
+    issue_to_selected(sys, &battle.units[static_cast<std::size_t>(lo)], &battle.units[static_cast<std::size_t>(hi)], intent, mission, queued, hover,
+                      pos, cursor, param0, param1);
 }
 
 void issue_to_group(Battle& battle, int player, std::int32_t group, std::uint8_t intent, bool queued, Unit* target,

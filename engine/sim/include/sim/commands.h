@@ -91,6 +91,20 @@ void clear_selection(Battle& battle, int player);
 // cancels it (0x43AFC0).
 void issue_to_selected(Battle& battle, int player, std::uint8_t intent, std::uint8_t mission, bool queued, Unit* hover,
                        const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1);
+// The same routine on any unit range (first..last inclusive, the player's part of the unit
+// table) with its outside calls: the intent's mission per unit (0x43F0E0, with the cursor's
+// position), the unit's abilities (standing-order gates) and the order itself (0x43AFC0).
+class SelectedOrderSystems {
+public:
+    virtual ~SelectedOrderSystems() = default;
+    virtual std::uint8_t resolve(std::uint8_t intent, Unit& unit, Unit* target, const std::array<std::int32_t, 3>& cursor) = 0;
+    virtual std::uint32_t abilities(const Unit& unit) = 0;
+    virtual void issue(std::uint8_t mission, bool queued, Unit& unit, Unit* target, const std::array<std::int32_t, 3>* pos,
+                       std::int32_t param0, std::int32_t param1) = 0;
+};
+void issue_to_selected(SelectedOrderSystems& systems, Unit* first, Unit* last, std::uint8_t intent, std::uint8_t mission, bool queued,
+                       Unit* hover, const std::array<std::int32_t, 3>* pos, const std::array<std::int32_t, 3>& cursor, std::int32_t param0,
+                       std::int32_t param1);
 // Orders to every unit of the player in group `group` (0x480460).
 void issue_to_group(Battle& battle, int player, std::int32_t group, std::uint8_t intent, bool queued, Unit* target,
                     const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1);
