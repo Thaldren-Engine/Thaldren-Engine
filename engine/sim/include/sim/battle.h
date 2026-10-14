@@ -30,6 +30,7 @@
 #include "sim/targeting.h"
 #include "sim/route_search.h"
 #include "sim/sight.h"
+#include "sim/sky.h"
 #include "sim/unit.h"
 #include "sim/unit_create.h"
 #include "sim/unit_tick.h"
@@ -82,6 +83,10 @@ struct BattleSettings {
     float tidal_strength = 0.0f;      // the map's tidal strength (tidal generators)
     std::uint16_t build_menu_focus = 0;     // unit whose build menu this machine shows (user interface)
     std::int32_t network_provider = 0;      // the map info's provider type (3: reclaims are announced)
+    std::int32_t provider = 2;              // the map info's kind of game: 1 campaign, 2 skirmish, 3 network
+    bool cd_mismatch = false;               // the copy-protection check failed (forces a defeat later)
+    bool shake_disabled = false;            // the player turned camera shaking off (no rand() draws)
+    bool net_frame_timing = true;           // network games: the end-of-step sharing and flush run (0x506DBC)
     OriginalAddresses addresses;
 };
 
@@ -232,6 +237,8 @@ public:
     WindState wind;
     EndGameState end_game;
     VictoryState victory;  // outcome per player and the end of the game (sim/victory.h)
+    MeteorShower meteors;  // meteor showers (sim/sky.h), configured by the loader
+    CameraShake shake;     // the camera shake, whose decay draws rand() (sim/sky.h)
 
     // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
     // inclusive range of them (the entries' owner is fixed by it).
@@ -330,6 +337,15 @@ public:
     // frame loop calls end_frame().
     void step();
     void end_frame();
+    // Stage 8's meteors (sim/sky.h): a scheduled shower, a meteor shot when one drops.
+    void step_meteor_shower();
+    // Victory (sim/victory.h, engine/sim/src/victory.cpp): the local player's checks in its turn
+    // of the players' stage, the network end check after the stage's loop, and a commander's
+    // death destroying its player's units (0x486F10).
+    void victory_turn(int slot);
+    void victory_stage_end();
+    void kill_team(int slot);
+    void deathmatch_respawn(int slot);
     // The route search's step: the first thing the players stage (0x464F80) does, after
     // the effects stage and before the players' own updates.
     void run_route_search();
@@ -407,7 +423,10 @@ private:
     void release_unit(Unit& u) override { outside_.release_unit(u); }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
     void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
-    void commander_died(int p) override { outside_.commander_died(p); }
+    void commander_died(int p) override {
+        outside_.commander_died(p);  // the user interface part (0x491D70)
+        kill_team(p);
+    }
 
     // WeaponSystems
     std::int32_t fire(Unit& unit, int slot, Unit* target, WorldPos& target_pos) override;
@@ -421,7 +440,10 @@ private:
     void spawn_smoke(const Vec3i& p) override { outside_.spawn_smoke(p); }
     void spawn_muzzle_smoke(const Vec3i& p) override { outside_.spawn_muzzle_smoke(p); }
     void spawn_explosion(const Vec3i& p, const WeaponType& w, bool wa, bool iw) override { spawn_impact(effects_world_, p, w, wa, iw); }
-    void camera_shake(std::int32_t x, std::int32_t y, std::int32_t d) override { outside_.camera_shake(x, y, d); }
+    void camera_shake(std::int32_t x, std::int32_t y, std::int32_t d) override {
+        add_camera_shake(shake, x, y, d, settings.shake_disabled);
+        outside_.camera_shake(x, y, d);
+    }
     void damage_feature(MapCell& c, std::int32_t x, std::int32_t z, const WeaponType& w) override {
         sim::damage_feature(feature_world_, c, x, z, w);
     }

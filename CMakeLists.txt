@@ -41,12 +41,14 @@ add_library(sim STATIC
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp
     engine/sim/src/sight.cpp
+    engine/sim/src/sky.cpp
     engine/sim/src/step_budget.cpp
     engine/sim/src/targeting.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/unit.cpp
     engine/sim/src/unit_create.cpp
     engine/sim/src/unit_tick.cpp
+    engine/sim/src/victory.cpp
     engine/sim/src/weapons.cpp
     engine/sim/src/world.cpp
     engine/sim/src/x87_math.cpp

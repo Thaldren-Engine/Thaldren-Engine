@@ -250,6 +250,7 @@ void Battle::players_stage() {
         PlayerEconomy& account = player_economy[static_cast<std::size_t>(slot)];
         if (account.next_update_tick > unit_env_.game_tick) continue;
         account.next_update_tick += 30;
+        if (slot == settings.local_player) victory_turn(slot);
         outside_.player_victory_turn(slot);
         if (settlement_allowed(players[static_cast<std::size_t>(slot)], end_game)) {
             sync_settings();
@@ -262,6 +263,7 @@ void Battle::players_stage() {
         }
         outside_.player_sensor_turn(slot);
     }
+    victory_stage_end();
     outside_.players_stage_end();
 }
 
@@ -463,12 +465,23 @@ void Battle::step() {
     step_effects();                  // 5
     players_stage();                 // 6
     step_features();                 // 7
-    step_wind();                     // 8 (animation cursors before it are presentation)
-    step_nano();                     // 9 (the effect sweep's nano streams)
-    if (settings.net_game) {         // 10
+    // 8: texture animation cursors (presentation), wind, meteors, camera (its shake decay).
+    step_wind();
+    step_meteor_shower();
+    step_camera_shake(shake, crt_rand);
+    step_nano();                     // 9: the effect sweep (lists 0-5 are presentation, see RE_MEMORY)
+    // The minimap blink counter (presentation) runs here.
+    if (settings.net_game && settings.net_frame_timing) {  // 10
         auto_share_resources();
         outside_.network_flush();
     }
+}
+
+void Battle::step_meteor_shower() {
+    std::int32_t pos[3], vel[3];
+    if (!step_meteors(meteors, unit_env_.game_tick, map.width, map.height, crt_rand, pos, vel)) return;
+    sync_settings();
+    if (meteors.weapon) spawn_free_projectile(projectile_world_, *meteors.weapon, Vec3i{pos[0], pos[1], pos[2]}, Vec3i{vel[0], vel[1], vel[2]}, true);
 }
 
 void Battle::end_frame() { expire_lingering_sight(); }
