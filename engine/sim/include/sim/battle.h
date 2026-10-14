@@ -14,6 +14,7 @@
 
 #include "sim/anim.h"
 #include "sim/combat.h"
+#include "sim/construction.h"
 #include "sim/effects.h"
 #include "sim/features.h"
 #include "sim/fire.h"
@@ -22,6 +23,7 @@
 #include "sim/heightmap.h"
 #include "sim/missions.h"
 #include "sim/motion.h"
+#include "sim/nano_spray.h"
 #include "sim/orders.h"
 #include "sim/projectile.h"
 #include "sim/rng.h"
@@ -44,6 +46,7 @@ struct BattleUnitType {
     MissionTypeInfo mission;
     TargetingTypeInfo targeting;
     RouteType route;  // movement class and placement limits (footprint and movement come from `create`)
+    ConstructionTypeInfo construction;  // building, reclaiming and placement (sim/construction.h)
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -69,6 +72,8 @@ struct BattleSettings {
     std::uint16_t units_per_player = 0;  // size of a player's part of the unit table
     bool lava_world = false;          // lava instead of water splashes
     std::uint8_t feature_network_role = 0;  // feature damage: 0 alone, 1 network host, 2 other machine
+    std::uint16_t build_menu_focus = 0;     // unit whose build menu this machine shows (user interface)
+    std::int32_t network_provider = 0;      // the map info's provider type (3: reclaims are announced)
     OriginalAddresses addresses;
 };
 
@@ -149,6 +154,14 @@ public:
     virtual void feature_fire_sound(std::int16_t, std::int16_t) {}  // "treeburn" at a cell
     virtual void wreck_fire(const Vec3i&) {}              // a burning wreck (0x472630)
     virtual void explosion_smoke(const Vec3i&) {}         // smoke after an explosion above the sea (0x472630)
+    // Construction (sim/construction.h): victory bookkeeping of a unit changing hands, the unit
+    // script call notice with arguments (0x456290), and user interface refreshes.
+    virtual void victory_unit_transferred(Unit&) {}
+    virtual void broadcast_script_call_args(Unit&, std::int16_t, std::int32_t, std::int32_t) {}
+    virtual void builder_menu(Unit&) {}
+    virtual void build_menu_refresh(Unit&) {}
+    virtual void orders_panel_changed() {}
+    virtual void selection_changed() {}
 };
 
 class Battle final : UnitWorld,
@@ -180,6 +193,7 @@ public:
     AnimLibrary anims;                // animation sequences of features and effects
     FeatureState feature_state;       // feature animation slots (sim/features.h)
     EffectsState effects;             // world effects, shards, debris (sim/effects.h)
+    NanoSprayState nano;              // nano lathe particle streams (sim/nano_spray.h)
     EffectsEnvironment effect_art;    // effect sequences (the rest is synced from the settings)
     Lcg15 crt_rand;                   // the C runtime rand() stream of the simulation thread
     ProjectileTable projectiles;
@@ -231,6 +245,19 @@ public:
     void step_effects();
     // Stage 6, after the players' stage: feature animations, reproduction, fires, falling wrecks.
     void step_features();
+    // Stage 9: the effect sweep's nano streams (their emissions draw the C runtime rand()).
+    void step_nano();
+    // Command input (sim/construction.h): a factory's (or mobile builder's) build queue of `type`
+    // grows or shrinks by `delta`; a mobile builder is ordered to build `type` at `pos`.
+    void order_build_count(Unit& unit, std::uint16_t type, std::int32_t delta);
+    bool order_mobile_build(Unit& builder, std::uint16_t type, const std::array<std::int32_t, 3>& pos, bool queued);
+    // Any order (the original's general order routine, see enqueue_order in sim/missions.h).
+    bool order(Unit& unit, std::uint8_t kind, bool queued, Unit* target, const std::array<std::int32_t, 3>* pos,
+               std::int32_t param0 = 0, std::int32_t param1 = 0);
+    // Transport attach / detach as sent and applied (packet 0x0A, 0x48AAC0).
+    void transport_attach(Unit& cargo, Unit* transport, std::uint8_t piece, std::uint8_t layer);
+    Construction& construction() { return construction_; }
+    Missions& missions() { return missions_; }
     // Map setup: all feature slots free, no effects; then the type-wide feature animations.
     // Call once the feature types and animations are set (before placing map features).
     void reset_features_and_effects();
@@ -303,7 +330,7 @@ private:
     void forget_speech(Unit& u) override { outside_.forget_speech(u); }
     void leave_group(Unit& u) override { outside_.leave_group(u); }
     void remove_projectiles(Unit& unit) override;
-    void detach_from_carrier(Unit& u) override { outside_.detach_from_carrier(u); }
+    void detach_from_carrier(Unit& u) override { transport_attach(u, nullptr, 0xFF, 1); }
     void clear_footprint(Unit& u) override { sim::clear_footprint(footprint_, u); }
     void forget_fog(Unit& u) override { outside_.forget_fog(u); }
     void kill_counted(std::uint8_t slot, Unit& v) override { outside_.kill_counted(slot, v); }
@@ -401,11 +428,14 @@ private:
         std::uint8_t resolve_mission(OrderIntent i, Unit& u, Unit* t, const std::array<std::int32_t, 3>* pos) override {
             return sim::resolve_mission(b.targeting_, static_cast<std::uint8_t>(i), u, t, pos);
         }
-        void unfinished_decay(Unit& u, std::int32_t ticks) override { b.outside_.unfinished_decay(u, ticks); }
+        void unfinished_decay(Unit& u, std::int32_t ticks) override { sim::unfinished_decay(b.missions_, u, ticks); }
         void display_changed(Unit& u) override { b.outside_.display_changed(u); }
         bool use_resources_if_not_stalled(Unit& u, float e, float m) override { return b.outside_.use_resources_if_not_stalled(u, e, m); }
         void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
-        void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override { b.outside_.nano_beam(from, box); }
+        void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override {
+            spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, point_box(from), box);
+            b.outside_.nano_beam(from, box);
+        }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
         void attach_circle_goal(Unit&, MissionOrder& o, const std::array<std::int32_t, 3>& pos, std::int32_t radius) override {
             sim::attach_circle_goal(b.motion_, o, pos, radius);
@@ -414,7 +444,7 @@ private:
     struct RouteHooks final : RouteSystems {
         Battle& b;
         explicit RouteHooks(Battle& battle) : b(battle) {}
-        bool structure_fits(std::uint16_t type, std::int16_t x, std::int16_t z) override { return b.outside_.structure_fits(type, x, z); }
+        bool structure_fits(std::uint16_t type, std::int16_t x, std::int16_t z) override { return sim::structure_fits(b.construction_, type, x, z); }
     };
     struct TargetingHooks final : TargetingSystems {
         Battle& b;
@@ -464,6 +494,44 @@ private:
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;
+    // Construction (sim/construction.h).
+    struct ConstructionHooks final : ConstructionSystems, TransportLinks {
+        Battle& b;
+        explicit ConstructionHooks(Battle& battle) : b(battle) {}
+        Unit* create_unit(int player, std::uint16_t type, const std::array<std::int32_t, 3>& pos, bool built, std::uint32_t layer) override {
+            return b.create_unit(player, type, pos[0], pos[1], pos[2], built, layer);
+        }
+        bool can_place(std::uint16_t type, std::uint16_t exclude, std::int16_t x, std::int16_t z, std::uint32_t mode) override {
+            return can_place_footprint(b.route_, type, exclude, x, z, mode);
+        }
+        void transport_attach(Unit& cargo, Unit* t, std::uint8_t piece, std::uint8_t layer) override { b.transport_attach(cargo, t, piece, layer); }
+        void attach_edge_goal(Unit&, MissionOrder& o, std::uint32_t cell, std::uint32_t size) override { sim::attach_edge_goal(b.motion_, o, cell, size); }
+        void attach_ring_goal(Unit&, MissionOrder& o, const std::array<std::int32_t, 3>& pos, std::int32_t outer, std::int32_t inner) override {
+            sim::attach_ring_goal(b.motion_, o, pos, outer, inner);
+        }
+        void nano_beam_reverse(const std::array<std::int32_t, 6>& box, const std::array<std::int32_t, 3>& to) override {
+            spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, box, point_box(to));
+        }
+        void kill_feature(std::int32_t x, std::int32_t z, bool reclaimed) override { sim::kill_feature(b.feature_world_, x, z, reclaimed); }
+        void victory_unit_transferred(Unit& u) override { b.outside_.victory_unit_transferred(u); }
+        void network_send(std::int32_t net, const std::uint8_t* p, std::int32_t size) override { b.outside_.network_send(net, p, size); }
+        void broadcast_script_call_args(Unit& u, std::int16_t f, std::int32_t n, std::int32_t a) override { b.outside_.broadcast_script_call_args(u, f, n, a); }
+        void builder_menu(Unit& u) override { b.outside_.builder_menu(u); }
+        void build_menu_refresh(Unit& u) override { b.outside_.build_menu_refresh(u); }
+        void orders_panel_changed() override { b.outside_.orders_panel_changed(); }
+        // TransportLinks
+        void bucket_unlink(Unit& u) override { sim::bucket_unlink(b.footprint_, u); }
+        void bucket_prepend(Unit& u) override { sim::bucket_prepend(b.footprint_, u); }
+        std::uint32_t type_flags(const Unit& u) override {
+            const UnitTickState& t = b.ticks[u.id];
+            return t.tick_type ? t.tick_type->type_flags : 0;
+        }
+        void selection_changed() override { b.outside_.selection_changed(); }
+    };
+    ConstructionHooks construction_hooks_{*this};
+    std::vector<ConstructionTypeInfo> construction_types_;  // by type index
+    ConstructionEnvironment construction_env_;
+    Construction construction_;
 };
 
 } // namespace sim

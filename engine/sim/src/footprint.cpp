@@ -278,4 +278,23 @@ void refresh_height_range(MapGrid& map, std::int16_t x, std::int16_t z, std::int
         }
 }
 
+void bucket_unlink(FootprintWorld& w, Unit& unit) {
+    if (unit.bucket == kNoBucket) {
+        set_fault(w, "unit without a spatial bucket leaves its bucket");
+        return;
+    }
+    unlink_bucket(w, unit);
+}
+
+void bucket_prepend(FootprintWorld& w, Unit& unit) {
+    if (unit.bucket == kNoBucket) {
+        set_fault(w, "unit without a spatial bucket joins its bucket");
+        return;
+    }
+    if (Unit** head = bucket_head(w, unit.bucket)) {
+        unit.cargo_next = *head;
+        *head = &unit;
+    }
+}
+
 } // namespace sim

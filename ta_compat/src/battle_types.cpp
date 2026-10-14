@@ -157,6 +157,19 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     route.max_water_depth = d.max_water_depth;
     route.min_water_depth = d.min_water_depth;
 
+    sim::ConstructionTypeInfo& con = out.construction;
+    con.footprint_x = d.footprint_x;
+    con.footprint_z = d.footprint_z;
+    con.movement = d.bm_code;
+    con.build_distance = static_cast<u16>(d.build_distance);
+    con.reclaim_reach = static_cast<std::int16_t>(static_cast<std::uint32_t>(d.model_avg_size) >> 16);
+    con.has_build_options = d.has_build_options;
+    con.waterline = d.waterline;
+    con.max_slope = d.max_slope;
+    con.max_water_depth = d.max_water_depth;
+    con.min_water_depth = d.min_water_depth;
+    con.yard_map = d.has_yard_map ? d.yard_map : std::vector<std::uint8_t>{};
+
     out.mission.abilities = d.can_do_flags;
     out.mission.worker_time = static_cast<std::uint16_t>(d.worker_time);
 

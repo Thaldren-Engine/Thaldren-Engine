@@ -19,7 +19,9 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_},
       targeting_{units, ticks, players, alliances, targeting_types_, mission_types_, map, 0, missions_, targeting_env_,
                  targeting_hooks_, targeting_state_},
-      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}} {
+      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}},
+      construction_{map, features, construction_types_, heights_, construction_hooks_, construction_env_} {
+    missions_.construction = &construction_;
     alliances.resize(kPlayerRecords);
     feature_state.reset();
     effects.reset();
@@ -111,6 +113,12 @@ void Battle::sync_settings() {
         route_types_[k].footprint_z = types[k].create.footprint_z;
         route_types_[k].movement = types[k].create.movement;
     }
+    construction_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) construction_types_[k] = types[k].construction;
+    construction_env_.ai_difficulty = s.ai_difficulty;
+    construction_env_.sea_level = s.sea_level;
+    construction_env_.build_menu_focus = s.build_menu_focus;
+    construction_env_.network_provider = s.network_provider;
     route_.env.game_tick = unit_env_.game_tick;
     route_.env.sea_level = s.sea_level;
     route_.env.player_count = s.player_count;
@@ -180,6 +188,46 @@ void Battle::step_effects() {
 void Battle::step_features() {
     sync_settings();
     sim::step_features(feature_world_);
+}
+
+void Battle::step_nano() {
+    sync_settings();
+    step_nano_streams(nano, crt_rand, unit_env_.game_tick);
+}
+
+void Battle::order_build_count(Unit& unit, std::uint16_t type, std::int32_t delta) {
+    sync_settings();
+    const std::uint8_t kind = ticks[unit.id].has_motion ? mission::kMobileBuild : mission::kBuildingBuild;
+    adjust_build_count(missions_, unit, kind, type, delta);
+}
+
+bool Battle::order_mobile_build(Unit& builder, std::uint16_t type, const std::array<std::int32_t, 3>& pos, bool queued) {
+    return order(builder, mission::kMobileBuild, queued, nullptr, &pos, type, 0);
+}
+
+bool Battle::order(Unit& unit, std::uint8_t kind, bool queued, Unit* target, const std::array<std::int32_t, 3>* pos,
+                   std::int32_t param0, std::int32_t param1) {
+    sync_settings();
+    return enqueue_order(orders_, unit, kind, queued, target, pos ? pos->data() : nullptr, param0, param1);
+}
+
+void Battle::transport_attach(Unit& cargo, Unit* transport, std::uint8_t piece, std::uint8_t layer) {
+    // The sender checks the same conditions as the receiver, then sends to the first
+    // playing player's machine and applies the packet itself (0x48AAC0).
+    sync_settings();
+    if (!(cargo.flags & unit_flags::kAlive) || (cargo.flags & 0x20000000u) || cargo.cargo_head) return;
+    if (transport && (!(transport->flags & unit_flags::kAlive) || transport == &cargo || transport->carrier)) return;
+    std::uint8_t pk[7] = {0x0A, static_cast<std::uint8_t>(cargo.id), static_cast<std::uint8_t>(cargo.id >> 8),
+                          static_cast<std::uint8_t>(transport ? transport->id : 0), static_cast<std::uint8_t>(transport ? transport->id >> 8 : 0),
+                          piece, layer};
+    std::int32_t net = -1;
+    for (int s = 0; s < 10; ++s)
+        if (players[static_cast<std::size_t>(s)].active && (players[static_cast<std::size_t>(s)].controller == 1 || players[static_cast<std::size_t>(s)].controller == 2)) {
+            net = players[static_cast<std::size_t>(s)].net_id;
+            break;
+        }
+    outside_.network_send(net, pk, 7);
+    apply_transport_attach(missions_, construction_hooks_, cargo, transport, piece, layer);
 }
 
 void Battle::reset_features_and_effects() {

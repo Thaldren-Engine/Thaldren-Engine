@@ -93,6 +93,10 @@ void force_reclaim_around(FootprintWorld& w, Unit& unit);
 bool yard_cells_free(FootprintWorld& w, const Unit& unit, std::int32_t value);
 // Recomputes each cell's height range (min and max of its corner heights) over an
 // area clipped to the map (0x483210).
+// The unit leaves / joins the head of its spatial bucket's list (0x47CB00 / 0x47CB40; used by
+// transport attach and detach).
+void bucket_unlink(FootprintWorld& w, Unit& unit);
+void bucket_prepend(FootprintWorld& w, Unit& unit);
 void refresh_height_range(MapGrid& map, std::int16_t x, std::int16_t z, std::int16_t size_x, std::int16_t size_z);
 
 } // namespace sim

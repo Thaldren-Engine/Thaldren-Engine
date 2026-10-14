@@ -100,6 +100,8 @@ std::vector<sim::FeatureTypeInfo> to_feature_types(const FeatureDefTable& defs, 
         t.dead = static_cast<std::uint16_t>(r.dead);
         t.burnt = static_cast<std::uint16_t>(r.burnt);
         t.reclamate = static_cast<std::uint16_t>(r.reclamate);
+        t.metal = r.metal;
+        t.energy = r.energy;
         if (r.flags & feature_flags::kGaf) {
             if (r.gaf_owner >= 0) {
                 const std::string& file = recs[static_cast<std::size_t>(r.gaf_owner)].gaf_file;
