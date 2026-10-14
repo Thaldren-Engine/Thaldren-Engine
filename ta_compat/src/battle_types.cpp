@@ -112,6 +112,24 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     tick.name = d.unit_name;
     tick.default_mission = d.default_mission;
 
+    sim::MotionType& m = out.motion;
+    m.type_flags = d.type_flags;
+    m.max_velocity = d.max_velocity;
+    m.brake_rate = d.brake_rate;
+    m.acceleration = d.acceleration;
+    m.bank_scale = d.bank_scale;
+    m.pitch_scale = d.pitch_scale;
+    m.move_rate1 = d.move_rate1;
+    m.move_rate2 = d.move_rate2;
+    m.turn_rate = d.turn_rate;
+    m.cruise_altitude = d.cruise_alt;
+    m.waterline = d.waterline;
+    m.model_height = static_cast<std::int16_t>(static_cast<std::uint32_t>(d.model_max_y) >> 16);
+    m.has_move_class = d.movement_class >= 0;
+
+    out.mission.abilities = d.can_do_flags;
+    out.mission.worker_time = static_cast<std::uint16_t>(d.worker_time);
+
     sim::GroundSettleType& settle = out.settle;
     settle.type_flags = d.type_flags;
     settle.waterline = d.waterline;

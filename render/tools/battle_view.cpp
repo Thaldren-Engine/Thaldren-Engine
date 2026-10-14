@@ -313,6 +313,7 @@ int main(int argc, char** argv) {
             {"CORCOM", 1, 1520, 1980}, {"CORLLT", 1, 1420, 2000}, {"CORAK", 1, 1580, 1940}, {"CORRAID", 1, 1680, 1980},
             {"CORSTORM", 1, 1460, 1940},
         };
+        for (const Spawn& s : spawns) battle_type(s.name);  // all types first: the type table must not grow under live units
         for (const Spawn& s : spawns) {
             const std::uint16_t type = battle_type(s.name);
             if (!type) {

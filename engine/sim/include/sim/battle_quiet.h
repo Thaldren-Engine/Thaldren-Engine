@@ -9,18 +9,26 @@ namespace sim {
 
 class QuietBattleOutside : public BattleOutside {
 public:
-    void motion_step(Unit&, std::uint32_t&) override {}
-    std::int32_t motion_speed(const Unit&) override { return 0; }
-    std::uint32_t motion_start_tick(const Unit&) override { return 0; }
-    void release_motion(Unit&) override {}
-    void release_attached(Unit&, MissionOrder&) override {}
+    // Moves are always allowed (the placement check is not built yet); flat buckets.
+    bool can_place(Unit&, std::int16_t, std::int16_t, std::uint32_t) override { return true; }
+    std::uint8_t bucket_height(const Unit&) override { return 0; }
+    void route_search_forget(MotionGoal&) override {}
+    void update_sight(Unit&) override {}
+    void enemies_in_radius(int, const std::array<std::int32_t, 3>&, std::int32_t, std::vector<Unit*>&) override {}
+    Unit* fire_at_will_target(Unit&) override { return nullptr; }
+    bool issue_attack_order(Unit&, Unit&, bool) override { return false; }
+    std::uint8_t resolve_mission(OrderIntent, Unit&, Unit*, const std::array<std::int32_t, 3>*) override { return 0; }
+    void unfinished_decay(Unit&, std::int32_t) override {}
+    bool use_resources_if_not_stalled(Unit&, float, float) override { return true; }
+    void speech(Unit&, std::uint32_t, SpeechText) override {}
+    void display_changed(Unit&) override {}
+    void build_counts_changed(Unit&) override {}
+    void nano_beam(const std::array<std::int32_t, 3>&, const std::array<std::int32_t, 6>&) override {}
     std::int32_t run_mission(Unit&, MissionOrder&, std::uint32_t&) override { return mission_result::kContinue; }
     void retarget(Unit*, Unit&, std::uint16_t) override {}
     void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
     void drop_unit(Unit&, std::int32_t) override {}
     void detach_from_carrier(Unit&) override {}
-    void create_motion(Unit&) override {}
-    void motion_cells_claimed(Unit&) override {}
     void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override {}
     void passability_after_release(Unit&) override {}
     void join_group(Unit&, std::int32_t) override {}

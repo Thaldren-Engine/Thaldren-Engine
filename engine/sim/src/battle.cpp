@@ -12,7 +12,10 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       weapons_{units, ticks, players, weapon_env_, *this},
       projectile_world_{projectiles, combat_, heights_, map, features, projectile_env_, *this, rng_},
       orders_{ticks, players, rng_, *this, 0},
-      footprint_{map, buckets, units, ticks, players, *this, {}} {
+      footprint_{map, buckets, units, ticks, players, *this, {}},
+      motion_{units, ticks, players, motion_types_, heights_, motion_hooks_, {}, {}},
+      missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_} {
+    alliances.resize(kPlayerRecords);
     types[0].info.max_damage = 0;  // the blank type of empty slots
     types[0].tick.damage_modifier = 0;
 }
@@ -28,6 +31,13 @@ Battle::~Battle() {
 }
 
 void Battle::sync_settings() {
+    // Units point at their type data by index; re-point them (the type table may have grown).
+    for (std::size_t i = 0; i < units.size() && i < ticks.size(); ++i) {
+        const std::uint16_t k = ticks[i].type_index;
+        if (k == 0 || k >= types.size()) continue;
+        units[i].type = &types[k].info;
+        ticks[i].tick_type = &types[k].tick;
+    }
     const BattleSettings& s = settings;
     unit_env_.sea_level = s.sea_level;
     unit_env_.water_damage_enabled = s.water_damage_enabled;
@@ -54,6 +64,20 @@ void Battle::sync_settings() {
     projectile_env_.options = s.damage_options;
     projectile_env_.net_game = s.net_game;
     orders_.game_tick = unit_env_.game_tick;
+    // Motion and mission type data by type index.
+    motion_types_.resize(types.size());
+    mission_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) {
+        motion_types_[k] = types[k].motion;
+        mission_types_[k] = types[k].mission;
+    }
+    motion_.env.game_tick = unit_env_.game_tick;
+    motion_.env.sea_level = s.sea_level;
+    motion_.env.gravity = s.gravity;
+    motion_.env.addresses = s.addresses;
+    mission_env_.sea_level = s.sea_level;
+    mission_env_.gravity = s.gravity;
+    mission_env_.addresses = s.addresses;
 }
 
 void Battle::step_units_and_projectiles() {
@@ -78,13 +102,27 @@ void Battle::damage(Unit* attacker, Unit& target, std::int32_t amount, std::int3
 
 void Battle::repair_heal(Unit& worker, Unit& target, float rate) { sim::repair_heal(combat_, worker, target, rate); }
 
+void Battle::motion(Unit& unit, std::uint32_t& stale_word) {
+    run_motion(motion_, unit);
+    stale_word = motion_stale_word(unit_env_);  // a saved register of the unit pass
+}
+
+void Battle::motion_cells_claimed(Unit& unit) {
+    // The claim stamps the motion object's claim step.
+    if (ticks[unit.id].has_motion) ticks[unit.id].motion.claim_tick = unit_env_.game_tick;
+}
+
 void Battle::primary_orders(Unit& unit, std::uint32_t& stale_word) {
+    missions_.caller = MissionCaller::Primary;
     run_primary_orders(orders_, unit);
     // The original's routine leaves a saved register there: the visited slot's player record.
     stale_word = unit_env_.addresses.player(unit_env_.pass_slot);
 }
 
-void Battle::secondary_orders(Unit& unit, std::uint32_t& stale_word) { run_secondary_orders(orders_, unit, stale_word); }
+void Battle::secondary_orders(Unit& unit, std::uint32_t& stale_word) {
+    missions_.caller = MissionCaller::Secondary;
+    run_secondary_orders(orders_, unit, stale_word);
+}
 
 void Battle::settle_height(Unit& unit, std::uint32_t& stale_word) {
     const UnitTickState& t = ticks[unit.id];

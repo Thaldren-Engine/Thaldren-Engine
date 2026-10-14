@@ -7,6 +7,7 @@
 // features, line of sight), presentation, network and user interface — goes to
 // one BattleOutside interface.
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -16,6 +17,8 @@
 #include "sim/footprint.h"
 #include "sim/ground_settle.h"
 #include "sim/heightmap.h"
+#include "sim/missions.h"
+#include "sim/motion.h"
 #include "sim/orders.h"
 #include "sim/projectile.h"
 #include "sim/rng.h"
@@ -32,6 +35,8 @@ struct BattleUnitType {
     UnitTickTypeInfo tick;
     GroundSettleType settle;
     UnitCreateType create;
+    MotionType motion;
+    MissionTypeInfo mission;
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -59,16 +64,23 @@ class BattleOutside {
 public:
     virtual ~BattleOutside() = default;
     // Not built yet: motion.
-    virtual void motion_step(Unit& unit, std::uint32_t& stale_word) = 0;
-    virtual std::int32_t motion_speed(const Unit& unit) = 0;
-    virtual std::uint32_t motion_start_tick(const Unit& unit) = 0;
-    virtual void release_motion(Unit& unit) = 0;
-    virtual void release_attached(Unit& unit, MissionOrder& order) = 0;
+    // Motion: the placement check of a move into new cells (0x47DB70), the highest
+    // terrain of a unit's spatial bucket, the route search (pathfinder) and sight.
+    virtual bool can_place(Unit& unit, std::int16_t cell_x, std::int16_t cell_z, std::uint32_t layer) = 0;
+    virtual std::uint8_t bucket_height(const Unit& unit) = 0;
+    virtual void route_search_forget(MotionGoal& goal) = 0;
+    virtual void update_sight(Unit& unit) = 0;
+    // Mission behaviours: targeting, attack orders, mission resolution, construction decay.
+    virtual void enemies_in_radius(int player, const std::array<std::int32_t, 3>& pos, std::int32_t radius,
+                                   std::vector<Unit*>& out) = 0;
+    virtual Unit* fire_at_will_target(Unit& unit) = 0;
+    virtual bool issue_attack_order(Unit& unit, Unit& target, bool forced) = 0;
+    virtual std::uint8_t resolve_mission(OrderIntent intent, Unit& unit, Unit* target, const std::array<std::int32_t, 3>* pos) = 0;
+    virtual void unfinished_decay(Unit& unit, std::int32_t ticks) = 0;
+    virtual bool use_resources_if_not_stalled(Unit& unit, float energy, float metal) = 0;
     // Unit creation and footprints (sim/unit_create.h, sim/footprint.h): the parts owned by
     // other systems. Motion object of a new mobile unit (0x43DC00; the battle has already set
     // has_motion), its footprint step when it claims cells, the movement classes' passability.
-    virtual void create_motion(Unit& unit) = 0;
-    virtual void motion_cells_claimed(Unit& unit) = 0;
     virtual void update_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) = 0;
     virtual void passability_after_release(Unit& unit) = 0;
     // Group list membership (0x480250, group 0 for a new unit), line of sight (0x482AC0) and
@@ -102,6 +114,10 @@ public:
     virtual void broadcast_script_call(Unit& unit, std::int16_t function) = 0;
     // Presentation and user interface (no effect on the simulation).
     virtual void on_activate_flags_changed(Unit& unit, std::uint8_t gained, std::uint8_t lost) = 0;
+    virtual void speech(Unit& unit, std::uint32_t id, SpeechText text) = 0;
+    virtual void display_changed(Unit& unit) = 0;
+    virtual void build_counts_changed(Unit& unit) = 0;
+    virtual void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) = 0;
     virtual void forget_speech(Unit& unit) = 0;
     virtual void leave_group(Unit& unit) = 0;
     virtual void stats_activity(std::int32_t kind) = 0;
@@ -136,6 +152,8 @@ public:
     std::vector<UnitTickState> ticks;
     std::vector<PlayerSlot> players;
     std::vector<BattleUnitType> types;  // [0] = the blank type of empty table slots
+    // Alliance bytes of each player record, indexed by the other player's state index.
+    std::vector<std::array<std::uint8_t, 16>> alliances;
     std::vector<FeatureTypeInfo> features;
     ProjectileTable projectiles;
     MapGrid map;
@@ -199,7 +217,7 @@ private:
     void repair_heal(Unit& worker, Unit& target, float rate) override;
     void primary_orders(Unit& unit, std::uint32_t& stale_word) override;
     void secondary_orders(Unit& unit, std::uint32_t& stale_word) override;
-    void motion(Unit& unit, std::uint32_t& stale_word) override { outside_.motion_step(unit, stale_word); }
+    void motion(Unit& unit, std::uint32_t& stale_word) override;
     void settle_height(Unit& unit, std::uint32_t& stale_word) override;
     void killed(Unit& unit, std::uint8_t kind, std::uint32_t& stale_word) override;
     void broadcast_player_units(int player, std::uint32_t&) override { outside_.broadcast_player_units(player); }
@@ -224,7 +242,7 @@ private:
     void detonate(Unit& unit, bool self_destruct) override;
     void spawn_wreck(Unit& u, std::int32_t level, bool burn) override { outside_.spawn_wreck(u, level, burn); }
     void release_unit(Unit& u) override { outside_.release_unit(u); }
-    void release_motion(Unit& u) override { outside_.release_motion(u); }
+    void release_motion(Unit& u) override { destroy_motion(motion_, u); }
     void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
     void commander_died(int p) override { outside_.commander_died(p); }
 
@@ -235,7 +253,7 @@ private:
     // ProjectileSystems
     const WeaponType* slot_weapon(const Unit& u, int slot) override { return u.weapons[static_cast<std::size_t>(slot)].type; }
     std::uint16_t slot_fire_heading(const Unit& u, int slot) override { return u.weapons[static_cast<std::size_t>(slot)].aim_heading; }
-    std::int32_t motion_speed(const Unit& u) override { return outside_.motion_speed(u); }
+    std::int32_t motion_speed(const Unit& u) override { return sim::motion_speed(ticks[u.id]); }
     void play_sound(std::uint16_t s, const Vec3i& p) override { outside_.play_sound(s, p); }
     void spawn_smoke(const Vec3i& p) override { outside_.spawn_smoke(p); }
     void spawn_muzzle_smoke(const Vec3i& p) override { outside_.spawn_muzzle_smoke(p); }
@@ -245,10 +263,10 @@ private:
     Vec3i feature_anim_pos(std::uint16_t slot) override { return outside_.feature_anim_pos(slot); }
 
     // OrderSystems
-    std::int32_t run_mission(Unit& u, MissionOrder& o, std::uint32_t& event) override { return outside_.run_mission(u, o, event); }
+    std::int32_t run_mission(Unit& u, MissionOrder& o, std::uint32_t& event) override { return run_mission_behaviour(missions_, u, o, event); }
     void clear_weapon_target(Unit& unit, int slot) override { sim::clear_weapon_target(unit, slot); }
     void release_weapon_targets(Unit& unit) override { sim::release_weapon_targets(unit, 3); }
-    void release_attached(Unit& u, MissionOrder& o) override { outside_.release_attached(u, o); }
+    void release_attached(Unit& u, MissionOrder& o) override { release_order_goal(motion_, u, o); }
     void broadcast_script_call(Unit& u, std::int16_t f) override { outside_.broadcast_script_call(u, f); }
     MissionOrder* allocate_order() override;
     void free_order(MissionOrder* order) override;
@@ -258,11 +276,47 @@ private:
         outside_.update_passability(x, z, w, h);
     }
     void passability_after_release(Unit& u) override { outside_.passability_after_release(u); }
-    void motion_cells_claimed(Unit& u) override { outside_.motion_cells_claimed(u); }
+    void motion_cells_claimed(Unit& u) override;
 
     // GroundSettleSystems
-    std::int32_t motion_speed(Unit& u) override { return outside_.motion_speed(u); }
-    std::uint32_t motion_start_tick(Unit& u) override { return outside_.motion_start_tick(u); }
+    std::int32_t motion_speed(Unit& u) override { return sim::motion_speed(ticks[u.id]); }
+    std::uint32_t motion_start_tick(Unit& u) override { return motion_move_tick(ticks[u.id]); }
+
+    // Motion and mission hooks (separate objects: some names clash with the combat hooks).
+    struct MotionHooks final : MotionSystems {
+        Battle& b;
+        explicit MotionHooks(Battle& battle) : b(battle) {}
+        bool can_place(Unit& u, std::int16_t x, std::int16_t z, std::uint32_t layer) override { return b.outside_.can_place(u, x, z, layer); }
+        void clear_footprint(Unit& u) override { release_cells(b.footprint_, u); }  // 0x47D0E0
+        void claim_footprint(Unit& u) override { sim::claim_footprint(b.footprint_, u); }
+        void update_sight(Unit& u) override { b.outside_.update_sight(u); }
+        bool off_map(const Unit& u) override { return u.bucket == kOffMapBucket; }
+        std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
+        void route_search_forget(MotionGoal& g) override { b.outside_.route_search_forget(g); }
+        void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
+        std::uint32_t allocate_object(std::uint32_t) override { return 0; }
+        void free_object(std::uint32_t) override {}
+    };
+    struct MissionHooks final : MissionSystems {
+        Battle& b;
+        explicit MissionHooks(Battle& battle) : b(battle) {}
+        std::int32_t run_other(Unit& u, MissionOrder& o, std::uint32_t& event) override { return b.outside_.run_mission(u, o, event); }
+        void speech(Unit& u, std::uint32_t id, SpeechText t) override { b.outside_.speech(u, id, t); }
+        void enemies_in_radius(int p, const std::array<std::int32_t, 3>& pos, std::int32_t r, std::vector<Unit*>& out) override {
+            b.outside_.enemies_in_radius(p, pos, r, out);
+        }
+        Unit* fire_at_will_target(Unit& u) override { return b.outside_.fire_at_will_target(u); }
+        bool issue_attack_order(Unit& u, Unit& t, bool forced) override { return b.outside_.issue_attack_order(u, t, forced); }
+        std::uint8_t resolve_mission(OrderIntent i, Unit& u, Unit* t, const std::array<std::int32_t, 3>* pos) override {
+            return b.outside_.resolve_mission(i, u, t, pos);
+        }
+        void unfinished_decay(Unit& u, std::int32_t ticks) override { b.outside_.unfinished_decay(u, ticks); }
+        void display_changed(Unit& u) override { b.outside_.display_changed(u); }
+        bool use_resources_if_not_stalled(Unit& u, float e, float m) override { return b.outside_.use_resources_if_not_stalled(u, e, m); }
+        void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
+        void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override { b.outside_.nano_beam(from, box); }
+        void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
+    };
     std::uint32_t clock_ticks() override { return outside_.clock_ticks(); }
 
     BattleOutside& outside_;
@@ -277,6 +331,13 @@ private:
     ProjectileWorld projectile_world_;
     OrderContext orders_;
     FootprintWorld footprint_;
+    MotionHooks motion_hooks_{*this};
+    MissionHooks mission_hooks_{*this};
+    std::vector<MotionType> motion_types_;        // by type index (copied from types each step)
+    std::vector<MissionTypeInfo> mission_types_;  // by type index
+    MotionContext motion_;
+    MissionEnvironment mission_env_;
+    Missions missions_;
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;

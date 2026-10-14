@@ -200,7 +200,7 @@ Unit* Battle::create_unit(int player, std::uint16_t type, std::int32_t x, std::i
     update_metal_extraction(u, map, ct.extracts_metal);
     if (ct.movement == 1) {
         t.has_motion = true;
-        outside_.create_motion(u);
+        sim::create_motion(motion_, u);
         u.heading = ct.build_angle;  // the random facing is replaced (its draw still happened)
     }
     u.flags = (u.flags & ~3u) | (layer & 3u);

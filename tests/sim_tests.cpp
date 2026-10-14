@@ -10,6 +10,7 @@
 #include <string>
 
 #include "sim/battle.h"
+#include "sim/battle_quiet.h"
 #include "sim/combat.h"
 #include "sim/motion.h"
 #include "sim/fixed.h"
@@ -856,56 +857,12 @@ void test_projectiles() {
 }
 
 // Records what reaches the outside of a battle; everything else does nothing.
-struct NullOutside : sim::BattleOutside {
-    int sounds = 0, explosions = 0, missions = 0, motions = 0, passability = 0, packets = 0;
-    void motion_step(Unit&, std::uint32_t&) override {}
-    std::int32_t motion_speed(const Unit&) override { return 0; }
-    std::uint32_t motion_start_tick(const Unit&) override { return 0; }
-    void release_motion(Unit&) override {}
-    void release_attached(Unit&, sim::MissionOrder&) override {}
-    std::int32_t run_mission(Unit&, sim::MissionOrder&, std::uint32_t&) override {
-        ++missions;
-        return sim::mission_result::kContinue;
-    }
-    void retarget(Unit*, Unit&, std::uint16_t) override {}
-    void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
-    void drop_unit(Unit&, std::int32_t) override {}
-    void detach_from_carrier(Unit&) override {}
-    void create_motion(Unit&) override { ++motions; }
-    void motion_cells_claimed(Unit&) override {}
+struct NullOutside : sim::QuietBattleOutside {
+    int sounds = 0, explosions = 0, passability = 0, packets = 0;
     void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override { ++passability; }
-    void passability_after_release(Unit&) override {}
-    void join_group(Unit&, std::int32_t) override {}
-    void stamp_line_of_sight(Unit&) override {}
-    void victory_unit_created(Unit&) override {}
-    void release_unit(Unit&) override {}
-    bool pay_energy(Unit&, float) override { return true; }
-    void damage_feature(sim::MapCell&, std::int32_t, std::int32_t, const sim::WeaponType&) override {}
-    sim::Vec3i feature_anim_pos(std::uint16_t) override { return {}; }
-    void spawn_wreck(Unit&, std::int32_t, bool) override {}
-    void explode_piece(Unit&, std::int32_t, std::int32_t) override {}
-    void emit_sfx(Unit&, std::int32_t, std::int32_t) override {}
-    void reveal_dead_unit(Unit&) override {}
-    void forget_fog(Unit&) override {}
-    void victory_unit_destroyed(Unit&) override {}
-    void player_out_of_units(int) override {}
-    void commander_died(int) override {}
-    std::uint32_t clock_ticks() override { return 0; }
     void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override { ++packets; }
-    void broadcast_player_units(int) override {}
-    void broadcast_script_call(Unit&, std::int16_t) override {}
-    void on_activate_flags_changed(Unit&, std::uint8_t, std::uint8_t) override {}
-    void forget_speech(Unit&) override {}
-    void leave_group(Unit&) override {}
-    void stats_activity(std::int32_t) override {}
-    void kill_counted(std::uint8_t, Unit&) override {}
-    void stockpile_used(Unit&) override {}
-    void camera_follow_step() override {}
     void play_sound(std::uint16_t, const sim::Vec3i&) override { ++sounds; }
-    void spawn_smoke(const sim::Vec3i&) override {}
-    void spawn_muzzle_smoke(const sim::Vec3i&) override {}
     void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override { ++explosions; }
-    void camera_shake(std::int32_t, std::int32_t, std::int32_t) override {}
 };
 
 // A shooter and a target wired through a whole battle: the unit pass aims and
@@ -1055,7 +1012,7 @@ void test_unit_create() {
     CHECK_EQ(m != nullptr, true);
     if (!m) return;
     CHECK_EQ(m->id, 5);
-    CHECK_EQ(outside.motions, 1);
+    CHECK_EQ(b.ticks[5].has_motion, true);
     CHECK_EQ(m->heading, 0x4000);
     CHECK_EQ(m->hit_points, 0);
     CHECK_EQ(m->build_fraction_left, 1.0f);
