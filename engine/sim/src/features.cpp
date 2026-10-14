@@ -520,7 +520,7 @@ void step_features(FeatureWorld& w) {
                 const AnimFrame* fr = anim_frame(s->cursor(S::kCursorA), w.anims);
                 const AnimFrame none{};
                 if (!fr) {
-                    w.state.fault = "burning feature without a frame";
+                    w.state.fault = "burning feature with no flame frame (the original reads through a null frame)";
                     fr = &none;
                 }
                 const u16 fw = fr->width, fh = fr->height;

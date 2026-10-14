@@ -178,6 +178,13 @@ int add_pose_nodes(const Model3doPiece* p, sim::PoseModel& m) {
     m.nodes.back().name = p->name;
     m.nodes.back().offset = p->offset;
     m.nodes.back().vertices = p->vertices;
+    m.nodes.back().selection = p->selection_primitive;
+    for (const Model3doPrimitive& src : p->primitives) {
+        sim::PosePrimitive prim;
+        prim.indices = src.indices;
+        prim.flat = (src.raw[0x1C] & 1) != 0;  // the file's colour flag (texture binding can add it)
+        m.nodes.back().primitives.push_back(std::move(prim));
+    }
     const int child = p->child ? add_pose_nodes(p->child.get(), m) : -1;
     const int sibling = p->sibling ? add_pose_nodes(p->sibling.get(), m) : -1;
     m.nodes[static_cast<std::size_t>(index)].child = child;

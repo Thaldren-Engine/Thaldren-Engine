@@ -122,16 +122,16 @@ void load_section(const TdfSection& s, WeaponDefTable& t, const WeaponDefOptions
         if (!shared) w.model_name = model.substr(0, 63);
     }
 
-    auto seq = [&](const char* gaf_key, const char* art_key) -> std::string {
+    auto seq = [&](const char* gaf_key, const char* art_key, std::string& gaf_out) -> std::string {
         bool g = false, a = false;
         const std::string gaf = s.get_string(gaf_key, 0x100, "", &g);
         const std::string art = s.get_string(art_key, 0x100, "", &a);
-        (void)gaf;
+        gaf_out = (g && a) ? gaf : std::string();
         return (g && a) ? art : std::string();
     };
-    w.explosion_seq = seq("explosiongaf", "explosionart");
-    w.water_explosion_seq = opt.lava_world ? seq("lavaexplosiongaf", "lavaexplosionart")
-                                           : seq("waterexplosiongaf", "waterexplosionart");
+    w.explosion_seq = seq("explosiongaf", "explosionart", w.explosion_gaf);
+    w.water_explosion_seq = opt.lava_world ? seq("lavaexplosiongaf", "lavaexplosionart", w.water_explosion_gaf)
+                                           : seq("waterexplosiongaf", "waterexplosionart", w.water_explosion_gaf);
 
     auto sound = [&](const char* key) {
         bool found = false;

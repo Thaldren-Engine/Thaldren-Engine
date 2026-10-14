@@ -26,6 +26,7 @@ struct WeaponDefRecord {
     std::string model_name;        // aModelName (blank when sharing an earlier weapon's model)
     std::string explosion_seq;     // "" = none
     std::string water_explosion_seq;
+    std::string explosion_gaf, water_explosion_gaf;  // anims\<name>.GAF holding them
     float energy_per_shot = 0, metal_per_shot = 0, min_barrel_angle = 0;
     std::int32_t shake_magnitude = 0, shake_duration = 0;
     std::int16_t default_damage = 0, area_of_effect = 0;
