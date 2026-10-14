@@ -28,6 +28,8 @@ void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_
 
 // Quad mapped with the whole texture: vertex 0 -> (0,0), 1 -> (w-1,0),
 // 2 -> (w-1,h-1), 3 -> (0,h-1). The texture's key is not honoured (texels are copied).
-void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& texture);
+// A texel address outside the texture (the original reads neighbouring
+// memory there) is clamped and reported through `out_of_range`.
+void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& texture, bool* out_of_range = nullptr);
 
 } // namespace render

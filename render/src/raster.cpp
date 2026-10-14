@@ -152,7 +152,7 @@ void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_
     });
 }
 
-void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex) {
+void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex, bool* out_of_range) {
     if (tex.width <= 0 || tex.height <= 0) return;
     const std::int32_t uw = tex.width - 1, vh = tex.height - 1;
     const EdgeVertex vs[4] = {{v[0].x, v[0].y, v[0].z, 0, 0},
@@ -161,9 +161,16 @@ void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex) {
                               {v[3].x, v[3].y, v[3].z, 0, vh}};
     scan(t, vs, 4, [&](std::uint8_t& p, std::int32_t u, std::int32_t vv) {
         const std::int32_t tx = u >> 16, ty = vv >> 16;
-        // The original reads outside the texture here (neighbouring memory); we clamp.
-        const int cx = std::clamp(tx, 0, tex.width - 1), cy = std::clamp(ty, 0, tex.height - 1);
-        p = tex.at(cx, cy);
+        // The original addresses texels linearly (x + y * width), so an x
+        // outside the row reads a neighbouring row. Outside the whole texture
+        // it reads unrelated memory; we clamp there.
+        const long long lin = static_cast<long long>(tx) + static_cast<long long>(ty) * tex.width;
+        if (lin >= 0 && lin < static_cast<long long>(tex.pixels.size())) {
+            p = tex.pixels[static_cast<std::size_t>(lin)];
+        } else {
+            if (out_of_range) *out_of_range = true;
+            p = tex.at(std::clamp(tx, 0, tex.width - 1), std::clamp(ty, 0, tex.height - 1));
+        }
         return true;
     });
 }
