@@ -241,3 +241,8 @@ add_executable(projectile_harness
 )
 target_include_directories(projectile_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(projectile_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Polygon scan conversion: original flat depth polygon and textured quad vs render::fill_polygon / textured_quad.
+add_executable(raster_harness raster_harness.cpp ${ROOT}/render/src/raster.cpp ${ROOT}/render/src/image.cpp)
+target_include_directories(raster_harness PRIVATE ${ROOT}/render/include ${ROOT}/engine/sim/include)
+target_compile_options(raster_harness PRIVATE /W4 /permissive- /fp:precise)
