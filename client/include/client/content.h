@@ -1,0 +1,151 @@
+#pragma once
+// Everything the playable client shows besides the simulation itself: the
+// interface layout and art, fonts, cursors, sounds and per-unit-type display
+// data. An importer fills it from game data; the client never reads files.
+
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "client/canvas.h"
+#include "render/battle_view.h"
+#include "render/draw_list.h"
+#include "render/image.h"
+
+namespace client {
+
+// What a button does.
+enum class Action : std::uint8_t {
+    None,
+    OrdersTab, BuildTab, PrevPage, NextPage,
+    // Order modes (the next map click gives the order).
+    Move, Patrol, Attack, Guard, Reclaim, Repair, Capture, Load, Unload, Special,
+    // Immediate orders.
+    Stop,
+    // Standing orders and switches (several stages).
+    FireOrders, MoveOrders, OnOff, Cloak,
+    // Build menu entry.
+    BuildUnit,
+};
+
+struct Button {
+    Action action = Action::None;
+    int x = 0, y = 0, w = 0, h = 0;                       // screen rectangle
+    const std::vector<render::Sprite8>* frames = nullptr;  // look: see button_frame()
+    int quickkey = 0;                                     // character that presses it (0 = none)
+    std::uint16_t unit_type = 0;                          // BuildUnit: battle type index
+    bool staged = false;                                  // shows a stage (standing orders, switches)
+};
+
+// Frame of a button's look: a staged button shows its stage (the last frame while
+// held down); a plain one frame 0, 1 while held, 2 (when present) when disabled.
+int button_frame(const Button& b, bool held, bool disabled, int stage);
+
+struct Panel {
+    const render::Sprite8* background = nullptr;
+    int x = 0, y = 0;
+    std::vector<Button> buttons;
+};
+
+// An inclusive screen rectangle as the side description gives it.
+struct Region {
+    int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+};
+
+// The interface of one side.
+struct SideLayout {
+    // Top bar.
+    Region logo, energy_bar, energy_num, energy_max, energy_zero, metal_bar, metal_num, metal_max, metal_zero;
+    Region energy_produced, energy_consumed, metal_produced, metal_consumed;
+    // Bottom bar (y values are for a 480-row screen; they move with the screen height).
+    Region logo2, unit_name, damage_bar, unit_metal_make, unit_metal_use, unit_energy_make, unit_energy_use;
+    Region mission_text, unit_name2, damage_bar2, name, description;
+    std::uint8_t energy_colour = 0, metal_colour = 0;
+    const Font* font = nullptr;  // console and bar text
+    const render::Sprite8* panel_top = nullptr;
+    const render::Sprite8* panel_bottom = nullptr;
+    const render::Sprite8* panel_side = nullptr;
+    Panel orders;  // order buttons of a selection without build menu shown
+    Panel idle;    // shown with nothing selected (statistics)
+};
+
+// Mouse pointer looks.
+enum class CursorKind : std::uint8_t {
+    Normal, Select, Move, Attack, Guard, Patrol, Repair, Reclaim, Capture, Load, Unload, FindSite, TooFar, Busy, Red,
+    Count
+};
+
+struct CursorSet {
+    std::array<const std::vector<render::Sprite8>*, static_cast<std::size_t>(CursorKind::Count)> looks{};
+};
+
+// Sound indices into the client's sample table (-1 = none).
+// Unit notices by the simulation's speech id (1 select .. 22 count 0).
+using UnitSounds = std::array<int, 24>;
+
+struct InterfaceSounds {
+    int immediate = -1;        // stop and other immediate orders
+    int orders_tab = -1, build_tab = -1, next_build_menu = -1;
+    int add_build = -1, sub_build = -1;       // factory queue
+    int ok_to_build = -1, not_ok_to_build = -1;  // placement
+    int set_fire = -1, set_move = -1, special = -1;  // standing orders, order modes
+    int select_squad = -1, create_squad = -1, select_multiple = -1, message = -1;
+};
+
+// Display data of a unit type (index = battle type index).
+struct UnitTypeLook {
+    std::string name, description;
+    UnitSounds sounds{};
+    std::vector<Panel> build_pages;  // empty: no build menu
+    // Box around the model at rest (16.16, unit space): the selection outline.
+    std::array<std::int32_t, 3> box_min{}, box_max{};
+    bool commander = false;
+};
+
+// A decoded sound: signed 16-bit samples.
+struct Sample {
+    int rate = 22050;
+    int channels = 1;
+    std::vector<std::int16_t> pcm;
+};
+
+// Shot looks by weapon index (the battle view draws shots through these).
+struct ShotLook {
+    render::ProjectileLook look = render::ProjectileLook::Line;
+    bool hidden = false;          // drawn some other way (not modelled)
+    std::uint8_t colour = 0, colour2 = 0;
+    bool second_line = false;
+    const std::vector<render::Sprite8>* frames = nullptr;
+    const render::Model* model = nullptr;
+    const sim::PoseModel* pose_model = nullptr;
+};
+
+struct Content {
+    // Palette, tables and the interface colours (index k of the interface palette -> game palette).
+    render::Palette palette{};
+    render::BlendTable blend;
+    std::array<std::uint8_t, 256> hud{};
+    std::vector<SideLayout> sides;               // by side index
+    std::vector<UnitTypeLook> types;              // by battle type index
+    CursorSet cursors;
+    InterfaceSounds ui_sounds;
+    std::vector<Sample> samples;                  // sound table
+    std::vector<ShotLook> shots;                  // by weapon index
+    // Minimap: the map picture (any size; scaled to fit), radar dots by colour, the dot of
+    // the unit under the pointer.
+    const render::Sprite8* minimap_picture = nullptr;
+    const std::vector<render::Sprite8>* radar_dots = nullptr;
+    const render::Sprite8* radar_dot_hover = nullptr;
+    const Font* small_font = nullptr;
+    // The paused sign (drawn at the view's centre).
+    const render::Sprite8* paused_sign = nullptr;
+    std::vector<std::string> start_messages;      // console lines shown at the start
+    // Builds the battle view of the viewing player (projection, culling and draw order are
+    // the renderer's; which units, features and shots are seen is the content's).
+    std::function<void(render::BattleScene& scene, int view_player, std::uint32_t frame_counter)> fill_scene;
+};
+
+} // namespace client
