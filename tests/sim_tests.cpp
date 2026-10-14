@@ -7,9 +7,13 @@
 #include <fstream>
 #include <vector>
 
+#include <string>
+
 #include "sim/fixed.h"
 #include "sim/rng.h"
+#include "sim/step_budget.h"
 #include "sim/trig.h"
+#include "sim/world.h"
 #include "sim/x87.h"
 
 namespace {
@@ -123,6 +127,69 @@ void test_fixed() {
     CHECK_EQ(sar(-3, 1), -2);
 }
 
+void test_world_stage_order() {
+    World w;
+    std::string log;
+    for (const Stage s : kStageOrder) {
+        w.set_stage(s, [&log, s](World& world) {
+            log += std::to_string(world.tick()) + ":" + std::to_string(static_cast<int>(s)) + " ";
+        });
+    }
+    w.set_frame_end([&log](World&) { log += "end "; });
+    w.run_frame(2);
+    // Offline: network stages (0 and 10) are skipped.
+    CHECK_EQ(log == "1:1 1:2 1:3 1:4 1:5 1:6 1:7 1:8 1:9 2:1 2:2 2:3 2:4 2:5 2:6 2:7 2:8 2:9 end ", true);
+    log.clear();
+    w.set_networked(true);
+    w.run_frame(0);
+    CHECK_EQ(log == "end ", true);
+    w.run_frame(1);
+    CHECK_EQ(log == "end 3:0 3:1 3:2 3:3 3:4 3:5 3:6 3:7 3:8 3:9 3:10 end ", true);
+}
+
+void test_step_budget() {
+    // Normal speed: 1 step per 1/30 s, fractions carried.
+    StepBudget b;
+    b.update(0);                  // 0 steps: hysteresis -1
+    CHECK_EQ(b.update(1000), 5);  // 30 steps wanted, capped at 5 (excess dropped): hysteresis 0
+    CHECK_EQ(b.hysteresis, std::int16_t{0});
+    CHECK_EQ(b.update(1034), 1);  // 1034*30/1000 = 31 -> elapsed 1
+    CHECK_EQ(b.update(1100), 2);  // 33 -> elapsed 2
+    CHECK_EQ(b.hysteresis, std::int16_t{-2});
+
+    // Half speed: 0.5 step per tick, remainder carried as float.
+    StepBudget h;
+    h.game_speed = h.effective_speed = 5;
+    h.update(0);
+    CHECK_EQ(h.update(34), 0);  // 1 tick * 0.5
+    CHECK_EQ(h.step_fraction, 0.5f);
+    CHECK_EQ(h.update(67), 1);  // 0.5 + 0.5
+    CHECK_EQ(h.step_fraction, 0.0f);
+
+    // Overload backs the speed off once hysteresis exceeds 10.
+    StepBudget o;
+    o.update(0);  // hysteresis -1
+    std::uint32_t t = 0;
+    for (int i = 0; i < 11; ++i) o.update(t += 1000);  // -> 10
+    CHECK_EQ(o.effective_speed, std::uint16_t{10});
+    o.update(t += 1000);  // 11 > 10: reset and slow down
+    CHECK_EQ(o.effective_speed, std::uint16_t{9});
+    CHECK_EQ(o.hysteresis, std::int16_t{0});
+
+    // Remote lag throttle: 3600+ ticks behind -> rate * 0.01.
+    StepBudget l;
+    l.update(0);
+    CHECK_EQ(l.update(10000, 5000), 3);  // 300 ticks * 1.0 * 0.01
+    CHECK_EQ(l.lag_throttled, true);
+
+    // Paused: no steps, no hysteresis change.
+    StepBudget p;
+    p.paused = true;
+    p.update(0);
+    CHECK_EQ(p.update(1000), 0);
+    CHECK_EQ(p.hysteresis, std::int16_t{0});
+}
+
 } // namespace
 
 int main() {
@@ -134,6 +201,8 @@ int main() {
     test_mul_sin_cos_golden();
     test_ftol();
     test_fixed();
+    test_world_stage_order();
+    test_step_budget();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
