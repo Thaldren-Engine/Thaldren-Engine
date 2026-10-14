@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 #include <string>
@@ -1303,8 +1304,19 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             } else if (kind_of_op < 12) {  // ownerless shot (meteor shower)
                 int s = used[g() % used.size()];
                 if (weapons[static_cast<std::size_t>(s)].flags & sim::weapon_flags::kInterceptor) continue;
-                const sim::Vec3i pos{region_pos(), static_cast<i32>((200u + g() % 600u) << 16), region_pos()};
-                const sim::Vec3i vel{static_cast<i32>(g() % 0x40000) - 0x20000, -static_cast<i32>(g() % 0x80000), static_cast<i32>(g() % 0x40000) - 0x20000};
+                sim::Vec3i pos{region_pos(), static_cast<i32>((200u + g() % 600u) << 16), region_pos()};
+                sim::Vec3i vel{static_cast<i32>(g() % 0x40000) - 0x20000, -static_cast<i32>(g() % 0x80000), static_cast<i32>(g() % 0x40000) - 0x20000};
+                if (g() % 6 == 0) {
+                    // Near a map edge, heading out: map-edge removal and clamped area damage.
+                    const int edge = static_cast<int>(g() % 4);
+                    const i32 far_x = (L.map_w * 16 - 1) << 16, far_z = (L.map_h * 16 - 1) << 16;
+                    const i32 off = static_cast<i32>(g() % (64u << 16));
+                    if (edge == 0) pos[0] = off, vel[0] = -static_cast<i32>(g() % 0x80000);
+                    if (edge == 1) pos[0] = far_x - off, vel[0] = static_cast<i32>(g() % 0x80000);
+                    if (edge == 2) pos[2] = off, vel[2] = -static_cast<i32>(g() % 0x80000);
+                    if (edge == 3) pos[2] = far_z - off, vel[2] = static_cast<i32>(g() % 0x80000);
+                    pos[1] = static_cast<i32>((g() % 200u) << 16);
+                }
                 const bool bcast = g() % 2;
                 const bool mine = sim::spawn_free_projectile(pw, weapons[static_cast<std::size_t>(s)], pos, vel, bcast);
                 put_vec(L.args, pos);
@@ -1366,6 +1378,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             } else {
                 continue;
             }
+            if (std::getenv("PH_TRACE")) std::printf("trace: %s tick %d\n", what.c_str(), tick);
             if (engine_faulted()) return true;
             if (!compare(what + " tick " + std::to_string(tick))) return true;
         }
@@ -1397,7 +1410,9 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         }
         if (table.camera_slot >= 0) ++st.kind[11];
         if (table.count == sim::kMaxProjectiles) ++st.full_table;
+        if (std::getenv("PH_TRACE")) std::printf("trace: update tick %d count %d\n", tick, table.count);
         sim::update_projectiles(pw);
+        if (std::getenv("PH_TRACE")) std::printf("trace: engine update done\n");
         if (!r.call(kUpdate, 0, {}, nullptr, 20000)) return fail("projectile update tick " + std::to_string(tick));
         if (!table.fault.empty()) {
             std::printf("scenario %u tick %d: engine notes an original crash (%s) but the original ran on\n", seed, tick, table.fault.c_str());
@@ -1420,6 +1435,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: projectile_harness <TotalA.exe> <game_dir> [scenarios] [ticks] [first seed]\n");
         return 2;
     }
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const int scenarios = argc > 3 ? std::atoi(argv[3]) : 50;
     const int ticks = argc > 4 ? std::atoi(argv[4]) : 200;
     const int first = argc > 5 ? std::atoi(argv[5]) : 0;

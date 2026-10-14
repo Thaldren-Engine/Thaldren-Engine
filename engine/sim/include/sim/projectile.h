@@ -106,7 +106,12 @@ struct ProjectileTable {
     // Set when the original would have crashed (division by zero, ...); the
     // engine continues with a defined value.
     std::string fault;
+    // Detonations nest when interceptors set off other shots.
+    std::int32_t detonation_depth = 0;
+    bool runaway_chain = false;
 };
+
+constexpr std::int32_t kMaxDetonationDepth = 1000;
 
 // A map cell (16 x 16 world units) as projectiles see it.
 struct MapCell {

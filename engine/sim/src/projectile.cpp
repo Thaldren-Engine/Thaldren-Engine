@@ -579,18 +579,21 @@ bool spawn_free_projectile(ProjectileWorld& w, const WeaponType& weapon, const V
 void detonate_projectile(ProjectileWorld& w, Projectile& p, Unit* hit) {
     // Interceptors detonate the shots around them, which may be interceptors too. Shots
     // that do not explode stay live, so two of them can set each other off forever: the
-    // original recurses until its stack overflows.
-    struct Depth {
-        int& d;
-        explicit Depth(int& v) : d(v) { ++d; }
-        ~Depth() { --d; }
-    };
-    static thread_local int depth = 0;
-    const Depth guard(depth);
-    if (depth > 1000) {
-        w.table.fault = "endless chain of interceptor detonations";
+    // original recurses until its stack overflows. The engine gives up the whole chain.
+    ProjectileTable& t = w.table;
+    if (t.runaway_chain) return;
+    if (t.detonation_depth >= kMaxDetonationDepth) {
+        t.fault = "endless chain of interceptor detonations";
+        t.runaway_chain = true;
         return;
     }
+    struct Nesting {
+        ProjectileTable& t;
+        explicit Nesting(ProjectileTable& table) : t(table) { ++t.detonation_depth; }
+        ~Nesting() {
+            if (--t.detonation_depth == 0) t.runaway_chain = false;
+        }
+    } nesting(t);
     const WeaponType& wt = *p.weapon;
     const MapCell* cell = w.map.cell_at(p.pos);
     const bool sea = cell && cell->height_max < w.env.sea_level;
