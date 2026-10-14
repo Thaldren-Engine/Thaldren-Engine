@@ -50,6 +50,7 @@ struct GpuRenderer::Impl {
     SDL_GPUShader* quad_vs = nullptr;
     SDL_GPUShader* resolve_fs = nullptr;
     SDL_Window* window = nullptr;
+    bool owns_window = true;  // false for a window the caller made (present_to_window)
     SDL_GPUGraphicsPipeline* window_resolve = nullptr;
 
     ~Impl() {
@@ -57,7 +58,7 @@ struct GpuRenderer::Impl {
         if (window_resolve) SDL_ReleaseGPUGraphicsPipeline(dev, window_resolve);
         if (window) {
             SDL_ReleaseWindowFromGPUDevice(dev, window);
-            SDL_DestroyWindow(window);
+            if (owns_window) SDL_DestroyWindow(window);
         }
         if (quad_vs) SDL_ReleaseGPUShader(dev, quad_vs);
         if (resolve_fs) SDL_ReleaseGPUShader(dev, resolve_fs);
@@ -442,6 +443,24 @@ bool GpuRenderer::present_window(const DrawList& list, const Palette& palette, i
     SDL_Event e;
     while (SDL_PollEvent(&e))
         if (e.type == SDL_EVENT_QUIT || e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) return false;
+    return present_frame(list, palette, scale);
+}
+
+bool GpuRenderer::present_to_window(void* sdl_window, const DrawList& list, const Palette& palette, int scale) {
+    Impl& m = *impl_;
+    scale = std::max(scale, 1);
+    if (!m.window) {
+        m.window = static_cast<SDL_Window*>(sdl_window);
+        m.owns_window = false;
+        if (!SDL_ClaimWindowForGPUDevice(m.dev, m.window)) return fail("SDL_ClaimWindowForGPUDevice");
+        m.window_resolve = m.pipeline(m.quad_vs, m.resolve_fs, SDL_GetGPUSwapchainTextureFormat(m.dev, m.window));
+        if (!m.window_resolve) return fail("SDL_CreateGPUGraphicsPipeline (window)");
+    }
+    return present_frame(list, palette, scale);
+}
+
+bool GpuRenderer::present_frame(const DrawList& list, const Palette& palette, int scale) {
+    Impl& m = *impl_;
     if (!m.ensure_frame(list.width, list.height)) return false;
     std::uint8_t pal[256 * 4];
     for (int i = 0; i < 256; ++i) {

@@ -32,6 +32,9 @@ public:
     // shows each drawn list there, resolved through the palette on the GPU.
     // Returns false when the window was closed or on error.
     bool present_window(const DrawList& list, const Palette& palette, int scale, const char* title);
+    // The same into a window the caller made and pumps events for (an SDL_Window*):
+    // the frame is scaled by `scale` and drawn at the top-left of its drawable area.
+    bool present_to_window(void* sdl_window, const DrawList& list, const Palette& palette, int scale);
 
     // Name of the GPU driver in use ("direct3d12", "vulkan", "metal").
     std::string driver() const;
@@ -39,6 +42,7 @@ public:
     struct Impl;
 
 private:
+    bool present_frame(const DrawList& list, const Palette& palette, int scale);
     explicit GpuRenderer(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
 };

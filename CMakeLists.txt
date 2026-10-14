@@ -117,3 +117,5 @@ endif()
 
 # Renderer (8-bit battle view), its game-data importers and the offline viewer.
 add_subdirectory(render)
+# Playable client (SDL3 window and sound when the GPU backend is built).
+add_subdirectory(client)
