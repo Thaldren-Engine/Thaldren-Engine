@@ -142,6 +142,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Commands (input)** | Cmd 93, Orders 4 | How player orders enter the sim |
 | **Net lockstep / sync** | Net 66, Sync 59 | Later phase; checksums useful for tests |
 | **Debris / FX** | Fx 55, Debris 3 | **Open:** which parts change sim state (debris can deal damage?) and which are visual |
+| **Construction / reclaim / capture** | MissionTick 9, Unit 12 | Built (smoke-verified): see RE_MEMORY "Construction and reclaim" — build slices `0x41BA60`, factory `0x402640`, mobile build `0x403A20`, help `0x403F70`, repair `0x405300`, reclaim `0x404AD0`/`0x404730`, capture `0x404270`, yard placement `0x47D2E0`, transport packet `0x48AB70`. **Nano streams draw the C runtime rand() in the unit pass and stage 9 (not at draw time).** Open: RepairPatrol, Resurrect, aircraft builders |
 
 ---
 

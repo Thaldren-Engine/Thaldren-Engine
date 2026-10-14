@@ -958,6 +958,18 @@ void attach_ring_goal(MotionContext& c, MissionOrder& order, const std::array<st
     attach_order_goal(c, order, make_ring_goal(c, order, pos[0], pos[2], outer, inner));
 }
 
+void attach_edge_goal(MotionContext& c, MissionOrder& order, std::uint32_t cell, std::uint32_t size) {
+    Unit& u = *order.unit;
+    if (c.type(u).type_flags & motion_flags::kTypeFlies) {
+        if (c.tick(u).has_motion && order.attached) {
+            c.motion(u).goal->attach(c, nullptr);
+            delete_order_goal(c, order);
+        }
+        return;
+    }
+    attach_order_goal(c, order, make_edge_goal(c, order, cell, size));
+}
+
 void release_order_goal(MotionContext& c, Unit& u, MissionOrder& order) {
     MotionGoal* mg = c.motion(u).goal.get();
     if (mg && mg->attached && order.attached && mg->attached == order.goal.get()) mg->attach(c, nullptr);

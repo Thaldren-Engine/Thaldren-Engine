@@ -353,6 +353,9 @@ void attach_order_goal(MotionContext& c, MissionOrder& order, std::shared_ptr<Or
 void attach_circle_goal(MotionContext& c, MissionOrder& order, const std::array<std::int32_t, 3>& pos, std::int32_t radius);
 void attach_ring_goal(MotionContext& c, MissionOrder& order, const std::array<std::int32_t, 3>& pos, std::int32_t outer,
                       std::int32_t inner);
+// Standing next to the cell rectangle at `cell` of `size` (packed x low, z high; 0x438AD0):
+// the build site marker of builders, reclaimers and parking units. Aircraft only lose their goal.
+void attach_edge_goal(MotionContext& c, MissionOrder& order, std::uint32_t cell, std::uint32_t size);
 // An order being destroyed: its goal is detached (if it is the current one) and deleted.
 void release_order_goal(MotionContext& c, Unit& unit, MissionOrder& order);
 

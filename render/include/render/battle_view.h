@@ -80,6 +80,12 @@ struct UnitInstance {
     bool translucent = false;     // cloaked: the sprite is mixed with the frame (blend table)
 };
 
+// One nano lathe particle (sim/nano_spray.h): a dot in its palette colour.
+struct NanoDotInstance {
+    std::array<std::int32_t, 3> pos{};  // 16.16 world
+    std::uint8_t colour = 0;
+};
+
 enum class ProjectileLook : std::uint8_t { Line, Sprite, Model };
 
 struct ProjectileInstance {
@@ -119,6 +125,8 @@ struct BattleScene {
     std::vector<FeatureInstance> features;
     std::vector<UnitInstance> units;              // in the game's visible-unit order
     std::vector<ProjectileInstance> projectiles;
+    std::vector<NanoDotInstance> nano;            // drawn after the ground units, before the projectiles
+    std::uint32_t game_tick = 0;                  // pulses the colours of units under construction
     std::vector<DebrisInstance> debris;           // drawn after the projectiles, before the effects
     std::vector<EffectInstance> effects;          // in the effect table's order
     const BlendTable* light = nullptr;            // light table for glows (light_blend_table); none: no glows

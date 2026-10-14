@@ -175,4 +175,71 @@ void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex, b
     });
 }
 
+void outline_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_t colour) {
+    if (count < 1) return;
+    int top = 0, bottom = 0;
+    std::int32_t min_y = 999999, max_y = -999999;
+    for (int i = 0; i < count; ++i) {
+        if (v[i].y < min_y) {
+            min_y = v[i].y;
+            top = i;
+        }
+        if (v[i].y > max_y) {
+            max_y = v[i].y;
+            bottom = i;
+        }
+    }
+    if (max_y == min_y) return;
+    struct Ends {
+        std::int32_t l = 0, r = 0, zl = 0, zr = 0;
+    };
+    std::vector<Ends> rows(static_cast<std::size_t>(max_y - min_y));
+    // One chain: rows from the top vertex to the bottom one, written from the first row on.
+    auto chain = [&](int step, bool right) {
+        std::size_t cursor = 0;
+        int i = top;
+        do {
+            int j = i + step;
+            if (j < 0) j = count - 1;
+            if (j >= count) j = 0;
+            const RasterVertex& a = v[i];
+            const RasterVertex& b = v[j];
+            if (a.y < b.y) {
+                const std::int32_t dy = b.y - a.y;
+                const std::int32_t sx = cdiv(wmul(wsub(b.x, a.x), 0x10000), dy);
+                const std::int32_t sz = cdiv(wsub(wmul(b.z, 0x10000), wmul(a.z, 0x10000)), dy);
+                std::int32_t x = wadd(wmul(a.x, 0x10000), 0xFFFF), z = wmul(a.z, 0x10000);
+                for (std::int32_t k = 0; k < dy; ++k) {
+                    if (cursor >= rows.size()) rows.resize(cursor + 1);  // (the original's buffer is large)
+                    Ends& e = rows[cursor++];
+                    (right ? e.r : e.l) = x >> 16;
+                    (right ? e.zr : e.zl) = z;
+                    x = wadd(x, sx);
+                    z = wadd(z, sz);
+                }
+            }
+            i = j;
+        } while (i != bottom);
+    };
+    chain(-1, false);
+    chain(1, true);
+    auto plot = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
+        const std::size_t at = static_cast<std::size_t>(y) * static_cast<std::size_t>(t.pitch) + static_cast<std::size_t>(x);
+        if (t.depth) {
+            const auto d = static_cast<std::uint8_t>(z >> 16);
+            if (t.depth[at] > d) return;
+            t.depth[at] = d;
+        }
+        t.pixels[at] = colour;
+    };
+    for (std::int32_t y = min_y; y < max_y; ++y) {
+        const Ends& e = rows[static_cast<std::size_t>(y - min_y)];
+        if (e.r - e.l <= 0) continue;
+        // Only the two ends of each row (no clipping: the caller's surface holds the polygon).
+        if (y < t.clip.y0 || y > t.clip.y1 || e.l < t.clip.x0 || e.r > t.clip.x1) continue;  // (out of the surface)
+        plot(e.l, y, e.zl);
+        plot(e.r, y, e.zr);
+    }
+}
+
 } // namespace render

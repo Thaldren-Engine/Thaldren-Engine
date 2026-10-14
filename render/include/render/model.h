@@ -3,6 +3,7 @@
 // textured quad) and the routines that turn a posed model into pixels the way
 // the original does (spec: docs/RE_MEMORY.md, "Rendering", "Models").
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -53,6 +54,23 @@ RasterVertex project_sprite_point(const std::int32_t* p, int depth_bias);
 // last piece to the first, primitives in stored order, no depth test.
 // The hotspot is the unit origin.
 Sprite8 rasterize_model_sprite(const Model& model, const sim::PoseState& pose, const ModelDrawParams& params);
+
+// The same sprite drawn with a depth plane (cleared to 0; each pixel keeps the depth
+// written, z = height + bias): the original's two-plane sprite of units under construction.
+Sprite8 rasterize_model_sprite_depth(const Model& model, const sim::PoseState& pose, const ModelDrawParams& params,
+                                     std::vector<std::uint8_t>& depth);
+
+// The two pulsing colours (palette 0xA0..0xAF) of a unit under construction at step `tick`.
+std::array<std::uint8_t, 2> nanoframe_colours(std::uint16_t unit_id, std::uint32_t tick);
+
+// The look of a unit under construction (0x458DD0 with 0x458D30 and 0x458FA0) applied to its
+// two-plane sprite: a band at a depth set by the build fraction left sweeps the model; above,
+// below and in the band the pixels vanish, keep their texture or take the first pulsing
+// colour, by stage (a frame, then a solid shell rising, then the texture rising under the
+// shell, then a last band sweeping down); then every primitive of every visible piece is
+// outlined (row ends, depth tested) in the second colour.
+void apply_nanoframe(Sprite8& sprite, std::vector<std::uint8_t>& depth, const Model& model, const sim::PoseState& pose,
+                     const ModelDrawParams& params, float build_left, std::uint16_t unit_id, std::uint32_t tick);
 
 // Draws the visible pieces that are not cached straight onto `target`
 // (last piece first), projecting every point relative to the unit's screen

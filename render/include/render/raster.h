@@ -32,4 +32,10 @@ void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_
 // memory there) is clamped and reported through `out_of_range`.
 void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& texture, bool* out_of_range = nullptr);
 
+// Outline of a polygon as the construction look draws it (0x4C0820 / 0x4C0A90): the
+// polygon is scan converted like fill_polygon but without clipping, and each row with
+// right > left gets only its two end pixels (x = left and x = right), each depth tested
+// (written when the stored depth byte <= the interpolated depth) when there is a depth plane.
+void outline_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_t colour);
+
 } // namespace render
