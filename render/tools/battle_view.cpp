@@ -6,8 +6,9 @@
 //   --gpu      also render through the GPU backend (if built) and compare with the CPU reference.
 //   --window S afterwards show the view live in a window for S seconds (GPU backend).
 //   --battle   run a real battle instead of animating placed units: two players' units made
-//              by the engine's unit creation, every step run by sim::Battle (no movement or
-//              behaviours yet; each weapon is pointed at the nearest enemy as an order would).
+//              by the engine's unit creation, every step run by sim::Battle; units find their
+//              targets themselves (no line of sight yet: everything is in sight). Behaviours
+//              not built yet (movement, chasing) just wait.
 
 #include <cstdio>
 #include <cstdlib>
@@ -254,7 +255,15 @@ int main(int argc, char** argv) {
         render::Model model;
     };
     std::vector<std::unique_ptr<BattleType>> btypes(1);  // index = battle type index (0 = blank)
-    sim::QuietBattleOutside outside;
+    // Behaviours not built yet (movement, chasing) wait 30 steps at a time instead of looping.
+    struct ViewOutside : sim::QuietBattleOutside {
+        const sim::Battle* battle = nullptr;
+        std::int32_t run_mission(sim::Unit&, sim::MissionOrder& order, std::uint32_t&) override {
+            order.wait |= sim::order_wait::kTimer;
+            order.wake_tick = battle->game_tick() + 30;
+            return sim::mission_result::kContinue;
+        }
+    } outside;
     sim::BattleRng battle_rng;
     battle_rng.seed(0x12345678u);
     std::vector<sim::WeaponType> weapon_types;
@@ -262,6 +271,7 @@ int main(int argc, char** argv) {
     if (battle_mode) {
         weapon_types = ta::to_weapon_types(weapons);
         battle = std::make_unique<sim::Battle>(outside, hm, battle_rng);
+        outside.battle = battle.get();
         sim::Battle& b = *battle;
         b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
         b.settings.gravity = 112;
@@ -271,6 +281,8 @@ int main(int argc, char** argv) {
             s.active = true;
             s.controller = static_cast<std::uint8_t>(p == 0 ? 1 : 2);
             s.net_id = p + 1;
+            s.state = static_cast<std::uint8_t>(p);
+            b.alliances[static_cast<std::size_t>(p)][static_cast<std::size_t>(p)] = 1;  // allied with itself only
             s.energy_stored = 1.0e6f;
             s.metal_stored = 1.0e6f;
             b.assign_unit_range(p, 1 + 50 * p, 50 + 50 * p);
@@ -298,6 +310,7 @@ int main(int argc, char** argv) {
                 t->model = ta::build_render_model(t->root.get(), textures);
                 b.types.emplace_back();
                 ta::to_battle_unit_type(d, t->assets, weapon_types, b.types.back());
+                ta::to_targeting_type(d, defs.categories, weapon_types, b.types.back().targeting);
                 btypes.push_back(std::move(t));
                 return static_cast<std::uint16_t>(btypes.size() - 1);
             }
@@ -324,27 +337,7 @@ int main(int argc, char** argv) {
             if (!b.create_unit(s.player, type, s.x << 16, gy << 16, s.z << 16, true, 1))
                 std::printf("could not create %s\n", s.name);
         }
-        // No targeting behaviours yet: point every weapon at the nearest enemy, as an attack order would.
-        for (std::size_t i = 1; i < b.units.size(); ++i) {
-            sim::Unit& u = b.units[i];
-            if (b.ticks[i].type_index == 0) continue;
-            std::uint16_t best = 0;
-            std::int64_t best_d = 0;
-            for (std::size_t j = 1; j < b.units.size(); ++j) {
-                if (b.ticks[j].type_index == 0 || b.ticks[j].owner == b.ticks[i].owner) continue;
-                const std::int64_t dx = (u.pos[0] - b.units[j].pos[0]) >> 16, dz = (u.pos[2] - b.units[j].pos[2]) >> 16;
-                const std::int64_t d = dx * dx + dz * dz;
-                if (!best || d < best_d) {
-                    best = static_cast<std::uint16_t>(j);
-                    best_d = d;
-                }
-            }
-            for (auto& slot : u.weapons)
-                if (slot.type && best) {
-                    slot.target_x = static_cast<std::int16_t>(best);
-                    slot.target_z = sim::kUnitTarget;
-                }
-        }
+        b.start_players();  // the players' weapon-target controllers and enemy lists
     }
 
     render::BattleScene scene;
@@ -446,6 +439,7 @@ int main(int argc, char** argv) {
                 if (battle) {
                     battle->advance_tick();
                     battle->step_units_and_projectiles();
+                    battle->players_stage();
                 } else {
                     for (auto& u : units) u->script->tick(1);
                 }
@@ -454,6 +448,15 @@ int main(int argc, char** argv) {
         const render::Image8 frame = render::execute(list, blend);
         out.present(frame, palette);
         std::printf("frame %d (tick %u): %zu draw commands, %zu transient sprites\n", f, tick, list.cmds.size(), list.transient.size());
+        if (battle) {
+            int live = 0, aimed = 0;
+            for (std::size_t i = 1; i < battle->units.size(); ++i) {
+                if (battle->ticks[i].type_index == 0) continue;
+                ++live;
+                for (const auto& slot : battle->units[i].weapons) aimed += slot.target_z == sim::kUnitTarget && slot.target_x != 0;
+            }
+            std::printf("  live units %d, weapon slots aimed at a unit %d, shots in flight %d\n", live, aimed, battle->projectiles.count);
+        }
 #ifdef RENDER_HAVE_GPU
         if (gpu) {
             render::Image8 g;
@@ -493,6 +496,7 @@ int main(int argc, char** argv) {
             if (battle) {
                 battle->advance_tick();
                 battle->step_units_and_projectiles();
+                battle->players_stage();
             } else {
                 for (auto& u : units) u->script->tick(1);
             }
