@@ -17,6 +17,7 @@
 #include "sim/script_vm.h"
 #include "sim/step_budget.h"
 #include "sim/trig.h"
+#include "sim/weapons.h"
 #include "sim/world.h"
 #include "sim/x87.h"
 #include "sim/x87_trig.h"
@@ -435,6 +436,149 @@ void test_combat() {
     CHECK_EQ(sim::player_net_id(players, 10), -1);
 }
 
+struct WeaponLog : sim::WeaponSystems {
+    std::vector<std::string> calls;
+    std::int32_t result = 1;
+    sim::WorldPos last_pos{};
+    std::int32_t fire(Unit&, int slot, Unit* target, sim::WorldPos& pos) override {
+        calls.push_back("fire " + std::to_string(slot) + (target ? " unit " + std::to_string(target->id) : std::string()));
+        last_pos = pos;
+        return result;
+    }
+    void network_send(std::int32_t, const std::uint8_t*, std::int32_t size) override { calls.push_back("send " + std::to_string(size)); }
+    void stockpile_used(Unit&) override { calls.push_back("stockpile"); }
+};
+
+void test_weapons() {
+    sim::HeightMap hm(4, 4);
+    for (int z = 0; z < 4; ++z)
+        for (int x = 0; x < 4; ++x) hm.at(x, z) = static_cast<std::uint8_t>(20 + x);
+    sim::UnitTypeInfo type;
+    type.max_damage = 1000;
+    std::vector<Unit> units(4);
+    std::vector<UnitTickState> ticks(4);
+    std::vector<PlayerSlot> players(10);
+    players[0].energy_stored = 100.0f;
+    players[0].metal_stored = 50.0f;
+    for (std::uint16_t i = 1; i <= 3; ++i) {
+        units[i].id = i;
+        units[i].type = &type;
+        units[i].hit_points = 500;
+        units[i].flags = unit_flags::kAlive;
+        ticks[i].type_index = 1;
+    }
+    sim::WeaponType gun;
+    gun.fire = sim::WeaponFireRoutine::LineOfSight;
+    gun.range = 100;
+    gun.reload_time = 30;
+    gun.energy_per_shot = 10.0f;
+    gun.metal_per_shot = 5.0f;
+    gun.velocity = 0x80000;
+    sim::WeaponEnvironment env;
+    env.heightmap = &hm;
+    env.sea_level = 10;
+    WeaponLog log;
+    sim::Weapons w{units, ticks, players, env, log};
+    Unit& shooter = units[1];
+    sim::WeaponSlot& slot = shooter.weapons[0];
+    slot.type = &gun;
+    slot.flags = sim::slot_flags::kEnabled;
+    slot.target_x = 16;  // ground point (16, 16): terrain height 21
+    slot.target_z = 16;
+    ticks[1].kill_count = 12;
+    shooter.pos[1] = 100 << 16;  // the gun must be above the water
+
+    std::uint32_t stale = 0x12345678;
+    sim::process_weapon_slots(w, shooter, stale);
+    CHECK_EQ(log.calls.size(), 1u);
+    CHECK_EQ(log.last_pos[1], 21 << 16);
+    CHECK_EQ(stale, 21u << 16);  // the last target height is left in the caller's stack word
+    // Reload: (100 - 2 x 6)% of 30 = 26, then x (120 - 20 x 500/1000) / 100 = 28.
+    CHECK_EQ(slot.reload, 28);
+    CHECK_EQ(shooter.net_dirty, 0x400);
+    CHECK_EQ(players[0].energy_stored, 90.0f);
+    CHECK_EQ(players[0].metal_stored, 45.0f);
+    CHECK_EQ(ticks[1].energy_use, 10.0f);
+    CHECK_EQ(ticks[1].metal_use, 5.0f);
+    // Reloading: no shot, the countdown drops by one.
+    sim::process_weapon_slots(w, shooter, stale);
+    CHECK_EQ(slot.reload, 27);
+    CHECK_EQ(log.calls.size(), 1u);
+    // Below sea level the ground point is raised to the sea surface; out of range sets net bit 0x1000.
+    env.sea_level = 40;
+    slot.reload = 0;
+    slot.target_x = 3000;
+    slot.target_z = 3000;
+    stale = 0;
+    sim::process_weapon_slots(w, shooter, stale);
+    CHECK_EQ(stale, 40u << 16);  // outside the map the sample is -1: sea level
+    CHECK_EQ(shooter.net_dirty, 0x1400);
+    CHECK_EQ(log.calls.size(), 1u);
+    // Not enough energy: no shot, nothing paid.
+    players[0].energy_stored = 5.0f;
+    slot.target_x = 16;
+    slot.target_z = 16;
+    env.sea_level = 0;
+    sim::process_weapon_slots(w, shooter, stale);
+    CHECK_EQ(log.calls.size(), 1u);
+    CHECK_EQ(sim::use_resources(players[0], ticks[1], 10.0f, 1.0f), false);
+    players[0].energy_stored = 100.0f;
+
+    // A dead target is forgotten and the slot stops aiming; the stack word is untouched.
+    slot.target_x = 2;
+    slot.target_z = sim::kUnitTarget;
+    slot.flags |= sim::slot_flags::kAiming;
+    ticks[2].type_index = 0;
+    stale = 7;
+    sim::process_weapon_slots(w, shooter, stale);
+    CHECK_EQ(slot.target_x, 0);
+    CHECK_EQ(slot.flags & sim::slot_flags::kAiming, 0);
+    CHECK_EQ(stale, 7u);
+
+    // Veterans (more than 5 kills) lead a moving target: 100 units away at 8 units per
+    // tick is 12.5 ticks, 5/6 of which (10.4166 ticks, 655350 in 16.16) times its velocity.
+    ticks[2].type_index = 1;
+    ticks[2].has_motion = true;
+    ticks[2].velocity = {0x10000, 0, 0};
+    units[2].pos = {100 << 16, 0, 0};
+    shooter.pos = {0, 0, 0};
+    slot.target_x = 2;
+    sim::WorldPos pos{};
+    CHECK_EQ(sim::weapon_target_position(w, shooter, 0, pos), true);
+    CHECK_EQ(pos[0], (100 << 16) + 655350);
+    ticks[1].kill_count = 5;
+    CHECK_EQ(sim::weapon_target_position(w, shooter, 0, pos), true);
+    CHECK_EQ(pos[0], 100 << 16);
+
+    // Aim tolerance: 150 (2000 while bits 2-3 of the unit flags are set) unless the type has its own.
+    slot.aim_heading = 1000;
+    slot.aim_pitch = 0;
+    CHECK_EQ(sim::aim_within_tolerance(shooter, slot, 1150, 0xFF6A), true);
+    CHECK_EQ(sim::aim_within_tolerance(shooter, slot, 1151, 0), false);
+    shooter.flags |= 0x4;
+    CHECK_EQ(sim::aim_within_tolerance(shooter, slot, 3000, 0), true);
+    gun.tolerance = 10;
+    CHECK_EQ(sim::aim_within_tolerance(shooter, slot, 1010, 10), true);
+    CHECK_EQ(sim::aim_within_tolerance(shooter, slot, 1010, 11), false);
+    gun.pitch_tolerance = 20;
+    CHECK_EQ(sim::aim_within_tolerance(shooter, slot, 1010, 11), true);
+
+    // Stockpile weapons spend a stored shot instead of reloading and paying.
+    gun.flags = sim::weapon_flags::kStockpile | sim::weapon_flags::kCommandFire;
+    slot.stockpile = 2;
+    slot.reload = 0;
+    shooter.pos[1] = 100 << 16;
+    shooter.net_dirty = 0;
+    log.calls.clear();
+    sim::process_weapon_slots(w, shooter, stale);
+    CHECK_EQ(slot.stockpile, 1);
+    CHECK_EQ(slot.reload, 0);
+    CHECK_EQ(shooter.net_dirty, 0x800);
+    CHECK_EQ(log.calls.size(), 2u);
+    CHECK_EQ(log.calls[0] == "fire 0 unit 2" && log.calls[1] == "stockpile", true);
+    CHECK_EQ(players[0].energy_stored, 100.0f);
+}
+
 } // namespace
 
 int main() {
@@ -452,6 +596,7 @@ int main() {
     test_x87_rotation();
     test_heightmap_and_packing();
     test_combat();
+    test_weapons();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

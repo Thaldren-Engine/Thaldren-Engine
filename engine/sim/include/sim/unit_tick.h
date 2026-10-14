@@ -40,6 +40,8 @@ struct UnitTickState {
     Unit* last_attacker = nullptr;
     std::uint8_t last_attacker_slot = 10;    // player slot of the last attacker, 10 = none
     float metal_make = 0.0f;                 // metal income of the unit's resource slot
+    std::array<std::int32_t, 3> velocity{};  // of the motion object (16.16 per tick), when has_motion
+    float energy_use = 0.0f, metal_use = 0.0f;  // spent by the unit's resource slot (weapon shots)
 };
 
 namespace unit_tick_flags {
@@ -57,6 +59,7 @@ struct PlayerSlot {
     std::uint16_t flags = 0;                     // bit 0: still has its commander
     std::array<std::uint8_t, 10> shares_vision{}; // by the other player's state index
     std::string commander_name;                  // unit name of this player's side commander
+    float energy_stored = 0.0f, metal_stored = 0.0f;  // resources available to spend
 };
 
 // Addresses of the original's game state block and unit table. A few original
