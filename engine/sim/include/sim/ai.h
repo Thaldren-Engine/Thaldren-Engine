@@ -166,7 +166,9 @@ struct AiState {
     std::array<AiController, 10> controllers{};  // by player slot
     std::array<AiTable, 10> tables{};            // by table index (as TargetingState::tables)
     UnitGroupLists groups{};                     // by player record
-    bool profile_gate = false;                   // the last "plan" line matched the difficulty
+    // The last "plan" line matched the difficulty. A process-wide value in the original (on at
+    // program start, then whatever the last profile text left), so it starts on.
+    bool profile_gate = true;
 };
 
 struct Ai {

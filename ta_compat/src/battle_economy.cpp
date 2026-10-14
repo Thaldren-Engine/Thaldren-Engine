@@ -41,6 +41,7 @@ void init_map_economy(sim::Battle& b, const std::vector<std::uint8_t>& tnt, cons
     b.wind.min_speed = (m.min_wind < 0 || !new_format) ? tnt_min : m.min_wind;
     b.wind.max_speed = (m.max_wind < 0 || !new_format) ? tnt_max : m.max_wind;
     b.settings.tidal_strength = m.tidal_strength < 0.0f ? 0.5f : m.tidal_strength;
+    b.settings.surface_metal = m.surface_metal;  // the map info's value (the computer player's site choice)
     b.wind.denominator = 5000;
     b.wind.next_change_tick = 0;
     // Metal in the ground: the schema's surface metal everywhere (newer maps), or each
