@@ -352,7 +352,8 @@ void stamp_feature_metal(MapGrid& map, const std::vector<FeatureTypeInfo>& featu
         const auto value = static_cast<std::uint8_t>(x87::ftol32(metal));
         for (i32 z = z0; z < z0 + t.footprint_z; ++z)
             for (i32 x = x0; x < x0 + t.footprint_x; ++x)
-                if (MapCell* mc = map.cell(x, z)) mc->metal = value;
+                if (x >= 0 && x < map.width && z >= 0 && z < map.height)  // cells outside the map are skipped
+                    map.cells[static_cast<std::size_t>(z) * static_cast<std::size_t>(map.width) + static_cast<std::size_t>(x)].metal = value;
     }
 }
 

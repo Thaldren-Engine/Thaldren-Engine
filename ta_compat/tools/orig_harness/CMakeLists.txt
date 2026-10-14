@@ -410,3 +410,13 @@ add_executable(feature_harness
 )
 target_include_directories(feature_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(feature_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Economy: settlement, slot bookings, transfers, automatic sharing and the wind vs sim/economy.h.
+add_executable(economy_harness
+    economy_harness.cpp
+    ${ROOT}/engine/sim/src/economy.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+)
+target_include_directories(economy_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(economy_harness PRIVATE /W4 /permissive- /fp:precise)
