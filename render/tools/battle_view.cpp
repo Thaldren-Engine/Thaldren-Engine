@@ -25,6 +25,7 @@
 #include "sim/battle_quiet.h"
 #include "sim/rng.h"
 #include "sim/unit.h"
+#include "ta/battle_economy.h"
 #include "ta/battle_features.h"
 #include "ta/cob.h"
 #include "ta/featuredefs.h"
@@ -295,10 +296,14 @@ int main(int argc, char** argv) {
             s.net_id = p + 1;
             s.state = static_cast<std::uint8_t>(p);
             b.alliances[static_cast<std::size_t>(p)][static_cast<std::size_t>(p)] = 1;  // allied with itself only
-            s.energy_stored = 1.0e6f;
-            s.metal_stored = 1.0e6f;
             b.assign_unit_range(p, 1 + 50 * p, 50 + 50 * p);
+            // Skirmish start: 1000 of each, which is also the storage the commander brings.
+            b.init_player_economy(p);
+            sim::set_storage_bonus(s, b.player_economy[static_cast<std::size_t>(p)], 1000, 1000);
+            s.energy_stored = 1000.0f;
+            s.metal_stored = 1000.0f;
         }
+        b.settings.ai_difficulty = 2;  // hard: the AI's income is not scaled
         b.map.width = hm.width();
         b.map.height = hm.height();
         b.map.cells.assign(static_cast<std::size_t>(b.map.width) * static_cast<std::size_t>(b.map.height), sim::MapCell{});
@@ -309,6 +314,18 @@ int main(int argc, char** argv) {
         b.init_buckets();
         b.reset_features_and_effects();
         ta::place_tnt_features(b, tnt);
+        {
+            // Metal in the ground, wind and tide from the map's OTA (its first schema).
+            ta::MapEconomy me;
+            std::vector<std::uint8_t> ota;
+            if (vfs.read("maps\\" + map_name + ".ota", ota)) ta::read_map_economy(ota, 0, me);
+            ta::init_map_economy(b, tnt, me, fdefs);
+            b.step_wind();  // once while loading, as the original does
+            int metal_cells = 0;
+            for (const sim::MapCell& c : b.map.cells) metal_cells += c.metal != 0;
+            std::printf("map economy: surface metal %d, %d cells with metal, wind %d..%d, tidal strength %g\n", me.surface_metal,
+                        metal_cells, b.wind.min_speed, b.wind.max_speed, static_cast<double>(b.settings.tidal_strength));
+        }
         b.settings.player_count = 2;
         b.settings.units_per_player = 50;
         b.move_classes = ta::to_move_classes(ctx);
@@ -341,7 +358,8 @@ int main(int argc, char** argv) {
         };
         const Spawn spawns[] = {
             {"ARMCOM", 0, 1380, 1760}, {"ARMLLT", 0, 1460, 1720}, {"ARMLLT", 0, 1560, 1720}, {"ARMSTUMP", 0, 1340, 1680},
-            {"ARMHAM", 0, 1620, 1760}, {"ARMSOLAR", 0, 1300, 1800},
+            {"ARMHAM", 0, 1620, 1760}, {"ARMSOLAR", 0, 1300, 1800}, {"ARMMEX", 0, 1260, 1700}, {"ARMWIN", 0, 1240, 1820},
+            {"ARMMAKR", 0, 1200, 1760}, {"CORMEX", 1, 1620, 2060}, {"CORSOLAR", 1, 1700, 2060}, {"CORWIN", 1, 1760, 2040},
             {"CORCOM", 1, 1520, 1980}, {"CORLLT", 1, 1420, 2000}, {"CORAK", 1, 1580, 1940}, {"CORRAID", 1, 1680, 1980},
             {"CORSTORM", 1, 1460, 1940},
         };
@@ -607,6 +625,7 @@ int main(int argc, char** argv) {
                     battle->step_effects();   // stage 5
                     battle->players_stage();  // stage 6
                     battle->step_features();  // stage 7
+                    battle->step_wind();      // stage 8
                 } else {
                     for (auto& u : units) u->script->tick(1);
                 }
@@ -623,6 +642,16 @@ int main(int argc, char** argv) {
                 for (const auto& slot : battle->units[i].weapons) aimed += slot.target_z == sim::kUnitTarget && slot.target_x != 0;
             }
             std::printf("  live units %d, weapon slots aimed at a unit %d, shots in flight %d\n", live, aimed, battle->projectiles.count);
+            for (int p = 0; p < 2; ++p) {
+                const sim::PlayerSlot& s = battle->players[static_cast<std::size_t>(p)];
+                const sim::PlayerEconomy& a = battle->player_economy[static_cast<std::size_t>(p)];
+                std::printf("  player %d: energy %.1f/%.0f (+%.2f -%.2f), metal %.2f/%.0f (+%.3f -%.3f)\n", p,
+                            static_cast<double>(s.energy_stored), static_cast<double>(a.energy_storage), static_cast<double>(a.energy_income),
+                            static_cast<double>(a.energy_usage), static_cast<double>(s.metal_stored), static_cast<double>(a.metal_storage),
+                            static_cast<double>(a.metal_income), static_cast<double>(a.metal_usage));
+            }
+            std::printf("  wind speed %d (%.3f of full), heading %u\n", battle->wind.speed, static_cast<double>(battle->wind.fraction),
+                        static_cast<unsigned>(battle->wind.heading));
             int alive = 0, wrecks = 0, burning = 0;
             for (std::size_t i = 1; i < battle->units.size(); ++i) alive += battle->ticks[i].type_index != 0;
             for (const auto& c : battle->map.cells)
