@@ -205,6 +205,42 @@ Verified 2026-10-13: `tdf_check` parses 2,311 files (55k keys in FBIs, 573k in O
 - **Section checksum:** `Hash_ComputeSimpleChecksum` (`0x004B6BA0`) over `[sectionStart, end − 2)`. The mix is four 8-bit accumulators: Σb, ⊕b, Σ(i⊕b), ⊕(i+b).
 - `atof` is reproduced bit-exactly; see the next section.
 
+### Unit definitions (units\*.FBI → UnitDef[], 0x249 bytes each)
+Implementation: `ta_compat/src/unitdefs.cpp`. Checked with `ta_compat/tools/unitdef_check`, which compares field by field against a dump of the live game's tables (`ta_capture --dump-defs`). Status: see Feature log.
+- **Enumerate** (`UnitDef_EnumerateFbiAndCheckCompat` `0x0042A8D0`):
+  - Source: `units\*.FBI` in VFS enumeration order (see `Vfs::enumerate`).
+  - Record 0 = `"None"`, zero-filled with only VERSION_COMPATIBLE set.
+  - Per file: `fbi_checksum` = simple checksum of the bytes. Stub keys: name (localized), unitname, side, ai_weight, ai_limit, objectname (default unitname), buildcost*, norestrict, wacky.
+  - `weapon_hash_xor` ^= checksum of the first weapon TDF section named weapon1/2/3/explodeas/selfdestructas.
+  - Version: `floor(v)` vs 3, `floor((v - major) × 10)` vs 1.
+  - Copyright must equal `Copyright 0000 Humongous Entertainment. All rights reserved.` (year ignored).
+  - Loose (non-archive) FBIs are rejected while the CD check is enabled.
+  - `max_this_unit` = −1.
+  - An FBI without `[UNITINFO]` aborts the whole enumeration.
+- **Sort** (`GameData_LoadAll` `0x0042D2E0`): drop incompatible units, then sort [1..] by `stricmp(unitname)`. The quicksort is unstable; duplicate names are not yet reproduced, and there are none in the stock data.
+- **Properties** (`UnitDef_LoadFbiProperties` `0x0042BF40`) re-open `units\<unitname>.FBI` (by **unitname**, not by the enumerated filename) if its size > 0. Notable defaults and quirks:
+  - moverate1/2 default to maxvelocity × 2; bankscale and damagemodifier default to 1.0 (16.16).
+  - cloakcostmoving defaults to `ftol(cloakcost)`.
+  - canresurrect copies CANRECLAMATE into CANREPAIR (bit 9).
+  - CANCLOAK when cloakcost > 0; then a mincloakdistance of 0 becomes 80.
+  - selfdestructcountdown missing → 5.
+  - The 4 bad-target/no-chase category keys use the **whole** string as one name (default `none`). `category` is split into tokens, plus `ALL`.
+  - soundcategory = section index in sound.tdf, else `atoi`.
+  - movementclass → `CLASS<n>` index. Otherwise, footprint/slope/depth come from UNITINFO keys with defaults 10000 / −10000 / 255 and clamping.
+  - `scaled_max_velocity` = (int64)(maxvel << 16) / ((maxslope + 1) << 16).
+  - Weapons are found by linear name search over 256 slots; not found → slot 0. HASWEAPONS is set if any weapon1-3 ≠ 0.
+  - YardMap is read only when bmcode = 0. Unknown characters are skipped, and the last character repeats when the string runs out. A **missing** YardMap reads stale stack data (modelled; no stock unit hits it).
+  - Model X/Z extents come from the footprint; Y comes from the 3DO height (not yet).
+- **Build menus:**
+  - `HAS_GUI0` if `guis\<name>0.GUI` exists with nonzero size. Pages = 1 + count of consecutive `<name>1..N.GUI`; if none, 1 when HAS_GUI0, else 0.
+- **Build options** (sidedata.tdf `[CANBUILD]\[<unit>]` canbuild1..N, counter increments even when a name is unknown): written into **one shared, never-cleared 30-entry scratch list**, copied whole to each builder, so stale entries from earlier builders persist.
+- **Download menus** (`UnitDef_LoadDownloadMenus` `0x0042DCF0`, `UnitDef_AppendDownloadBuildOptions` `0x0042BE30`):
+  - Each file gets a 0xBD block = u32 count + 5 slots of 0x25 bytes {u16 unit, u8 MENU, u8 BUTTON, char[32] UNITNAME}. More than 5 sections overflow into the next file's block.
+  - A slot whose UNITMENU is unknown still counts but stays uninitialised.
+  - Page count = max(MENU).
+  - DOWNLOADABLE is checked against **slot 0 of each file only**.
+  - Up to 31 build options are appended (the buffer holds 30).
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -228,6 +264,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | Unit definition table (all fields except 3DO height / COB) — **exact vs live game: 24,780 fields, 279 units, 56 category masks** | `0x0042A8D0`, `0x0042D2E0`, `0x0042BF40`, `0x0042DCF0`, `0x0042BE30`, `0x00440340`, `0x004402E0`, `0x00440420`, `0x0049E5B0`, `0x00488B10`, `0x00488C50`, `0x00488E70`, `0x00438760`, `0x004290F0`, `0x004BCA30`, `0x004BC4B0`, `0x004BC640`, `0x004BC370`, `0x004C58A0`, `0x004BB0F0`, `0x0042F580`, `0x0042E310` | `ta_compat/src/unitdefs.cpp`, `tools/unitdef_check.cpp`, capture `--dump-defs` |
 | 2026-10-13 | Bit-exact atof/atoi | `0x004E4560`, `0x004EAF00`, `0x004F3D10`, `0x004F8C40`, `0x004F9390`, `0x004F90D0`, `0x004F37C0`, `0x004F3610`, tables `0x005116F0`/`0x00511850` | `ta_compat/src/crt_strtod.cpp`, `tools/gen_pow10_table.py`, `ta_compat/tools/orig_harness` |
 | 2026-10-13 | TDF parser | `0x004C2F60`, `0x004C3120`, `0x004C33A0`, `0x004C3410`, `0x004C3E40`, `0x004C4340`, `0x004C4470`, `0x004C4630`–`0x004C48C0`, `0x004E4560`, `0x004E4ED0`, `0x004F8A70`, `0x004B6BA0` | `ta_compat/src/tdf.cpp`, `tools/tdf_check.cpp`, `tests/compat_tests.cpp` |
 | 2026-10-13 | HPI archives + game VFS | `0x0041D4C0`, `0x004BB2E0`, `0x004BB4E0`, `0x004BB7C0`, `0x004BDD70`, `0x004BE010`, `0x004BE0B0`, `0x004BE400`, `0x004D1480`, `0x004D1970`, `0x004D1D20` | `ta_compat/src/hpi.cpp`, `inflate.cpp`, `tools/hpi_check.cpp` |

@@ -32,12 +32,13 @@ add_library(ta_compat STATIC
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp
     ta_compat/src/tdf.cpp
+    ta_compat/src/unitdefs.cpp
 )
 target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
@@ -63,4 +64,6 @@ set(TA_GAME_DIR "" CACHE PATH "Path to an installed Total Annihilation 3.1 direc
 if(TA_GAME_DIR)
     add_test(NAME hpi_decode_all COMMAND hpi_check "${TA_GAME_DIR}")
     add_test(NAME tdf_parse_all COMMAND tdf_check "${TA_GAME_DIR}")
+    add_test(NAME unitdefs_match_game COMMAND unitdef_check "${TA_GAME_DIR}"
+             "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin")
 endif()

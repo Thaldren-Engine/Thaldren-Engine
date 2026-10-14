@@ -19,6 +19,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -39,6 +40,21 @@ constexpr DWORD kBpSimStep = 0x004954C6;        // after dwGameTick++ in the ste
 constexpr DWORD kOffRandState = 0x14;           // per-thread data: rand seed
 constexpr DWORD kBpArchiveOpen = 0x004BDD70;    // HPI open: [esp+4] = path, [esp+8] = keep open
 
+// Definition tables (GameState offsets / statics), for --dump-defs.
+constexpr DWORD kOffWeaponDefs = 0x2CF3;        // WeaponDef[256], 0x115 bytes each (inline)
+constexpr DWORD kWeaponDefSize = 0x115;
+constexpr DWORD kOffFeatureDefCount = 0x14253;
+constexpr DWORD kOffFeatureDefs = 0x1426F;      // FeatureDef*, 0x100 bytes each
+constexpr DWORD kOffUnitDefCount = 0x1438F;
+constexpr DWORD kOffUnitDefs = 0x1439B;         // UnitDef*, 0x249 bytes each
+constexpr DWORD kUnitDefSize = 0x249;
+constexpr DWORD kOffSoundCategories = 0x37E13;  // SoundCategory*, 0x160 bytes each
+constexpr DWORD kOffSoundCategoryCount = 0x37E17;
+constexpr DWORD kMoveInfoArray = 0x00512358;    // MoveInfo[32], 0x20 bytes each
+constexpr DWORD kCategoryTableBegin = 0x0051E6B4;
+constexpr DWORD kMissionTableBegin = 0x00512344;  // MissionOrderTableEntry*, 0x19 bytes each
+constexpr DWORD kTranslateLanguage = 0x0051FDC0;  // char[64]
+
 struct Options {
     std::string exe;
     std::string cwd;
@@ -47,6 +63,7 @@ struct Options {
     std::optional<std::uint32_t> rand_seed;
     std::uint32_t max_ticks = 0;  // 0 = unlimited
     bool rng_calls = false;
+    std::string dump_defs;        // write definition tables at the first sim step
 };
 
 struct Breakpoint {
@@ -92,6 +109,145 @@ void add_bp(DWORD addr) {
     }
     g_bps[addr] = Breakpoint{addr, orig, true};
     write_byte(addr, 0xCC);
+}
+
+bool read_block(DWORD addr, void* dst, std::size_t size) {
+    SIZE_T n = 0;
+    return ReadProcessMemory(g_process, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(addr)), dst, size, &n) &&
+           n == size;
+}
+
+std::string read_cstr(DWORD addr) {
+    std::string s;
+    char c = 0;
+    while (addr && s.size() < 4096 && read_block(addr++, &c, 1) && c) s += c;
+    return s;
+}
+
+// Chunked binary: 4-char tag, u32 payload size, payload.
+void write_chunk(FILE* f, const char tag[4], const std::vector<std::uint8_t>& data) {
+    const auto size = static_cast<std::uint32_t>(data.size());
+    std::fwrite(tag, 1, 4, f);
+    std::fwrite(&size, 4, 1, f);
+    if (size) std::fwrite(data.data(), 1, size, f);
+}
+
+void put_u32(std::vector<std::uint8_t>& v, std::uint32_t x) {
+    for (int i = 0; i < 4; ++i) v.push_back(static_cast<std::uint8_t>(x >> (8 * i)));
+}
+
+void put_str(std::vector<std::uint8_t>& v, const std::string& s) {
+    v.insert(v.end(), s.begin(), s.end());
+    v.push_back(0);
+}
+
+bool dump_defs(const std::string& path) {
+    std::uint32_t gs = 0;
+    if (!read_u32(kGameStatePtr, gs) || !gs) return false;
+    std::uint32_t ud_count = 0, ud_ptr = 0, ft_count = 0, ft_ptr = 0, sc_count = 0, sc_ptr = 0;
+    read_u32(gs + kOffUnitDefCount, ud_count);
+    read_u32(gs + kOffUnitDefs, ud_ptr);
+    read_u32(gs + kOffFeatureDefCount, ft_count);
+    read_u32(gs + kOffFeatureDefs, ft_ptr);
+    read_u32(gs + kOffSoundCategoryCount, sc_count);
+    read_u32(gs + kOffSoundCategories, sc_ptr);
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+
+    std::vector<std::uint8_t> hdr;
+    const std::uint32_t header[] = {gs,     ud_count, ud_ptr,   static_cast<std::uint32_t>(gs + kOffWeaponDefs),
+                                    static_cast<std::uint32_t>(kMoveInfoArray), ft_count, ft_ptr, sc_count, sc_ptr};
+    for (std::uint32_t v : header) put_u32(hdr, v);
+    write_chunk(f, "HDR ", hdr);
+
+    std::vector<std::uint8_t> ud(static_cast<std::size_t>(ud_count) * kUnitDefSize);
+    read_block(ud_ptr, ud.data(), ud.size());
+    write_chunk(f, "UDEF", ud);
+
+    std::vector<std::uint8_t> wd(256u * kWeaponDefSize);
+    read_block(gs + kOffWeaponDefs, wd.data(), wd.size());
+    write_chunk(f, "WDEF", wd);
+
+    std::vector<std::uint8_t> mv(32u * 0x20);
+    read_block(kMoveInfoArray, mv.data(), mv.size());
+    write_chunk(f, "MOVE", mv);
+    std::vector<std::uint8_t> mvn;
+    for (int i = 0; i < 32; ++i) {
+        std::uint32_t p = 0;
+        std::memcpy(&p, &mv[static_cast<std::size_t>(i) * 0x20], 4);
+        put_u32(mvn, p);
+        put_str(mvn, read_cstr(p));
+    }
+    write_chunk(f, "MVNM", mvn);
+
+    std::uint32_t cb = 0, ce = 0;
+    read_u32(kCategoryTableBegin, cb);
+    read_u32(kCategoryTableBegin + 4, ce);
+    std::vector<std::uint8_t> cats;
+    put_u32(cats, (ce - cb) / 8);
+    for (std::uint32_t p = cb; p < ce; p += 8) {
+        std::uint32_t name = 0, mask = 0;
+        read_u32(p, name);
+        read_u32(p + 4, mask);
+        std::uint8_t bits[64] = {};
+        read_block(mask, bits, sizeof bits);
+        put_u32(cats, mask);
+        cats.insert(cats.end(), bits, bits + 64);
+        put_str(cats, read_cstr(name));
+    }
+    write_chunk(f, "CATS", cats);
+
+    std::vector<std::uint8_t> yard, bopt;
+    for (std::uint32_t i = 0; i < ud_count; ++i) {
+        const std::uint8_t* u = &ud[static_cast<std::size_t>(i) * kUnitDefSize];
+        std::int16_t fx = 0, fz = 0;
+        std::uint32_t yp = 0, bp = 0;
+        std::memcpy(&fx, u + 330, 2);
+        std::memcpy(&fz, u + 332, 2);
+        std::memcpy(&yp, u + 334, 4);
+        std::memcpy(&bp, u + 342, 4);
+        if (yp && fx > 0 && fz > 0) {
+            std::vector<std::uint8_t> y(static_cast<std::size_t>(fx) * static_cast<std::size_t>(fz));
+            read_block(yp, y.data(), y.size());
+            put_u32(yard, i);
+            put_u32(yard, static_cast<std::uint32_t>(y.size()));
+            yard.insert(yard.end(), y.begin(), y.end());
+        }
+        if (bp) {
+            std::uint8_t b[0x3C] = {};
+            read_block(bp, b, sizeof b);
+            put_u32(bopt, i);
+            bopt.insert(bopt.end(), b, b + sizeof b);
+        }
+    }
+    write_chunk(f, "YARD", yard);
+    write_chunk(f, "BOPT", bopt);
+
+    std::uint32_t mb = 0, me = 0;
+    read_u32(kMissionTableBegin, mb);
+    read_u32(kMissionTableBegin + 4, me);
+    std::vector<std::uint8_t> miss;
+    put_u32(miss, (me - mb) / 0x19);
+    for (std::uint32_t p = mb; p < me; p += 0x19) {
+        std::uint32_t display = 0, lookup = 0;
+        read_u32(p, display);
+        read_u32(p + 21, lookup);
+        put_str(miss, read_cstr(lookup));
+        put_str(miss, read_cstr(display));
+    }
+    write_chunk(f, "MISS", miss);
+    std::vector<std::uint8_t> lang;
+    put_str(lang, read_cstr(kTranslateLanguage));
+    write_chunk(f, "LANG", lang);
+
+    std::vector<std::uint8_t> ft(static_cast<std::size_t>(ft_count) * 0x100);
+    if (ft_ptr) read_block(ft_ptr, ft.data(), ft.size());
+    write_chunk(f, "FEAT", ft);
+    std::vector<std::uint8_t> sc(static_cast<std::size_t>(sc_count) * 0x160);
+    if (sc_ptr) read_block(sc_ptr, sc.data(), sc.size());
+    write_chunk(f, "SNDC", sc);
+    std::fclose(f);
+    return true;
 }
 
 std::uint32_t game_tick() {
@@ -193,6 +349,12 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
                      static_cast<unsigned long long>(g_rand_draws_this_step));
         g_battle_draws_this_step = 0;
         g_rand_draws_this_step = 0;
+        static bool dumped = false;
+        if (!opt.dump_defs.empty() && !dumped) {
+            dumped = true;
+            const bool ok = dump_defs(opt.dump_defs);
+            std::fprintf(g_out, "{\"ev\":\"dump_defs\",\"tick\":%u,\"ok\":%s}\n", tick, ok ? "true" : "false");
+        }
         std::fflush(g_out);
         if (opt.max_ticks && tick >= opt.max_ticks) return true;
         break;
@@ -215,6 +377,7 @@ bool parse_args(int argc, char** argv, Options& opt) {
         else if (a == "--rand-seed" && (v = next())) opt.rand_seed = parse_u32(v);
         else if (a == "--max-ticks" && (v = next())) opt.max_ticks = parse_u32(v);
         else if (a == "--rng-calls") opt.rng_calls = true;
+        else if (a == "--dump-defs" && (v = next())) opt.dump_defs = v;
         else {
             std::fprintf(stderr, "unknown or incomplete argument: %s\n", a.c_str());
             return false;

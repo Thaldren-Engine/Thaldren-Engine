@@ -319,6 +319,102 @@ void Vfs::mount_game_dir(const std::filesystem::path& game_dir, std::vector<std:
     mount_matching(ext_is(".hpi"), 10);
 }
 
+bool wildcard_match(std::string_view name, std::string_view pattern) {
+    // Set of live pattern positions, advanced one name character at a time
+    // (the game keeps at most 100 states).
+    auto up = [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); };
+    auto pat = [&](std::size_t i) { return i < pattern.size() ? up(pattern[i]) : '\0'; };
+    std::vector<std::size_t> states{0};
+    for (char raw : name) {
+        const char c = up(raw);
+        // States appended by '*' are processed for this same character.
+        std::size_t k = 0;
+        while (k < states.size()) {
+            const char p = pat(states[k]);
+            if (p == '?' || p == c) {
+                ++states[k];
+            } else if (p == '*') {
+                if (states.size() < 100) states.push_back(states[k] + 1);
+            } else {
+                // Drop this state: move the last one into its slot and re-examine the slot.
+                states[k] = states.back();
+                states.pop_back();
+                if (states.empty()) return false;
+                continue;
+            }
+            ++k;
+        }
+    }
+    for (std::size_t s : states) {
+        const char p = pat(s);
+        if (p == '\0' || (p == '*' && pat(s + 1) == '\0')) return true;
+    }
+    return false;
+}
+
+std::uint32_t Vfs::size_or_zero(std::string_view path) {
+    std::string native(path);
+    std::replace(native.begin(), native.end(), '\\', '/');
+    const auto loose = root_ / native;
+    if (!root_.empty() && std::filesystem::is_regular_file(loose)) {
+        return static_cast<std::uint32_t>(std::filesystem::file_size(loose));
+    }
+    for (auto& a : archives_) {
+        const HpiEntry* e = a->find(path);
+        if (e && !e->is_dir) return e->size;
+    }
+    return 0;
+}
+
+bool Vfs::is_loose(std::string_view path) {
+    std::string native(path);
+    std::replace(native.begin(), native.end(), '\\', '/');
+    return !root_.empty() && std::filesystem::is_regular_file(root_ / native);
+}
+
+std::vector<std::string> Vfs::enumerate(std::string_view pattern) {
+    std::string dir, file_pat(pattern);
+    const auto sep = pattern.find_last_of("\\/");
+    if (sep != std::string_view::npos) {
+        dir = std::string(pattern.substr(0, sep));
+        file_pat = std::string(pattern.substr(sep + 1));
+    }
+    if (file_pat == "*.*") file_pat = "*";
+    std::vector<std::string> out;
+    std::vector<std::string> seen_lower;
+    auto seen = [&](const std::string& name) {
+        const std::string l = lower(name);
+        for (const auto& s : seen_lower)
+            if (s == l) return true;
+        return false;
+    };
+    // Loose files (NTFS order: upper-cased name order).
+    std::string native = dir;
+    std::replace(native.begin(), native.end(), '\\', '/');
+    if (!root_.empty() && std::filesystem::is_directory(root_ / native)) {
+        std::vector<std::string> names;
+        for (const auto& de : std::filesystem::directory_iterator(root_ / native)) names.push_back(de.path().filename().string());
+        std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) { return upper(a) < upper(b); });
+        for (const auto& n : names) {
+            if (wildcard_match(n, file_pat)) {
+                out.push_back(n);
+                seen_lower.push_back(lower(n));
+            }
+        }
+    }
+    for (auto& a : archives_) {
+        const HpiEntry* node = dir.empty() ? &a->root() : a->find(dir);
+        if (!node || !node->is_dir) continue;
+        for (const auto& e : node->children) {
+            if (!wildcard_match(e.name, file_pat)) continue;
+            if (!e.is_dir && seen(e.name)) continue;  // shadowed by an earlier source
+            out.push_back(e.name);
+            if (!e.is_dir) seen_lower.push_back(lower(e.name));
+        }
+    }
+    return out;
+}
+
 bool Vfs::read(std::string_view path, std::vector<std::uint8_t>& out, std::string* source) {
     std::string native(path);
     std::replace(native.begin(), native.end(), '\\', '/');

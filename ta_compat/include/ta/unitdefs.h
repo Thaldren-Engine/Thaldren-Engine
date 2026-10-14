@@ -1,0 +1,117 @@
+#pragma once
+// Unit definition table built from units\*.FBI exactly as TotalA.exe does
+// (see docs/RE_MEMORY.md, "Unit definitions").
+
+#include <array>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "ta/hpi.h"
+
+namespace ta {
+
+// UnitTypeFlags / UnitCanDoFlags bits (subset referenced by the importer).
+namespace unit_flags {
+constexpr std::uint32_t kHasWeapons = 1u << 16;
+constexpr std::uint32_t kVersionCompatible = 1u << 23;
+constexpr std::uint32_t kHasGui0 = 1u << 31;
+constexpr std::uint32_t kCanCloakFromCost = 1u << 13;  // can-do
+}  // namespace unit_flags
+
+struct UnitDefRecord {
+    // Fixed-size text fields hold at most size-1 characters.
+    std::string name;         // [32]
+    std::string unit_name;    // [32]
+    std::string description;  // [64]
+    std::string object_name;  // [32]
+    std::string side;         // [30]
+    std::string ai_weight;    // [64]
+    std::string ai_limit;     // [64]
+    std::uint32_t fbi_checksum = 0;
+    std::uint32_t script_checksum = 0;
+    std::uint32_t weapon_hash_xor = 0;
+    std::int16_t footprint_x = 0, footprint_z = 0;
+    bool has_yard_map = false;
+    std::vector<std::uint8_t> yard_map;
+    std::int32_t build_options_count = 0;
+    bool has_build_options = false;
+    std::array<std::uint16_t, 30> build_options{};
+    std::int32_t max_this_unit = 0;
+    std::int32_t model_min_x = 0, model_min_y = 0, model_min_z = 0;
+    std::int32_t model_max_x = 0, model_max_y = 0, model_max_z = 0;
+    std::int32_t model_size_x = 0, model_size_y = 0, model_size_z = 0;
+    std::int32_t model_avg_size = 0;
+    float build_cost_energy = 0, build_cost_metal = 0;
+    std::int32_t max_velocity = 0, scaled_max_velocity = 0, brake_rate = 0, acceleration = 0;
+    std::int32_t bank_scale = 0, pitch_scale = 0, damage_modifier = 0, move_rate1 = 0, move_rate2 = 0;
+    int movement_class = -1;  // CLASS index, -1 = none
+    std::uint16_t turn_rate = 0;
+    std::string corpse;       // feature name ("" = none); the id depends on the map's feature list
+    bool has_corpse = false;
+    std::int16_t corpse_feature_id = -1;  // used when has_corpse is false (the zero-filled "None" record has 0)
+    std::int16_t max_water_depth = 0, min_water_depth = 0;
+    float energy_make = 0, energy_use = 0, metal_make = 0, extracts_metal = 0, wind_generator = 0;
+    float tidal_generator = 0, cloak_cost = 0, cloak_cost_moving = 0, energy_storage = 0, metal_storage = 0;
+    std::int32_t build_time = 0;
+    int weapon1 = 0, weapon2 = 0, weapon3 = 0;  // weapon slot (0 when not found; -1 = null pointer)
+    std::uint32_t max_damage = 0;
+    std::int16_t worker_time = 0, heal_time = 0, sight_distance = 0, radar_distance = 0, sonar_distance = 0;
+    std::int16_t min_cloak_distance = 0, radar_distance_jam = 0, sonar_distance_jam = 0, sound_category = 0;
+    std::int16_t build_angle = 0, build_distance = 0, maneuver_leash_length = 0, attack_run_length = 0;
+    std::int16_t kamikaze_distance = 0, sort_bias = 0, cruise_alt = 0;
+    std::uint16_t index = 0;
+    int explode_as = 0, self_destruct_as = 0;
+    std::uint8_t max_slope = 0, max_water_slope = 0, transport_size = 0, transport_capacity = 0;
+    std::uint8_t waterline = 0, makes_metal = 0, build_menu_page_count = 0, bm_code = 0, default_mission = 0;
+    // Category names as looked up (whole value strings; matched case-insensitively).
+    std::string wpri_bad_target, wsec_bad_target, wspe_bad_target, no_chase;
+    std::uint32_t type_flags = 0;
+    std::uint32_t can_do_flags = 0;
+    std::string source_file;  // FBI file name found during enumeration
+};
+
+// Named 512-bit unit masks keyed case-insensitively; keeps the first spelling.
+class CategoryRegistry {
+public:
+    std::array<std::uint32_t, 16>& lookup_or_create(const std::string& name);
+    const std::array<std::uint32_t, 16>* find(const std::string& name) const;
+    const std::map<std::string, std::pair<std::string, std::array<std::uint32_t, 16>>>& all() const { return masks_; }
+
+private:
+    std::map<std::string, std::pair<std::string, std::array<std::uint32_t, 16>>> masks_;  // key: lower-case
+};
+
+struct UnitDefContext {
+    std::array<std::string, 256> weapon_names;        // by slot ("" = empty)
+    std::array<std::string, 32> movement_class_names; // by CLASS index ("" = empty)
+    struct MoveInfo {
+        std::int16_t footprint_x = 0, footprint_z = 0, max_water_depth = 10000, min_water_depth = -10000;
+        std::uint8_t max_slope = 0xFF, bad_slope = 0xFF, max_water_slope = 0xFF, bad_water_slope = 0xFF;
+    };
+    std::array<MoveInfo, 32> movement_classes{};
+    std::vector<std::string> sound_categories;         // section names of gamedata\sound.tdf
+    std::vector<std::string> mission_names = default_mission_names();  // sorted lookup names (index = mission type)
+    std::string language = "english";                  // key prefix for localized strings
+
+    // The game's mission table sorted by lookup name (verified against a live dump).
+    static std::vector<std::string> default_mission_names();
+    bool cd_check_enabled = true;                      // loose (non-archive) FBIs/weapons rejected
+    std::uint8_t game_version_major = 3, game_version_minor = 1;
+};
+
+struct UnitDefTable {
+    std::vector<UnitDefRecord> units;  // [0] is the "None" record
+    CategoryRegistry categories;
+    std::vector<std::string> notes;    // diagnostics (e.g. duplicate unit names)
+};
+
+// Loads weapon slot names, movement classes and sound categories into ctx
+// (mission names and language must be supplied by the caller).
+void load_unit_context(Vfs& vfs, UnitDefContext& ctx);
+
+// Enumerate, filter, sort and load every unit definition.
+UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx);
+
+} // namespace ta

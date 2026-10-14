@@ -82,6 +82,9 @@ private:
 
 // The game's layered file system: loose files under the root directory first,
 // then archives in mount order (earlier mounts take precedence).
+// The game's wildcard matcher (case-insensitive '*' and '?').
+bool wildcard_match(std::string_view name, std::string_view pattern);
+
 class Vfs {
 public:
     // Mounts archives from `game_dir` exactly as TA 3.1 does:
@@ -95,6 +98,19 @@ public:
 
     // Read a file by game path (e.g. "units\\armcom.fbi"). Returns false if absent.
     bool read(std::string_view path, std::vector<std::uint8_t>& out, std::string* source = nullptr);
+
+    // Size of the file the game would open, or 0 if absent (the game treats an
+    // empty file the same as a missing one).
+    std::uint32_t size_or_zero(std::string_view path);
+
+    // True if the path resolves to a loose file on disk (not archive-backed).
+    bool is_loose(std::string_view path);
+
+    // File names (no directory) matching `pattern` (e.g. "units\\*.FBI") in the
+    // game's enumeration order: loose files, then each archive in mount order with
+    // its entries in stored order; a file already provided by an earlier source is
+    // skipped (case-insensitive). Wildcards: '*' and '?', case-insensitive.
+    std::vector<std::string> enumerate(std::string_view pattern);
 
 private:
     std::filesystem::path root_;
