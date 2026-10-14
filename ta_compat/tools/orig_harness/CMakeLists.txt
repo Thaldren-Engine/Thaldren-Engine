@@ -157,6 +157,9 @@ add_executable(orders_harness
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/unit_missions_common.cpp
+    ${ROOT}/engine/sim/src/air_missions.cpp
+    ${ROOT}/engine/sim/src/ground_missions.cpp
     ${ROOT}/engine/sim/src/nano_spray.cpp
     ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/pose.cpp
@@ -276,6 +279,9 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/targeting.cpp
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/unit_missions_common.cpp
+    ${ROOT}/engine/sim/src/air_missions.cpp
+    ${ROOT}/engine/sim/src/ground_missions.cpp
     ${ROOT}/engine/sim/src/nano_spray.cpp
     ${ROOT}/engine/sim/src/motion.cpp
     ${ROOT}/engine/sim/src/combat.cpp
@@ -348,6 +354,9 @@ add_executable(targeting_harness
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/unit_missions_common.cpp
+    ${ROOT}/engine/sim/src/air_missions.cpp
+    ${ROOT}/engine/sim/src/ground_missions.cpp
     ${ROOT}/engine/sim/src/nano_spray.cpp
     ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/pose.cpp
