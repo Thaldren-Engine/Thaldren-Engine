@@ -28,7 +28,7 @@ UnitMissions& ctx(Missions& m) {
             void broadcast_script_call(Unit&, const char*, i32, i32, i32, i32, i32) override {}
             i32 reclaim_site_y() override { return 0; }
             void place_unit(Unit&, const Vec&, u32) override {}
-            void teleport_trail(const Vec&, const Vec&) override {}
+            void teleport_trail(Unit&, const Vec&) override {}
             void remove_feature(i32) override {}
             void wreck_attitude(const MapCell&, Unit&) override {}
         };

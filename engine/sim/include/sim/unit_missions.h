@@ -89,7 +89,7 @@ public:
     // Teleporting: the unit is put at `pos` on `layer` (0x48A9F0), with a trail of dots from
     // where it was (0x471FD0: effect list 5, 30 steps; its particles draw the C runtime rand()).
     virtual void place_unit(Unit& unit, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) = 0;
-    virtual void teleport_trail(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& to) = 0;
+    virtual void teleport_trail(Unit& unit, const std::array<std::int32_t, 3>& to) = 0;
     // Resurrection: the wreck feature covering map cell `cell` (index) goes (0x4246B0, not
     // forced), and the new unit takes the attitude of the feature slot the wreck's own cell
     // names (`origin`'s feature_aux; 0x1420B slots, not checked against their count).

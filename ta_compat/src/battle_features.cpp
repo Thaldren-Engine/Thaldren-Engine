@@ -167,4 +167,26 @@ void place_tnt_features(sim::Battle& b, const std::vector<std::uint8_t>& tnt) {
     }
 }
 
+void bind_resurrect_types(std::vector<sim::FeatureTypeInfo>& features, const FeatureDefTable& defs,
+                          const std::vector<std::string>& type_names) {
+    const auto& recs = defs.records();
+    auto lower = [](std::string v) {
+        for (char& c : v)
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        return v;
+    };
+    for (std::size_t i = 0; i < recs.size() && i < features.size(); ++i) {
+        std::string name = recs[i].name.substr(0, 63);
+        const std::size_t cut = name.find('_');
+        if (cut != std::string::npos) name.resize(cut);
+        const std::string want = lower(name);
+        features[i].resurrect_type = 0;
+        for (std::size_t k = 1; k < type_names.size(); ++k)
+            if (lower(type_names[k]) == want) {
+                features[i].resurrect_type = static_cast<std::uint16_t>(k);
+                break;
+            }
+    }
+}
+
 } // namespace ta

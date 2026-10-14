@@ -430,7 +430,7 @@ std::int32_t teleport(Missions& m, Unit& u, MissionOrder& o) {
         const i32 x = w.pos[0], y = w.pos[1], z = w.pos[2];
         if (!(min_x <= x && x <= max_x && min_z <= z && z <= max_z && min_y <= y && y <= max_y && &w != &u)) continue;
         const Vec to = {wsub(wadd(o.pos[0], x), u.pos[0]), wsub(wadd(o.pos[1], y), u.pos[1]), wsub(wadd(o.pos[2], z), u.pos[2])};
-        ctx(m).systems.teleport_trail(w.pos, to);
+        ctx(m).systems.teleport_trail(w, to);
         ctx(m).systems.place_unit(w, to, 1);
     }
     return mission_result::kFinished;

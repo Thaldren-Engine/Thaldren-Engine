@@ -184,6 +184,8 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
 
     out.mission.abilities = d.can_do_flags;
     out.mission.worker_time = static_cast<std::uint16_t>(d.worker_time);
+    out.unit_missions.attack_run_length = static_cast<std::uint16_t>(d.attack_run_length);
+    out.unit_missions.kamikaze_distance = static_cast<std::uint16_t>(d.kamikaze_distance);
 
     sim::GroundSettleType& settle = out.settle;
     settle.type_flags = d.type_flags;
