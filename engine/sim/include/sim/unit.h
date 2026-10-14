@@ -14,9 +14,15 @@
 namespace sim {
 
 // Unit type data the unit values need.
+struct WeaponType;
+
 struct UnitTypeInfo {
     std::uint32_t max_damage = 1;   // full hit points
     std::int32_t model_max_y = 0;   // model height
+    // The rest of the model box (16.16, relative to the unit position): projectile hits and area damage.
+    std::int32_t model_min_x = 0, model_min_y = 0, model_min_z = 0, model_max_x = 0, model_max_z = 0;
+    const WeaponType* explode_as = nullptr;       // explosion when the unit dies
+    const WeaponType* self_destruct_as = nullptr; // explosion when it self-destructs
 };
 
 namespace unit_flags {
@@ -39,6 +45,7 @@ struct Unit {
     std::uint32_t flags = 0;             // bits 18-19 move orders, 20-21 fire orders, 28 alive
     float build_fraction_left = 0.0f;
     std::uint16_t net_dirty = 0;
+    std::uint32_t cloak_holdoff_tick = 0;  // firing keeps the unit decloaked until this tick
     const UnitTypeInfo* type = nullptr;
     Unit* carrier = nullptr;     // transport carrying this unit
     Unit* cargo_head = nullptr;  // first unit carried
