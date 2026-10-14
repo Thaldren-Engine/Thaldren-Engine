@@ -407,7 +407,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::We
 
 struct Stats {
     std::size_t scenarios = 0, ticks = 0, direct_passes = 0, helper_calls = 0, ops = 0, deaths = 0, mismatches = 0, failures = 0,
-                faults = 0, shots = 0, aims = 0;
+                faults = 0, shots = 0, stockpile_shots = 0, aim_packets = 0;
 };
 
 std::string random_case(std::string s, std::mt19937& g) {
@@ -978,6 +978,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             const Stub* s = stub_by_id(world.log[i]);
             if (!s) break;
             if (world.log[i] == 60) ++st.shots;
+            if (world.log[i] == 61) ++st.stockpile_shots;
+            if (world.log[i] == 16 && world.log[i + 4] == 22) ++st.aim_packets;
             i += 2 + static_cast<std::size_t>(s->args + s->extra);
         }
     };
@@ -1271,8 +1273,8 @@ int main(int argc, char** argv) {
     }
     std::printf("unit types %zu, weapon types %zu\n", types.size(), loaded_weapons.size());
     std::printf("scenarios %zu, unit passes %zu, direct slot passes %zu, helper calls %zu, other operations %zu, kills %zu, "
-                "shots %zu, mismatching scenarios %zu, engine faults %zu, original failures %zu\n",
-                st.scenarios, st.ticks, st.direct_passes, st.helper_calls, st.ops, st.deaths, st.shots, st.mismatches, st.faults,
-                st.failures);
+                "shots %zu (stockpile %zu), broadcast aim starts %zu, mismatching scenarios %zu, engine faults %zu, original failures %zu\n",
+                st.scenarios, st.ticks, st.direct_passes, st.helper_calls, st.ops, st.deaths, st.shots, st.stockpile_shots, st.aim_packets,
+                st.mismatches, st.faults, st.failures);
     return st.mismatches || st.failures ? 1 : 0;
 }
