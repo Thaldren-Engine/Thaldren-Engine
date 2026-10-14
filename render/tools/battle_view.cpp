@@ -349,6 +349,13 @@ int main(int argc, char** argv) {
                     slot.target_z = sim::kUnitTarget;
                 }
         }
+        // Routing: the raider drives over to the far side of the other camp (route search + motion).
+        for (std::size_t i = 1; i < b.units.size(); ++i) {
+            if (b.ticks[i].type_index == 0 || !b.ticks[i].has_motion || b.ticks[i].type_index >= btypes.size()) continue;
+            if (ta::stricmp_c(btypes[b.ticks[i].type_index]->def->unit_name, "CORRAID") != 0) continue;
+            const std::int32_t to[3] = {1250 << 16, 0, 1640 << 16};
+            sim::enqueue_order(b.order_context(), b.units[i], sim::mission::kMoveGround, false, nullptr, to, 0, 0);
+        }
     }
 
     render::BattleScene scene;
