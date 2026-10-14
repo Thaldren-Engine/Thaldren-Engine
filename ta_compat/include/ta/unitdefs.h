@@ -50,7 +50,7 @@ struct UnitDefRecord {
     std::uint16_t turn_rate = 0;
     std::string corpse;       // feature name ("" = none); the id depends on the map's feature list
     bool has_corpse = false;
-    std::int16_t corpse_feature_id = -1;  // used when has_corpse is false (the zero-filled "None" record has 0)
+    std::int16_t corpse_feature_id = -1;  // feature index (-1 = none; set only with a feature table; "None" has 0)
     std::int16_t max_water_depth = 0, min_water_depth = 0;
     float energy_make = 0, energy_use = 0, metal_make = 0, extracts_metal = 0, wind_generator = 0;
     float tidal_generator = 0, cloak_cost = 0, cloak_cost_moving = 0, energy_storage = 0, metal_storage = 0;
@@ -112,7 +112,11 @@ struct UnitDefTable {
 // (mission names and language must be supplied by the caller).
 void load_unit_context(Vfs& vfs, UnitDefContext& ctx);
 
-// Enumerate, filter, sort and load every unit definition.
-UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx);
+class FeatureDefTable;
+
+// Enumerate, filter, sort and load every unit definition. With a feature table,
+// each corpse is looked up there (and appended if missing), as the game does
+// during battle loading; corpse_feature_id then holds the index.
+UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable* features = nullptr);
 
 } // namespace ta

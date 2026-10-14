@@ -143,6 +143,18 @@ Written to `/TotalA.exe` (name + prototype + plate comment) once verified.
 | `0x004CB590` | `Model3d_NegateAxesXZ` | — | Negate X/Z of vertices and offsets | Verified: live model dump |
 | `0x004CB5F0` | `Model3d_GetHeight` | — | Max Y over the tree, ≥ 0 | Verified: unit table Y extents |
 | `0x0045AE80` | `Model3d_CountTreeNodes` | — | Piece count | Disasm |
+| `0x004917D0` | `Loading_LoadBattleData` | `void (void)` | Battle data load order (features → map → weapons → units → chains) | Verified: feature table order |
+| `0x004222E0` | `Feature_EnumTdfFiles` | `void (void)` | Parse features\**\*.tdf into the parser list | Verified |
+| `0x00421F20` | `Map_ProcessTntFeatures` | `void (TntInfo*)` | Reset table, append every TNT feature | Verified |
+| `0x00483610` | `Map_LoadTnt` | `void (void)` | TNT header, tiles, feature placement | Partial (feature part verified) |
+| `0x004224B0` | `FeatureDef_LoadTdfProperties` | `int (char* name)` | Append one feature def; returns its index | Verified: live dump |
+| `0x00422E40` | `FeatureDef_FindOrLoad` | `int (char* name)` | Index by stricmp, else load | Verified: corpse indices |
+| `0x00422EA0` | `FeatureDef_ResolveChains` | `void (void)` | dead → reclamate → burnt links, appending misses | Verified: live dump |
+| `0x00423160` | `Mission_SpawnMapFeatures` | `void (void)` | OTA schema features: find-or-load + place | Disasm (no schema features on the test map) |
+| `0x004BCB50` | `Hapi_EnumerateTree` | `void (char* dir, char* pattern, vector*, int source, bool all)` | Recursive file enumeration | Verified: feature library |
+| `0x004B8C60` | `Gaf_LoadAndRelocate` | `GafFile* (char* path)` | Load a GAF and relocate offsets | Verified (sequence names) |
+| `0x004B8D40` | `Gaf_FindSequenceByName` | `GafSeq* (GafFile*, char*)` | Linear stricmp lookup | Verified |
+| `0x0042A2C0` | `Model3d_LoadObjectByName` | `Model* (char*)` | objects3d\<name>.3DO, flip, register | Verified (feature models) |
 
 ## Globals
 | Address | Name | Type | Meaning |
@@ -184,6 +196,12 @@ Verified 2026-10-13: `hpi_check` decodes all 7,890 files in all 30 archives of t
   - Globs come back in NTFS order (names compared upper-cased).
   - Opening a file: a loose file on disk wins; otherwise the first mounted archive containing it.
   - **On the Steam install, `totala3.hpi`, `totala4.hpi` and `worlds.hpi` are never mounted.**
+- **Finder** (`Hapi_FindFirstFile` `0x004BC4B0` / `Hapi_FindNextFile` `0x004BC640`): a source index of −1 means disk first, then every archive in mount order. A source index ≥ 0 restricts the search to one source. Archive entries flagged "shadowed" (bit 1) are skipped. `*.*` is treated as `*`.
+- **Recursive enumeration** (`Hapi_EnumerateTree` `0x004BCB50`, used for `features\**\*.tdf`):
+  - Lists `<dir>\*.*` over all sources, skipping `.` and `..`.
+  - A directory is recursed **within the source it came from only**. This is why archive subtrees are walked archive by archive.
+  - A file is kept when its name matches the pattern, and is stored as `dir\sub\name`.
+  - Implemented as `Vfs::enumerate_tree`; verified for features (177 files, giving an identical feature table).
 
 ### TDF text format (.tdf / .fbi / .ota / .gui)
 Verified 2026-10-13: `tdf_check` parses 2,311 files (55k keys in FBIs, 573k in OTAs). The only 2 failures are files the game never loads: `gamedata\UNITVIEW.TDF` (Unit Viewer data, stray `};`) and `guis\SCORE.GUI` (unbalanced braces, no string reference in the exe). Implementation: `ta_compat/src/tdf.cpp`.
@@ -295,6 +313,44 @@ Implementation: `ta_compat/src/weapondefs.cpp`. Checked with `tools/weapondef_ch
 - **Sounds:** soundstart, soundhit and soundwater register their paths in the global sound bank (`SoundBank_EnsureNamed` `0x00429470`, appended after `allsound.tdf`). No key → −1.
 - **Damage:** `[DAMAGE]` `default` gives the default damage. The other keys are walked in the section's sorted key order and inserted into a stricmp-sorted vector of {name, damage}. The value is looked up by name, so the first case variant wins.
 
+### Feature definitions (FeatureDef[], 0x100 bytes, GameState+0x1426F, count +0x14253) — exact vs live game: 434 features, 8,307 fields, 279 unit corpse indices
+The table is built per battle and grows by appending (realloc). Implementation: `ta_compat/src/featuredefs.cpp`; checked by `tools/feature_check`.
+- **Order inside battle loading** (`Loading_LoadBattleData` `0x004917D0`):
+  1. `Feature_EnumTdfFiles` (`0x004222E0`) parses every `features\**\*.tdf` (recursive enumeration) into a list of parsers, in enumeration order. A file that fails to load is dropped.
+  2. `Map_LoadTnt` (`0x00483610`) → `Map_ProcessTntFeatures` (`0x00421F20`): the count is reset to 0, then **every** TNT feature entry is appended, in TNT order, duplicates included.
+     - TNT header u32[7] = feature count, u32[8] = offset of 0x84-byte entries {u32 index, char name[128]}.
+     - Then, unless a saved game is loading, `Mission_SpawnMapFeatures` (`0x00423160`) runs on the OTA schema's `[features]`, using find-or-load. The schema list is built by `0x00436C30`: children in file order with Featurename[0x80], XPos, ZPos (default −1). A negative position blanks the name, and blank names are skipped.
+  3. Units (`UnitDef_LoadFbiProperties`): `corpse` present → `FeatureDef_FindOrLoad` (`0x00422E40`). Its return value is the unit's corpse index (UnitDef+0x1BC; −1 when there is no corpse key). Units are processed in sorted unit order.
+  4. `FeatureDef_ResolveChains` (`0x00422EA0`): for i = 0 .. count−1, with the count re-read every iteration, resolve **featuredead (0xF4), then featurereclamate (0xF8), then featureburnt (0xF6)**.
+     - Each link: key absent → −1. Otherwise take the first case-insensitive name match, or append the feature by loading it.
+     - Because the count is re-read, appended entries get resolved too.
+  5. The parsers are destroyed (`0x004223E0`).
+- **Section lookup:** the first parser (in file order) with a top-level section whose name matches case-insensitively. If none: message "Record %s missing from feature" and then a null dereference (crash).
+- **Load** (`FeatureDef_LoadTdfProperties` `0x004224B0`, returns the new index):
+  - Name: strncpy of the requested name (not the section's spelling), 0x80 bytes.
+  - `Description` [20]. `footprintx`/`footprintz` → i16; `height` → u8.
+  - **`object` present → 3D:** flag bit 0 is cleared and objects3d\<object>.3DO is loaded (load + X/Z flip + register). The GAF fields 0xA8–0xCB are **not written** (uninitialised).
+  - **Otherwise 2D:** bit 0 is set; read `filename`. Scan existing entries 0..n−1 with a **case-sensitive `strncmp(entry+0x98, filename, 16)`**. For 3D entries that compares pointer bytes.
+    - Hit: this entry's GAF pointer is 0 and 0x98 receives `"REUSE"`. Its sequences are looked up in the hit entry's GAF. Later features can never match a REUSE entry by file name.
+    - Miss: load `anims\<filename>.GAF`, relocated in place (0 if missing), and strncpy the name into 0x98 (16 bytes).
+  - **Sequences** 0xAC..0xC8: seqname, seqnameshad, seqnameburn, seqnameburnshad, seqnamedie, seqnamedieshad, seqnamereclamate, seqnamereclamateshad.
+    - Missing or empty key → 0. Otherwise the first GAF entry whose name matches stricmp (0 if none).
+    - For the six burn/die/reclamate pointers, sequence byte +2 is cleared.
+  - Fields:
+    - `spreadchance` 0xFB, `reproduce` 0xFC, `reproducearea` 0xFD: u8.
+    - `metal` 0xF0 and `energy` 0xEC: float of `(uint)atoi & 0xFFFF`.
+    - `damage` 0xEA: i16.
+  - **Flags** u16 at 0xFE: bits 1–11 = `(atoi & 1)` of animating, animtrans, shadtrans, flamable, geothermal, blocking, reclaimable, autoreclaimable (**default 1**), indestructible, nodisplayinfo, nodrawundergray.
+    - Bits 12–15 are never written: they come from realloc memory (0xB in the live dump).
+    - Bit 11 is forced on when the requested name is DragonsTeeth, DragonsTeeth_Core, Fortification or Fortification_Core (stricmp).
+  - `sparktime` 0xE8 = (i16) ftol(atof × 30.0).
+  - `burnweapon` 0xE4 = pointer to the first weapon slot whose name matches stricmp; an empty string gives 0.
+  - Per-def animation state at 0xCC/0xD8 is zeroed. If animating, it is initialised from seq / seqshad (`0x004B8B30`).
+- **GAF in memory** (`Gaf_LoadAndRelocate` `0x004B8C60`):
+  - Header {u32 version, i16 count @4, …, u32 entry offsets @12}.
+  - Sequence entry {u16 frames, u8 @2, …, char name[32] @8, frame table}.
+  - `Gaf_FindSequenceByName` `0x004B8D40` does a linear stricmp search.
+
 ### 3DO models (objects3d\*.3DO) — exact vs live game: 278 unit + 74 weapon model trees
 - **Layout:** the file is loaded whole and used in place; every stored offset is file-relative and becomes a pointer (`Model3d_RelocatePointers` `0x004CB4C0`).
   - Piece header, 0x34 bytes: version, vertex count, primitive count, selection primitive (−1 = none), offset x/y/z, then file offsets of name, (unused), vertices, primitives, sibling, child.
@@ -330,6 +386,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | Feature definitions + unit corpse indices + recursive VFS enumeration — **exact vs live game: 434 features, 8,307 fields (incl. model trees and GAF sequence names), 279 corpse indices** | `0x004917D0`, `0x004222E0`, `0x00483610`, `0x00421F20`, `0x00423160`, `0x00436C30`, `0x00422E40`, `0x004224B0`, `0x00422EA0`, `0x004BCB50`, `0x004BC4B0`, `0x004BC640`, `0x004B8C60`, `0x004B8D40`, `0x0042A2C0`, `0x004C4760` | `ta_compat/src/featuredefs.cpp`, `gaf.cpp`, `hpi.cpp` (`enumerate_tree`), `tools/feature_check.cpp` |
 | 2026-10-13 | 3DO model loader + unit model height — **exact vs live game: 278 unit + 74 weapon model trees; unit table now 25,617 fields** | `0x004CB560`, `0x004CB4C0`, `0x004CB370`, `0x004CB590`, `0x004CB5F0`, `0x0045AE80` | `ta_compat/src/model3do.cpp`, `tools/model_check.cpp` |
 | 2026-10-13 | Weapon definition table — **exact vs live game: all 256 slots, 9,141 fields** | `0x0042E310`, `0x0042E440`, `0x0049E010`, `0x00429470`, `0x0042F7E0` | `ta_compat/src/weapondefs.cpp`, `tools/weapondef_check.cpp` |
 | 2026-10-13 | Unit definition table (all fields except 3DO height / COB) — **exact vs live game: 24,780 fields, 279 units, 56 category masks** | `0x0042A8D0`, `0x0042D2E0`, `0x0042BF40`, `0x0042DCF0`, `0x0042BE30`, `0x00440340`, `0x004402E0`, `0x00440420`, `0x0049E5B0`, `0x00488B10`, `0x00488C50`, `0x00488E70`, `0x00438760`, `0x004290F0`, `0x004BCA30`, `0x004BC4B0`, `0x004BC640`, `0x004BC370`, `0x004C58A0`, `0x004BB0F0`, `0x0042F580`, `0x0042E310` | `ta_compat/src/unitdefs.cpp`, `tools/unitdef_check.cpp`, capture `--dump-defs` |

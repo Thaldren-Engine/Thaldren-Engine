@@ -336,6 +336,34 @@ bool dump_defs(const std::string& path) {
     std::vector<std::uint8_t> ft(static_cast<std::size_t>(ft_count) * 0x100);
     if (ft_ptr) read_block(ft_ptr, ft.data(), ft.size());
     write_chunk(f, "FEAT", ft);
+    // Feature details behind pointers: GAF loaded?, 8 sequence names (2D) or the model tree (3D),
+    // burn weapon slot.
+    {
+        std::vector<std::uint8_t> fx;
+        for (std::uint32_t i = 0; i < ft_count; ++i) {
+            const std::uint8_t* r = &ft[static_cast<std::size_t>(i) * 0x100];
+            std::uint16_t flags = 0;
+            std::uint32_t p = 0;
+            std::memcpy(&flags, r + 0xFE, 2);
+            if (flags & 1) {
+                std::memcpy(&p, r + 0xA8, 4);
+                put_u32(fx, p ? 1 : 0);
+                for (int k = 0; k < 8; ++k) {
+                    std::uint32_t seq = 0;
+                    std::memcpy(&seq, r + 0xAC + k * 4, 4);
+                    put_str(fx, seq ? read_cstr(seq + 8) : std::string());
+                }
+            } else {
+                std::memcpy(&p, r + 0x98, 4);
+                put_u32(fx, p);
+                if (p) dump_model(fx, p, 0);
+            }
+            std::memcpy(&p, r + 0xE4, 4);
+            const std::uint32_t base = gs + kOffWeaponDefs;
+            put_u32(fx, p ? (p - base) / kWeaponDefSize : 0xFFFFFFFFu);
+        }
+        write_chunk(f, "FTX2", fx);
+    }
     std::vector<std::uint8_t> sc(static_cast<std::size_t>(sc_count) * 0x160);
     if (sc_ptr) read_block(sc_ptr, sc.data(), sc.size());
     write_chunk(f, "SNDC", sc);

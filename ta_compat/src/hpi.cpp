@@ -415,6 +415,51 @@ std::vector<std::string> Vfs::enumerate(std::string_view pattern) {
     return out;
 }
 
+std::vector<std::string> Vfs::enumerate_tree(std::string_view dir, std::string_view file_pattern) {
+    std::vector<std::string> out;
+    std::vector<std::string> seen_lower;  // full paths already provided by an earlier source
+    auto seen = [&](const std::string& path) {
+        const std::string l = lower(path);
+        return std::find(seen_lower.begin(), seen_lower.end(), l) != seen_lower.end();
+    };
+    auto walk_disk = [&](auto&& self, const std::string& d) -> void {
+        std::string native = d;
+        std::replace(native.begin(), native.end(), '\\', '/');
+        if (root_.empty() || !std::filesystem::is_directory(root_ / native)) return;
+        std::vector<std::pair<std::string, bool>> names;
+        for (const auto& de : std::filesystem::directory_iterator(root_ / native))
+            names.emplace_back(de.path().filename().string(), de.is_directory());
+        std::sort(names.begin(), names.end(), [](const auto& a, const auto& b) { return upper(a.first) < upper(b.first); });
+        for (const auto& [n, is_dir] : names) {
+            const std::string path = d + "\\" + n;
+            if (is_dir) {
+                self(self, path);
+            } else if (wildcard_match(n, file_pattern)) {
+                out.push_back(path);
+                seen_lower.push_back(lower(path));
+            }
+        }
+    };
+    auto walk_archive = [&](auto&& self, const HpiEntry& node, const std::string& d) -> void {
+        for (const auto& e : node.children) {
+            const std::string path = d + "\\" + e.name;
+            if (e.is_dir) {
+                self(self, e, path);
+            } else if (wildcard_match(e.name, file_pattern) && !seen(path)) {
+                out.push_back(path);
+                seen_lower.push_back(lower(path));
+            }
+        }
+    };
+    const std::string base(dir);
+    walk_disk(walk_disk, base);
+    for (auto& a : archives_) {
+        const HpiEntry* node = a->find(base);
+        if (node && node->is_dir) walk_archive(walk_archive, *node, base);
+    }
+    return out;
+}
+
 bool Vfs::read(std::string_view path, std::vector<std::uint8_t>& out, std::string* source) {
     std::string native(path);
     std::replace(native.begin(), native.end(), '\\', '/');

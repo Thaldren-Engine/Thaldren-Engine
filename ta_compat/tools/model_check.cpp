@@ -16,39 +16,9 @@
 #include "ta/model3do.h"
 #include "ta/unitdefs.h"
 #include "ta/weapondefs.h"
+#include "model_dump_format.h"
 
 namespace {
-
-void put_u32(std::vector<std::uint8_t>& v, std::uint32_t x) {
-    for (int i = 0; i < 4; ++i) v.push_back(static_cast<std::uint8_t>(x >> (8 * i)));
-}
-
-// Same layout as ta_capture's dump_model.
-void serialize(std::vector<std::uint8_t>& out, const ta::Model3doPiece* p) {
-    for (; p; p = p->sibling.get()) {
-        put_u32(out, 1);
-        out.insert(out.end(), p->name.begin(), p->name.end());
-        out.push_back(0);
-        for (std::uint32_t v : {static_cast<std::uint32_t>(p->version), static_cast<std::uint32_t>(p->vertices.size()),
-                                static_cast<std::uint32_t>(p->primitives.size()), static_cast<std::uint32_t>(p->selection_primitive),
-                                static_cast<std::uint32_t>(p->offset[0]), static_cast<std::uint32_t>(p->offset[1]),
-                                static_cast<std::uint32_t>(p->offset[2])}) {
-            put_u32(out, v);
-        }
-        for (const auto& vx : p->vertices)
-            for (std::int32_t c : vx) put_u32(out, static_cast<std::uint32_t>(c));
-        for (const auto& pr : p->primitives) {
-            put_u32(out, static_cast<std::uint32_t>(pr.color_index));
-            put_u32(out, static_cast<std::uint32_t>(pr.indices.size()));
-            for (std::uint16_t i : pr.indices) {
-                out.push_back(static_cast<std::uint8_t>(i));
-                out.push_back(static_cast<std::uint8_t>(i >> 8));
-            }
-        }
-        if (p->child) serialize(out, p->child.get());
-    }
-    put_u32(out, 0);
-}
 
 std::uint32_t u32(const std::uint8_t* p) { std::uint32_t v; std::memcpy(&v, p, 4); return v; }
 
@@ -89,7 +59,7 @@ int main(int argc, char** argv) {
         if (!vfs.read(path, data)) return false;
         const auto m = ta::load_3do(data, true);
         if (!m.root) return false;
-        serialize(out, m.root.get());
+        tools::serialize_model(out, m.root.get());
         return true;
     };
 

@@ -112,6 +112,13 @@ public:
     // skipped (case-insensitive). Wildcards: '*' and '?', case-insensitive.
     std::vector<std::string> enumerate(std::string_view pattern);
 
+    // Full paths ("dir\sub\name") of files under `dir` whose name matches
+    // `file_pattern`, walked the way the game's recursive finder does: loose
+    // files first (each directory recursed on disk only), then each archive in
+    // mount order (each subdirectory recursed within that archive only).
+    // Entries are visited in source order; files shadowed by an earlier source are skipped.
+    std::vector<std::string> enumerate_tree(std::string_view dir, std::string_view file_pattern);
+
 private:
     std::filesystem::path root_;
     std::vector<std::unique_ptr<HpiArchive>> archives_;
