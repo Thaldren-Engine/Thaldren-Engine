@@ -444,3 +444,12 @@ add_executable(los_harness
 )
 target_include_directories(los_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(los_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Effect particle lists (stage 9 of a step) vs sim/effect_lists.h.
+add_executable(fx_harness fx_harness.cpp
+    ${ROOT}/engine/sim/src/effect_lists.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+)
+target_include_directories(fx_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(fx_harness PRIVATE /W4 /permissive- /fp:precise)

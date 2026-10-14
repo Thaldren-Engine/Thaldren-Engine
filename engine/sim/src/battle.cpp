@@ -390,6 +390,7 @@ void Battle::reset_features_and_effects() {
     sync_settings();
     feature_state.reset();
     effects.reset();
+    fx_lists.reset();
     init_feature_type_cursors(feature_world_);
 }
 
@@ -500,7 +501,13 @@ void Battle::step() {
     step_wind();
     step_meteor_shower();
     step_camera_shake(shake, crt_rand);
-    step_nano();                     // 9: the effect sweep (lists 0-5 are presentation, see RE_MEMORY)
+    {                                // 9: the effect sweep, lists 0-9 in order (6: nano streams)
+        FxContext c = fx_context();
+        step_effect_lists(c, 0, 6);
+        step_nano();
+        c.nano_streams = static_cast<std::int32_t>(nano.streams.size());
+        step_effect_lists(c, 7, EffectLists::kLists);
+    }
     // The minimap blink counter (presentation) runs here.
     if (settings.net_game && settings.net_frame_timing) {  // 10
         auto_share_resources();
@@ -515,6 +522,62 @@ void Battle::step_meteor_shower() {
     if (meteors.weapon) spawn_free_projectile(projectile_world_, *meteors.weapon, Vec3i{pos[0], pos[1], pos[2]}, Vec3i{vel[0], vel[1], vel[2]}, true);
 }
 
-void Battle::end_frame() { expire_lingering_sight(); }
+void Battle::end_frame() {
+    // Drawing: every debris piece with smoke starts a puff, with fire a jittered flame
+    // (0x421550, before the frame's other drawing); then lingering sight expires.
+    if (settings.draw_side_effects)
+        for (int k = 0; k < kMaxDebris; ++k) {
+            if (effects.debris_block[static_cast<std::size_t>(k)] == -1) continue;
+            const DebrisPiece& d = effects.debris[static_cast<std::size_t>(k)];
+            FxContext c = fx_context();
+            if (d.flags & 2u) fx_smoke(c, d.move, 9);
+            if (d.flags & 1u) fx_flame_jittered(c, d.move, 9);
+        }
+    expire_lingering_sight();
+}
+
+void Battle::emit_sfx(Unit& u, std::int32_t piece, std::int32_t type) {
+    // A unit script's effect (0x480EB0): only for units the viewed player sees. The pose is
+    // brought up to date; the effect starts at the piece's first point and points at its
+    // second (types without 0x100), or at the piece's origin (0x100 types).
+    outside_.emit_sfx(u, piece, type);
+    if (!targeting_hooks_.unit_visible(settings.local_view, u)) return;
+    u.pose.sync(u.pitch, u.heading, u.bank);
+    if (piece < 0 || static_cast<std::size_t>(piece) >= u.pose.pieces.size()) {
+        effects.fault = "effect from a piece outside the object state";
+        return;
+    }
+    const PosePiece& pp = u.pose.pieces[static_cast<std::size_t>(piece)];
+    std::array<std::int32_t, 3> at{}, to{};
+    const auto add = [](std::int32_t a, std::int32_t b) { return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b)); };
+    const auto sub = [](std::int32_t a, std::int32_t b) { return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b)); };
+    if (!(static_cast<std::uint32_t>(type) & 0x100u)) {
+        if (pp.points.size() < 6) {
+            effects.fault = "effect from a piece with fewer than two points";
+            return;
+        }
+        at = {add(u.pos[0], pp.points[0]), add(u.pos[1], pp.points[1]), sub(u.pos[2], pp.points[2])};
+        to = {add(u.pos[0], pp.points[3]), add(u.pos[1], pp.points[4]), sub(u.pos[2], pp.points[5])};
+    } else {
+        at = {add(u.pos[0], pp.xform[0]), add(u.pos[1], pp.xform[1]), sub(u.pos[2], pp.xform[2])};
+    }
+    FxContext c = fx_context();
+    switch (type) {
+    case 0: fx_flame(c, at, to, 1, 6, 7); break;
+    case 1: fx_flame(c, at, to, 1, 7, 7); break;
+    case 2: fx_wake(c, at, to, 0x10, true, 2); break;
+    case 3: fx_wake(c, at, to, 8, true, 2); break;
+    case 4: fx_wake(c, to, at, 0x10, true, 2); break;
+    case 5: fx_wake(c, to, at, 8, true, 2); break;
+    case 0x101: fx_smoke(c, at, 9, false); break;
+    case 0x102: fx_smoke(c, at, 9, true); break;
+    case 0x103: {
+        const std::array<std::int32_t, 3> sea = {at[0], static_cast<std::int32_t>(static_cast<std::uint32_t>(settings.sea_level) << 16), at[2]};
+        fx_wake(c, at, sea, 8, false, 7);
+        break;
+    }
+    default: break;
+    }
+}
 
 } // namespace sim

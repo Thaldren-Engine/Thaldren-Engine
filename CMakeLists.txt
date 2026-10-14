@@ -22,6 +22,7 @@ add_library(sim STATIC
     engine/sim/src/battle_start.cpp
     engine/sim/src/commands.cpp
     engine/sim/src/effects.cpp
+    engine/sim/src/effect_lists.cpp
     engine/sim/src/features.cpp
     engine/sim/src/combat.cpp
     engine/sim/src/economy.cpp

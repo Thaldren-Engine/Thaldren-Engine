@@ -144,6 +144,14 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     bind_weapon_explosions(lb->weapon_defs, lb->weapons, *lb->anims);
     b.features = to_feature_types(lb->feature_defs, lb->weapons, *lb->anims, &lb->feature_models);
     load_effect_art(*lb->anims, b.effect_art);
+    // Particle art the effect lists count frames of (fx.gaf "smoke 1", "smoke 2", "flamestream").
+    auto frames = [&](const char* seq) -> std::int32_t {
+        const sim::AnimSequence* a = b.anims.find(lb->anims->sequence("shared", "fx", seq, false));
+        return a ? static_cast<std::int32_t>(a->frames.size()) : 0;
+    };
+    b.fx_lists.smoke1_frames = frames("smoke 1");
+    b.fx_lists.smoke2_frames = frames("smoke 2");
+    b.fx_lists.flame_frames = frames("flamestream");
     b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
     b.settings.gravity = 112;
     b.settings.damage_options = 8;

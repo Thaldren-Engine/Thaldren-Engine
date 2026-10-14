@@ -16,6 +16,7 @@
 #include "sim/economy.h"
 #include "sim/construction.h"
 #include "sim/effects.h"
+#include "sim/effect_lists.h"
 #include "sim/features.h"
 #include "sim/fire.h"
 #include "sim/footprint.h"
@@ -87,6 +88,9 @@ struct BattleSettings {
     bool cd_mismatch = false;               // the copy-protection check failed (forces a defeat later)
     bool shake_disabled = false;            // the player turned camera shaking off (no rand() draws)
     bool net_frame_timing = true;           // network games: the end-of-step sharing and flush run (0x506DBC)
+    // Drawing a frame starts particle emitters for flaming and smoking debris pieces in the
+    // original (0x421550), which draws rand(); on: Battle::end_frame() does the same.
+    bool draw_side_effects = false;
     OriginalAddresses addresses;
 };
 
@@ -226,6 +230,7 @@ public:
     FeatureState feature_state;       // feature animation slots (sim/features.h)
     EffectsState effects;             // world effects, shards, debris (sim/effects.h)
     NanoSprayState nano;              // nano lathe particle streams (sim/nano_spray.h)
+    EffectLists fx_lists;             // the other particle emitters of the effect sweep (sim/effect_lists.h)
     EffectsEnvironment effect_art;    // effect sequences (the rest is synced from the settings)
     Lcg15 crt_rand;                   // the C runtime rand() stream of the simulation thread
     ProjectileTable projectiles;
@@ -387,7 +392,11 @@ public:
 
 private:
     void sync_settings();
-    void prune_retired_goals();  // order goals the route search no longer reads (MotionContext::retired_goals)
+    void prune_retired_goals();
+    FxContext fx_context() {
+        return FxContext{fx_lists, crt_rand, unit_env_.game_tick, static_cast<std::int32_t>(nano.streams.size()), settings.sea_level, &heights_,
+                         wind.velocity[0], wind.velocity[2], settings.gravity};
+    }  // order goals the route search no longer reads (MotionContext::retired_goals)
     void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
                           std::int32_t z, bool fully_built);
     void build_script_and_pose(Unit& u, const UnitCreateType& type);
@@ -399,7 +408,7 @@ private:
     void claim_yard_cells(Unit& u) override;
     void on_activate_flags_changed(Unit& u, std::uint8_t g, std::uint8_t l) override { outside_.on_activate_flags_changed(u, g, l); }
     std::uint32_t random_mod(std::uint32_t n) override { return rng_.next_mod(n); }
-    void emit_sfx(Unit& u, std::int32_t p, std::int32_t t) override { outside_.emit_sfx(u, p, t); }
+    void emit_sfx(Unit& u, std::int32_t p, std::int32_t t) override;
     void explode_piece(Unit& u, std::int32_t p, std::int32_t t) override {
         sim::explode_piece(effects_world_, u, p, static_cast<std::uint32_t>(t));
     }
@@ -453,8 +462,16 @@ private:
     std::uint16_t slot_fire_heading(const Unit& u, int slot) override { return u.weapons[static_cast<std::size_t>(slot)].aim_heading; }
     std::int32_t motion_speed(const Unit& u) override { return sim::motion_speed(ticks[u.id]); }
     void play_sound(std::uint16_t s, const Vec3i& p) override { outside_.play_sound(s, p); }
-    void spawn_smoke(const Vec3i& p) override { outside_.spawn_smoke(p); }
-    void spawn_muzzle_smoke(const Vec3i& p) override { outside_.spawn_muzzle_smoke(p); }
+    void spawn_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke(c, p, 9);
+        outside_.spawn_smoke(p);
+    }
+    void spawn_muzzle_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_muzzle_smoke(c, p, 9);
+        outside_.spawn_muzzle_smoke(p);
+    }
     void spawn_explosion(const Vec3i& p, const WeaponType& w, bool wa, bool iw) override { spawn_impact(effects_world_, p, w, wa, iw); }
     void camera_shake(std::int32_t x, std::int32_t y, std::int32_t d) override {
         add_camera_shake(shake, x, y, d, settings.shake_disabled);
@@ -470,10 +487,22 @@ private:
     void free_object(std::uint32_t) override {}
     void area_damage(const WeaponType& w, const Vec3i& at) override { area_damage_at(projectile_world_, w, at); }
     void feature_packet(const std::uint8_t* p, bool to_host) override { outside_.feature_packet(p, to_host); }
-    void feature_smoke(const Vec3i& p) override { outside_.feature_smoke(p); }
-    void feature_steam(const Vec3i& p) override { outside_.feature_steam(p); }
+    void feature_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke(c, p, 5);
+        outside_.feature_smoke(p);
+    }
+    void feature_steam(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_steam(c, p, 4);
+        outside_.feature_steam(p);
+    }
     void feature_fire_sound(std::int16_t x, std::int16_t z) override { outside_.feature_fire_sound(x, z); }
-    void wreck_fire(const Vec3i& p) override { outside_.wreck_fire(p); }
+    void wreck_fire(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke_emitter(c, p, 15, 900, 9);
+        outside_.wreck_fire(p);
+    }
 
     // EffectsSystems
     bool unit_velocity(const Unit& u, Vec3i& v) override {
@@ -482,7 +511,11 @@ private:
         return true;
     }
     int unit_owner(const Unit& u) override { return u.id < ticks.size() ? ticks[u.id].owner : 0; }
-    void explosion_smoke(const Vec3i& p) override { outside_.explosion_smoke(p); }
+    void explosion_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke_emitter(c, p, 7, 15, 9);
+        outside_.explosion_smoke(p);
+    }
 
     // OrderSystems
     std::int32_t run_mission(Unit& u, MissionOrder& o, std::uint32_t& event) override { return run_mission_behaviour(missions_, u, o, event); }
