@@ -1,0 +1,136 @@
+#include "ta/battle_types.h"
+
+#include "ta/model3do.h"
+
+namespace ta {
+namespace {
+
+using u16 = std::uint16_t;
+
+const sim::WeaponType* weapon_at(const std::vector<sim::WeaponType>& weapons, int slot) {
+    return slot >= 0 && static_cast<std::size_t>(slot) < weapons.size() ? &weapons[static_cast<std::size_t>(slot)] : nullptr;
+}
+
+} // namespace
+
+sim::WeaponType to_weapon_type(const WeaponDefRecord& d) {
+    sim::WeaponType w;
+    w.index = d.index;
+    w.flags = d.flags;
+    switch (d.fire) {
+    case WeaponFireFn::Turret: w.fire = sim::WeaponFireRoutine::Turret; break;
+    case WeaponFireFn::VLaunch: w.fire = sim::WeaponFireRoutine::VerticalLaunch; break;
+    case WeaponFireFn::LineOfSight: w.fire = sim::WeaponFireRoutine::LineOfSight; break;
+    case WeaponFireFn::Dropped: w.fire = sim::WeaponFireRoutine::Dropped; break;
+    default: w.fire = sim::WeaponFireRoutine::None; break;
+    }
+    w.velocity = d.weapon_velocity;
+    w.start_velocity = d.start_velocity;
+    w.acceleration = d.weapon_acceleration;
+    w.range = d.range;
+    w.energy_per_shot = d.energy_per_shot;
+    w.metal_per_shot = d.metal_per_shot;
+    w.min_barrel_angle = d.min_barrel_angle;
+    w.reload_time = static_cast<u16>(d.reload_time);
+    w.tolerance = static_cast<u16>(d.tolerance);
+    w.pitch_tolerance = static_cast<u16>(d.pitch_tolerance);
+    w.accuracy = static_cast<u16>(d.accuracy);
+    w.coverage = d.coverage;
+    w.weapon_timer = static_cast<u16>(d.weapon_timer);
+    w.turn_rate = static_cast<u16>(d.turn_rate);
+    w.burst = static_cast<u16>(d.burst);
+    w.burst_rate = static_cast<u16>(d.burst_rate);
+    w.spray_angle = static_cast<u16>(d.spray_angle);
+    w.duration = static_cast<u16>(d.duration);
+    w.random_decay = static_cast<u16>(d.random_decay);
+    w.smoke_delay = static_cast<u16>(d.smoke_delay);
+    w.flight_time = static_cast<u16>(d.flight_time);
+    w.hold_time = static_cast<u16>(d.hold_time);
+    w.area_of_effect = static_cast<u16>(d.area_of_effect);
+    w.default_damage = static_cast<u16>(d.default_damage);
+    w.edge_effectiveness = d.edge_effectiveness;
+    w.shake_magnitude = d.shake_magnitude;
+    w.shake_duration = d.shake_duration;
+    if (d.has_damage_map) w.damage = d.damage_overrides;
+    return w;
+}
+
+std::vector<sim::WeaponType> to_weapon_types(const WeaponDefTable& defs) {
+    std::vector<sim::WeaponType> out;
+    out.reserve(defs.slots.size());
+    for (const WeaponDefRecord& d : defs.slots) out.push_back(to_weapon_type(d));
+    return out;
+}
+
+bool load_unit_assets(Vfs& vfs, const UnitDefRecord& d, UnitTypeAssets& out, std::string& error) {
+    out = UnitTypeAssets{};
+    if (!vfs.read("objects3d\\" + d.object_name + ".3DO", out.model_file)) {
+        error = "no model objects3d\\" + d.object_name + ".3DO";
+        return false;
+    }
+    const Model3doLoadResult m = load_3do(out.model_file, true);
+    if (!m.root) {
+        error = "model: " + m.error;
+        return false;
+    }
+    out.has_model = true;
+    out.pose_model = to_pose_model(m.root.get());
+    out.has_footprint = selection_footprint(out.model_file, m.root.get(), out.footprint);
+    if (vfs.read("scripts\\" + d.unit_name + ".COB", out.cob_file)) {
+        std::string cob_error;
+        out.has_script = load_cob(out.cob_file, out.cob, cob_error);
+        if (!out.has_script) {
+            error = "script: " + cob_error;
+            return false;
+        }
+    }
+    return true;
+}
+
+void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, const std::vector<sim::WeaponType>& weapons,
+                         sim::BattleUnitType& out) {
+    sim::UnitTypeInfo& info = out.info;
+    info.max_damage = d.max_damage;
+    info.model_min_x = d.model_min_x;
+    info.model_min_y = d.model_min_y;
+    info.model_min_z = d.model_min_z;
+    info.model_max_x = d.model_max_x;
+    info.model_max_y = d.model_max_y;
+    info.model_max_z = d.model_max_z;
+    info.explode_as = weapon_at(weapons, d.explode_as);
+    info.self_destruct_as = weapon_at(weapons, d.self_destruct_as);
+    info.yard_map = d.has_yard_map ? d.yard_map : std::vector<std::uint8_t>{};
+
+    sim::UnitTickTypeInfo& tick = out.tick;
+    tick.wind_generator = d.wind_generator;
+    tick.heal_time = static_cast<u16>(d.heal_time);
+    tick.type_flags = d.type_flags;
+    tick.damage_modifier = d.damage_modifier;
+    tick.build_time = d.build_time;
+    tick.build_cost_energy = d.build_cost_energy;
+    tick.build_cost_metal = d.build_cost_metal;
+    tick.name = d.unit_name;
+    tick.default_mission = d.default_mission;
+
+    sim::GroundSettleType& settle = out.settle;
+    settle.type_flags = d.type_flags;
+    settle.waterline = d.waterline;
+    settle.max_velocity = d.max_velocity;
+    settle.has_footprint = assets.has_footprint;
+    settle.footprint = assets.footprint;
+
+    sim::UnitCreateType& c = out.create;
+    c.type_flags = d.type_flags;
+    c.max_per_player = d.max_this_unit;
+    c.movement = d.bm_code;
+    c.build_menu_pages = d.build_menu_page_count;
+    c.footprint_x = d.footprint_x;
+    c.footprint_z = d.footprint_z;
+    c.build_angle = static_cast<u16>(d.build_angle);
+    c.extracts_metal = d.extracts_metal;
+    c.weapons = {weapon_at(weapons, d.weapon1), weapon_at(weapons, d.weapon2), weapon_at(weapons, d.weapon3)};
+    c.model = assets.has_model ? &assets.pose_model : nullptr;
+    c.script = assets.has_script ? &assets.cob.program : nullptr;
+}
+
+} // namespace ta

@@ -44,6 +44,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 # TA compatibility layer (importers for the original game's data). Kept apart
 # from the engine; the engine never depends on it.
 add_library(ta_compat STATIC
+    ta_compat/src/battle_types.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp
