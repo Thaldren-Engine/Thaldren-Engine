@@ -205,7 +205,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems {
     }
     void drop_unit(sim::Unit& u, i32 a) override { rec(13, unit_token(u), {static_cast<u32>(a)}); }
     // UnitTickSystems
-    void weapons(sim::Unit& u) override { rec(1, 0, {unit_token(u)}); }
+    void weapons(sim::Unit& u, u32&) override { rec(1, 0, {unit_token(u)}); }
     void damage(sim::Unit* a, sim::Unit& t, i32 amount, i32 kind, i32 heading) override {
         rec(2, 0, {a ? unit_token(*a) : 0u, unit_token(t), static_cast<u32>(amount), static_cast<u32>(kind), static_cast<u32>(heading)});
     }
@@ -214,13 +214,13 @@ struct World : sim::UnitWorld, sim::UnitTickSystems {
         std::memcpy(&bits, &rate, 4);
         rec(3, 0, {unit_token(w), unit_token(t), bits});
     }
-    void primary_orders(sim::Unit& u) override { rec(4, 0, {unit_token(u)}); }
-    void secondary_orders(sim::Unit& u) override { rec(5, 0, {unit_token(u)}); }
-    void motion(sim::Unit& u) override { rec(6, 0x7E000000u | u.id, {unit_token(u)}); }
-    void settle_height(sim::Unit& u) override { rec(7, 0, {unit_token(u)}); }
-    void killed(sim::Unit& u, std::uint8_t kind) override { rec(8, 0, {unit_token(u), kind}); }
-    void broadcast_player_units(int player) override { rec(9, 0, {0x20000000u | static_cast<u32>(player)}); }
-    void camera_follow_step() override {}
+    void primary_orders(sim::Unit& u, u32&) override { rec(4, 0, {unit_token(u)}); }
+    void secondary_orders(sim::Unit& u, u32&) override { rec(5, 0, {unit_token(u)}); }
+    void motion(sim::Unit& u, u32&) override { rec(6, 0x7E000000u | u.id, {unit_token(u)}); }
+    void settle_height(sim::Unit& u, u32&) override { rec(7, 0, {unit_token(u)}); }
+    void killed(sim::Unit& u, std::uint8_t kind, u32&) override { rec(8, 0, {unit_token(u), kind}); }
+    void broadcast_player_units(int player, u32&) override { rec(9, 0, {0x20000000u | static_cast<u32>(player)}); }
+    void camera_follow_step(u32&) override {}
 };
 
 struct Stats {

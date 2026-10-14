@@ -59,6 +59,17 @@ struct PlayerSlot {
     std::string commander_name;                  // unit name of this player's side commander
 };
 
+// Addresses of the original's game state block and unit table. A few original
+// behaviours depend on them through stale stack words holding pointers; they are
+// heap addresses and vary between runs (docs/RE_MEMORY.md, "Stale stack word").
+// Defaults: a skirmish measured on Windows 11.
+struct OriginalAddresses {
+    std::uint32_t game_state = 0x025F818E;
+    std::uint32_t unit_table = 0x0E7C9020;
+    std::uint32_t unit(std::uint16_t id) const { return unit_table + id * 0x118u; }
+    std::uint32_t player(int slot) const { return game_state + 0x1B63u + static_cast<std::uint32_t>(slot) * 0x14Bu; }
+};
+
 struct UnitTickEnvironment {
     std::uint32_t game_tick = 0;
     bool wind_changed = false;
@@ -69,22 +80,33 @@ struct UnitTickEnvironment {
     std::uint8_t sea_level = 0;
     bool broadcast_unit_states = false;  // network game flag
     bool camera_auto_follow = false;     // "big brother" camera cycling
+    OriginalAddresses addresses;
+    // The original's stack word 0x1C below the unit pass frame. Whatever the
+    // routines called from the pass leave there is what a dying unit without a
+    // Killed script gets as its wreck level. It carries over between passes.
+    std::uint32_t stale_word = 0;
 };
 
-// Systems the unit pass calls into, in this order per unit.
+// Systems the unit pass calls into, in this order per unit. Each one that the
+// original calls from the pass also updates `stale_word` the way the original
+// routine does: whatever it leaves in the stack word 0x1C below the pass frame
+// (unchanged if it never reaches that deep).
 class UnitTickSystems {
 public:
     virtual ~UnitTickSystems() = default;
-    virtual void weapons(Unit& unit) = 0;
+    virtual void weapons(Unit& unit, std::uint32_t& stale_word) = 0;
+    // Damage and healing leave fixed values; the pass applies them itself.
     virtual void damage(Unit* attacker, Unit& target, std::int32_t amount, std::int32_t kind, std::int32_t heading) = 0;
     virtual void repair_heal(Unit& worker, Unit& target, float rate) = 0;
-    virtual void primary_orders(Unit& unit) = 0;
-    virtual void secondary_orders(Unit& unit) = 0;
-    virtual void motion(Unit& unit) = 0;
-    virtual void settle_height(Unit& unit) = 0;
-    virtual void killed(Unit& unit, std::uint8_t kind) = 0;
-    virtual void broadcast_player_units(int player) = 0;
-    virtual void camera_follow_step() = 0;
+    // The original's primary orders routine always leaves the slot player's record address.
+    virtual void primary_orders(Unit& unit, std::uint32_t& stale_word) = 0;
+    virtual void secondary_orders(Unit& unit, std::uint32_t& stale_word) = 0;
+    virtual void motion(Unit& unit, std::uint32_t& stale_word) = 0;
+    virtual void settle_height(Unit& unit, std::uint32_t& stale_word) = 0;
+    // Reads the word as the uninitialised wreck level and leaves the final wreck level.
+    virtual void killed(Unit& unit, std::uint8_t kind, std::uint32_t& stale_word) = 0;
+    virtual void broadcast_player_units(int player, std::uint32_t& stale_word) = 0;
+    virtual void camera_follow_step(std::uint32_t& stale_word) = 0;
 };
 
 // Runs one step of the unit pass. `units` and `ticks` are parallel tables

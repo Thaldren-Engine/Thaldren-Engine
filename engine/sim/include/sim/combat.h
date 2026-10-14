@@ -81,7 +81,9 @@ void apply_damage_packet(Combat& c, const DamagePacket& packet);
 // One step of repair or self-heal at `rate`; false if already whole or out of energy.
 bool repair_heal(Combat& c, Unit& worker, Unit& target, float rate);
 // Kills a dying unit: runs its death script, then tells the network and applies the kill.
-void kill_unit(Combat& c, Unit& unit, std::int32_t kind);
+// `stale_word` is the caller's stack word the original reads as the uninitialised wreck
+// level (it matters when the script has no Killed function); it receives the final wreck level.
+void kill_unit(Combat& c, Unit& unit, std::int32_t kind, std::uint32_t& stale_word);
 void apply_killed_packet(Combat& c, const KilledPacket& packet, bool skip_script);
 
 } // namespace sim

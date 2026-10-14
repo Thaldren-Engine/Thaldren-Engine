@@ -159,17 +159,19 @@ bool repair_heal(Combat& c, Unit& worker, Unit& target, float rate) {
     return true;
 }
 
-void kill_unit(Combat& c, Unit& u, i32 kind) {
+void kill_unit(Combat& c, Unit& u, i32 kind, u32& stale_word) {
     if (!(u.flags & unit_flags::kAlive)) return;
     UnitTickState& t = c.ticks[u.id];
     PlayerSlot& owner = c.players[static_cast<std::size_t>(t.owner)];
     const bool commander = is_commander(c, t);
     if (commander) owner.flags = static_cast<u16>(owner.flags & ~1u);
     i32 severity = 0;
-    i32 wreck = 0;  // the original leaves this uninitialised until the death script sets it
+    i32 wreck = static_cast<i32>(stale_word);  // uninitialised in the original: whatever the caller left there
     if (kind == damage_kind::kCorpseOnly) {
         wreck = 1;
-    } else if (kind != 4 && kind != 5 && kind != 9 && u.hit_points <= 0) {
+    } else if (kind == 4 || kind == 5 || kind == 9 || u.hit_points > 0) {
+        wreck = 0;
+    } else {
         const u32 max = u.type ? u.type->max_damage : 0;
         const u32 sum = hp_percent_raw(u.hit_points * -100, max) + t.prev_health_percent;
         severity = static_cast<i32>(sum) / 2;
@@ -178,6 +180,7 @@ void kill_unit(Combat& c, Unit& u, i32 kind) {
         if (u.script) u.script->call_in_out(u.script->program().find_function("Killed"), &severity, &wreck, nullptr, nullptr);
     }
     if (u.build_fraction_left != 0.0f) wreck = 0;
+    stale_word = static_cast<u32>(wreck);
     KilledPacket p{};
     p[0] = 0x0C;
     put16(&p[1], u.id);

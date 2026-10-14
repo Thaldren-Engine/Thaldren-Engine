@@ -403,12 +403,15 @@ void test_combat() {
     CHECK_EQ(units[3].hit_points < 0, true);
     ticks[3].prev_health_percent = 40;
     log.calls.clear();
-    sim::kill_unit(c, units[3], ticks[3].last_damage_kind);
-    // Packet: severity from overkill and previous health, kind 1, no script so no wreck.
+    // No script: the wreck level is the low nibble of the caller's stale stack word (here a
+    // return address the ground-settle routine leaves).
+    std::uint32_t stale = 0x0048A8FF;
+    sim::kill_unit(c, units[3], ticks[3].last_damage_kind, stale);
+    CHECK_EQ(stale, 0x0048A8FFu);  // left as the final wreck level
     CHECK_EQ(log.last_packet.size(), 11u);
     CHECK_EQ(log.last_packet[0], 0x0C);
     CHECK_EQ(log.last_packet[3], 100);  // attacker's net id
-    CHECK_EQ(log.last_packet[10], 0x10);
+    CHECK_EQ(log.last_packet[10], 0x1F);
     CHECK_EQ(players[1].units_lost, 1);
     CHECK_EQ(players[0].units_killed, 1);
     CHECK_EQ(players[0].commanders_killed, 1);
@@ -417,11 +420,12 @@ void test_combat() {
     CHECK_EQ(players[1].alive_count, 1);
     CHECK_EQ(ticks[3].type_index, 0);
     CHECK_EQ((units[3].flags & unit_flags::kAlive) != 0, false);
-    CHECK_EQ(log.calls.size(), 2u);  // no "commander died": game mode 0
-    CHECK_EQ(log.calls[0] == "kill counted" && log.calls[1] == "detonate", true);
+    CHECK_EQ(log.calls.size(), 3u);  // no "commander died": game mode 0
+    CHECK_EQ(log.calls[0] == "kill counted" && log.calls[1] == "detonate" && log.calls[2] == "wreck 15 burn", true);
     // Corpse-only death: wreck level 1, no burning, no severity.
     log.calls.clear();
-    sim::kill_unit(c, units[2], sim::damage_kind::kCorpseOnly);
+    sim::kill_unit(c, units[2], sim::damage_kind::kCorpseOnly, stale);
+    CHECK_EQ(stale, 1u);
     CHECK_EQ(log.last_packet[10], 0x71);
     CHECK_EQ(log.last_packet[9], 0);
     CHECK_EQ(log.calls.size(), 2u);

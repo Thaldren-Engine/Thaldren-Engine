@@ -146,6 +146,13 @@ bool ScriptInstance::call_in_out(int function, std::int32_t* a, std::int32_t* b,
     return true;
 }
 
+void ScriptInstance::tick(std::int32_t ticks, std::uint32_t& stale_word) {
+    const bool live = thread_count() != 0;
+    tick(ticks);
+    if (live) stale_word = 7;
+    if (turned_) stale_word = last_turn_target_;
+}
+
 void ScriptInstance::tick(std::int32_t ticks) {
     if (thread_count() != 0)
         for (int t = 0; t < kThreads; ++t) run_thread(t, ticks);
@@ -492,6 +499,7 @@ void ScriptInstance::run_thread(int t, std::int32_t ticks) {
 }
 
 void ScriptInstance::animate(std::int32_t ticks) {
+    turned_ = false;
     if (ticks == 0 || !dirty_) return;
     dirty_ = false;
     const std::size_t pieces = program_.piece_names.size();
@@ -532,6 +540,8 @@ void ScriptInstance::animate(std::int32_t ticks) {
                 const u32 step = u(ticks) * u(a[kTurnSpeed + axis]);
                 u32 value = u(cur) + step;
                 const i32 target = a[kTurnTarget + axis];
+                turned_ = true;
+                last_turn_target_ = u(target);
                 if (target == -1) {
                     a[kActive] = 1;
                 } else if (a[kTurnSpeed + axis] > 0) {

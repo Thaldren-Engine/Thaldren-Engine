@@ -565,14 +565,14 @@ After every step it compares the stub call log, all touched unit fields, every u
 
 **After all slots:** camera auto-follow, every 90 steps while GS+0x14373 bit1 is set (UI; it reads the keyboard for Shift).
 
-### Damage, healing and death — differential-tested: 3,000 scenarios, 600,000 unit passes, 656,853 combat operations, 26,934 kills, 0 differences
+### Damage, healing and death — differential-tested: 3,000 scenarios, 600,000 unit passes, 656,956 combat operations, 26,878 kills, all 278 unit types, 0 differences
 Implementation: `engine/sim/src/combat.cpp` (`apply_damage`, `apply_damage_packet`, `repair_heal`, `kill_unit`, `apply_killed_packet`). Checked by `tools/orig_harness/combat_harness`. It works like `unitloop_harness`, but the original damage, heal and kill routines run for real. Random direct damage, heals, kills and received damage/kill packets are mixed with unit passes. After each operation it compares:
 - the stub log, including network packet bytes;
 - unit fields (hp, flags, type index, kill count, last attacker and slot, last damage kind, metal income, timers);
 - player counters;
 - scripts and poses.
 
-Unit types whose script has no `Killed` function (22 of 278) are left out (see the wreck quirk below).
+All 278 unit types are used, including the 22 whose script has no `Killed` function. The harness presets the stale stack word (below) before each unit pass and direct kill, reads it back afterwards, and compares it too.
 
 **Unit fields used:** +0xB8 kill count (u16), +0xBC the unit's resource slot (metal income float at +0xD4, its player at +0xEC), +0xF0 last attacker, +0xF4 last attacker's player slot (10 = none), +0xF5 last damage kind, +0xFF owner slot.
 **Player fields used** (0x14B record):
@@ -618,7 +618,7 @@ Unit types whose script has no `Killed` function (22 of 278) are left out (see t
   - Kind 7: wreck 1, severity 0.
   - Kinds 4, 5, 9, or hp > 0: both 0.
   - Otherwise: severity = ((u32)(−hp·100) / max + previous health % (+0xF7)) / 2 as signed, clamped 1..100. Then the script runs `Killed(severity, wreck)` in/out at once (CallInOut). Both values may change.
-  - **Quirk:** the wreck variable is uninitialised before that call. If the script has no `Killed` function, the stale stack value is used. The engine uses 0.
+  - **Quirk:** the wreck variable is uninitialised before that call, and the in/out call leaves it alone when the script has no `Killed` function. Its value is then the caller's stale stack word (next section). The engine takes that word as a parameter, and after the routine the word holds the final wreck level.
 - If the build fraction ≠ 0, wreck = 0.
 - It builds the kill packet: the net id is from the last attacker slot via `0x0044FFD0` (−1 for slot 10 or a slot with controller 0).
 - If the owner plays (1|2), it sends 11 bytes with the owner's net id.
@@ -654,6 +654,28 @@ Unit types whose script has no `Killed` function (22 of 278) are left out (see t
     - type index = 0; clear alive and bits 0x30; the def becomes the game state's blank def (GS+0x1439B);
     - owner alive count −1. At 0, the network/AI announcements run (provider types 3/2).
 
+### Stale stack word (the wreck level of units without a `Killed` function)
+The kill routine's wreck variable is the dword 0x10 below its entry stack pointer. Called from the unit pass, that is **0x1C below the pass's frame** (after its four register pushes). Its value is whatever the routines the pass called last left at that depth. The engine carries it as `UnitTickEnvironment::stale_word` across passes. Every hook the pass calls gets it by reference and must update it like the original routine does.
+
+**Verified effects** (compared after every pass and direct kill in `combat_harness`):
+- **Wind notification** (when it fires): the last pushed argument, `wind speed << 4`.
+- **Script step:** if the live-thread count was ≠ 0 at its start, 7 (the last thread index pushed). Then, if the animation step ran a rotation (turn speed ≠ 0, including endless spins), the turn target of the last rotation processed, as a u32 (a local of `0x004B1C00` at its entry − 4).
+- **Water damage:** the damage packet's kind byte (0x0B) replaces the low byte. The other three bytes stay.
+- **Self-heal step:** a saved register, **the unit's address** in the original's unit table (`table + id × 0x118`).
+- **Kill:** the final wreck level (1 for kind 7; 0 for kinds 4, 5, 9 or hp > 0, or when not fully built; else whatever `Killed` returned or the stale value). If the unit is not alive, unchanged.
+- **Stubbed / not built yet:** weapons, orders, motion, settle, broadcast and camera. The harness stubs never reach that depth.
+
+**Traced but not yet verified** (their implementations must reproduce this):
+- **Primary orders `0x0043B7C0`:** always leaves a saved register, **the slot player's record address** (GS + 0x1B63 + slot × 0x14B).
+- **Ground settle `0x0048A870`:** leaves the return address of the last call it made at its entry − 0x10: `0x0048A8FF`, `0x0048A909`, `0x0048A92C` or `0x0048A96F`. On paths with no call, unchanged. So a dying mobile unit without `Killed` usually gets wreck level 15, 9 or 12.
+- **Secondary orders `0x0043BAD0`, motion `0x0043DD20`, weapons `0x0049E1A0`:** not traced.
+
+**The original is not deterministic here.** The game state block is a heap allocation, and its address varies between runs on the same machine: two skirmishes on Windows 11 measured 0x025F818E and 0x025E86AB (unit table 0x0E7C9020 and 0x0E6FD020; its low 12 bits look stable). The value left by primary orders depends on that address.
+- The engine keeps both addresses in `OriginalAddresses`; the defaults are the first measurement.
+- `ta_capture` writes a `layout` event with the live addresses at the first simulation step.
+
+**Other callers of the kill routine** each have their own stale word: `0x00486F10` (kill a player's units), `0x004861D0`, `0x00485980`. They are not built yet.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -677,6 +699,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Stale stack word as the wreck level of units without `Killed` (wind, script step, water damage, heal, kill effects; original heap addresses) — **3,000 scenarios incl. all 22 Killed-less types, word compared after every pass/kill: 0 differences** | `0x004864B0`, `0x0048AD30`, `0x00437910`, `0x004B0D60`, `0x004B1C00`, `0x00489BB0`, `0x0041BD10`, `0x0043B7C0`, `0x0048A870` | `engine/sim/src/{combat,unit_tick,script_vm}.cpp`, `tools/orig_harness/combat_harness.cpp`, `tools/capture/capture.cpp` |
 | 2026-10-14 | Damage, repair/self-heal, kills (packets, veterancy, severity/wreck, statistics, reclaim, teardown) — **3,000 scenarios / 600,000 unit passes / 656,853 combat operations / 26,934 kills identical** | `0x00489BB0`, `0x00489CE0`, `0x0041BD10`, `0x004864B0`, `0x004866D0`, `0x00467950`, `0x0044FDB0`, `0x0044FE40`, `0x0044FFD0` | `engine/sim/src/combat.cpp`, `tools/orig_harness/combat_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Per-step unit pass (wind, script step, timers, selection, health %, water damage, self-heal gates; subsystems as ordered hooks) — **1,000 scenarios / 253,024 passes / 65,843 script calls with real scripts identical** | `0x0048AD30`, `0x00437910`, `0x0048B090` (activation side calls `0x0047F780`, `0x0041C110`, `0x00451DF0`) | `engine/sim/src/unit_tick.cpp`, `tools/orig_harness/unitloop_harness.cpp` |
 | 2026-10-14 | Unit state, script unit values (GET/SET/transport), heightmap + TNT heights — **116,867 GET / 33,341 SET / 16,592 transport calls on all 278 units identical** | `0x00480770`, `0x00480B20`, `0x00481430`, `0x00481470`, `0x00485070`, `0x0043DEF0`, `0x0043E060`, `0x0048B090`, `0x0047DAC0`, `0x00483610` | `engine/sim/src/{unit,heightmap}.cpp`, `ta_compat/src/tnt.cpp`, `tools/orig_harness/unitvalue_harness.cpp` |

@@ -27,6 +27,7 @@ namespace {
 constexpr DWORD kGameStatePtr = 0x00511DE8;     // GameState*
 constexpr DWORD kOffGameTick = 0x38A47;         // GameState::dwGameTick
 constexpr DWORD kOffSimStepsPending = 0x38A3B;  // GameState::nSimStepsPending
+constexpr DWORD kOffUnitTable = 0x14357;        // Unit* (0x118 bytes each)
 constexpr DWORD kDisplayContextPtr = 0x0051FBD0;
 constexpr DWORD kOffTickRateHz = 0xE8;
 constexpr DWORD kBattleRngState = 0x0051FC88;
@@ -470,6 +471,13 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
                      static_cast<unsigned long long>(g_rand_draws_this_step));
         g_battle_draws_this_step = 0;
         g_rand_draws_this_step = 0;
+        // Heap addresses some original behaviour depends on (stale stack words holding pointers).
+        static bool layout_written = false;
+        std::uint32_t unit_table = 0;
+        if (gs && !layout_written && read_u32(gs + kOffUnitTable, unit_table)) {
+            layout_written = true;
+            std::fprintf(g_out, "{\"ev\":\"layout\",\"game_state\":%u,\"unit_table\":%u}\n", gs, unit_table);
+        }
         static bool dumped = false;
         if (!opt.dump_defs.empty() && !dumped) {
             dumped = true;

@@ -143,7 +143,7 @@ void emit_stub(Emitter& e, const Stub& s, u32 log_ptr_addr, u32 ret_addr) {
 }
 
 struct Layout {
-    u32 heap = 0, bump_ptr = 0, stubs = 0, log_ptr = 0, log_base = 0, ret_val = 0, gs = 0, units = 0, defs = 0, models = 0,
+    u32 caller_pass = 0, caller_kill = 0, heap = 0, bump_ptr = 0, stubs = 0, log_ptr = 0, log_base = 0, ret_val = 0, gs = 0, units = 0, defs = 0, models = 0,
         cells = 0, schema = 0, names = 0, files = 0, pinfo = 0, empty_def = 0;
 };
 
@@ -185,6 +185,32 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm) {
         while (e.b.size() % 16) e.u8(0xCC);
         if (!r.patch_jump(s.address, at)) return false;
     }
+    // Callers that preset the stack word the original's kill routine reads uninitialised
+    // (0x1C below the unit pass frame / 0x1C below the caller's own stack pointer for a
+    // direct kill), call, and save what is left there afterwards.
+    const u32 in = L.ret_val + 0x10, out = L.ret_val + 0x14, kind_arg = L.ret_val + 0x18, unit_arg = L.ret_val + 0x1C;
+    auto call_rel = [&](u32 target) {
+        const u32 next = L.stubs + static_cast<u32>(e.b.size()) + 5;
+        e.u8(0xE8); e.u32le(target - next);
+    };
+    L.caller_pass = L.stubs + static_cast<u32>(e.b.size());
+    e.u8(0xA1); e.u32le(in);                                 // mov eax,[in]
+    e.u8(0x89); e.u8(0x44); e.u8(0x24); e.u8(0xC0);          // mov [esp-0x40],eax
+    call_rel(kUnitPass);
+    e.u8(0x8B); e.u8(0x44); e.u8(0x24); e.u8(0xC0);          // mov eax,[esp-0x40]
+    e.u8(0xA3); e.u32le(out);                                // mov [out],eax
+    e.u8(0xC3);
+    while (e.b.size() % 16) e.u8(0xCC);
+    L.caller_kill = L.stubs + static_cast<u32>(e.b.size());
+    e.u8(0xA1); e.u32le(in);
+    e.u8(0x89); e.u8(0x44); e.u8(0x24); e.u8(0xE4);          // mov [esp-0x1C],eax
+    e.u8(0xFF); e.u8(0x35); e.u32le(kind_arg);               // push [kind]
+    e.u8(0xFF); e.u8(0x35); e.u32le(unit_arg);               // push [unit]
+    call_rel(kKillUnit);
+    e.u8(0x8B); e.u8(0x44); e.u8(0x24); e.u8(0xE4);          // mov eax,[esp-0x1C]
+    e.u8(0xA3); e.u32le(out);
+    e.u8(0xC3);
+    while (e.b.size() % 16) e.u8(0xCC);
     if (!r.write(L.stubs, e.b.data(), e.b.size())) return false;
     r.w32(L.bump_ptr, L.heap);
     r.w32(L.log_ptr, L.log_base);
@@ -277,18 +303,19 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems {
     }
     void drop_unit(sim::Unit& u, i32 a) override { rec(13, tok(u), {static_cast<u32>(a)}); }
     // UnitTickSystems
-    void weapons(sim::Unit& u) override { rec(1, 0, {tok(u)}); }
+    // Stubbed systems never reach the stale stack word, so they leave it unchanged.
+    void weapons(sim::Unit& u, u32&) override { rec(1, 0, {tok(u)}); }
     void damage(sim::Unit* a, sim::Unit& t, i32 amount, i32 kind, i32 heading) override {
         sim::apply_damage(*combat, a, t, amount, kind, heading);
     }
     void repair_heal(sim::Unit& w, sim::Unit& t, float rate) override { sim::repair_heal(*combat, w, t, rate); }
-    void primary_orders(sim::Unit& u) override { rec(4, 0, {tok(u)}); }
-    void secondary_orders(sim::Unit& u) override { rec(5, 0, {tok(u)}); }
-    void motion(sim::Unit& u) override { rec(6, 0x7E000000u | u.id, {tok(u)}); }
-    void settle_height(sim::Unit& u) override { rec(7, 0, {tok(u)}); }
-    void killed(sim::Unit& u, std::uint8_t kind) override { sim::kill_unit(*combat, u, kind); }
-    void broadcast_player_units(int player) override { rec(9, 0, {0x20000000u | static_cast<u32>(player)}); }
-    void camera_follow_step() override {}
+    void primary_orders(sim::Unit& u, u32&) override { rec(4, 0, {tok(u)}); }
+    void secondary_orders(sim::Unit& u, u32&) override { rec(5, 0, {tok(u)}); }
+    void motion(sim::Unit& u, u32&) override { rec(6, 0x7E000000u | u.id, {tok(u)}); }
+    void settle_height(sim::Unit& u, u32&) override { rec(7, 0, {tok(u)}); }
+    void killed(sim::Unit& u, std::uint8_t kind, u32& stale) override { sim::kill_unit(*combat, u, kind, stale); }
+    void broadcast_player_units(int player, u32&) override { rec(9, 0, {0x20000000u | static_cast<u32>(player)}); }
+    void camera_follow_step(u32&) override {}
     // CombatSystems
     void retarget(sim::Unit* a, sim::Unit& v, std::uint16_t amount) override { rec(20, 0, {a ? tok(*a) : 0u, tok(v), amount}); }
     void add_paralysis(sim::Unit& v, std::uint16_t amount) override {
@@ -576,6 +603,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     ++st.scenarios;
 
     sim::UnitTickEnvironment env;
+    env.addresses.game_state = L.gs;
+    env.addresses.unit_table = L.units;
     std::int16_t camera = 0;
     i32 env_live = 0;
     auto norm_ptr = [&](u32& w) {
@@ -724,6 +753,15 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     };
     auto alive = [&](int i) { return (units[static_cast<std::size_t>(i)].flags & sim::unit_flags::kAlive) != 0; };
     auto any_unit = [&]() { return present[g() % present.size()]; };
+    auto random_stale = [&]() -> u32 { return g() % 3 == 0 ? g() % 16 : static_cast<u32>(g()); };
+    // The stack word left behind by the original must match the engine's stale word.
+    auto check_stale = [&](u32 mine, const std::string& what) {
+        const u32 theirs = r.r32(L.ret_val + 0x14);
+        if (theirs == mine) return true;
+        std::printf("scenario %u %s: stale stack word orig %08x ours %08x\n", seed, what.c_str(), theirs, mine);
+        ++st.mismatches;
+        return false;
+    };
     auto fail = [&](const std::string& what) {
         std::printf("scenario %u: the original failed during %s\n", seed, what.c_str());
         return false;
@@ -799,8 +837,13 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 if (g() % 2) units[static_cast<std::size_t>(ui)].hit_points = static_cast<std::int16_t>(-static_cast<i32>(g() % 500));
                 const std::int16_t hp = units[static_cast<std::size_t>(ui)].hit_points;
                 r.write(unit_addr(ui) + uHp, &hp, 2);
-                sim::kill_unit(combat, units[static_cast<std::size_t>(ui)], kind);
-                if (!r.call(kKillUnit, 0, {unit_addr(ui), static_cast<u32>(kind)})) return fail("kill kind " + std::to_string(kind));
+                u32 stale = random_stale();
+                r.w32(L.ret_val + 0x10, stale);
+                r.w32(L.ret_val + 0x18, static_cast<u32>(kind));
+                r.w32(L.ret_val + 0x1C, unit_addr(ui));
+                sim::kill_unit(combat, units[static_cast<std::size_t>(ui)], kind, stale);
+                if (!r.call(L.caller_kill, 0, {})) return fail("kill kind " + std::to_string(kind));
+                if (!check_stale(stale, "kill " + std::to_string(ui))) return true;
                 ++st.deaths;
                 what = "kill " + std::to_string(ui) + " kind " + std::to_string(kind);
             } else if (kind_of_op == 8) {  // damage packet from the network
@@ -843,9 +886,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         }
 
         // One unit pass.
+        env.stale_word = random_stale();
+        r.w32(L.ret_val + 0x10, env.stale_word);
         env_live = sim::run_unit_pass(units, tstate, players, env, world, camera);
         if (engine_faulted()) return true;
-        if (!r.call(kUnitPass, 0, {})) return fail("unit pass");
+        if (!r.call(L.caller_pass, 0, {})) return fail("unit pass");
+        if (!check_stale(env.stale_word, "unit pass tick " + std::to_string(tick))) return true;
         ++st.ticks;
         if (!compare("tick " + std::to_string(tick))) return true;
     }
@@ -873,7 +919,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::vector<LoadedType> types;
-    int skipped_no_killed = 0;
+    int no_killed = 0;
     for (std::size_t i = 1; i < defs.units.size(); ++i) {
         const auto& d = defs.units[i];
         LoadedType t;
@@ -883,11 +929,7 @@ int main(int argc, char** argv) {
             continue;
         const auto m = ta::load_3do(t.model_file, true);
         if (!m.root || !ta::load_cob(t.cob_file, t.cob, err)) continue;
-        // Without a Killed function the original's wreck level is an uninitialised stack value.
-        if (t.cob.program.find_function("Killed") < 0) {
-            ++skipped_no_killed;
-            continue;
-        }
+        if (t.cob.program.find_function("Killed") < 0) ++no_killed;
         t.pose_model = ta::to_pose_model(m.root.get());
         t.info.max_damage = d.max_damage ? d.max_damage : 1;
         t.info.model_max_y = d.model_max_y;
@@ -912,7 +954,7 @@ int main(int argc, char** argv) {
             if (!r.start(argv[1]) || !setup(r, L, hm)) return 1;
         }
     }
-    std::printf("unit types %zu (%d without a Killed function left out)\n", types.size(), skipped_no_killed);
+    std::printf("unit types %zu (%d without a Killed function)\n", types.size(), no_killed);
     std::printf("scenarios %zu, unit passes %zu, combat operations %zu, kills %zu, mismatching scenarios %zu, engine faults %zu, "
                 "original failures %zu\n",
                 st.scenarios, st.ticks, st.ops, st.deaths, st.mismatches, st.faults, st.failures);

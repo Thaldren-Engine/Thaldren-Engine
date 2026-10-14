@@ -106,6 +106,10 @@ public:
     bool call_in_out(int function, std::int32_t* a, std::int32_t* b, std::int32_t* c, std::int32_t* d);
     // One simulation step: run every thread (sleep counters drop by `ticks`), then animate pieces.
     void tick(std::int32_t ticks);
+    // The same, also updating the stack word the original's step leaves behind for its caller
+    // (see docs/RE_MEMORY.md, "Stale stack word"): 7 if any thread was live, then the turn
+    // target of the last rotation animated.
+    void tick(std::int32_t ticks, std::uint32_t& stale_word);
 
     // State access (for saving, debugging and verification).
     std::uint32_t& thread_word(int thread, int word) { return mem_[static_cast<std::size_t>(thread * kThreadWords + word)]; }
@@ -143,6 +147,8 @@ private:
     std::vector<std::int32_t> statics_;
     std::vector<std::int32_t> anims_;
     bool dirty_ = false;
+    bool turned_ = false;              // the last animate() stepped a rotation
+    std::uint32_t last_turn_target_ = 0;
     std::uint32_t scratch_ = 0;
     std::string fault_;
     std::uint64_t step_limit_ = 0, steps_ = 0;
