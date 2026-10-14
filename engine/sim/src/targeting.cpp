@@ -63,7 +63,7 @@ bool allied_with(Targeting& t, int player, const Unit& other) {
 // Whether `target`'s type is in the category mask.
 bool in_category(Targeting& t, const CategoryMask& mask, const Unit& target) {
     const u16 bit = ttype(t, target).category_bit;
-    if ((bit >> 5) >= mask.size()) {
+    if (static_cast<std::size_t>(bit >> 5) >= mask.size()) {
         set_fault(t, "category bit past the mask");
         return false;
     }
@@ -444,8 +444,9 @@ std::uint8_t resolve_mission(Targeting& t, std::uint8_t what, Unit& unit, Unit* 
 }
 
 void retarget_attack(Targeting& t, Unit* attacker, Unit& victim) {
-    // The original first notifies every order targeting the victim; an order's
-    // notification does nothing.
+    // Every order targeting the victim hears event 0x10 (orders of other units waiting on it wake up).
+    for (UnitLink* l = victim.referrers; l; l = l->next)
+        if (l->owner) l->owner->events |= 0x10u;
     if (attacker && tick_of(t, *attacker).type_index == 0) attacker = nullptr;
     UnitTickState& vt = tick_of(t, victim);
     const PlayerSlot& owner = owner_of(t, victim);
