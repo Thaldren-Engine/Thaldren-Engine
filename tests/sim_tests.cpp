@@ -1424,6 +1424,87 @@ void test_features_and_effects() {
     CHECK_EQ(b.effects.fault.empty(), true);
 }
 
+// Line of sight through the battle: with fog, a player's enemy list holds only what its
+// units' sight shapes cover; the explored map grows with them; the viewed player's radar
+// marks units outside sight; a cloaked enemy is never seen.
+void test_sight() {
+    sim::HeightMap hm(48, 16);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(99);
+    sim::Battle b(outside, hm, rng);
+    b.map.width = 48;
+    b.map.height = 16;
+    b.map.cells.resize(48 * 16);
+    b.init_buckets();
+    b.init_unit_table(4);
+    b.assign_unit_range(0, 1, 1);
+    b.assign_unit_range(1, 2, 3);
+    b.types.resize(2);
+    sim::BattleUnitType& ty = b.types[1];
+    ty.info.max_damage = 100;
+    ty.info.model_max_y = 20 << 16;
+    ty.tick.type_flags = sim::targeting_type_flags::kShootMe;
+    ty.targeting.sight_distance = 300;
+    ty.sight.sight = 300;
+    ty.sight.radar = 700;
+    ty.sight.model_size_y = 20 << 16;
+    // One mask: a disc of radius 2 blocks (64 world units) around the unit's block.
+    sim::SightMask m;
+    m.width = m.height = 5;
+    m.x_offset = m.y_offset = 2;
+    for (int z = 0; z < 5; ++z)
+        for (int x = 0; x < 5; ++x) m.covered.push_back((x - 2) * (x - 2) + (z - 2) * (z - 2) <= 4 ? 1 : 0);
+    b.sight_tables.masks.push_back(m);
+    for (int p = 0; p < 2; ++p) {
+        b.players[static_cast<std::size_t>(p)].active = true;
+        b.players[static_cast<std::size_t>(p)].controller = static_cast<std::uint8_t>(1 + p);
+        b.players[static_cast<std::size_t>(p)].state = static_cast<std::uint8_t>(p);
+        b.alliances[static_cast<std::size_t>(p)][static_cast<std::size_t>(p)] = 1;
+    }
+    b.settings.fog_of_war = true;
+    b.settings.explore = true;
+    b.settings.player_count = 2;
+    b.settings.local_view = 0;
+    b.settings.unit_limit = 0;
+    b.init_sight();
+    CHECK_EQ(b.explored.size(), 24u * 8u);
+    const std::int32_t xs[] = {0, 100, 160, 600};
+    for (std::uint16_t i = 1; i <= 3; ++i) {
+        Unit& u = b.units[i];
+        u.type = &b.types[1].info;
+        u.hit_points = 100;
+        u.flags = unit_flags::kAlive | 1u;
+        u.activate_flags = unit_flags::kActivated;
+        u.pos = {xs[i] << 16, 0, 100 << 16};
+        b.ticks[i].type_index = 1;
+        b.ticks[i].tick_type = &b.types[1].tick;
+        sim::claim_footprint(b.footprint_world(), u);
+    }
+    b.rebuild_sight(true);
+    // Player 0's unit at x 100 sees x 160 (two blocks away), not x 600.
+    CHECK_EQ(b.unit_seen_by(0, b.units[2]), true);
+    CHECK_EQ(b.unit_seen_by(0, b.units[3]), false);
+    CHECK_EQ(b.unit_seen_by(0, b.units[1]), true);  // its own
+    CHECK_EQ((b.explored[3 * 24 + 3] & 1u) != 0 && (b.explored[3 * 24 + 18] & 1u) == 0, true);
+    b.start_players();
+    for (int k = 0; k < 30; ++k) b.advance_tick();
+    b.players_stage();
+    CHECK_EQ(b.targeting().state.tables[0].seen.size(), 1u);
+    CHECK_EQ(b.targeting().state.tables[0].radar.size(), 0u);  // marks come after the refresh
+    // The viewed player's radar (700 + the height bonus) marked unit 3.
+    CHECK_EQ((b.units[3].flags & sim::sight_unit_flags::kRadar) != 0, true);
+    // Cloaked: never seen.
+    b.units[2].activate_flags |= unit_flags::kCloaked;
+    CHECK_EQ(b.unit_seen_by(0, b.units[2]), false);
+    // A move takes the sight along: at x 560 player 0 sees unit 3.
+    b.units[1].pos[0] = 560 << 16;
+    for (int k = 0; k < 30; ++k) b.advance_tick();
+    b.players_stage();
+    CHECK_EQ(b.unit_seen_by(0, b.units[3]), true);
+    CHECK_EQ(b.sight_faults(), 0u);
+}
+
 } // namespace
 
 int main() {
@@ -1451,6 +1532,7 @@ int main() {
     test_motion();
     test_route_search();
     test_features_and_effects();
+    test_sight();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
