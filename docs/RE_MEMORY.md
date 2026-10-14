@@ -977,6 +977,9 @@ The weapon type's routine is picked at load time (see "Weapon definitions"): tur
 - No lifetime, target, scripts or smoke of its own. Packet with the muzzle as start.
 - **The original requires a motion object** (it reads +0x20 through it). Only aircraft carry dropped weapons.
 
+### Draw-time side effects on the simulation
+**Drawing advances the simulation's C-runtime random sequence.** `Gfx_DrawProjectiles` (`0x0049BE60`) calls the C runtime `rand()` while drawing lightning shots (render type 7). It runs on the same thread as the simulation. The simulation also draws from `rand()`, for wind, meteors, features, explosion frames, victory polling and battle start (see SIM_INVENTORY "Randomness"). So in the original, that sequence depends on which lightning shots were on screen and on how many frames were drawn. This is a view- and frame-rate-dependent input, like the heap-address cases. The engine keeps drawing free of side effects; whether to feed these draws in is open.
+
 ### Battle step (integration) — `sim::Battle`
 `engine/sim/src/battle.cpp` holds the state of one game:
 - the unit table (index = id, entry 0 unused), per-unit states, 11 player records (ten slots plus "no owner"), unit types (entry 0 = the blank type of empty slots);
