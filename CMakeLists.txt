@@ -96,3 +96,6 @@ if(TA_GAME_DIR)
     add_test(NAME features_match_game COMMAND feature_check "${TA_GAME_DIR}"
              "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin" "Moon Quartet")
 endif()
+
+# Renderer (8-bit battle view), its game-data importers and the offline viewer.
+add_subdirectory(render)

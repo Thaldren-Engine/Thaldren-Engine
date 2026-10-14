@@ -1,0 +1,33 @@
+#pragma once
+// Polygon scan conversion with the original's integer rules: 16.16 edge
+// walking with a +0xFFFF bias on x, top-inclusive / bottom-exclusive rows,
+// left-inclusive / right-exclusive spans, a right and bottom clip that also
+// drops the last column and row of the clip rectangle, affine texture
+// coordinates and an optional byte depth test (spec: docs/RE_MEMORY.md,
+// "Rendering", "Polygon scan conversion").
+
+#include <cstdint>
+
+#include "render/image.h"
+
+namespace render {
+
+struct RasterTarget {
+    std::uint8_t* pixels = nullptr;
+    std::uint8_t* depth = nullptr;   // optional; same layout as pixels
+    int pitch = 0;
+    ClipRect clip;                   // inclusive
+};
+
+struct RasterVertex {
+    int x = 0, y = 0, z = 0;         // pixels; z is the depth value (low byte compared)
+};
+
+// Flat polygon with `count` vertices (any count >= 1, walked in order).
+void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_t colour);
+
+// Quad mapped with the whole texture: vertex 0 -> (0,0), 1 -> (w-1,0),
+// 2 -> (w-1,h-1), 3 -> (0,h-1). The texture's key is not honoured (texels are copied).
+void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& texture);
+
+} // namespace render
