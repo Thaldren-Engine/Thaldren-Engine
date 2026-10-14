@@ -24,7 +24,8 @@ i32 flat_distance_sq(const Unit& from, const Unit& to) {
 }
 
 // Mission kinds looked up by name inside behaviours.
-constexpr u8 kKindSelfDestruct = mission::kSelfDestruct, kKindLandIfCan = mission::kAirLandIfCan;
+constexpr u8 kKindSelfDestruct = mission::kSelfDestruct, kKindLandIfCan = mission::kAirLandIfCan, kKindPark = mission::kPark,
+             kKindQueuedMove = mission::kQueuedMove, kKindQueuedPatrol = mission::kQueuedPatrol;
 // Return addresses of the behaviour calls in the original's order routines.
 constexpr u32 kPrimaryReturn = 0x0043B880, kSecondaryReturn = 0x0043BB25;
 constexpr u32 kToAirWeapon = 1u << 17;
@@ -458,7 +459,7 @@ std::int32_t attack_no_move(Missions& m, Unit& u, MissionOrder& o, u32 event) {
 
 // Becomes the attack order the unit would use on the target, with weapon slot 2 (param0 = 2).
 std::int32_t attack_special(Missions& m, Unit& u, MissionOrder& o) {
-    const u8 kind = m.systems.resolve_attack_mission(u, target_of(o));
+    const u8 kind = m.systems.resolve_mission(OrderIntent::Attack, u, target_of(o), nullptr);
     if (kind >= mission::kCount) {
         m.fault = "order kind outside the mission table";
         return mission_result::kContinue;
@@ -499,11 +500,110 @@ std::int32_t attack_unit_type(Missions& m, Unit& u, MissionOrder& o) {
         }
     }
     if (!best) return mission_result::kFinished;
-    push_order(m, u, m.systems.resolve_attack_mission(u, best), best, nullptr, 0);
+    push_order(m, u, m.systems.resolve_mission(OrderIntent::Attack, u, best, nullptr), best, nullptr, 0);
     return mission_result::kRestart;
 }
 
+// The unit under construction (the order's target is its builder). While unfinished it
+// waits, and decays when its builder stops; once finished it takes over the builder's
+// queued moves and patrols (or parks) and its standing orders and group.
+std::int32_t get_built(Missions& m, Unit& u, MissionOrder& o, u32& event) {
+    if (!is_zero(u.build_fraction_left)) {
+        switch (o.step) {
+        case 0:
+            unrelease_weapon_slot(u, 3);
+            set_deadline(m, o, 300);
+            o.wait |= 0x8000u;
+            return mission_result::kAdvance;
+        case 1:
+            set_deadline(m, o, 30);
+            o.wait |= 0x8000u;
+            return mission_result::kAdvance;
+        case 2:
+            if (event & 0x8000u) {
+                set_deadline(m, o, 30);
+            } else if (event & 1u) {
+                set_deadline(m, o, 11);
+                m.systems.unfinished_decay(u, 11);
+            }
+            o.wait |= 0x8000u;
+            return mission_result::kContinue;
+        default:
+            return mission_result::kClearAll;
+        }
+    }
+    m.systems.display_changed(u);
+    if (!has_motion(m, u)) return mission_result::kFinished;
+    bool ordered = false;
+    if (Unit* builder = target_of(o)) {
+        for (MissionOrder* p = builder->orders; p; p = p->next) {
+            // The resolved kind lives in the low byte of the behaviour's event argument.
+            event &= ~0xFFu;
+            u8 kind = 0;
+            if (p->kind == kKindQueuedMove) kind = m.systems.resolve_mission(OrderIntent::Move, u, nullptr, &p->pos);
+            else if (p->kind == kKindQueuedPatrol) kind = m.systems.resolve_mission(OrderIntent::Patrol, u, nullptr, &p->pos);
+            event |= kind;
+            if (kind != 0) {
+                if (!enqueue_order(m.orders, u, kind, true, nullptr, p->pos.data(), 0, 0)) m.fault = "endless idle-order search";
+                ordered = true;
+            }
+        }
+        const u32 alive = unit_flags::kAlive, dying = unit_tick_flags::kDying;
+        if ((u.flags & alive) && !(u.flags & dying) && (builder->flags & alive) && !(builder->flags & dying)) {
+            u.flags = ((builder->flags ^ u.flags) & 0xC0000u) ^ u.flags;
+            u.flags = ((builder->flags ^ u.flags) & 0x300000u) ^ u.flags;
+            const PlayerSlot& owner = m.orders.players[static_cast<std::size_t>(tick_of(m, u).owner)];
+            if (owner.active && owner.controller == 1) u.group = builder->group;
+        }
+    }
+    if (!ordered && !enqueue_order(m.orders, u, kKindPark, true, nullptr, nullptr, 0, 0)) m.fault = "endless idle-order search";
+    return mission_result::kFinished;
+}
+
 }  // namespace
+
+bool enqueue_order(OrderContext& c, Unit& unit, std::uint8_t kind, bool queued, Unit* target, const std::int32_t* pos,
+                   std::int32_t param0, std::int32_t param1) {
+    MissionOrder* o = c.systems.allocate_order();
+    construct_order(c, *o, kind, target, pos, param0, param1, 0);
+    // Replace what the unit was doing (orders marked kKeep stay).
+    if (!queued && !(o->flags & 0x40u)) clear_orders(c, unit, false);
+    if (!(o->flags & order_flags::kSecondary)) {
+        // Idle orders at the head of the primary list make way, each searched for in the
+        // list its own flags name.
+        while (unit.orders && (unit.orders->flags & order_flags::kIdle)) {
+            MissionOrder* head = unit.orders;
+            MissionOrder*& list = (head->flags & order_flags::kSecondary) ? unit.secondary_orders : unit.orders;
+            MissionOrder** link = &list;
+            while (*link && *link != head) link = &(*link)->next;
+            if (!*link) return false;  // never found: the original keeps looking forever
+            *link = head->next;
+            destroy_order(c, head);
+        }
+    }
+    o->flags |= queued ? 0x1u : 0x2001u;
+    if (!(o->flags & 0x40020u)) {
+        // After the first order marked 0x1000, which hands the mark on; else at the end.
+        o->unit = &unit;
+        o->flags |= 0x1000u;
+        MissionOrder** link = &unit.orders;
+        for (MissionOrder* p = unit.orders; p; p = p->next) {
+            if (p->flags & 0x1000u) {
+                p->flags &= ~0x1000u;
+                o->unit = &unit;
+                o->next = p->next;
+                p->next = o;
+                return true;
+            }
+            link = &p->next;
+        }
+        o->next = nullptr;
+        *link = o;
+        return true;
+    }
+    prepend_order(unit, *o);
+    return true;
+}
 
 bool mission_implemented(std::uint8_t kind) {
     switch (kind) {
@@ -512,7 +612,7 @@ bool mission_implemented(std::uint8_t kind) {
     case mission::kDeactivate: case mission::kGuardNoMove: case mission::kMakeSelectable: case mission::kParalyze:
     case mission::kRepairUnitNoMove: case mission::kSelfDestruct: case mission::kSelfDestructFg: case mission::kSelfRepair:
     case mission::kStandby: case mission::kStandbyMine: case mission::kStandingFireOrder: case mission::kStandingMoveOrder:
-    case mission::kStop: case mission::kWait: case mission::kWaitForAttack:
+    case mission::kStop: case mission::kWait: case mission::kWaitForAttack: case mission::kGetBuilt:
         return true;
     default:
         return false;
@@ -544,6 +644,7 @@ std::int32_t run_mission_behaviour(Missions& m, Unit& u, MissionOrder& o, std::u
     case mission::kAttackNoMove: return attack_no_move(m, u, o, event);
     case mission::kAttackSpecial: return attack_special(m, u, o);
     case mission::kAttackUnitType: return attack_unit_type(m, u, o);
+    case mission::kGetBuilt: return get_built(m, u, o, event);
     default: return m.systems.run_other(u, o, event);
     }
 }

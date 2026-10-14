@@ -6,7 +6,8 @@
 // OrderSystems::run_mission. This module implements the behaviours that need
 // no unit motion: switches (activate, cloak, standing orders), waiting,
 // stopping, paralysis, self-destruct, stationary attacks and guards, idle
-// standby, stockpile building and stationary repair. Every other kind is
+// standby, stockpile building, stationary repair and a unit's completion
+// (taking over its builder's queued moves). Every other kind is
 // passed on to MissionSystems::run_other, and so is everything outside the
 // simulation core (target search, attack order issue, speech, effects, the
 // economy's stall state).
@@ -43,6 +44,9 @@ constexpr std::uint32_t kBuilder = 0x40, kCanFly = 0x800, kHover = 0x1000, kFloa
 // self-destruct countdown depends on it: the caller's return address).
 enum class MissionCaller : std::uint8_t { Primary, Secondary };
 
+// What a player's command means; resolved into a mission kind per unit.
+enum class OrderIntent : std::uint8_t { Move = 2, Attack = 3, Patrol = 9 };
+
 // Fixed texts some speech calls carry.
 enum class SpeechText : std::uint8_t { None, RepairAborted, RepairsUnsuccessful, UnitRepaired };
 
@@ -64,8 +68,13 @@ public:
     // Puts an attack order on `target` in front of the unit's orders if its standing
     // orders allow (or `forced`); true if it did.
     virtual bool issue_attack_order(Unit& unit, Unit& target, bool forced) = 0;
-    // The mission kind an attack on `target` (or none) resolves to for this unit (0 = none).
-    virtual std::uint8_t resolve_attack_mission(Unit& unit, Unit* target) = 0;
+    // The mission kind `intent` on `target` (or none) at `pos` (or none) resolves to for
+    // this unit (0 = none).
+    virtual std::uint8_t resolve_mission(OrderIntent intent, Unit& unit, Unit* target, const std::array<std::int32_t, 3>* pos) = 0;
+    // Construction: an unfinished unit nobody works on decays by `ticks` steps of building.
+    virtual void unfinished_decay(Unit& unit, std::int32_t ticks) = 0;
+    // User interface: the unit's status display needs a refresh.
+    virtual void display_changed(Unit& unit) = 0;
     // Books energy and metal use on the unit's resource slot; false (nothing paid) while
     // its player stalls on either.
     virtual bool use_resources_if_not_stalled(Unit& unit, float energy, float metal) = 0;
@@ -104,8 +113,19 @@ struct Missions {
 // Whether `kind` is implemented here (the rest goes to MissionSystems::run_other).
 bool mission_implemented(std::uint8_t kind);
 // One step of the order's behaviour; returns a mission_result value. `event` is the
-// behaviour's third argument (none of the behaviours here reuse it as a variable).
+// behaviour's third argument; GetBuilt reuses its low byte as a variable (the secondary
+// list leaves the result in the unit pass's stale stack word).
 std::int32_t run_mission_behaviour(Missions& m, Unit& unit, MissionOrder& order, std::uint32_t& event);
+
+// Gives the unit a new order (the original's general "order this unit" routine): unless
+// `queued` or the order is a background one (flag 0x40), the unit's orders without kKeep go;
+// then, unless the new order lives in the secondary list, idle orders at the head of the
+// primary list go. A queued order is flagged 0x1, an immediate one 0x2001. Orders without
+// flags 0x40020 go after the first primary order marked 0x1000 (taking the mark), else at
+// the end; others go in front of their list. False if the original would never finish (an
+// idle order at the primary head whose flags name the secondary list).
+bool enqueue_order(OrderContext& c, Unit& unit, std::uint8_t kind, bool queued, Unit* target, const std::int32_t* pos,
+                   std::int32_t param0, std::int32_t param1);
 
 // Weapon slot helpers the behaviours use.
 // The slot (0..2, or 3 for all: 0, 1, then 2) stops being released: an enabled slot

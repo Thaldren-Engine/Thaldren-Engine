@@ -53,6 +53,7 @@ struct Unit {
     MissionOrder* secondary_orders = nullptr;  // secondary order list
     UnitLink* referrers = nullptr;             // links (order targets) pointing at this unit, newest first
     std::uint16_t hover_phase = 0;             // hover bob phase (sim/ground_settle.h)
+    std::uint32_t group = 0;                   // the player's selection group the unit belongs to
     std::uint32_t cloak_holdoff_tick = 0;  // firing keeps the unit decloaked until this tick
     const UnitTypeInfo* type = nullptr;
     Unit* carrier = nullptr;     // transport carrying this unit
