@@ -34,6 +34,8 @@ struct GpuRenderer::Impl {
     SDL_GPUTexture* table = nullptr;
     SDL_GPUTexture* light_table = nullptr;  // BlitLight's table (uploaded with the first list using it)
     const BlendTable* light_uploaded = nullptr;
+    SDL_GPUTexture* remap_table = nullptr;  // BlitRemap's table
+    const BlendTable* remap_uploaded = nullptr;
     SDL_GPUTexture* dummy = nullptr;
     SDL_GPUTexture* palette = nullptr;
     // Per frame size.
@@ -61,6 +63,7 @@ struct GpuRenderer::Impl {
         if (resolve_fs) SDL_ReleaseGPUShader(dev, resolve_fs);
         for (auto& [k, t] : cache) SDL_ReleaseGPUTexture(dev, t);
         if (light_table) SDL_ReleaseGPUTexture(dev, light_table);
+        if (remap_table) SDL_ReleaseGPUTexture(dev, remap_table);
         for (SDL_GPUTexture* t : {table, dummy, palette, frame, frame_copy, rgba})
             if (t) SDL_ReleaseGPUTexture(dev, t);
         if (sampler) SDL_ReleaseGPUSampler(dev, sampler);
@@ -182,6 +185,11 @@ struct GpuRenderer::Impl {
             if (!light_table || !upload({{light_table, 256, 256, 1, list.light->data()}})) return false;
             light_uploaded = list.light;
         }
+        if (list.remap && list.remap->size() >= 65536 && list.remap != remap_uploaded) {
+            if (!remap_table) remap_table = texture(256, 256, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+            if (!remap_table || !upload({{remap_table, 256, 256, 1, list.remap->data()}})) return false;
+            remap_uploaded = list.remap;
+        }
         // Textures for every sprite in the list.
         std::unordered_map<const Sprite8*, SDL_GPUTexture*> frame_tex;
         std::vector<Upload> ups;
@@ -224,7 +232,9 @@ struct GpuRenderer::Impl {
             if (r.x0 > r.x1 || r.y0 > r.y1) continue;
             const bool light_op = c.op == DrawOp::BlitLight;
             if (light_op && !light_table) continue;
-            const bool blend_op = c.op == DrawOp::BlitBlend || light_op;
+            const bool remap_op = c.op == DrawOp::BlitRemap;
+            if (remap_op && !remap_table) continue;
+            const bool blend_op = c.op == DrawOp::BlitBlend || light_op || remap_op;
             if (blend_op) {
                 bool need = !copied_once;
                 for (const Rect& d : dirty)
@@ -253,7 +263,7 @@ struct GpuRenderer::Impl {
             SDL_PushGPUFragmentUniformData(cb, 0, fu, sizeof fu);
             const SDL_GPUTextureSamplerBinding b[3] = {{frame_tex[c.sprite], sampler},
                                                        {blend_op ? frame_copy : dummy, sampler},
-                                                       {light_op ? light_table : table, sampler}};
+                                                       {light_op ? light_table : remap_op ? remap_table : table, sampler}};
             SDL_BindGPUFragmentSamplers(pass, 0, b, 3);
             SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
         }

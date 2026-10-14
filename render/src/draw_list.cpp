@@ -21,6 +21,9 @@ Image8 execute(const DrawList& list, const BlendTable& blend) {
         case DrawOp::BlitLight:
             if (c.sprite && list.light) blit_blend(frame, c.clip, *c.sprite, c.x, c.y, *list.light);
             break;
+        case DrawOp::BlitRemap:
+            if (c.sprite && list.remap) blit_blend(frame, c.clip, *c.sprite, c.x, c.y, *list.remap);
+            break;
         }
     }
     return frame;
@@ -36,6 +39,46 @@ BlendTable light_blend_table(const std::vector<std::uint8_t>& light32) {
                 v = light32[static_cast<std::size_t>(level * 256 + d)];
             t[static_cast<std::size_t>(s * 256 + d)] = v;
         }
+    return t;
+}
+
+BlendTable gray_remap_table(const Palette& palette) {
+    // Colours ordered by r + g + b: the original's selection sort (swapping whenever a later
+    // entry is smaller), indices swapped along.
+    int lum[256];
+    std::uint8_t idx[256];
+    for (int i = 0; i < 256; ++i) {
+        lum[i] = palette[static_cast<std::size_t>(i)].r + palette[static_cast<std::size_t>(i)].g + palette[static_cast<std::size_t>(i)].b;
+        idx[i] = static_cast<std::uint8_t>(i);
+    }
+    for (int i = 0; i < 256; ++i)
+        for (int j = i + 1; j < 256; ++j)
+            if (lum[j] < lum[i]) {
+                std::swap(lum[i], lum[j]);
+                std::swap(idx[i], idx[j]);
+            }
+    std::uint8_t gray[256];
+    for (int c = 0; c < 256; ++c) {
+        const Rgb& p = palette[static_cast<std::size_t>(c)];
+        const int g = (p.r + p.g + p.b) / 3;
+        const int sum = 3 * g;
+        int best = 1000000000, at = 0, k = 0;
+        for (; k < 256; ++k) {
+            if (lum[k] < sum - 0x28) continue;
+            if (lum[k] > sum + 0x28) break;
+            const Rgb& q = palette[idx[k]];
+            const int d = (q.r - g) * (q.r - g) + (q.g - g) * (q.g - g) + (q.b - g) * (q.b - g);
+            if (d < best) {
+                best = d;
+                at = k;
+            }
+        }
+        if (best == 1000000000) at = k & 0xFF;
+        gray[c] = idx[at];
+    }
+    BlendTable t(65536);
+    for (int s = 0; s < 256; ++s)
+        for (int d = 0; d < 256; ++d) t[static_cast<std::size_t>(s * 256 + d)] = gray[d];
     return t;
 }
 

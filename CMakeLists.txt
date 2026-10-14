@@ -35,6 +35,7 @@ add_library(sim STATIC
     engine/sim/src/route_search.cpp
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp
+    engine/sim/src/sight.cpp
     engine/sim/src/step_budget.cpp
     engine/sim/src/targeting.cpp
     engine/sim/src/trig.cpp
@@ -62,6 +63,7 @@ add_library(ta_compat STATIC
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp
     ta_compat/src/model3do.cpp
+    ta_compat/src/sight_tables.cpp
     ta_compat/src/tdf.cpp
     ta_compat/src/tnt.cpp
     ta_compat/src/unitdefs.cpp

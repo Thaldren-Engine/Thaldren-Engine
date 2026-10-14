@@ -3,6 +3,7 @@
 // units and projectiles, turned into a DrawList (spec: docs/RE_MEMORY.md,
 // "Rendering"). Reads simulation state only; never modifies it.
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -76,6 +77,7 @@ struct UnitInstance {
     bool ground = true;           // drawn with the ground units (else after projectiles)
     bool shadow = true;           // offset shadow (ground units)
     std::int32_t ground_height = 0;  // terrain height under the unit (shadow placement), integer
+    bool translucent = false;     // cloaked: the sprite is mixed with the frame (blend table)
 };
 
 enum class ProjectileLook : std::uint8_t { Line, Sprite, Model };
@@ -94,6 +96,22 @@ struct ProjectileInstance {
     std::int32_t ground_height = 0;
 };
 
+// The viewed player's fog of war over the battle view (the original's 0x4843C0 and 0x4848E0;
+// see docs/RE_MEMORY.md, "Line of sight and radar"). The map is in blocks of 32 x 32 world units.
+// A grid of 32 x 32-pixel cells is laid over the view, each cell centred on a block corner;
+// a cell whose four surrounding blocks are all unexplored is filled black, all unseen greyed
+// (the frame remapped through the grey table); partly covered cells get an edge frame chosen
+// by which corners are covered (frame = corner mask - 1, mask bits 1 top left, 2 top right,
+// 4 bottom left, 8 bottom right), from one of four sequences picked by the cell position.
+struct FogOfWar {
+    int blocks_x = 0, blocks_z = 0;        // map size in blocks
+    std::vector<std::uint8_t> unexplored;  // per block, nonzero: never explored (black)
+    std::vector<std::uint8_t> unseen;      // per block, nonzero: explored, out of sight (grey); empty: no grey
+    std::array<const std::vector<Sprite8>*, 4> black{}, gray{};  // fog edge sequences
+    const BlendTable* gray_table = nullptr;  // gray_remap_table
+    std::uint8_t fill = 0;                   // colour of black cells
+};
+
 struct BattleScene {
     Camera camera;
     Terrain terrain;
@@ -105,6 +123,7 @@ struct BattleScene {
     std::vector<EffectInstance> effects;          // in the effect table's order
     const BlendTable* light = nullptr;            // light table for glows (light_blend_table); none: no glows
     bool unit_shadows = true, feature_shadows = true;
+    const FogOfWar* fog = nullptr;                // drawn over everything (none: no fog)
     std::uint8_t clear_index = 0;
 };
 

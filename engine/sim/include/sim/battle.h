@@ -27,6 +27,7 @@
 #include "sim/rng.h"
 #include "sim/targeting.h"
 #include "sim/route_search.h"
+#include "sim/sight.h"
 #include "sim/unit.h"
 #include "sim/unit_create.h"
 #include "sim/unit_tick.h"
@@ -45,6 +46,7 @@ struct BattleUnitType {
     TargetingTypeInfo targeting;
     RouteType route;  // movement class and placement limits (footprint and movement come from `create`)
     EconomyType economy;  // production, upkeep and storage (sim/economy.h)
+    SightType sight;  // sight, radar, sonar, jamming, cloak distance (sim/sight.h)
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -56,7 +58,10 @@ struct BattleSettings {
     std::uint8_t local_view = 0;
     std::int32_t game_mode = 0;       // nonzero: a commander's death ends its player
     std::int32_t ai_difficulty = 0;
-    bool fog_of_war = false;
+    bool fog_of_war = false;          // line of sight option: live sight counts (sim/sight.h)
+    bool explore = false;             // mapping option: the map starts unexplored and units explore it
+    bool true_sight = false;          // line of sight type: rays over the terrain (else circles)
+    std::array<SightPlayerOptions, 11> player_sight{};  // per player: shares radar, watching
     bool water_damage_enabled = false;
     std::int32_t water_damage = 0;
     std::uint16_t damage_options = 0;  // bit 3 weapons damage features, bit 7 double damage, bit 8 half damage
@@ -102,7 +107,8 @@ public:
     // Each player's 30-step turn in the players' stage, around its economy settlement (built
     // in, sim/economy.h): before it the local player's victory and defeat checks (they may
     // start the end of the game: Battle::end_game); after it the view player's radar, sonar
-    // and cloak detection (0x467440), fog minimap and network view state.
+    // and cloak detection (0x467440, built in once init_sight() ran), fog minimap and network
+    // view state.
     virtual void player_victory_turn(int) {}
     virtual void player_sensor_turn(int) {}
     // Network game: resources and the explored map shared automatically (packet 0x16;
@@ -249,6 +255,23 @@ public:
     // Network games, at the end of a step: the local player's automatic sharing (0x457D30).
     void auto_share_resources();
 
+    // Line of sight (sim/sight.h). Until init_sight() runs, sight goes to BattleOutside
+    // (update_sight, unit_visible, position_explored, stamp_line_of_sight, reveal_dead_unit,
+    // forget_fog) as before. Order: map heights, sea level and player slots set ->
+    // init_sight() -> init_routes() -> units created -> rebuild_sight(true) (the battle start).
+    SightTables sight_tables;  // masks and rings (filled by the importer)
+    SightState sight;          // sight counts, explored map size, height band, lingering sight
+    void init_sight();
+    void rebuild_sight(bool clear_explored);
+    // Once per drawn frame, after that frame's steps (even none): lingering sight of dead
+    // units expires (the original runs it per frame, so it depends on the frame rate).
+    void expire_lingering_sight();
+    // Whether player record `viewer` sees the unit (line of sight test), and the block test at
+    // a point (shots are drawn where the viewed player sees).
+    bool unit_seen_by(int viewer, const Unit& unit);
+    bool point_seen_by(int viewer, const std::array<std::int32_t, 3>& pos);
+    std::uint32_t sight_faults() const { return sight_world_.faults; }
+
     // Per-step inputs the original reads from its game state.
     UnitTickEnvironment& unit_env() { return unit_env_; }
 
@@ -327,7 +350,7 @@ private:
     bool pay_energy(Unit& w, float amount) override { return add_energy_use_if_not_stalled(ticks[w.id], amount); }  // 0x401180
     void stats_activity(std::int32_t kind) override { outside_.stats_activity(kind); }
     void network_send(std::int32_t net, const std::uint8_t* p, std::int32_t size) override { outside_.network_send(net, p, size); }
-    void reveal_dead_unit(Unit& u) override { outside_.reveal_dead_unit(u); }
+    void reveal_dead_unit(Unit& u) override;
     void victory_unit_destroyed(Unit& u) override { outside_.victory_unit_destroyed(u); }
     void clear_orders(Unit& unit) override;
     void forget_speech(Unit& u) override { outside_.forget_speech(u); }
@@ -335,7 +358,7 @@ private:
     void remove_projectiles(Unit& unit) override;
     void detach_from_carrier(Unit& u) override { outside_.detach_from_carrier(u); }
     void clear_footprint(Unit& u) override { sim::clear_footprint(footprint_, u); }
-    void forget_fog(Unit& u) override { outside_.forget_fog(u); }
+    void forget_fog(Unit& u) override;
     void kill_counted(std::uint8_t slot, Unit& v) override { outside_.kill_counted(slot, v); }
     void detonate(Unit& unit, bool self_destruct) override;
     void spawn_wreck(Unit& u, std::int32_t level, bool burn) override;
@@ -410,7 +433,7 @@ private:
         }
         void clear_footprint(Unit& u) override { release_cells(b.footprint_, u); }  // 0x47D0E0
         void claim_footprint(Unit& u) override { sim::claim_footprint(b.footprint_, u); }
-        void update_sight(Unit& u) override { b.outside_.update_sight(u); }
+        void update_sight(Unit& u) override { b.update_sight(u); }
         bool off_map(const Unit& u) override { return u.bucket == kOffMapBucket; }
         std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
         void route_search_forget(MotionGoal& g) override { sim::route_search_forget(b.route_search, g); }
@@ -449,8 +472,8 @@ private:
     struct TargetingHooks final : TargetingSystems {
         Battle& b;
         explicit TargetingHooks(Battle& battle) : b(battle) {}
-        bool unit_visible(int p, Unit& u) override { return b.outside_.unit_visible(p, u); }
-        bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override { return b.outside_.position_explored(p, pos); }
+        bool unit_visible(int p, Unit& u) override;
+        bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override;
         std::uint8_t feature_flags(std::uint16_t f) override { return b.outside_.feature_flags(f); }
         std::int32_t intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) override;
         void ai_own_unit(int table, Unit& u) override { b.outside_.ai_own_unit(table, u); }
@@ -463,6 +486,9 @@ private:
         void set_cloaked(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kCloaked, on); }  // 0x48B090
     };
     Targeting& b_targeting() { return targeting_; }
+    void update_sight(Unit& u);
+    void stamp_line_of_sight(Unit& u);
+    void sync_sight();
     std::uint32_t clock_ticks() override { return outside_.clock_ticks(); }
 
     BattleOutside& outside_;
@@ -503,6 +529,10 @@ private:
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;
+    std::vector<SightType> sight_types_;  // by type index
+    SightEnvironment sight_env_;
+    SightWorld sight_world_;
+    bool sight_ready_ = false;
 };
 
 } // namespace sim

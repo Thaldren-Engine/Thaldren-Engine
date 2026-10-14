@@ -3,6 +3,10 @@
 // writes 640x480 8-bit BMP frames of the battle view.
 //
 // Usage: battle_view <game_dir> <out_prefix> [--gpu] [--window S] [--map NAME] [--scroll X Y] [--frames N] [--step K] [--battle]
+//                   [--player N [--true-los]]
+//   --player N with --battle: line of sight for player N: fog of war (unexplored black, unseen
+//              grey), only player N's units and what it sees drawn, shots in the fog hidden,
+//              cloaked units translucent. Default: no fog, everything drawn.
 //   --gpu      also render through the GPU backend (if built) and compare with the CPU reference.
 //   --window S afterwards show the view live in a window for S seconds (GPU backend).
 //   --battle   run a real battle instead of animating placed units: two players' units made
@@ -30,6 +34,7 @@
 #include "ta/cob.h"
 #include "ta/featuredefs.h"
 #include "ta/battle_types.h"
+#include "ta/sight_tables.h"
 #include "ta/gaf.h"
 #include "ta/hpi.h"
 #include "ta/model3do.h"
@@ -96,6 +101,8 @@ int main(int argc, char** argv) {
     int scroll_x = 1200, scroll_y = 1600, frames = 3, step = 15;
     bool use_gpu = false;
     bool battle_mode = false;
+    int view_player = -1;   // --player N: fog of war, line of sight and radar for player N
+    bool true_los = false;  // --true-los: true line of sight (else circular)
     int window_seconds = 0;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -108,6 +115,8 @@ int main(int argc, char** argv) {
         } else if (a == "--frames" && i + 1 < argc) frames = std::atoi(argv[++i]);
         else if (a == "--step" && i + 1 < argc) step = std::atoi(argv[++i]);
         else if (a == "--battle") battle_mode = true;
+        else if (a == "--player" && i + 1 < argc) view_player = std::atoi(argv[++i]);
+        else if (a == "--true-los") true_los = true;
     }
 
     ta::Vfs vfs;
@@ -329,6 +338,16 @@ int main(int argc, char** argv) {
         b.settings.player_count = 2;
         b.settings.units_per_player = 50;
         b.move_classes = ta::to_move_classes(ctx);
+        if (view_player >= 0) {
+            // Line of sight: fog, the map explored by the units, the shapes from the game files.
+            b.settings.fog_of_war = true;
+            b.settings.explore = true;
+            b.settings.true_sight = true_los;
+            b.settings.local_view = static_cast<std::uint8_t>(view_player);
+            std::string err;
+            if (!ta::load_sight_tables(vfs, b.sight_tables, err)) std::printf("sight tables: %s\n", err.c_str());
+            b.init_sight();
+        }
         b.init_routes();
         auto battle_type = [&](const std::string& name) -> std::uint16_t {
             for (std::size_t k = 1; k < btypes.size(); ++k)
@@ -375,6 +394,7 @@ int main(int argc, char** argv) {
                 std::printf("could not create %s\n", s.name);
         }
         b.start_players();  // the players' weapon-target controllers and enemy lists
+        if (view_player >= 0) b.rebuild_sight(true);  // the battle start
         // Routing: the raider drives over to the far side of the other camp (route search + motion).
         for (std::size_t i = 1; i < b.units.size(); ++i) {
             if (b.ticks[i].type_index == 0 || !b.ticks[i].has_motion || b.ticks[i].type_index >= btypes.size()) continue;
@@ -465,6 +485,22 @@ int main(int argc, char** argv) {
         std::vector<std::uint8_t> lht;
         if (vfs.read("palettes\\PALETTE.LHT", lht)) light_table = render::light_blend_table(lht);
     }
+    render::FogOfWar fog;
+    std::array<std::vector<render::Sprite8>, 4> fog_black, fog_gray;
+    render::BlendTable gray_table;
+    if (battle && view_player >= 0) {
+        std::vector<std::uint8_t> gaf;
+        ta::GafDirectory dir;
+        if (vfs.read("anims\\fog.gaf", gaf) && ta::gaf_read_directory(gaf, dir))
+            for (int k = 0; k < 4; ++k) {
+                ta::gaf_sequence_frames(gaf, ta::gaf_find_sequence(dir, "Black" + std::to_string(k + 1)), fog_black[static_cast<std::size_t>(k)]);
+                ta::gaf_sequence_frames(gaf, ta::gaf_find_sequence(dir, "Gray" + std::to_string(k + 1)), fog_gray[static_cast<std::size_t>(k)]);
+                fog.black[static_cast<std::size_t>(k)] = &fog_black[static_cast<std::size_t>(k)];
+                fog.gray[static_cast<std::size_t>(k)] = &fog_gray[static_cast<std::size_t>(k)];
+            }
+        gray_table = render::gray_remap_table(palette);
+        fog.gray_table = &gray_table;
+    }
     std::map<const sim::PoseModel*, const render::Model*> model_of_pose;
     for (const auto& bt : btypes)
         if (bt) model_of_pose[&bt->assets.pose_model] = &bt->model;
@@ -481,6 +517,19 @@ int main(int argc, char** argv) {
                     if (cell.feature >= sim::kFirstSpecialFeature || cell.feature >= b.features.size()) continue;
                     const sim::FeatureTypeInfo& t = b.features[cell.feature];
                     const auto& rec = fdefs.records()[cell.feature];
+                    if (view_player >= 0 && (rec.flags & ta::feature_flags::kNoDrawUnderGray) && ((cell.flags >> 3) & 0xF) != view_player) {
+                        // Hidden in the fog unless a footprint corner is seen (0x4658E0): the
+                        // corners' blocks at (16 x, 16 z - height / 2) and 16 cells further.
+                        auto corner = [&](int cx, int cz) {
+                            return std::array<std::int32_t, 3>{
+                                static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(cx * 16)) << 16),
+                                static_cast<std::int32_t>(static_cast<std::uint32_t>(cell.height) << 16),
+                                static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(cz * 16)) << 16)};
+                        };
+                        if (!b.point_seen_by(view_player, corner(x, z)) &&
+                            !b.point_seen_by(view_player, corner(x + t.footprint_x, z + t.footprint_z)))
+                            continue;
+                    }
                     render::FeatureInstance f;
                     f.cell_x = x;
                     f.cell_z = z;
@@ -566,6 +615,8 @@ int main(int argc, char** argv) {
                 const sim::UnitTickState& t = b.ticks[i];
                 if (t.type_index == 0 || t.type_index >= btypes.size()) continue;
                 const sim::Unit& u = b.units[i];
+                // The viewed player sees its own units and those in its sight (0x48BAE0).
+                if (view_player >= 0 && t.owner != view_player && !b.unit_seen_by(view_player, u)) continue;
                 const BattleType& bt = *btypes[t.type_index];
                 render::UnitInstance ui;
                 ui.unit = &u;
@@ -575,12 +626,30 @@ int main(int argc, char** argv) {
                 ui.ground = (bt.def->type_flags & (1u << 11)) == 0;
                 ui.ground_height = std::max(0, hm.sample(static_cast<std::int16_t>(u.pos[0] >> 16), static_cast<std::int16_t>(u.pos[2] >> 16)));
                 ui.shadow = (bt.def->type_flags & (1u << 25)) == 0;
+                ui.translucent = (u.activate_flags & sim::unit_flags::kCloaked) != 0;
                 scene.units.push_back(ui);
+            }
+            scene.fog = nullptr;
+            if (view_player >= 0) {
+                // The viewed player's fog: unexplored blocks black, unseen ones grey.
+                fog.blocks_x = b.sight.width;
+                fog.blocks_z = b.sight.height;
+                const std::size_t n = static_cast<std::size_t>(fog.blocks_x) * static_cast<std::size_t>(fog.blocks_z);
+                fog.unexplored.assign(n, 0);
+                fog.unseen.assign(n, 0);
+                const auto& counts = b.sight.players[static_cast<std::size_t>(view_player)].counts;
+                for (std::size_t k = 0; k < n; ++k) {
+                    fog.unexplored[k] = k < b.explored.size() && !(b.explored[k] & (1u << view_player));
+                    fog.unseen[k] = k < counts.size() && counts[k] == 0;
+                }
+                if (!b.settings.fog_of_war) fog.unseen.clear();
+                scene.fog = &fog;
             }
             scene.projectiles.clear();
             for (std::int32_t k = 0; k < b.projectiles.count; ++k) {
                 const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(k)];
                 if (p.flags & sim::projectile_flags::kDeleted) continue;
+                if (view_player >= 0 && !b.point_seen_by(view_player, p.pos)) continue;  // shots in the fog are not drawn
                 render::ProjectileInstance pi;
                 pi.look = render::ProjectileLook::Line;
                 pi.pos = p.pos;
@@ -630,6 +699,7 @@ int main(int argc, char** argv) {
                     for (auto& u : units) u->script->tick(1);
                 }
             }
+        if (battle) battle->expire_lingering_sight();  // once per frame (the original's 0x482130)
         render::DrawList list = build_frame(tick);
         const render::Image8 frame = render::execute(list, blend);
         out.present(frame, palette);
@@ -712,6 +782,7 @@ int main(int argc, char** argv) {
                 for (auto& u : units) u->script->tick(1);
             }
             ++tick;
+            if (battle) battle->expire_lingering_sight();
             render::DrawList list = build_frame(tick);
             render::lines_to_sprites(list);
             if (!gpu->present_window(list, palette, 2, "battle_view")) break;
