@@ -203,11 +203,32 @@ Verified 2026-10-13: `tdf_check` parses 2,311 files (55k keys in FBIs, 573k in O
   - `GetString` = `strncpy` to the buffer size with forced NUL (keeps at most size−1 chars); falls back to the default value.
 - **`stricmp`** (`0x004F8A70`, C locale): on a mismatch, fold only `A`–`Z` to lowercase, then compare unsigned.
 - **Section checksum:** `Hash_ComputeSimpleChecksum` (`0x004B6BA0`) over `[sectionStart, end − 2)`. The mix is four 8-bit accumulators: Σb, ⊕b, Σ(i⊕b), ⊕(i+b).
-- **OPEN:** `atof` is the 1998 MSVC CRT conversion (`0x004E4560` → `Crt_Atoldbl`). The engine uses correctly rounded `from_chars`. Not yet proven identical for every string. Check by comparing captured in-game UnitDef values (next step).
+- `atof` is reproduced bit-exactly; see the next section.
+
+### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
+Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
+- **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
+- **Scanner:**
+  - Skips space/tab/LF/CR, optional sign, digits, `.` (locale decimal point), digits.
+  - Exponent letters: `e` `E` `d` `D`.
+  - Stores at most 25 significant digits, then keeps 24; **extra digits are truncated**.
+  - Explicit exponent clamps at 5201, which gives inf or zero.
+  - No digits gives +0. The sign is OR'd in at the end, so `-0` and `-.0` give −0.0.
+  - No `inf`/`nan`/hex parsing.
+- **Mantissa:** decimal digits → 96-bit integer → normalized 80-bit mantissa (`Crt_DigitsToLd12` `0x004F8C40`, start exponent `0x404E`).
+- **Scaling** (`Crt_Ld12MulPow10` `0x004F9390`):
+  - Clear the low 16-bit guard word.
+  - For each octal digit of |exp| (least significant first), multiply by a table power.
+  - The table entry is "un-rounded" (its dword@2 decremented) when its low word > `0x7FFF`.
+  - Tables at `0x005116F0` / `0x00511850`: 29 × 12 bytes each, entry = low16(round80(10^p)) | round64(10^p) | exponent. Generated bit-exact by `tools/gen_pow10_table.py`.
+- **Multiply** (`Crt_Ld12Mul` `0x004F90D0`): 16-bit word partial products, only those with index sum ≥ 4. Carries bump one word only. Round half-even on the 16-bit guard word.
+- **To double** (`Crt_RoundMantissa` `0x004F3610`): round up only if bit 53 is set **and** some bit in 55..95 is set. **Bit 54 is never examined, and exact halves round down.** Denormals re-round after shifting.
+- **Test technique (reusable):** `ta_compat/tools/orig_harness` (32-bit) starts `TotalA.exe` **suspended**, injects an x86 stub, and calls the original routine in batches via `CreateRemoteThread`. Use it for any self-contained original routine (no OS calls, static data only).
 
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | Bit-exact atof/atoi | `0x004E4560`, `0x004EAF00`, `0x004F3D10`, `0x004F8C40`, `0x004F9390`, `0x004F90D0`, `0x004F37C0`, `0x004F3610`, tables `0x005116F0`/`0x00511850` | `ta_compat/src/crt_strtod.cpp`, `tools/gen_pow10_table.py`, `ta_compat/tools/orig_harness` |
 | 2026-10-13 | TDF parser | `0x004C2F60`, `0x004C3120`, `0x004C33A0`, `0x004C3410`, `0x004C3E40`, `0x004C4340`, `0x004C4470`, `0x004C4630`–`0x004C48C0`, `0x004E4560`, `0x004E4ED0`, `0x004F8A70`, `0x004B6BA0` | `ta_compat/src/tdf.cpp`, `tools/tdf_check.cpp`, `tests/compat_tests.cpp` |
 | 2026-10-13 | HPI archives + game VFS | `0x0041D4C0`, `0x004BB2E0`, `0x004BB4E0`, `0x004BB7C0`, `0x004BDD70`, `0x004BE010`, `0x004BE0B0`, `0x004BE400`, `0x004D1480`, `0x004D1970`, `0x004D1D20` | `ta_compat/src/hpi.cpp`, `inflate.cpp`, `tools/hpi_check.cpp` |
 | 2026-10-13 | Step scheduler + frame budget | `0x00495230`, `0x00495490`, `0x004E5050` | `engine/sim/src/world.cpp`, `step_budget.cpp` |

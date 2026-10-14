@@ -28,6 +28,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 # TA compatibility layer (importers for the original game's data). Kept apart
 # from the engine; the engine never depends on it.
 add_library(ta_compat STATIC
+    ta_compat/src/crt_strtod.cpp
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp
     ta_compat/src/tdf.cpp
@@ -53,6 +54,8 @@ add_test(NAME sim_tests COMMAND sim_tests)
 add_executable(compat_tests tests/compat_tests.cpp)
 target_link_libraries(compat_tests PRIVATE ta_compat)
 target_compile_options(compat_tests PRIVATE ${WARN_FLAGS})
+target_compile_definitions(compat_tests PRIVATE
+    FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures")
 add_test(NAME compat_tests COMMAND compat_tests)
 
 # Tests that need an installed copy of the original game (not redistributable).

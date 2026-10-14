@@ -14,7 +14,7 @@ namespace ta {
 // String helpers with the original runtime's semantics.
 int stricmp_c(std::string_view a, std::string_view b);  // ASCII-only case fold, unsigned byte order
 std::int32_t msvc_atoi(std::string_view s);            // wraps on overflow
-double msvc_atof(std::string_view s);                  // [ws][sign]digits[.digits][(e|E|d|D)[sign]digits]
+double msvc_atof(std::string_view s);                  // bit-exact original runtime atof (see crt_strtod.h)
 
 struct TdfKey {
     std::string key;

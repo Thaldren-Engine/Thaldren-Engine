@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 
+#include <fstream>
+
+#include "ta/crt_strtod.h"
 #include "ta/hpi.h"
 #include "ta/inflate.h"
 #include "ta/tdf.h"
@@ -100,9 +103,44 @@ void test_inflate() {
     CHECK(std::string(out.begin(), out.end()) == "hello hello hello");
 }
 
+void test_crt_pow10_table() {
+    // Fixture: the original runtime's two 29-entry tables (positive, negative powers).
+    std::ifstream f(FIXTURES_DIR "/crt_pow10_0x5116F0.bin", std::ios::binary);
+    std::vector<unsigned char> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    CHECK(b.size() == 696);
+    if (b.size() != 696) return;
+    int k = 0;
+    for (int sign : {1, -1}) {
+        for (int g = 0; g < 5; ++g) {
+            for (int d = 1; d < (g < 4 ? 8 : 2); ++d, ++k) {
+                int p = d;
+                for (int i = 0; i < g; ++i) p *= 8;
+                const ta::Ld12 e = ta::crt_pow10_entry(sign * p);
+                CHECK(std::memcmp(e.data(), b.data() + 12 * k, 12) == 0);
+            }
+        }
+    }
+}
+
+void test_crt_atof_quirks() {
+    auto bits = [](double d) {
+        std::uint64_t u;
+        std::memcpy(&u, &d, 8);
+        return u;
+    };
+    CHECK(ta::crt_atof("Infantry Kbot") == 0.0);   // no "inf" parsing
+    CHECK(ta::crt_atof("1d10") == 1e10);           // 'd' exponent
+    CHECK(bits(ta::crt_atof("-.0")) == 0x8000000000000000ull);
+    CHECK(bits(ta::crt_atof("-x")) == 0);          // no digits: +0
+    CHECK(ta::crt_atof("0.1") == 0.1);
+    CHECK(ta::crt_atof("  12.5e1") == 125.0);
+}
+
 } // namespace
 
 int main() {
+    test_crt_pow10_table();
+    test_crt_atof_quirks();
     test_comments();
     test_parse_basic();
     test_parse_errors();

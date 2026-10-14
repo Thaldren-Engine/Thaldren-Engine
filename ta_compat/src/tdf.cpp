@@ -1,9 +1,9 @@
 #include "ta/tdf.h"
 
-#include <charconv>
 #include <cstring>
 
 #include "sim/x87.h"
+#include "ta/crt_strtod.h"
 
 namespace ta {
 namespace {
@@ -50,34 +50,7 @@ std::int32_t msvc_atoi(std::string_view s) {
     return static_cast<std::int32_t>(v);
 }
 
-double msvc_atof(std::string_view s) {
-    std::size_t i = 0;
-    while (i < s.size() && is_c_space(s[i])) ++i;
-    std::string num;
-    if (i < s.size() && (s[i] == '-' || s[i] == '+')) num += s[i++];
-    const std::size_t mant_start = num.size();
-    while (i < s.size() && is_digit(s[i])) num += s[i++];
-    if (i < s.size() && s[i] == '.') {
-        num += s[i++];
-        while (i < s.size() && is_digit(s[i])) num += s[i++];
-    }
-    bool have_digits = false;
-    for (std::size_t k = mant_start; k < num.size(); ++k) have_digits |= is_digit(num[k]);
-    if (!have_digits) return 0.0;
-    if (i < s.size() && (s[i] == 'e' || s[i] == 'E' || s[i] == 'd' || s[i] == 'D')) {
-        std::string exp = "e";
-        std::size_t j = i + 1;
-        if (j < s.size() && (s[j] == '-' || s[j] == '+')) exp += s[j++];
-        const std::size_t exp_digits = j;
-        while (j < s.size() && is_digit(s[j])) exp += s[j++];
-        if (j > exp_digits) num += exp;
-    }
-    const char* b = num.data();
-    if (*b == '+') ++b;
-    double v = 0.0;
-    std::from_chars(b, num.data() + num.size(), v);
-    return v;
-}
+double msvc_atof(std::string_view s) { return crt_atof(s); }
 
 std::uint32_t simple_checksum(const std::uint8_t* data, std::int32_t len) {
     std::uint8_t sum = 0, x = 0, sum_ix = 0, x_ix = 0;

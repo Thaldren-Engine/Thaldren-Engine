@@ -45,7 +45,11 @@ void walk(ta::HpiArchive& a, const ta::HpiEntry& dir, const std::string& prefix,
         auto r = ta::tdf_parse(std::string_view(reinterpret_cast<const char*>(data.data()), data.size()));
         auto& st = by_ext[ext];
         ++st.files;
-        if (!r.error.empty()) {
+        // Files present in the archives that the game never loads (and that fail to parse there too).
+        const bool known_unused = path == "gamedata\\UNITVIEW.TDF" || path == "guis\\SCORE.GUI";
+        if (!r.error.empty() && known_unused) {
+            std::printf("  (expected) %s\\%s: %s\n", a.path().filename().string().c_str(), path.c_str(), r.error.c_str());
+        } else if (!r.error.empty()) {
             ++st.errors;
             std::printf("  ERROR %s\\%s: %s\n", a.path().filename().string().c_str(), path.c_str(), r.error.c_str());
         }
