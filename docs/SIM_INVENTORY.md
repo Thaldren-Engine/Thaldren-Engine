@@ -129,7 +129,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **COB script VM** | UnitScript 68, Cob 18 | `UnitScript_ExecSlot` `0x004B0DA0`, `AdvancePieceAnims` `0x004B1C00`, `LoadCob` `0x004B2450`, Get/SetUnitValue `0x00480770`/`0x00480B20`, FireWeapon* `0x0049C9C0`.. |
 | **Missions / orders** | MissionTick 66, MissionOrder 32, MissionOrderTable 20, AirManeuverOrder 14 | Ground, building, VTOL and air handlers `0x00401C20`–`0x004152F0` |
 | **Movement** | UnitMotion 13, MoveInfo 16 | `UnitMotion_Tick` `0x0043DD20`, fly physics `0x0043D290` |
-| **Pathfinding** | PathGoal 44, PathOrder 22, PathOrderAttach 3 | |
+| **Pathfinding** | PathGoal 44, PathOrder 22, PathOrderAttach 3 | The route search `RouteSearch_Step` `0x0040EB70` (the reference program's "AiSearch": a pathfinder, not AI) and the movement classes' passability: built, see RE_MEMORY "Route search" |
 | **Weapons / projectiles** | Weapon 23, WeaponDef 9, WeaponFire 4, Projectile 12, Explosion 4 | Ballistic aim `0x0049A9xx`, area damage `0x0049A388` |
 | **Damage / death** | (Unit) | `Unit_ApplyDamageAndBroadcast` `0x00489BB0`, `Unit_CreateFromDefId` `0x00485F50` |
 | **Economy** | Player 39, UnitResourceSlot 7 | `Player_AccumulateUnitResourceRates` `0x00401360`, extractor rate `0x00437840` |
