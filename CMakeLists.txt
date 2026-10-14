@@ -8,7 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Floating-point determinism: no fast-math, no FMA contraction. The simulation
 # must produce identical results on every compiler and CPU.
 if(MSVC)
-    set(FP_FLAGS /fp:precise /fp:contract-)
+    # /fp:precise does not contract to FMA unless /fp:contract is given.
+    set(FP_FLAGS /fp:precise)
     set(WARN_FLAGS /W4 /permissive-)
 else()
     set(FP_FLAGS -ffp-contract=off -fno-fast-math)
