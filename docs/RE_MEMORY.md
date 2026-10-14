@@ -663,6 +663,7 @@ The kill routine's wreck variable is the dword 0x10 below its entry stack pointe
 - **Water damage:** the damage packet's kind byte (0x0B) replaces the low byte. The other three bytes stay.
 - **Self-heal step:** a saved register, **the unit's address** in the original's unit table (`table + id × 0x118`).
 - **Kill:** the final wreck level (1 for kind 7; 0 for kinds 4, 5, 9 or hp > 0, or when not fully built; else whatever `Killed` returned or the stale value). If the unit is not alive, unchanged.
+- **Weapons `0x0049E1A0`:** the y of the last target position it resolved (or the fire routine left), else unchanged; see "Weapons: slot pass and aiming" (`weapons_harness`).
 - **Stubbed / not built yet:** weapons, orders, motion, settle, broadcast and camera. The harness stubs never reach that depth.
 
 **Traced but not yet verified** (their implementations must reproduce this):
@@ -675,6 +676,70 @@ The kill routine's wreck variable is the dword 0x10 below its entry stack pointe
 - `ta_capture` writes a `layout` event with the live addresses at the first simulation step.
 
 **Other callers of the kill routine** each have their own stale word: `0x00486F10` (kill a player's units), `0x004861D0`, `0x00485980`. They are not built yet.
+
+### Weapons: slot pass and aiming — differential-tested: 3,000 scenarios, 300,000 unit passes + 69,483 direct slot passes, 242,937 helper calls, 15,025 shots, 16,789 broadcast aim starts, 0 differences
+Implementation: `engine/sim/src/weapons.cpp` (`process_weapon_slots`, `weapon_target_position`, `sweet_spot_position`, `aim_from_position`, `weapon_piece_position`, `direct_aim`, `weapon_in_range`, `aim_within_tolerance`, `weapon_target_unit`, `use_resources`); slot and type data in `engine/sim/include/sim/weapon_slot.h`. Checked by `tools/orig_harness/weapons_harness`: like `combat_harness`, but every unit gets three slots with weapon types from the real weapon table (a third of them with flipped flag bits, other ranges, costs, reload times, tolerances or speeds), random targets (none, ground points inside and outside the map, live units, empty table entries), kill counts, motion velocities and player resources. The original slot pass runs inside the unit pass and is also called directly; the helpers are called on their own (target position, tolerance with boundary values, query-piece position, range check at the range limit, direct aim), and poses are re-synced at random as drawing would. Fire routines, the stockpile display and network sends are logging stubs (the fire stub also logs the target position it receives). After every operation it compares the stub log, all three slots of every unit, unit and player fields (net dirty bits, resource use, stored resources), scripts (including the sink word of waiting aim threads), poses, the RNG and the stale stack word. Mutation check: each of 18 deliberate one-line errors in the engine (lead factor, reload, resources, stale word, flags, packets, boundaries) is caught.
+
+**Slot layout** (3 slots of 0x1C bytes at unit+4):
+- +0/+2 i16 target: if +2 ≠ −0x8000 it is a ground point (x, z in whole world units); otherwise +0 is a target unit id (0 = none).
+- +4 the aim result sink (vtable `0x004FD6F0`), its result at +8. The sink's return handler (`0x00481490`) sets the result to 1 for any nonzero return value and leaves it alone for 0.
+- +0xC weapon type; +0x10 a value set at slot setup (projectiles use it); +0x14 u16 reload countdown; +0x16/+0x18 last aim heading/pitch sent to the script; +0x1A u8 stockpile count.
+- +0x1B flags: bit0 aim started, bit1 enabled (slot setup: weapon id ≠ 0), bits 2–3 script index (0..2 select Primary/Secondary/Tertiary names), bit4 set at slot setup.
+- **Weapon type fields used:** +0x60 fire routine (null: the slot never aims or fires), +0x68 speed, +0xC0/+0xC4 energy/metal per shot (floats), +0xC8 minimum barrel angle, +0xDC range, +0xE4 reload time (u16), +0x106/+0x108 tolerance/pitch tolerance, +0x111 flags (bits: 0 line of sight, 1 ballistic, 4 vertical launch, 16 water weapon, 19 turret, 25 cruise, 26 command fire, 28 stockpile).
+
+**Slot pass** (`UnitScript_ProcessWeaponSlots` `0x0049E1A0`, stdcall unit). For slots 0, 1, 2 in order, skipping slots without the enabled bit:
+1. If the reload countdown is nonzero, decrement it.
+2. Resolve the target position (below). No target: clear the aim-started bit; next slot.
+3. No fire routine: next slot.
+4. **Turret** weapons, unless aiming already started:
+   - **Ballistic:** from = aim-from position; d = from − target (wrapping). Heading = atan2_scaled(dx, dz) − unit heading (16 bits); pitch = the ballistic solver on (dx, dy, dz), the type's speed and minimum angle, and the game's gravity (GS+0x14263). Aim only if the pitch ≠ −32768.
+   - **Else line of sight:** direct aim (below), always succeeds.
+   - **Else:** no aim.
+   - To aim: store pitch and heading in the slot, then start the aim script.
+   - **Vertical launch** (non-turret) weapons, if not a stockpile weapon or the stockpile is nonzero, and aiming has not started: start the aim script with heading 0 and pitch 0.
+   - **Starting the aim script:** the sink's result = 0; start `Aim<n>` (n from the script index) with 2 arguments (heading, pitch, zero-extended), the slot's sink, not run now; then the broadcast (below); set the aim-started bit.
+5. If the reload countdown is nonzero: next slot.
+6. **Range check** from the unit's position (below). Out of range: unit net-dirty |= 0x1000 (byte +0xBB bit 0x10); next slot.
+7. **Can fire:** a stockpile weapon needs a nonzero stockpile; any other needs the owner player's stored energy (+0x8C) ≥ energy per shot and stored metal (+0x98) ≥ metal per shot (float compares; NaN fails).
+8. **Fire:** the fire routine (stdcall unit, slot, target unit or null (`0x0048A190`), &target position). Zero: next slot.
+9. **After a shot:**
+   - Stockpile weapons: stockpile −1 (8 bits), then the stockpile display hook (`0x0041C150`, UI only).
+   - Others: tier = min(kills / 5, 5); hurt = (u32)(hp·20, signed 32-bit) / max damage, **unsigned**; base = (100 − 6·tier) × reload time / 100 (truncated); reload = (120 − hurt) × base / 100 with 32-bit wrapping and signed truncating division, stored as 16 bits. So veterans reload up to 30% faster and a damaged unit up to 20% slower (negative hp gives a wrapped value).
+   - Net dirty |= 0x800 for command-fire weapons, else 0x400.
+   - Non-stockpile weapons then pay (below); its result is ignored.
+
+**Target position** (`0x0048A1E0`, stdcall unit, &pos, slot index; returns 0/1):
+- **Ground point:** x = target x << 16, z = target z << 16, y = terrain sample there (`0x00485070`), raised to the sea-level byte (GS+0x1427F) when not above it (signed compare; off the map the sample is −1, so sea level). Returns 1.
+- **Unit id 0:** returns 0 with pos untouched.
+- **Dead target** (table entry, indexed by the sign-extended id, with type index 0): set the target to (0, −0x8000), look up `StartBuilding` (a no-op lookup; nothing runs), queue `TargetCleared(slot index)` (1 argument, not run now), return 0 with pos untouched.
+- **Live target:** its sweet spot (below). Then, **lead for veterans**: if the slot is enabled, its type has no cruise flag, the target has a motion object, the shooter has more than 5 kills and the type's speed ≠ 0:
+  - d = shooter position − target position (32-bit wrapping, per axis); dist = truncate(√(dx² + dy² + dz²)) evaluated in doubles, keeping the low 32 bits;
+  - t = low 32 bits of ((int64)dist << 16) / speed (signed 64-bit division), then lead = low 32 bits of (t · 0xCCCC) >> 16 (about 5/6 of the flight time);
+  - each axis += low 32 bits of (velocity · lead) >> 16, with the motion object's velocity at +8/+0xC/+0x10.
+- Returns 1.
+
+**Sweet spot** (`0x0043E3C0` → `0x0043E0B0`): piece = 0, run `SweetSpot` in/out on the target's script now (a missing function leaves 0). Take the piece's current transformed vertices from the object state (**as last synced**, no sync here). The box starts at (0,0,0) in every bound, so it always contains the unit origin. The centre per axis is (max + min) / 2 (wrapping sum, truncating division), plus the unit position. The piece index is not range-checked by the original.
+
+**Aim-from position** (`0x0043E2E0`, stdcall unit, &out, script index): piece = −1, run `AimFrom<n>` in/out now; if it is still −1, piece = 0 and run `Query<n>` in/out now. Out = unit position + piece offset from its parent chain (`0x0043DEF0`; out-of-range pieces give 0). Script index 3 reads past the name table (undefined).
+**Query-piece position** (`0x0043E240`, stdcall unit, &out, script index, piece): a negative piece is replaced by `Query<n>` (starting at 0); then the same offset sum.
+
+**Direct aim** (`0x0049D910`, stdcall unit, type (unused), &heading, &pitch, script index, &target; returns 1): from = aim-from position; d = from − target. Heading = atan2_scaled(dx, dz) − unit heading (16 bits). flat = low 32 bits of truncate(hypot(dx, dz)) (C runtime `_hypot`). Pitch = atan2_scaled(−(i16)(dy >> 16), (i16)(flat >> 16)), i.e. only whole world units of the rise and of the distance.
+
+**Range check** (`0x0049AA80`, stdcall unit, &from, &target, slot as a byte — the caller's upper three bytes are stale and ignored; returns 0/1):
+- dist² = hi32((int64)dx²) + hi32((int64)dz²) with dx, dz the 16.16 offsets (32-bit wrapping sum); out of range if dist² > range² (32-bit product), signed compare.
+- Unless a water weapon: fails if (i16)(from.y >> 16) + (i16)(model height >> 16) ≤ the sea-level byte; then, for ballistic weapons, fails when the ballistic solver on (from − target) finds no pitch.
+
+**Aim tolerance** (`0x0049D880`, stdcall unit, slot, heading, pitch; used by fire routines): tolerances = the type's (pitch tolerance falls back to the tolerance when 0); a type tolerance of 0 gives 2000 for both when unit flags & 0xC, else 150. Within when |(i16)(slot heading − heading)| ≤ heading tolerance and |(i16)(slot pitch − pitch)| ≤ pitch tolerance.
+
+**Paying a shot** (`0x004012A0`, thiscall on the unit's resource slot +0xBC, float energy, float metal; player = slot+0x30, the unit's +0xEC): fails unless stored energy ≥ energy and stored metal ≥ metal (NaN fails). Then stored energy −= energy and slot+4 (unit+0xC0, energy used) += energy, each rounded to float; then, if stored metal ≥ metal still holds, stored metal −= metal and slot+0x1C (unit+0xD8, metal used) += metal. Returns 1.
+
+**Aim broadcast** (`0x00456200`, stdcall unit, name, argc, 4 args): looks the function up (index, −1 if missing); if GS+0x2A44 bit0 is set, sends a 22-byte packet: `0x10`, unit id u16, function index u16, argc byte, 4 dwords of arguments, to the owner's net id (`0x00451DF0`).
+
+**Stale stack word:** the unit pass's word lies inside the slot pass's frame, on the target position's **y** word. So after the slot pass it holds the y of the last target position written: the last slot whose target resolved (ground height or sweet spot plus lead), or whatever the fire routine left there (it receives the pointer). With no resolved target, it is unchanged. The engine starts the position's y from the word and stores it back.
+
+**Functions written to `/TotalA.exe`** (name, prototype, plate comment): `0x0049E1A0` `UnitScript_ProcessWeaponSlots`, `0x0048A1E0` `Weapon_ResolveTargetPos`, `0x0048A190` `Weapon_GetTargetUnit`, `0x0043E3C0` `Unit_GetSweetSpotPos`, `0x0043E0B0` `Unit_GetPieceBoxCentre`, `0x0043E2E0` `Weapon_GetAimFromPos`, `0x0043E240` `Weapon_GetQueryPiecePos`, `0x0049E570` `Vec3_Subtract`, `0x0049D910` `Weapon_ComputeDirectAim`, `0x0049AA80` `Weapon_IsTargetPosInRange`, `0x0049D880` `Weapon_IsAimWithinTolerance`, `0x00456200` `UnitScript_BroadcastScriptStart`, `0x004012A0` `ResourceSlot_TrySpend`, `0x004B07C0` `UnitScript_FindFunction`, `0x004B0A70` `UnitScript_InvokeNamed`, `0x004B0BC0` `UnitScript_CallInOutNamed`, `0x00481490` `WeaponAimSink_OnReturn`.
+
+**Open:** the stockpile display hook (`0x0041C150`) only touches the HUD (it calls `0x004199B0` when the unit is the one shown at GS+0x37E9C); not modelled. The fire routines (+0x60) are not built yet.
 
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
@@ -699,6 +764,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Weapon slot pass + aiming (target position, veteran lead, sweet spot, aim-from/query pieces, direct and ballistic aim, aim scripts and sink, broadcast, range check, tolerance, reload, stockpile, shot payment, stale word) — **3,000 scenarios / 300,000 unit passes + 69,483 direct slot passes / 242,937 helper calls / 15,025 shots identical** | `0x0049E1A0`, `0x0048A1E0`, `0x0048A190`, `0x0043E3C0`, `0x0043E0B0`, `0x0043E2E0`, `0x0043E240`, `0x0049E570`, `0x0049D910`, `0x0049AA80`, `0x0049D880`, `0x00456200`, `0x004012A0`, `0x004B07C0`, `0x004B0A70`, `0x004B0BC0`, `0x00481490`, `0x0049E070` | `engine/sim/src/weapons.cpp`, `engine/sim/include/sim/weapon_slot.h`, `tools/orig_harness/weapons_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Stale stack word as the wreck level of units without `Killed` (wind, script step, water damage, heal, kill effects; original heap addresses) — **3,000 scenarios incl. all 22 Killed-less types, word compared after every pass/kill: 0 differences** | `0x004864B0`, `0x0048AD30`, `0x00437910`, `0x004B0D60`, `0x004B1C00`, `0x00489BB0`, `0x0041BD10`, `0x0043B7C0`, `0x0048A870` | `engine/sim/src/{combat,unit_tick,script_vm}.cpp`, `tools/orig_harness/combat_harness.cpp`, `tools/capture/capture.cpp` |
 | 2026-10-14 | Damage, repair/self-heal, kills (packets, veterancy, severity/wreck, statistics, reclaim, teardown) — **3,000 scenarios / 600,000 unit passes / 656,853 combat operations / 26,934 kills identical** | `0x00489BB0`, `0x00489CE0`, `0x0041BD10`, `0x004864B0`, `0x004866D0`, `0x00467950`, `0x0044FDB0`, `0x0044FE40`, `0x0044FFD0` | `engine/sim/src/combat.cpp`, `tools/orig_harness/combat_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Per-step unit pass (wind, script step, timers, selection, health %, water damage, self-heal gates; subsystems as ordered hooks) — **1,000 scenarios / 253,024 passes / 65,843 script calls with real scripts identical** | `0x0048AD30`, `0x00437910`, `0x0048B090` (activation side calls `0x0047F780`, `0x0041C110`, `0x00451DF0`) | `engine/sim/src/unit_tick.cpp`, `tools/orig_harness/unitloop_harness.cpp` |
