@@ -175,7 +175,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 ---
 
 ## 8. Open questions (resolve when the relevant step is reached)
-1. `nTickRateHz` value (expected 30).
+1. ~~`nTickRateHz`~~ resolved: 30 Hz (runtime capture #1).
 2. ~~Sin/cos table~~ resolved: static, 640 entries, formula-generated (see RE_MEMORY).
 3. ~~RNG seeds~~ resolved: QPC for the battle RNG, `time(NULL)` for `rand()` (see RE_MEMORY).
 4. ~~`Math_RandMod` arithmetic~~ resolved from the disassembly (see RE_MEMORY).
