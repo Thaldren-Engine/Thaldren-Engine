@@ -19,7 +19,8 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_},
       targeting_{units, ticks, players, alliances, targeting_types_, mission_types_, map, 0, missions_, targeting_env_,
                  targeting_hooks_, targeting_state_},
-      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}} {
+      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}},
+      sight_world_{sight, sight_tables, explored, units, ticks, players, alliances, sight_types_, buckets, &targeting_state_, sight_env_, 0, 0} {
     alliances.resize(kPlayerRecords);
     feature_state.reset();
     effects.reset();
@@ -115,6 +116,93 @@ void Battle::sync_settings() {
     route_.env.sea_level = s.sea_level;
     route_.env.player_count = s.player_count;
     route_.env.units_per_player = s.units_per_player;
+    sync_sight();
+}
+
+void Battle::sync_sight() {
+    const BattleSettings& s = settings;
+    sight_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) sight_types_[k] = types[k].sight;
+    sight.flags = static_cast<std::uint16_t>((sight.flags & sight_flags::kViewClean) | (s.explore ? sight_flags::kReveal : 0) |
+                                             (s.fog_of_war ? sight_flags::kFog : 0) | (s.true_sight ? sight_flags::kTrueSight : 0));
+    sight_env_.game_tick = unit_env_.game_tick;
+    sight_env_.sea_level = s.sea_level;
+    sight_env_.view_player = s.local_view;
+    sight_env_.player_count = s.player_count;
+    sight_env_.options = s.player_sight;
+}
+
+void Battle::init_sight() {
+    sync_settings();
+    init_sight_map(sight, explored, heights_, settings.sea_level);
+    init_player_sight(sight, players);
+    sight_ready_ = true;
+}
+
+void Battle::rebuild_sight(bool clear_explored) {
+    sync_settings();
+    sim::rebuild_sight(sight_world_, clear_explored);
+}
+
+void Battle::expire_lingering_sight() {
+    if (!sight_ready_) return;
+    sync_settings();
+    sim::expire_lingering_sight(sight_world_);
+}
+
+bool Battle::unit_seen_by(int viewer, const Unit& unit) {
+    sync_settings();
+    return sim::unit_visible(sight_world_, viewer, unit);
+}
+
+void Battle::update_sight(Unit& u) {
+    if (!sight_ready_) {
+        outside_.update_sight(u);
+        return;
+    }
+    sync_sight();
+    update_unit_sight(sight_world_, u);
+}
+
+void Battle::stamp_line_of_sight(Unit& u) {
+    if (!sight_ready_) {
+        outside_.stamp_line_of_sight(u);
+        return;
+    }
+    sync_sight();
+    stamp_new_unit(sight_world_, u);
+}
+
+void Battle::reveal_dead_unit(Unit& u) {
+    // The kill handler, for a unit of the viewed player (0x482910): sight lingers 60 steps.
+    if (!sight_ready_) {
+        outside_.reveal_dead_unit(u);
+        return;
+    }
+    sync_sight();
+    linger_dead_unit(sight_world_, u);
+}
+
+void Battle::forget_fog(Unit& u) {
+    // The kill handler with fog (0x482090): the unit's sight goes.
+    if (!sight_ready_) {
+        outside_.forget_fog(u);
+        return;
+    }
+    sync_sight();
+    remove_unit_sight(sight_world_, u);
+}
+
+bool Battle::TargetingHooks::unit_visible(int p, Unit& u) {
+    if (!b.sight_ready_) return b.outside_.unit_visible(p, u);
+    b.sync_sight();
+    return sim::unit_visible(b.sight_world_, p, u);
+}
+
+bool Battle::TargetingHooks::position_explored(int p, const std::array<std::int32_t, 3>& pos) {
+    if (!b.sight_ready_) return b.outside_.position_explored(p, pos);
+    b.sync_sight();
+    return sim::position_explored(b.sight_world_, p, pos);
 }
 
 void Battle::start_players() {
@@ -136,8 +224,13 @@ void Battle::players_stage() {
         }
         refresh_unit_table(targeting_, slot);
         for (int id = p.first_unit; id <= p.last_unit && id < static_cast<int>(units.size()); ++id)
-            if (id > 0 && (units[static_cast<std::size_t>(id)].flags & unit_flags::kAlive)) outside_.update_sight(units[static_cast<std::size_t>(id)]);
+            if (id > 0 && (units[static_cast<std::size_t>(id)].flags & unit_flags::kAlive)) update_sight(units[static_cast<std::size_t>(id)]);
         outside_.player_stage_rest(slot);
+        // The viewed player's turn ends with the sensor pass (0x467440), after its economy.
+        if (sight_ready_ && slot == settings.local_view) {
+            sync_sight();
+            update_sensors(sight_world_);
+        }
     }
     outside_.players_stage_end();
 }

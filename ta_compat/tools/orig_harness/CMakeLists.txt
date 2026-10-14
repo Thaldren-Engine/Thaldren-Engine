@@ -265,6 +265,7 @@ add_executable(create_harness
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/sight.cpp
     ${ROOT}/engine/sim/src/anim.cpp
     ${ROOT}/engine/sim/src/effects.cpp
     ${ROOT}/engine/sim/src/features.cpp
@@ -409,3 +410,19 @@ add_executable(feature_harness
 )
 target_include_directories(feature_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(feature_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Line of sight, explored map, radar, sonar, jamming and cloak hold-off vs sim/sight.h.
+add_executable(los_harness
+    los_harness.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/sight_tables.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/engine/sim/src/footprint.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/sight.cpp
+)
+target_include_directories(los_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(los_harness PRIVATE /W4 /permissive- /fp:precise)

@@ -179,6 +179,19 @@ void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, c
     c.weapons = {weapon_at(weapons, d.weapon1), weapon_at(weapons, d.weapon2), weapon_at(weapons, d.weapon3)};
     c.model = assets.has_model ? &assets.pose_model : nullptr;
     c.script = assets.has_script ? &assets.cob.program : nullptr;
+
+    sim::SightType& sight = out.sight;
+    sight.sight = d.sight_distance;
+    sight.radar = d.radar_distance;
+    sight.sonar = d.sonar_distance;
+    sight.radar_jam = d.radar_distance_jam;
+    sight.sonar_jam = d.sonar_distance_jam;
+    sight.min_cloak_distance = d.min_cloak_distance;
+    sight.model_size_x = d.model_size_x;
+    sight.model_size_y = d.model_size_y;
+    sight.model_size_z = d.model_size_z;
+    sight.can_cloak = (d.can_do_flags & unit_flags::kCanCloakFromCost) != 0;
+    sight.stealth = (d.type_flags & (1u << 8)) != 0;
 }
 
 void to_targeting_type(const UnitDefRecord& d, const CategoryRegistry& categories, const std::vector<sim::WeaponType>& weapons,

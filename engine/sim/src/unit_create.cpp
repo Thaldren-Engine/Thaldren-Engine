@@ -234,7 +234,7 @@ Unit* Battle::create_unit(int player, std::uint16_t type, std::int32_t x, std::i
             u.flags |= unit_tick_flags::kDying;
         }
     }
-    outside_.stamp_line_of_sight(u);
+    stamp_line_of_sight(u);
     ++p.alive_count;
     ++p.units_created;
     outside_.victory_unit_created(u);
