@@ -25,7 +25,7 @@ namespace ta {
 
 struct BattleRequest {
     std::string map = "Moon Quartet";  // maps\<map>.tnt / .ota
-    int schema = 0;                    // the OTA schema (0: the first)
+    int schema = -1;                   // the OTA schema (-1: chosen as the original does)
     // Per player slot: the side name ("ARM", "CORE"), used for the commander; the rest of the
     // player description (kind, colour, alliances, start position, options, seeds) is
     // start.players / start.*. A player's commander_type is filled from its side.

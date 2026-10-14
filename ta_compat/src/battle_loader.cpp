@@ -35,25 +35,80 @@ std::string side_commander(const TdfSection* sides, const std::string& side) {
     return {};
 }
 
-// Start positions of a schema: [GlobalHeader] [Schema n] [specials] [specialK] with
-// specialwhat=StartPosN, XPos, ZPos (world units).
-int read_start_positions(const std::vector<std::uint8_t>& ota, int schema, std::array<std::array<std::int32_t, 2>, 10>& out) {
-    const TdfParseResult parsed = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
-    if (!parsed.root) return 0;
-    const TdfSection* h = parsed.root->child("GlobalHeader");
-    const TdfSection* s = h ? h->child("Schema " + std::to_string(schema)) : nullptr;
-    const TdfSection* sp = s ? s->child("specials") : nullptr;
-    if (!sp) return 0;
-    int count = 0;
+// The schema the original picks (0x436860) for a skirmish or network game: among
+// "Schema N" sections (N = 0, 1, ... until one is missing) of type "Network 1".."Network 4"
+// (types in that order), the one whose StartPos count equals the player count (the highest
+// filled slot + 1), else the largest count seen; later candidates replace earlier ones under
+// the same rule. Returns the schema number (-1: none).
+int select_schema(const TdfSection& header, int players) {
+    static const char* const kTypes[4] = {"Network 1", "Network 2", "Network 3", "Network 4"};
+    int chosen = -1, best = 0;
+    for (const char* type : kTypes)
+        for (int n = 0;; ++n) {
+            const TdfSection* s = header.child("Schema " + std::to_string(n));
+            if (!s) break;
+            if (stricmp_c(s->get_string("Type", 32, ""), type) != 0) continue;
+            int count = 0;
+            if (const TdfSection* sp = s->child("specials"))
+                for (const auto& c : sp->children()) {
+                    bool found = false;
+                    const std::string what = c->get_string("specialwhat", 16, "", &found);
+                    if (found && what.size() >= 8 && stricmp_c(what.substr(0, 8), "StartPos") == 0) ++count;
+                }
+            if (count != 0 && (count == players || players == 0 || (best < count && best != players))) {
+                chosen = n;
+                best = count;
+            }
+        }
+    return chosen;
+}
+
+// Start positions of a schema (0x437320's table): StartPosN gives id N-1; a StartPos
+// without digits takes the next of a running count (1, 2, ...) minus one.
+void read_start_rules(const TdfSection& schema, std::vector<sim::StartRule>& out) {
+    const TdfSection* sp = schema.child("specials");
+    if (!sp) return;
+    std::int32_t running = 0;
     for (const auto& c : sp->children()) {
-        const std::string what = c->get_string("specialwhat", 64, "");
-        if (what.size() < 9 || stricmp_c(what.substr(0, 8), "StartPos") != 0) continue;
-        const int n = msvc_atoi(what.substr(8));
-        if (n < 1 || n > 10) continue;
-        out[static_cast<std::size_t>(n - 1)] = {c->get_int("XPos", 0), c->get_int("ZPos", 0)};
-        count = std::max(count, n);
+        bool found = false;
+        const std::string what = c->get_string("specialwhat", 256, "", &found);
+        if (!found || what.size() < 8 || stricmp_c(what.substr(0, 8), "StartPos") != 0) continue;
+        sim::StartRule r;
+        r.x = static_cast<std::int16_t>(c->get_int("XPos", 0));
+        r.z = static_cast<std::int16_t>(c->get_int("ZPos", 0));
+        std::int32_t id;
+        if (what.size() > 8 && what[8] >= '0' && what[8] <= '9') id = msvc_atoi(what.substr(8));
+        else id = ++running;
+        r.id = id > 0 ? id - 1 : id;
+        out.push_back(r);
     }
-    return count;
+}
+
+// The meteor configuration: the schema's MeteorWeapon/Radius/Density/Duration/Interval
+// (enabled), or gamedata\meteor.tdf [Default] (disabled) when there is no weapon name; a
+// schema with a zero value also takes the default file's values (still enabled).
+void read_meteors(Vfs& vfs, const TdfSection* schema, sim::MeteorShower& m, std::string& weapon) {
+    auto from = [&](const TdfSection& s) {
+        weapon = s.get_string("MeteorWeapon", 32, "");
+        const std::int32_t radius = s.get_int("MeteorRadius", 0);
+        const float density = static_cast<float>(s.get_float("MeteorDensity", 0.0));
+        const float duration = static_cast<float>(s.get_float("MeteorDuration", 0.0));
+        const float interval = static_cast<float>(s.get_float("MeteorInterval", 0.0));
+        m.configure(radius, density, duration, interval);
+        return radius != 0 && density != 0.0f && duration != 0.0f && interval != 0.0f;
+    };
+    auto from_default = [&] {
+        const std::unique_ptr<TdfSection> d = parse_file(vfs, "gamedata\\meteor.tdf");
+        if (const TdfSection* sec = d ? d->child("Default") : nullptr) from(*sec);
+    };
+    const std::string name = schema ? schema->get_string("MeteorWeapon", 32, "") : std::string();
+    if (name.empty()) {
+        m.enabled = false;
+        from_default();
+        return;
+    }
+    if (!from(*schema)) from_default();
+    m.enabled = true;
 }
 
 }  // namespace
@@ -118,24 +173,45 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     b.init_buckets();
     b.reset_features_and_effects();
     place_tnt_features(b, lb->tnt);
+    // The map info's schema: chosen as the original does for skirmish and network games
+    // (request.schema < 0), else the requested one.
+    std::unique_ptr<TdfSection> ota_root;
+    if (!lb->ota.empty()) ota_root = tdf_parse(std::string_view(reinterpret_cast<const char*>(lb->ota.data()), lb->ota.size())).root;
+    const TdfSection* header = ota_root ? ota_root->child("GlobalHeader") : nullptr;
+    int schema = req.schema;
+    if (schema < 0 && header) {
+        int players = 0;
+        for (int s = 0; s < 10; ++s)
+            if (req.start.players[static_cast<std::size_t>(s)].kind != sim::PlayerKind::Empty) players = s + 1;
+        schema = select_schema(*header, players);
+    }
+    const TdfSection* schema_sec = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
     MapEconomy me;
-    if (!lb->ota.empty()) read_map_economy(lb->ota, req.schema, me);
+    if (!lb->ota.empty()) read_map_economy(lb->ota, schema < 0 ? 0 : schema, me);
     init_map_economy(b, lb->tnt, me, lb->feature_defs);
-    b.step_wind();
+    std::string meteor_weapon;
+    read_meteors(vfs, schema_sec, b.meteors, meteor_weapon);
+    // The meteor weapon by name; a missing one or one without the meteor flag: weapon slot 0.
+    b.meteors.weapon = &lb->weapons[0];
+    for (std::size_t w = 0; w < 256 && !meteor_weapon.empty(); ++w)
+        if (stricmp_c(lb->weapon_defs.slots[w].name, meteor_weapon) == 0) {
+            if (lb->weapon_defs.slots[w].flags & 0x20u) b.meteors.weapon = &lb->weapons[w];
+            break;
+        }
     b.move_classes = to_move_classes(lb->unit_context);
     std::string err;
     load_sight_tables(vfs, b.sight_tables, err);
 
     // Players.
     sim::BattleStart start = req.start;
-    if (!lb->ota.empty()) start.start_position_count = read_start_positions(lb->ota, req.schema, start.start_positions);
+    if (schema_sec && start.start_rules.empty()) read_start_rules(*schema_sec, start.start_rules);
     const std::unique_ptr<TdfSection> sides = parse_file(vfs, "gamedata\\sidedata.tdf");
     for (std::size_t s = 0; s < 10; ++s) {
         sim::StartPlayer& p = start.players[s];
         if (p.kind == sim::PlayerKind::Empty || p.commander_type) continue;
         const std::string com = side_commander(sides.get(), req.sides[s]);
         p.commander_type = lb->type_index(com);
-        b.players[s].commander_name = com;
+        if (p.commander_name.empty()) p.commander_name = com;
     }
     if (!sim::start_battle(b, start, error)) return nullptr;
     return lb;
