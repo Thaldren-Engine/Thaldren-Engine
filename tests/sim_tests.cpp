@@ -235,7 +235,7 @@ void test_x87_rotation() {
 
     // FPU profiles: the captured profile needs a capture; the documented model
     // differs from Intel silicon only in the last bit of some values.
-    CHECK_EQ(sim::x87::fpu_profile() == sim::x87::FpuProfile::IntelP6, true);
+    CHECK_EQ(sim::x87::fpu_profile() == sim::x87::FpuProfile::Model66Pi, true);
     const std::uint8_t junk[16] = {};
     CHECK_EQ(sim::x87::load_fsincos_capture(junk, sizeof junk), false);
     CHECK_EQ(sim::x87::set_fpu_profile(sim::x87::FpuProfile::Captured), false);
@@ -251,7 +251,7 @@ void test_x87_rotation() {
         CHECK_EQ(ds >= -1 && ds <= 1 && dc >= -1 && dc <= 1, true);
     }
     CHECK_EQ(differing > 0, true);
-    sim::x87::set_fpu_profile(sim::x87::FpuProfile::IntelP6);
+    sim::x87::set_fpu_profile(sim::x87::FpuProfile::Model66Pi);
 }
 
 void test_script_vm() {

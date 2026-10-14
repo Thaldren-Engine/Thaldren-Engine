@@ -92,7 +92,7 @@ struct CacheEntry {
     bool ready = false;
 };
 
-FpuProfile g_profile = FpuProfile::IntelP6;
+FpuProfile g_profile = FpuProfile::Model66Pi;
 std::vector<CacheEntry> g_cache(65536);          // per angle, for the active profile
 std::vector<std::array<Ext80, 2>> g_captured;    // per angle (uint16 index), from a capture file
 

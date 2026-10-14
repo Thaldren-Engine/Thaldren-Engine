@@ -93,8 +93,8 @@ Sources: `/Thaldren_TotalA.exe`, checked 2026-10-13. Not yet written to `/TotalA
    - Our `sim::x87::rotate_point_2d` equals the original routine on 524,288 calls (every angle, 8 points each).
    - Other CPUs (e.g. AMD) may compute different last bits, as the original game itself would.
    - **FPU profiles (`sim::x87::FpuProfile`, part of the sync contract):**
-     - `IntelP6` (default): the model plus the measured table. Reported identical across Intel from the Pentium III to Core i7, i.e. the P6 line that began with the Pentium Pro (1995).
-     - `Model66Pi`: the documented algorithm only.
+     - `Model66Pi` (**default**, user decision 2026-10-14: "use the more accurate one"): the documented algorithm only. Exact 66-bit-π reduction, then correct rounding.
+     - `IntelP6`: the model plus the measured table. Reported identical across Intel from the Pentium III to Core i7, i.e. the P6 line that began with the Pentium Pro (1995).
      - `Captured`: a table recorded on real hardware with `tools/fpu_capture`. That is a C-runtime-free Win32 executable stamped as Windows 4.0, importing only 5 kernel32 functions and using no CMOV/SSE. It runs on Win95 with a 486DX/Pentium and writes `FSINCOS.CAP`. Check a capture with `fpu_profile_check`.
    - **1995 hardware (researched 2026-10-14):**
      - Every Intel x87 since the 387 reduces with the same 66/68-bit π (Intel SDM / Intel forum). Intel improved the algorithms between the 387/486 and the Pentium and specifies an error bound, not bit-exact results.

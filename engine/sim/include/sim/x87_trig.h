@@ -31,8 +31,8 @@ enum class FpuProfile {
     // the 66-bit-pi model plus the one-unit exceptions measured on an
     // i7-13700K. Reported identical across Intel generations since the P6.
     IntelP6,
-    // The documented algorithm only: exact reduction by the 66-bit pi, then
-    // correct rounding. A stand-in for processors not captured.
+    // Default. The documented algorithm only: exact reduction by the 66-bit
+    // pi, then correct rounding (no implementation-specific last-bit errors).
     Model66Pi,
     // A full table captured on real hardware with tools/fpu_capture
     // (e.g. an original 1993-1995 P5 Pentium); see load_fsincos_capture.
