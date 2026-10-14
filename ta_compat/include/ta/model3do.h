@@ -53,4 +53,11 @@ int model_piece_count(const Model3doPiece* root);
 // node, its child subtree, then its next sibling.
 sim::PoseModel to_pose_model(const Model3doPiece* root);
 
+// The ground footprint the game fits units to the terrain with: X and Z of the
+// vertices named by the first four index slots of the root piece's selection
+// primitive (after load-time negation). `file` is the model file `root` was
+// loaded from. False when the model has no selection primitive.
+bool selection_footprint(const std::vector<std::uint8_t>& file, const Model3doPiece* root,
+                         std::array<std::array<std::int32_t, 2>, 4>& out);
+
 } // namespace ta

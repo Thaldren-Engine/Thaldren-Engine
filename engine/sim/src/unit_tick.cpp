@@ -23,6 +23,7 @@ std::int32_t run_unit_pass(std::vector<Unit>& units, std::vector<UnitTickState>&
     for (std::size_t slot = 0; slot < players.size() && slot < 10; ++slot) {
         PlayerSlot& player = players[slot];
         if (!player.active || player.controller < 1 || player.controller > 3 || player.state == 10) continue;
+        env.pass_slot = static_cast<int>(slot);
         for (int i = player.first_unit; i <= player.last_unit; ++i) {
             Unit& u = units[static_cast<std::size_t>(i)];
             UnitTickState& t = ticks[static_cast<std::size_t>(i)];
