@@ -122,6 +122,7 @@ struct FeatureTypeInfo {
     // reclaimed, each followed by its shadow.
     std::array<std::uint32_t, 8> sequences{};
     std::uint32_t model = 0;          // 3D features: their model (identity for the object state)
+    float metal = 0.0f, energy = 0.0f;  // what reclaiming it yields
 };
 
 struct ProjectileEnvironment {

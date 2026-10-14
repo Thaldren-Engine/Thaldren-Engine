@@ -50,7 +50,13 @@ enum class MissionCaller : std::uint8_t { Primary, Secondary };
 enum class OrderIntent : std::uint8_t { Move = 2, Attack = 3, Patrol = 9 };
 
 // Fixed texts some speech calls carry.
-enum class SpeechText : std::uint8_t { None, RepairAborted, RepairsUnsuccessful, UnitRepaired };
+enum class SpeechText : std::uint8_t {
+    None, RepairAborted, RepairsUnsuccessful, UnitRepaired,
+    // Construction (sim/construction.h).
+    ConstructionStopped, UnableToCreate, StartingConstruction, ConstructionTerminated, CantReachSite, WaitingForArea,
+    AreaBlocked, BuildingComplete, CantGetThere, Repairing, ReclamationFailed, CannotBeReclaimed, Reclaiming,
+    CaptureFailed, CannotBeCaptured, CloudOfVapor, Capturing,
+};
 
 // Systems the behaviours reach outside the simulation core.
 class MissionSystems {
@@ -92,6 +98,8 @@ public:
     virtual void attach_circle_goal(Unit& unit, MissionOrder& order, const std::array<std::int32_t, 3>& pos, std::int32_t radius) = 0;
 };
 
+struct Construction;
+
 struct MissionEnvironment {
     std::uint8_t sea_level = 0;
     std::int32_t gravity = 0;
@@ -110,6 +118,8 @@ struct Missions {
     const std::vector<std::array<std::uint8_t, 16>>& allied;
     MissionEnvironment& env;
     MissionCaller caller = MissionCaller::Primary;
+    // Construction behaviours (sim/construction.h); null where they are not wired.
+    Construction* construction = nullptr;
     // Set when the original would crash (or read memory the model cannot know);
     // the result of that step is then meaningless.
     std::string fault;

@@ -156,6 +156,7 @@ add_executable(orders_harness
     ${ROOT}/engine/sim/src/ground_settle.cpp
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/missions.cpp
+    ${ROOT}/engine/sim/src/construction.cpp
     ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/rng.cpp
@@ -271,6 +272,7 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/route_search.cpp
     ${ROOT}/engine/sim/src/targeting.cpp
     ${ROOT}/engine/sim/src/missions.cpp
+    ${ROOT}/engine/sim/src/construction.cpp
     ${ROOT}/engine/sim/src/motion.cpp
     ${ROOT}/engine/sim/src/combat.cpp
     ${ROOT}/engine/sim/src/fire.cpp
@@ -340,6 +342,7 @@ add_executable(targeting_harness
     ${ROOT}/engine/sim/src/combat.cpp
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/missions.cpp
+    ${ROOT}/engine/sim/src/construction.cpp
     ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/rng.cpp

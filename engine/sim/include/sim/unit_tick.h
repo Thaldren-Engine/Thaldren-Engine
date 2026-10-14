@@ -57,6 +57,7 @@ struct UnitTickState {
     Unit* last_attacker = nullptr;
     std::uint8_t last_attacker_slot = 10;    // player slot of the last attacker, 10 = none
     float metal_make = 0.0f;                 // metal income of the unit's resource slot
+    float energy_make = 0.0f;                // energy income of the unit's resource slot (construction refunds and reclaim yields)
     std::array<std::int32_t, 3> velocity{};  // of the motion object (16.16 per tick), when has_motion
     float energy_use = 0.0f, metal_use = 0.0f;  // spent by the unit's resource slot (weapon shots)
     MotionState motion;                         // when has_motion
