@@ -145,8 +145,7 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
 #endif
         }
     }
-    std::printf("headless: %d frames, %d simulation steps, game tick at end %u, scroll (%d, %d), %d selected\n", o.frames, total_steps,
-                0u, client.scroll_x(), client.scroll_y(), client.selected_count());
+    std::printf("headless: %d frames, %d simulation steps\n", o.frames, total_steps);
     return 0;
 }
 

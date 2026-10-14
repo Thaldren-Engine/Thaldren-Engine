@@ -30,6 +30,27 @@ bool kind_allowed(const sim::Battle& b, const sim::Unit& u, std::uint8_t kind) {
     return true;
 }
 
+// A queued command repeating one the unit already has (same kind, same target when one is
+// given, position within 16 world units when one is given) cancels that order instead.
+bool cancel_match(sim::Battle& b, sim::Unit& u, std::uint8_t kind, const sim::Unit* target, const WorldPos* pos) {
+    sim::MissionOrder* const head = u.orders;
+    for (sim::MissionOrder* o = u.orders; o; o = o->next) {
+        if (o->kind != kind) continue;
+        if (target && o->target.unit != target) continue;
+        if (pos && (static_cast<std::uint32_t>((*pos)[0] - o->pos[0]) + 0x100000u >= 0x200001u ||
+                    static_cast<std::uint32_t>((*pos)[2] - o->pos[2]) + 0x100000u >= 0x200001u))
+            continue;
+        sim::MissionOrder** link = (o->flags & sim::order_flags::kSecondary) ? &u.secondary_orders : &u.orders;
+        while (*link && *link != o) link = &(*link)->next;
+        if (!*link) return true;  // listed elsewhere: nothing happens
+        *link = o->next;
+        if (o != head) o->flags |= sim::order_flags::kNotCurrent;
+        sim::destroy_order(b.order_context(), o);
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 int command_selected(sim::Battle& b, int player, std::uint8_t intent, sim::Unit* target, const WorldPos* pos, bool queued) {
@@ -61,6 +82,10 @@ int command_selected(sim::Battle& b, int player, std::uint8_t intent, sim::Unit*
                 at = {(*pos)[0] + u.pos[0] - cx, (*pos)[1], (*pos)[2] + u.pos[2] - cz};
                 use = &at;
             }
+        }
+        if (queued && cancel_match(b, u, kind, target, use)) {
+            ++given;
+            continue;
         }
         if (b.order(u, kind, queued, target, use)) ++given;
     }
@@ -100,6 +125,10 @@ int command_build(sim::Battle& b, int player, std::uint16_t type, const WorldPos
         if (!b.ticks[i].has_motion) continue;
         const std::uint16_t t = b.ticks[i].type_index;
         if (t >= b.types.size() || !b.types[t].construction.has_build_options) continue;
+        if (queued && cancel_match(b, u, sim::mission::kMobileBuild, nullptr, &pos)) {
+            ++given;
+            continue;
+        }
         if (b.order_mobile_build(u, type, pos, queued)) ++given;
     }
     return given;

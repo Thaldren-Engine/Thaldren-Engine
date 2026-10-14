@@ -588,13 +588,7 @@ CursorKind GameClient::cursor_kind() const {
     if (dragging_) return CursorKind::Normal;
     const sim::Unit* target = hover_ ? &b_.units[hover_] : nullptr;
     const bool any = selected_count() > 0;
-    if (!any || mode_ == Action::None) {
-        // Default commands: the select pointer over an own selectable unit.
-        if (target && selectable(*target) && (!any || !opt_.right_click_orders || true)) {
-            if (!any) return CursorKind::Select;
-        }
-        if (!any) return CursorKind::Normal;
-    }
+    if (!any) return target && selectable(*target) ? CursorKind::Select : CursorKind::Normal;
     std::uint8_t intent = sim::intent::kDefault;
     switch (mode_) {
     case Action::Move: intent = sim::intent::kMove; break;
@@ -776,8 +770,7 @@ void GameClient::right_click_map(const InputEvent& e) {
 void GameClient::key_down(const InputEvent& e) {
     const int k = e.key;
     if (k == keys::kPause) {
-        budget_.paused = !budget_.paused;
-        message(budget_.paused ? "Paused" : "Unpaused");
+        budget_.paused = !budget_.paused;  // the paused sign shows it
         return;
     }
     if (k == keys::kEscape) {
@@ -789,7 +782,7 @@ void GameClient::key_down(const InputEvent& e) {
         if (budget_.game_speed < 20) {
             budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(budget_.game_speed + 1);
             const int d = budget_.game_speed - 10;
-            message(d == 0 ? "Game Speed Normal" : "Game Speed " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
+            message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
         }
         return;
     }
@@ -797,7 +790,7 @@ void GameClient::key_down(const InputEvent& e) {
         if (budget_.game_speed > 1) {
             budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(budget_.game_speed - 1);
             const int d = budget_.game_speed - 10;
-            message(d == 0 ? "Game Speed Normal" : "Game Speed " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
+            message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
         }
         return;
     }
