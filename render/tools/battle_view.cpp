@@ -283,6 +283,10 @@ int main(int argc, char** argv) {
                 b.map.cells[static_cast<std::size_t>(z * b.map.width + x)].height = hm.at(x, z);
         sim::refresh_height_range(b.map, 0, 0, static_cast<std::int16_t>(b.map.width), static_cast<std::int16_t>(b.map.height));
         b.init_buckets();
+        b.settings.player_count = 2;
+        b.settings.units_per_player = 50;
+        b.move_classes = ta::to_move_classes(ctx);
+        b.init_routes();
         auto battle_type = [&](const std::string& name) -> std::uint16_t {
             for (std::size_t k = 1; k < btypes.size(); ++k)
                 if (ta::stricmp_c(btypes[k]->def->unit_name, name) == 0) return static_cast<std::uint16_t>(k);
@@ -446,6 +450,7 @@ int main(int argc, char** argv) {
                 if (battle) {
                     battle->advance_tick();
                     battle->step_units_and_projectiles();
+                    battle->run_route_search();
                 } else {
                     for (auto& u : units) u->script->tick(1);
                 }
@@ -493,6 +498,7 @@ int main(int argc, char** argv) {
             if (battle) {
                 battle->advance_tick();
                 battle->step_units_and_projectiles();
+                battle->run_route_search();
             } else {
                 for (auto& u : units) u->script->tick(1);
             }
