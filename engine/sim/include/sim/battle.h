@@ -372,6 +372,7 @@ public:
 
 private:
     void sync_settings();
+    void prune_retired_goals();  // order goals the route search no longer reads (MotionContext::retired_goals)
     void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
                           std::int32_t z, bool fully_built);
     void build_script_and_pose(Unit& u, const UnitCreateType& type);
@@ -596,6 +597,7 @@ private:
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;
+    std::vector<MissionOrder*> free_orders_;  // destroyed orders, reused last first (allocate_order)
     std::vector<SightType> sight_types_;  // by type index
     SightEnvironment sight_env_;
     SightWorld sight_world_;

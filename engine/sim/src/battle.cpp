@@ -33,6 +33,7 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
 }
 
 Battle::~Battle() {
+    for (MissionOrder* o : free_orders_) delete o;
     for (Unit& u : units)
         for (MissionOrder* list : {u.orders, u.secondary_orders})
             while (list) {
@@ -230,9 +231,23 @@ void Battle::start_players() {
     create_player_targeting(targeting_);
 }
 
+void Battle::prune_retired_goals() {
+    // Kept while the route search or a unit's motion goal still points at one.
+    auto& r = motion_.retired_goals;
+    if (r.empty()) return;
+    for (std::size_t i = 0; i < r.size();) {
+        bool used = r[i].get() == route_search.order_goal;
+        for (std::size_t k = 1; k < ticks.size() && !used; ++k)
+            used = ticks[k].motion.goal && ticks[k].motion.goal->attached == r[i].get();
+        if (!used) r.erase(r.begin() + static_cast<std::ptrdiff_t>(i));
+        else ++i;
+    }
+}
+
 void Battle::players_stage() {
     sync_settings();
     sim::run_route_search(route_);  // the route search runs first
+    prune_retired_goals();
     for (int slot = 0; slot < 10; ++slot) {
         const PlayerSlot& p = players[static_cast<std::size_t>(slot)];
         if (!p.active || p.controller < 1 || p.controller > 3 || p.state == 10) continue;
@@ -307,6 +322,7 @@ void Battle::init_routes() {
 void Battle::run_route_search() {
     sync_settings();
     sim::run_route_search(route_);
+    prune_retired_goals();
 }
 
 void Battle::refresh_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) {
@@ -449,13 +465,28 @@ std::int32_t Battle::fire(Unit& unit, int slot, Unit* target, WorldPos& target_p
 MissionOrder* Battle::allocate_order() {
     // Orders carry the original's heap address (it can reach the stale stack
     // word); heap addresses vary between runs, so a plain sequence stands in.
+    // Freed orders are reused last-freed-first with their address, as a heap hands back
+    // the block it just took: goals and the route search keep plain pointers to orders
+    // that were destroyed, and what reaches them is then the order now living there.
+    if (!free_orders_.empty()) {
+        MissionOrder* o = free_orders_.back();
+        free_orders_.pop_back();
+        const std::uint32_t address = o->address;
+        *o = MissionOrder{};
+        o->address = address;
+        return o;
+    }
     auto* o = new MissionOrder;
     o->address = next_order_address_;
     next_order_address_ += 0x58;
     return o;
 }
 
-void Battle::free_order(MissionOrder* order) { delete order; }
+void Battle::free_order(MissionOrder* order) {
+    if (order->goal) motion_.retired_goals.push_back(order->goal);  // goals may still point here (prune_retired_goals)
+    order->goal.reset();
+    free_orders_.push_back(order);
+}
 
 void Battle::step() {
     // Game_RunSimulationStep 0x495490, one pending step (docs/RE_MEMORY.md "Battle step").

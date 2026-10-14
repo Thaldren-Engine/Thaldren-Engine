@@ -98,6 +98,7 @@ void delete_order_goal(MotionContext& c, MissionOrder& o) {
     if (o.goal) {
         o.goal->release();
         c.systems.free_object(o.goal->address);
+        c.retired_goals.push_back(o.goal);
     }
     o.goal.reset();
     o.attached = 0;
