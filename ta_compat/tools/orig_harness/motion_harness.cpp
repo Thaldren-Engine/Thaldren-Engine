@@ -365,8 +365,8 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::GroundSettleSystems, s
     void broadcast_player_units(int player, u32&) override { rec(9, 0, {0x20000000u | static_cast<u32>(player)}); }
     void camera_follow_step(u32&) override {}
     // GroundSettleSystems
-    std::int32_t motion_speed(sim::Unit& u) override { return (*ticks)[u.id].motion.speed; }
-    std::uint32_t motion_start_tick(sim::Unit& u) override { return (*ticks)[u.id].motion.move_tick; }
+    std::int32_t motion_speed(sim::Unit& u) override { return sim::motion_speed((*ticks)[u.id]); }
+    std::uint32_t motion_start_tick(sim::Unit& u) override { return sim::motion_move_tick((*ticks)[u.id]); }
     std::uint32_t clock_ticks() override {
         const u32 v = clock;
         clock += 7;

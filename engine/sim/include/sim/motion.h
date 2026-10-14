@@ -359,4 +359,11 @@ void release_order_goal(MotionContext& c, Unit& unit, MissionOrder& order);
 // Map cell of a 16.16 position for a footprint (the cell of its corner).
 std::int16_t footprint_cell(std::int32_t pos, std::int16_t footprint);
 
+// The motion state as other systems read it: ground settle's hover bob
+// (GroundSettleSystems::motion_speed / motion_start_tick), dropped weapons
+// (ProjectileSystems::motion_speed); weapon lead reads UnitTickState::velocity.
+// The original reads through the motion pointer unchecked; without motion these give 0.
+inline std::int32_t motion_speed(const UnitTickState& t) { return t.has_motion ? t.motion.speed : 0; }
+inline std::uint32_t motion_move_tick(const UnitTickState& t) { return t.has_motion ? t.motion.move_tick : 0; }
+
 } // namespace sim
