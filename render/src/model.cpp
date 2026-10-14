@@ -111,6 +111,11 @@ void draw_uncached_pieces(RasterTarget& target, const Model& model, const sim::P
     }
 }
 
+void draw_model_piece(RasterTarget& t, const ModelPiece& piece, const std::vector<RasterVertex>& pts,
+                      const ModelDrawParams& params, bool use_animation) {
+    draw_piece(t, piece, pts, params, use_animation);
+}
+
 sim::PoseState pose_for_drawing(const sim::PoseState& pose, std::int16_t pitch, std::uint16_t heading,
                                 std::int16_t bank) {
     sim::PoseState copy = pose;

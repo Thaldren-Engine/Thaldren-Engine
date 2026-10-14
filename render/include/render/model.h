@@ -62,6 +62,11 @@ void draw_uncached_pieces(RasterTarget& target, const Model& model, const sim::P
                           std::int32_t unit_view_x, std::int32_t unit_y, std::int32_t unit_view_z,
                           int origin_x, int origin_y, const ModelDrawParams& params);
 
+// Draws one piece's primitives at already projected points (skipping the selection
+// outline), flat polygons and textured quads, as the direct drawing paths do.
+void draw_model_piece(RasterTarget& t, const ModelPiece& piece, const std::vector<RasterVertex>& pts,
+                      const ModelDrawParams& params, bool use_animation);
+
 // The unit's pose as the drawing code sees it: a copy synced to the unit's
 // attitude (the original syncs the unit's own state while drawing; we never
 // touch simulation state).

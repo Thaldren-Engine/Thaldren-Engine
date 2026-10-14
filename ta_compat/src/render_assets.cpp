@@ -261,6 +261,14 @@ void add_pieces(const Model3doPiece* p, TextureLibrary& lib, render::Model& m) {
 
 } // namespace
 
+void bind_pose_primitives(sim::PoseModel& pose, const render::Model& model) {
+    for (std::size_t i = 0; i < pose.nodes.size() && i < model.pieces.size(); ++i) {
+        auto& prims = pose.nodes[i].primitives;
+        const auto& bound = model.pieces[i].primitives;
+        for (std::size_t k = 0; k < prims.size() && k < bound.size(); ++k) prims[k].flat = bound[k].flat;
+    }
+}
+
 render::Model build_render_model(const Model3doPiece* root, TextureLibrary& textures) {
     render::Model m;
     if (root) add_pieces(root, textures, m);

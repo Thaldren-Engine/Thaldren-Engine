@@ -8,6 +8,8 @@
 //   --battle   run a real battle instead of animating placed units: two players' units made
 //              by the engine's unit creation, every step run by sim::Battle (no movement or
 //              behaviours yet; each weapon is pointed at the nearest enemy as an order would).
+//              The map's features are the battle's: they burn, break and reproduce; dead
+//              units leave wrecks, and explosions, debris and shards are drawn.
 
 #include <cstdio>
 #include <cstdlib>
@@ -23,6 +25,7 @@
 #include "sim/battle_quiet.h"
 #include "sim/rng.h"
 #include "sim/unit.h"
+#include "ta/battle_features.h"
 #include "ta/cob.h"
 #include "ta/featuredefs.h"
 #include "ta/battle_types.h"
@@ -170,7 +173,10 @@ int main(int argc, char** argv) {
     // Units.
     ta::UnitDefContext ctx;
     ta::load_unit_context(vfs, ctx);
-    const ta::UnitDefTable defs = ta::load_unit_defs(vfs, ctx);
+    // With the feature table, as battle loading does: unit corpses are looked up (and appended),
+    // then the dead / burnt / reclaimed chains are resolved.
+    const ta::UnitDefTable defs = ta::load_unit_defs(vfs, ctx, &fdefs);
+    fdefs.resolve_chains();
     ta::TextureLibrary textures;
     textures.load(vfs);
     std::map<std::string, std::unique_ptr<UnitType>> types;
@@ -259,12 +265,19 @@ int main(int argc, char** argv) {
     battle_rng.seed(0x12345678u);
     std::vector<sim::WeaponType> weapon_types;
     std::unique_ptr<sim::Battle> battle;
+    std::unique_ptr<ta::AnimImporter> anim_import;
+    std::vector<std::string> feature_models;  // 3D feature model names (FeatureTypeInfo::model - 1)
     if (battle_mode) {
         weapon_types = ta::to_weapon_types(weapons);
         battle = std::make_unique<sim::Battle>(outside, hm, battle_rng);
         sim::Battle& b = *battle;
+        anim_import = std::make_unique<ta::AnimImporter>(vfs, b.anims);
+        ta::bind_weapon_explosions(weapons, weapon_types, *anim_import);  // before anything points into weapon_types
+        b.features = ta::to_feature_types(fdefs, weapon_types, *anim_import, &feature_models);
+        ta::load_effect_art(*anim_import, b.effect_art);
         b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
         b.settings.gravity = 112;
+        b.settings.damage_options = 8;  // weapons damage features
         b.init_unit_table(101);
         for (int p = 0; p < 2; ++p) {
             sim::PlayerSlot& s = b.players[static_cast<std::size_t>(p)];
@@ -283,6 +296,8 @@ int main(int argc, char** argv) {
                 b.map.cells[static_cast<std::size_t>(z * b.map.width + x)].height = hm.at(x, z);
         sim::refresh_height_range(b.map, 0, 0, static_cast<std::int16_t>(b.map.width), static_cast<std::int16_t>(b.map.height));
         b.init_buckets();
+        b.reset_features_and_effects();
+        ta::place_tnt_features(b, tnt);
         auto battle_type = [&](const std::string& name) -> std::uint16_t {
             for (std::size_t k = 1; k < btypes.size(); ++k)
                 if (ta::stricmp_c(btypes[k]->def->unit_name, name) == 0) return static_cast<std::uint16_t>(k);
@@ -296,6 +311,7 @@ int main(int argc, char** argv) {
                 if (!m.root) return 0;
                 t->root = std::move(m.root);
                 t->model = ta::build_render_model(t->root.get(), textures);
+                ta::bind_pose_primitives(t->assets.pose_model, t->model);
                 b.types.emplace_back();
                 ta::to_battle_unit_type(d, t->assets, weapon_types, b.types.back());
                 btypes.push_back(std::move(t));
@@ -356,6 +372,7 @@ int main(int argc, char** argv) {
     scene.terrain.tiles = &tiles.tiles;
     scene.heights = &hm;
     for (const auto& c : cells) {
+        if (battle_mode) break;  // the battle draws its own features
         if (c.feature >= fdefs.records().size()) continue;
         const auto& r = fdefs.records()[c.feature];
         FeatureLook* lk = feature_look(c.feature);
@@ -382,10 +399,148 @@ int main(int argc, char** argv) {
     if (use_gpu) std::printf("built without the GPU backend\n");
 #endif
 
+    // Battle-mode drawing data: decoded frames by sequence, 3D feature models, glows.
+    std::map<std::uint32_t, std::vector<render::Sprite8>> seq_frames;
+    auto frames_of = [&](std::uint32_t seq) -> const std::vector<render::Sprite8>* {
+        if (!seq || !anim_import) return nullptr;
+        auto it = seq_frames.find(seq);
+        if (it != seq_frames.end()) return &it->second;
+        std::vector<render::Sprite8>& v = seq_frames[seq];
+        const auto o = anim_import->origins().find(seq);
+        if (o != anim_import->origins().end())
+            if (const std::vector<std::uint8_t>* data = anim_import->file(o->second.first)) ta::gaf_sequence_frames(*data, o->second.second, v);
+        return &v;
+    };
+    auto frame_at = [&](const sim::AnimCursor& c) -> const render::Sprite8* {
+        const std::vector<render::Sprite8>* f = frames_of(c.seq);
+        return f && c.frame < f->size() ? &(*f)[c.frame] : nullptr;
+    };
+    struct FeatureModel {
+        std::vector<std::uint8_t> file;
+        std::unique_ptr<ta::Model3doPiece> root;
+        sim::PoseModel pose;
+        render::Model model;
+        bool ok = false;
+    };
+    std::map<std::uint32_t, FeatureModel> feature_model_cache;
+    auto feature_model = [&](std::uint32_t id) -> const FeatureModel* {
+        if (id == 0 || id > feature_models.size()) return nullptr;
+        FeatureModel& fm = feature_model_cache[id];
+        if (!fm.ok && fm.file.empty() && vfs.read("objects3d\\" + feature_models[id - 1] + ".3DO", fm.file)) {
+            auto m = ta::load_3do(fm.file, true);
+            if (m.root) {
+                fm.root = std::move(m.root);
+                fm.pose = ta::to_pose_model(fm.root.get());
+                fm.model = ta::build_render_model(fm.root.get(), textures);
+                fm.ok = true;
+            }
+        }
+        return fm.ok ? &fm : nullptr;
+    };
+    std::array<std::vector<render::Sprite8>, 3> glows;
+    for (int k = 0; k < 3; ++k) glows[static_cast<std::size_t>(k)] = render::glow_frames(k, 0xC0FFEEu + static_cast<std::uint32_t>(k));
+    render::BlendTable light_table;
+    {
+        std::vector<std::uint8_t> lht;
+        if (vfs.read("palettes\\PALETTE.LHT", lht)) light_table = render::light_blend_table(lht);
+    }
+    std::map<const sim::PoseModel*, const render::Model*> model_of_pose;
+    for (const auto& bt : btypes)
+        if (bt) model_of_pose[&bt->assets.pose_model] = &bt->model;
+
     auto build_frame = [&](std::uint32_t at_tick) {
         scene.units.clear();
         if (battle) {
             sim::Battle& b = *battle;
+            // Features as the battle holds them.
+            scene.features.clear();
+            for (std::int32_t z = 0; z < b.map.height; ++z)
+                for (std::int32_t x = 0; x < b.map.width; ++x) {
+                    const sim::MapCell& cell = b.map.cells[static_cast<std::size_t>(z * b.map.width + x)];
+                    if (cell.feature >= sim::kFirstSpecialFeature || cell.feature >= b.features.size()) continue;
+                    const sim::FeatureTypeInfo& t = b.features[cell.feature];
+                    const auto& rec = fdefs.records()[cell.feature];
+                    render::FeatureInstance f;
+                    f.cell_x = x;
+                    f.cell_z = z;
+                    f.footprint_x = t.footprint_x;
+                    f.footprint_z = t.footprint_z;
+                    f.height = t.height;
+                    if (cell.flags & 1) {
+                        const sim::FeatureSlot& sl = b.feature_state.slots[cell.feature_aux % sim::kFeatureSlots];
+                        if (!(t.flags & sim::feature_type_flags::kFlat)) {
+                            const FeatureModel* fm = feature_model(t.model);
+                            if (!fm) continue;
+                            f.model = &fm->model;
+                            f.pose_model = &fm->pose;
+                            f.pos = sl.pos();
+                            f.pitch = sl.get<std::int16_t>(sim::FeatureSlot::kAngles);
+                            f.heading = sl.get<std::uint16_t>(sim::FeatureSlot::kAngles + 2);
+                            f.bank = sl.get<std::int16_t>(sim::FeatureSlot::kAngles + 4);
+                        } else {
+                            f.image = frame_at(sl.cursor(sim::FeatureSlot::kCursorA));
+                            if (sl.get<std::uint8_t>(sim::FeatureSlot::kFlags) & sim::feature_slot_flags::kHasShadow)
+                                f.shadow = frame_at(sl.cursor(sim::FeatureSlot::kCursorB));
+                        }
+                    } else if (t.flags & sim::feature_type_flags::kFlat) {
+                        if (t.flags & sim::feature_type_flags::kAnimating) {
+                            const auto& tc = b.feature_state.type_cursors[cell.feature];
+                            f.image = t.sequences[sim::kSeqNormal] ? frame_at(tc[0]) : nullptr;
+                            f.shadow = t.sequences[sim::kSeqNormalShadow] ? frame_at(tc[1]) : nullptr;
+                        } else {
+                            const auto* im = frames_of(t.sequences[sim::kSeqNormal]);
+                            const auto* sh = frames_of(t.sequences[sim::kSeqNormalShadow]);
+                            f.image = im && !im->empty() ? &(*im)[0] : nullptr;
+                            f.shadow = sh && !sh->empty() ? &(*sh)[0] : nullptr;
+                        }
+                        f.image_blended = (rec.flags & ta::feature_flags::kAnimTrans) != 0;
+                        f.shadow_blended = (rec.flags & ta::feature_flags::kShadTrans) != 0;
+                    }
+                    if (f.image || f.shadow || f.model) scene.features.push_back(f);
+                }
+            // Debris pieces and world effects.
+            scene.debris.clear();
+            for (int k = 0; k < sim::kMaxDebris; ++k) {
+                if (b.effects.debris_block[static_cast<std::size_t>(k)] == -1) continue;
+                const sim::DebrisPiece& d = b.effects.debris[static_cast<std::size_t>(k)];
+                const auto m = model_of_pose.find(d.model);
+                if (m == model_of_pose.end()) continue;
+                render::DebrisInstance di;
+                di.model = m->second;
+                di.pose_model = d.model;
+                di.node = d.node;
+                di.pos = d.pos;
+                di.turn = d.turn;
+                di.team_colour = static_cast<std::uint8_t>(d.owner);
+                scene.debris.push_back(di);
+            }
+            scene.effects.clear();
+            for (std::int32_t k = 0; k < b.effects.count; ++k) {
+                const sim::WorldEffect& e = b.effects.effects[static_cast<std::size_t>(k)];
+                render::EffectInstance ei;
+                ei.pos = e.pos;
+                if (e.art.seq) ei.art = frame_at(e.art);
+                for (int g = 0; g < 3; ++g)
+                    if (e.glow.seq && e.glow.seq == b.effect_art.glow[static_cast<std::size_t>(g)] &&
+                        e.glow.frame < glows[static_cast<std::size_t>(g)].size())
+                        ei.glow = &glows[static_cast<std::size_t>(g)][e.glow.frame];
+                if (e.shard >= 0 && e.shard < sim::kMaxShards) {
+                    const sim::Shard& sh = b.effects.shards[static_cast<std::size_t>(e.shard)];
+                    const auto m = model_of_pose.find(sh.model);
+                    if (m != model_of_pose.end() && sh.node >= 0 && static_cast<std::size_t>(sh.node) < m->second->pieces.size()) {
+                        const auto& prims = m->second->pieces[static_cast<std::size_t>(sh.node)].primitives;
+                        if (sh.primitive >= 0 && static_cast<std::size_t>(sh.primitive) < prims.size()) {
+                            ei.shard = true;
+                            ei.points = sh.points;
+                            ei.angle = e.angle;
+                            ei.look = &prims[static_cast<std::size_t>(sh.primitive)];
+                            ei.team_colour = static_cast<std::uint8_t>(sh.owner);
+                        }
+                    }
+                }
+                scene.effects.push_back(ei);
+            }
+            scene.light = light_table.empty() ? nullptr : &light_table;
             for (std::size_t i = 1; i < b.units.size(); ++i) {
                 const sim::UnitTickState& t = b.ticks[i];
                 if (t.type_index == 0 || t.type_index >= btypes.size()) continue;
@@ -446,6 +601,8 @@ int main(int argc, char** argv) {
                 if (battle) {
                     battle->advance_tick();
                     battle->step_units_and_projectiles();
+                    battle->step_effects();
+                    battle->step_features();
                 } else {
                     for (auto& u : units) u->script->tick(1);
                 }
@@ -454,6 +611,21 @@ int main(int argc, char** argv) {
         const render::Image8 frame = render::execute(list, blend);
         out.present(frame, palette);
         std::printf("frame %d (tick %u): %zu draw commands, %zu transient sprites\n", f, tick, list.cmds.size(), list.transient.size());
+        if (battle) {
+            int alive = 0, wrecks = 0, burning = 0;
+            for (std::size_t i = 1; i < battle->units.size(); ++i) alive += battle->ticks[i].type_index != 0;
+            for (const auto& c : battle->map.cells)
+                if (c.feature < battle->features.size() && (c.flags & 1)) {
+                    const auto& t = battle->features[c.feature];
+                    if (!(t.flags & sim::feature_type_flags::kFlat)) ++wrecks;
+                    else if (battle->feature_state.slots[c.feature_aux % sim::kFeatureSlots].get<std::uint8_t>(sim::FeatureSlot::kFlags) & 1) ++burning;
+                }
+            int debris = 0;
+            for (auto d : battle->effects.debris_block) debris += d != -1;
+            std::printf("  battle: %d units, %d 3D features, %d burning, %d world effects, %d debris pieces%s%s\n", alive, wrecks, burning,
+                        battle->effects.count, debris, battle->feature_state.fault.empty() ? "" : " FEATURE FAULT: ",
+                        battle->feature_state.fault.c_str());
+        }
 #ifdef RENDER_HAVE_GPU
         if (gpu) {
             render::Image8 g;
@@ -493,6 +665,8 @@ int main(int argc, char** argv) {
             if (battle) {
                 battle->advance_tick();
                 battle->step_units_and_projectiles();
+                battle->step_effects();
+                battle->step_features();
             } else {
                 for (auto& u : units) u->script->tick(1);
             }

@@ -18,9 +18,25 @@ Image8 execute(const DrawList& list, const BlendTable& blend) {
         case DrawOp::Line:
             draw_line(frame, c.clip, c.x, c.y, c.x1, c.y1, c.colour);
             break;
+        case DrawOp::BlitLight:
+            if (c.sprite && list.light) blit_blend(frame, c.clip, *c.sprite, c.x, c.y, *list.light);
+            break;
         }
     }
     return frame;
+}
+
+BlendTable light_blend_table(const std::vector<std::uint8_t>& light32) {
+    BlendTable t(65536);
+    for (int s = 0; s < 256; ++s)
+        for (int d = 0; d < 256; ++d) {
+            const int level = s - 0x4F;
+            std::uint8_t v = static_cast<std::uint8_t>(d);
+            if (level >= 0 && level < 32 && static_cast<std::size_t>(level * 256 + d) < light32.size())
+                v = light32[static_cast<std::size_t>(level * 256 + d)];
+            t[static_cast<std::size_t>(s * 256 + d)] = v;
+        }
+    return t;
 }
 
 void lines_to_sprites(DrawList& list) {

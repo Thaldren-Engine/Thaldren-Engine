@@ -67,4 +67,8 @@ private:
 // logos (10 frames = team coloured); not found -> flat colour 0xD1.
 render::Model build_render_model(const Model3doPiece* root, TextureLibrary& textures);
 
+// Copies the bound primitives' flat/textured choice (texture binding can turn a primitive
+// flat) into the simulation's pose model of the same tree (shattering reads it).
+void bind_pose_primitives(sim::PoseModel& pose, const render::Model& model);
+
 } // namespace ta

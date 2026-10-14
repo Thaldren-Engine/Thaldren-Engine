@@ -38,6 +38,35 @@ struct FeatureInstance {
     const Sprite8* image = nullptr;
     const Sprite8* shadow = nullptr;
     bool image_blended = false, shadow_blended = false;
+    // 3D features (wrecks, rocks, ...): drawn as a model at their slot's place and attitude.
+    const Model* model = nullptr;
+    const sim::PoseModel* pose_model = nullptr;
+    std::array<std::int32_t, 3> pos{};  // 16.16 world
+    std::int16_t pitch = 0, bank = 0;
+    std::uint16_t heading = 0;
+};
+
+// A piece blown off a unit (sim/effects.h DebrisPiece): one model piece, turned and placed.
+struct DebrisInstance {
+    const Model* model = nullptr;
+    const sim::PoseModel* pose_model = nullptr;
+    int node = -1;
+    std::array<std::int32_t, 3> pos{};   // the piece origin, 16.16 world
+    std::array<std::int16_t, 3> turn{};  // x, y, z
+    std::uint8_t team_colour = 0;
+};
+
+// A world effect (sim/effects.h WorldEffect): its glow (lightens the ground), a shard of a
+// shattered piece and the explosion art, all at one point.
+struct EffectInstance {
+    std::array<std::int32_t, 3> pos{};
+    const Sprite8* glow = nullptr;
+    const Sprite8* art = nullptr;
+    bool shard = false;
+    std::array<std::array<std::int32_t, 3>, 8> points{};  // around pos, 16.16
+    std::array<std::int16_t, 3> angle{};                   // x, y, z spin angles
+    const ModelPrimitive* look = nullptr;                  // the shattered quad's colour / texture
+    std::uint8_t team_colour = 0;
 };
 
 struct UnitInstance {
@@ -72,11 +101,20 @@ struct BattleScene {
     std::vector<FeatureInstance> features;
     std::vector<UnitInstance> units;              // in the game's visible-unit order
     std::vector<ProjectileInstance> projectiles;
+    std::vector<DebrisInstance> debris;           // drawn after the projectiles, before the effects
+    std::vector<EffectInstance> effects;          // in the effect table's order
+    const BlendTable* light = nullptr;            // light table for glows (light_blend_table); none: no glows
     bool unit_shadows = true, feature_shadows = true;
     std::uint8_t clear_index = 0;
 };
 
 DrawList build_draw_list(const BattleScene& scene);
+
+// The game's generated explosion glows (three sequences of square noise discs: 12 frames
+// shrinking from 64 pixels, 15 from 128, 15 from 200), pixels 0x4F..0x6E for the light blit,
+// key 0xFF. The original fills them from the C runtime's rand() while loading; `seed` starts
+// our own generator (presentation only).
+std::vector<Sprite8> glow_frames(int which, std::uint32_t seed);
 
 // Screen position of a world point (16.16).
 inline int screen_x(const Camera& c, std::int32_t wx) {
