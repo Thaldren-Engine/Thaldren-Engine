@@ -7,7 +7,9 @@
 // no unit motion: switches (activate, cloak, standing orders), waiting,
 // stopping, paralysis, self-destruct, stationary attacks and guards, idle
 // standby, stockpile building, stationary repair and a unit's completion
-// (taking over its builder's queued moves). Every other kind is
+// (taking over its builder's queued moves); and the ground movement orders
+// that only hand the motion system a goal: move, patrol and the queued
+// move/patrol placeholders. Every other kind is
 // passed on to MissionSystems::run_other, and so is everything outside the
 // simulation core (target search, attack order issue, speech, effects, the
 // economy's stall state).
@@ -85,6 +87,9 @@ public:
     // The order's movement goal object (if any) is detached from the unit's motion and
     // deleted (only called for units with a motion object). Must leave `order.attached` = 0.
     virtual void drop_goal_object(Unit& unit, MissionOrder& order) = 0;
+    // Motion: the order gets a goal of standing within `radius` of `pos` (0x438930; ground
+    // units only, aircraft just lose the order's goal; nothing without a motion object).
+    virtual void attach_circle_goal(Unit& unit, MissionOrder& order, const std::array<std::int32_t, 3>& pos, std::int32_t radius) = 0;
 };
 
 struct MissionEnvironment {

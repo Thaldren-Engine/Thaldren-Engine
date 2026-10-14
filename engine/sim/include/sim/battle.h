@@ -332,6 +332,9 @@ private:
         void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
         void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override { b.outside_.nano_beam(from, box); }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
+        void attach_circle_goal(Unit&, MissionOrder& o, const std::array<std::int32_t, 3>& pos, std::int32_t radius) override {
+            sim::attach_circle_goal(b.motion_, o, pos, radius);
+        }
     };
     struct RouteHooks final : RouteSystems {
         Battle& b;

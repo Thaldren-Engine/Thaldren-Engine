@@ -605,6 +605,87 @@ bool enqueue_order(OrderContext& c, Unit& unit, std::uint8_t kind, bool queued, 
     return true;
 }
 
+// --- Movement behaviours (the motion system and the route search do the driving) ---
+
+// A ground move (0x4031D0): the order's position within param0 + 4 is the goal; done
+// when the goal reports it is reached, else it finishes when another order follows.
+std::int32_t move_ground(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    if (o.step == 0) {
+        if (u.carrier) return mission_result::kClearAll;
+        acknowledge(m, o);
+        m.systems.attach_circle_goal(*o.unit, o, o.pos, wadd(o.param0, 4));
+        o.wait = 0xE0;  // reached, no route, goal replaced
+        return mission_result::kAdvance;
+    }
+    if (o.step != 1) return mission_result::kClearAll;
+    if (event & 0x20) {
+        m.systems.speech(u, 6, SpeechText::None);
+        return mission_result::kFinished;
+    }
+    return mission_result::kFinishOrIdle;
+}
+
+// Queued move / patrol placeholders (0x403160): they wait at the back of the list (a
+// unit being built hands them over to itself as real orders, see GetBuilt).
+std::int32_t queued_move(Missions& m, MissionOrder& o) {
+    set_deadline(m, o, 60);
+    return mission_result::kRotate;
+}
+
+// The patrol's way back (0x43A020): unless one of the unit's primary orders already
+// carries the patrol mark (0x8000), an order of the same kind to where the unit stands
+// goes at the end of its list; the order gets the mark.
+void ensure_patrol_return(Missions& m, Unit& u, MissionOrder& o) {
+    bool found = false;
+    for (MissionOrder* p = u.orders; p; p = p->next)
+        if (p->flags & 0x8000) {
+            found = true;
+            break;
+        }
+    if (!found) {
+        MissionOrder* back = m.orders.systems.allocate_order();
+        construct_order(m.orders, *back, o.kind, nullptr, u.pos.data(), 0, 0, 0);
+        insert_order(u, *back, nullptr);
+    }
+    o.flags |= 0x8000;
+}
+
+// A ground patrol leg (0x4033A0): go to the order's position while looking for targets;
+// arriving (or failing) rotates the order to the back, so the legs take turns.
+std::int32_t patrol(Missions& m, Unit& u, MissionOrder& o, u32 event) {
+    switch (o.step) {
+    case 0:
+        if (!has_motion(m, u)) return mission_result::kClearAll;
+        acknowledge(m, o);
+        ensure_patrol_return(m, u, o);
+        set_deadline(m, o, 1);
+        return mission_result::kAdvance;
+    case 1:
+        release_weapon_targets(u, 3);
+        m.systems.attach_circle_goal(*o.unit, o, o.pos, 0);
+        set_deadline(m, o, 15);
+        o.wait |= 0xE0;
+        return mission_result::kAdvance;
+    case 2:
+        if (event & 0xE0) {
+            o.step = 1;
+            return mission_result::kRotate;
+        }
+        if (Unit* t = m.systems.fire_at_will_target(u)) {
+            if (m.systems.issue_attack_order(u, *t, false)) {
+                o.wait = 0;
+                o.step = 1;
+                return mission_result::kSnooze;
+            }
+        }
+        set_deadline(m, o, m.orders.rng.next_mod(30) + 30);
+        o.step = 1;
+        return 4;
+    default:
+        return mission_result::kClearAll;
+    }
+}
+
 bool mission_implemented(std::uint8_t kind) {
     switch (kind) {
     case mission::kReady: case mission::kActivate: case mission::kAttackNoMove: case mission::kAttackSpecial:
@@ -613,6 +694,7 @@ bool mission_implemented(std::uint8_t kind) {
     case mission::kRepairUnitNoMove: case mission::kSelfDestruct: case mission::kSelfDestructFg: case mission::kSelfRepair:
     case mission::kStandby: case mission::kStandbyMine: case mission::kStandingFireOrder: case mission::kStandingMoveOrder:
     case mission::kStop: case mission::kWait: case mission::kWaitForAttack: case mission::kGetBuilt:
+    case mission::kMoveGround: case mission::kPatrol: case mission::kQueuedMove: case mission::kQueuedPatrol:
         return true;
     default:
         return false;
@@ -645,6 +727,10 @@ std::int32_t run_mission_behaviour(Missions& m, Unit& u, MissionOrder& o, std::u
     case mission::kAttackSpecial: return attack_special(m, u, o);
     case mission::kAttackUnitType: return attack_unit_type(m, u, o);
     case mission::kGetBuilt: return get_built(m, u, o, event);
+    case mission::kMoveGround: return move_ground(m, u, o, event);
+    case mission::kPatrol: return patrol(m, u, o, event);
+    case mission::kQueuedMove:
+    case mission::kQueuedPatrol: return queued_move(m, o);
     default: return m.systems.run_other(u, o, event);
     }
 }
