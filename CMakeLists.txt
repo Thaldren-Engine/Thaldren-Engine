@@ -53,6 +53,10 @@ foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_che
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
 endforeach()
 
+add_executable(fpu_profile_check tools/fpu_profile_check.cpp)
+target_link_libraries(fpu_profile_check PRIVATE sim)
+target_compile_options(fpu_profile_check PRIVATE ${WARN_FLAGS})
+
 enable_testing()
 add_executable(sim_tests tests/sim_tests.cpp)
 target_link_libraries(sim_tests PRIVATE sim)

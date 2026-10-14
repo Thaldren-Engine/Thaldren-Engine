@@ -85,21 +85,99 @@ void sincos_x87_model(double a, Ext80& sine, Ext80& cosine) {
     cosine = fix_to_ext(c);
 }
 
+namespace {
+
+struct CacheEntry {
+    Ext80 s, c;
+    bool ready = false;
+};
+
+FpuProfile g_profile = FpuProfile::IntelP6;
+std::vector<CacheEntry> g_cache(65536);          // per angle, for the active profile
+std::vector<std::array<Ext80, 2>> g_captured;    // per angle (uint16 index), from a capture file
+
+Ext80 ext_from_tbyte(const std::uint8_t* b) {
+    Ext80 v;
+    std::memcpy(&v.mantissa, b, 8);
+    std::uint16_t se;
+    std::memcpy(&se, b + 8, 2);
+    v.negative = (se & 0x8000) != 0;
+    v.exponent = static_cast<int>(se & 0x7FFF) - 16383 - 63;
+    if (v.mantissa == 0) v = Ext80{};
+    return v;
+}
+
+} // namespace
+
+FpuProfile fpu_profile() { return g_profile; }
+
+bool set_fpu_profile(FpuProfile profile) {
+    if (profile == FpuProfile::Captured && g_captured.empty()) return false;
+    if (profile != g_profile) {
+        g_profile = profile;
+        for (auto& e : g_cache) e.ready = false;
+    }
+    return true;
+}
+
+// Capture file (tools/fpu_capture): 64-byte header
+//   "FPUCAP1" NUL, u32 angle count (65535), u32 CPUID(1).EAX, char vendor[12], u32 has_cpuid, 32 reserved
+// then for angle = -32768..32767 except 0: 10-byte FSINCOS sine, 10-byte cosine (x87 tbyte).
+bool load_fsincos_capture(const std::uint8_t* data, std::size_t size, std::string* cpu_description) {
+    constexpr std::size_t kHeader = 64, kCount = 65535;
+    if (size != kHeader + kCount * 20 || std::memcmp(data, "FPUCAP1", 8) != 0) return false;
+    std::uint32_t count, signature, has_cpuid;
+    std::memcpy(&count, data + 8, 4);
+    std::memcpy(&signature, data + 12, 4);
+    std::memcpy(&has_cpuid, data + 28, 4);
+    if (count != kCount) return false;
+    std::vector<std::array<Ext80, 2>> table(65536);
+    table[0][0] = Ext80{};                                 // sin 0 (angle 0 is never rotated)
+    table[0][1] = Ext80{0x8000000000000000ull, -63, false}; // cos 0 = 1
+    const std::uint8_t* p = data + kHeader;
+    for (int angle = -32768; angle <= 32767; ++angle) {
+        if (angle == 0) continue;
+        auto& t = table[static_cast<std::uint16_t>(angle)];
+        t[0] = ext_from_tbyte(p);
+        t[1] = ext_from_tbyte(p + 10);
+        p += 20;
+    }
+    g_captured = std::move(table);
+    if (cpu_description) {
+        if (has_cpuid) {
+            const std::string vendor(reinterpret_cast<const char*>(data + 16), 12);
+            // Display family/model include the extended fields (family 6 and 15).
+            unsigned family = (signature >> 8) & 0xF, model = (signature >> 4) & 0xF;
+            if (family == 15) family += (signature >> 20) & 0xFF;
+            if (family == 6 || family >= 15) model += ((signature >> 16) & 0xF) << 4;
+            *cpu_description = vendor + " family " + std::to_string(family) + " model " + std::to_string(model) +
+                               " stepping " + std::to_string(signature & 0xF);
+        } else {
+            *cpu_description = "no CPUID (386/486-class)";
+        }
+    }
+    if (g_profile == FpuProfile::Captured)
+        for (auto& e : g_cache) e.ready = false;
+    return true;
+}
+
 void sincos_for_angle(std::int16_t angle, Ext80& sine, Ext80& cosine) {
     // Computed once per angle on first use (the series is slow); not thread-safe.
-    struct Entry {
-        Ext80 s, c;
-        bool ready = false;
-    };
-    static std::vector<Entry> cache(65536);
-    Entry& e = cache[static_cast<std::uint16_t>(angle)];
+    CacheEntry& e = g_cache[static_cast<std::uint16_t>(angle)];
     if (!e.ready) {
-        sincos_x87_model(static_cast<double>(angle) * angle_step(), e.s, e.c);
-        for (const std::uint32_t x : kExceptions) {
-            if (x == 0xFFFFFFFFu || static_cast<std::uint16_t>(x) != static_cast<std::uint16_t>(angle)) continue;
-            Ext80& v = (x >> 16) & 1 ? e.c : e.s;
-            const int delta = static_cast<int>((x >> 17) & 0xFF) - 128;
-            v.mantissa += static_cast<std::uint64_t>(static_cast<std::int64_t>(delta));
+        if (g_profile == FpuProfile::Captured) {
+            e.s = g_captured[static_cast<std::uint16_t>(angle)][0];
+            e.c = g_captured[static_cast<std::uint16_t>(angle)][1];
+        } else {
+            sincos_x87_model(static_cast<double>(angle) * angle_step(), e.s, e.c);
+            if (g_profile == FpuProfile::IntelP6) {
+                for (const std::uint32_t x : kExceptions) {
+                    if (x == 0xFFFFFFFFu || static_cast<std::uint16_t>(x) != static_cast<std::uint16_t>(angle)) continue;
+                    Ext80& v = (x >> 16) & 1 ? e.c : e.s;
+                    const int delta = static_cast<int>((x >> 17) & 0xFF) - 128;
+                    v.mantissa += static_cast<std::uint64_t>(static_cast<std::int64_t>(delta));
+                }
+            }
         }
         e.ready = true;
     }

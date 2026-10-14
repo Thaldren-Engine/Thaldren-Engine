@@ -232,6 +232,26 @@ void test_x87_rotation() {
     sim::x87::Ext80 s, c;
     sim::x87::sincos_for_angle(-32768, s, c);
     CHECK_EQ(s.mantissa != 0, true);
+
+    // FPU profiles: the captured profile needs a capture; the documented model
+    // differs from Intel silicon only in the last bit of some values.
+    CHECK_EQ(sim::x87::fpu_profile() == sim::x87::FpuProfile::IntelP6, true);
+    const std::uint8_t junk[16] = {};
+    CHECK_EQ(sim::x87::load_fsincos_capture(junk, sizeof junk), false);
+    CHECK_EQ(sim::x87::set_fpu_profile(sim::x87::FpuProfile::Captured), false);
+    int differing = 0;
+    for (int k = 1; k < 4096; ++k) {
+        sim::x87::Ext80 s1, c1, s2, c2;
+        sim::x87::set_fpu_profile(sim::x87::FpuProfile::IntelP6);
+        sim::x87::sincos_for_angle(static_cast<std::int16_t>(k), s1, c1);
+        sim::x87::set_fpu_profile(sim::x87::FpuProfile::Model66Pi);
+        sim::x87::sincos_for_angle(static_cast<std::int16_t>(k), s2, c2);
+        const long long ds = static_cast<long long>(s1.mantissa - s2.mantissa), dc = static_cast<long long>(c1.mantissa - c2.mantissa);
+        if (ds || dc) ++differing;
+        CHECK_EQ(ds >= -1 && ds <= 1 && dc >= -1 && dc <= 1, true);
+    }
+    CHECK_EQ(differing > 0, true);
+    sim::x87::set_fpu_profile(sim::x87::FpuProfile::IntelP6);
 }
 
 void test_script_vm() {

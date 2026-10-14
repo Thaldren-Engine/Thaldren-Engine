@@ -5,6 +5,8 @@
 // integer store. Portable: no x87 needed at run time.
 
 #include <cstdint>
+#include <cstddef>
+#include <string>
 
 namespace sim::x87 {
 
@@ -20,8 +22,31 @@ struct Ext80 {
 constexpr std::uint64_t kAngleStepBits = 0x3F1921FB54442C5Aull;
 double angle_step();
 
+// Which processor's FSINCOS the simulation reproduces. The last bits of x87
+// transcendentals are implementation specific (Intel only guarantees an error
+// bound), so this is part of the simulation contract: every peer in a game
+// must use the same profile.
+enum class FpuProfile {
+    // Intel P6-family microcode (Pentium Pro, 1995, through current Core):
+    // the 66-bit-pi model plus the one-unit exceptions measured on an
+    // i7-13700K. Reported identical across Intel generations since the P6.
+    IntelP6,
+    // The documented algorithm only: exact reduction by the 66-bit pi, then
+    // correct rounding. A stand-in for processors not captured.
+    Model66Pi,
+    // A full table captured on real hardware with tools/fpu_capture
+    // (e.g. an original 1993-1995 P5 Pentium); see load_fsincos_capture.
+    Captured,
+};
+FpuProfile fpu_profile();
+// Selects the profile (clears cached values). Captured requires a successful load_fsincos_capture.
+bool set_fpu_profile(FpuProfile profile);
+// Loads an fpu_capture output file (header + 10-byte sin/cos for every angle).
+// Returns false (and leaves the profile unchanged) if the data is malformed.
+bool load_fsincos_capture(const std::uint8_t* data, std::size_t size, std::string* cpu_description = nullptr);
+
 // FSINCOS results for the argument (double)angle * angle_step(), rounded to
-// 64-bit mantissas like the hardware this was verified on.
+// 64-bit mantissas as the selected profile's processor does.
 void sincos_for_angle(std::int16_t angle, Ext80& sine, Ext80& cosine);
 
 // Correctly rounded 64-bit-mantissa sin/cos of an exact double (|a| <= 4).

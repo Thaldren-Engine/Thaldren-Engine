@@ -92,6 +92,19 @@ Sources: `/Thaldren_TotalA.exe`, checked 2026-10-13. Not yet written to `/TotalA
    - Model: reduce the argument exactly by the FPU's **66-bit π** (`0xC90FDAA22168C234C·2⁻⁶⁶`), then round correctly. That leaves 3,620 one-unit exceptions, stored in `engine/sim/src/x87_sincos_exceptions.inc`. With the table, the emulation equals the hardware for all 65,535 angles.
    - Our `sim::x87::rotate_point_2d` equals the original routine on 524,288 calls (every angle, 8 points each).
    - Other CPUs (e.g. AMD) may compute different last bits, as the original game itself would.
+   - **FPU profiles (`sim::x87::FpuProfile`, part of the sync contract):**
+     - `IntelP6` (default): the model plus the measured table. Reported identical across Intel from the Pentium III to Core i7, i.e. the P6 line that began with the Pentium Pro (1995).
+     - `Model66Pi`: the documented algorithm only.
+     - `Captured`: a table recorded on real hardware with `tools/fpu_capture`. That is a C-runtime-free Win32 executable stamped as Windows 4.0, importing only 5 kernel32 functions and using no CMOV/SSE. It runs on Win95 with a 486DX/Pentium and writes `FSINCOS.CAP`. Check a capture with `fpu_profile_check`.
+   - **1995 hardware (researched 2026-10-14):**
+     - Every Intel x87 since the 387 reduces with the same 66/68-bit π (Intel SDM / Intel forum). Intel improved the algorithms between the 387/486 and the Pentium and specifies an error bound, not bit-exact results.
+     - No public data exists for the original P5 Pentium's last bits. The capture tool is the way to get them.
+   - **Emulators (source-checked):** none reproduces 1995 silicon.
+     - DOSBox-X normal core: host double `sin`/`cos` (53 bits).
+     - DOSBox / dosbox-staging x86 FPU core: the *host* CPU's x87 instructions via inline asm.
+     - 86Box / Bochs / MAME SoftFloat: 128-bit-π reduction plus float128 Taylor series, i.e. nearly correctly rounded, *not* the 66-bit-π behaviour.
+   - **Impact measured:** on 1,048,560 rotations (all angles; model-scale and full-range int32 points), the captured i7 table, `Model66Pi`, a SoftFloat-style true-π computation and a host-double computation all give **identical** results. The 53-bit products and integer rounding absorb last-bit differences: a flip needs a product within about 1e-7 of a .5 boundary.
+   - FPATAN and hypot behave the same way. hypot uses only IEEE-exact operations, so it is identical on any IEEE x87, except an original P5 with the 1994 FDIV flaw, which was not emulated.
    - `Math_RotatePointByAngles` (`0x004B6CC0`): (x,y) rotated by angles[0], then (y,z) by angles[2], then (x,z) by angles[1].
 6. **Scaled atan2: `Math_Atan2Scaled` `0x004B715A`** (cdecl `(int y, int x) → int`), with 22 callers in weapons, movement, AI and scripts.
    - `FPATAN(y, x)` at 64-bit precision, then × `0x40C45F306DC9C78A` (≈65536/2π, slightly off), rounded to 53 bits (PC53), then `FISTP` nearest-even.
