@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "sim/ai.h"
 #include "sim/anim.h"
 #include "sim/combat.h"
 #include "sim/economy.h"
@@ -50,6 +51,7 @@ struct BattleUnitType {
     EconomyType economy;  // production, upkeep and storage (sim/economy.h)
     SightType sight;  // sight, radar, sonar, jamming, cloak distance (sim/sight.h)
     ConstructionTypeInfo construction;  // building, reclaiming and placement (sim/construction.h)
+    AiTypeInfo ai;  // what the computer player reads of the type (sim/ai.h)
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -82,6 +84,10 @@ struct BattleSettings {
     std::uint16_t build_menu_focus = 0;     // unit whose build menu this machine shows (user interface)
     std::int32_t network_provider = 0;      // the map info's provider type (3: reclaims are announced)
     OriginalAddresses addresses;
+    // The computer player (sim/ai.h): the map's surface metal (the OTA schema's SurfaceMetal)
+    // and the stack word the constructors' build sites take their height from (an input).
+    std::int32_t surface_metal = 0;
+    std::int32_t ai_site_height_word = 0;
 };
 
 // Everything outside the systems built so far. Each method names the original
@@ -249,6 +255,13 @@ public:
     // Battle start: the players' weapon-target controllers and unit tables (after the player
     // slots are set up).
     void start_players();
+    // The computer player (sim/ai.h). start_players() also makes every player's controller,
+    // roles and table (the original's player set-up, with eight random draws per table);
+    // the profile is applied through ai() afterwards and the map's metal spots are collected
+    // once the map features are placed (the original does it after the first players' stage).
+    AiState ai_state;
+    Ai& ai();
+    void collect_ai_metal_sites();
     // The players' stage (stage 6 of a step): for every playing player its weapon-target pass,
     // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
     void players_stage();
@@ -381,7 +394,10 @@ private:
     void victory_unit_destroyed(Unit& u) override { outside_.victory_unit_destroyed(u); }
     void clear_orders(Unit& unit) override;
     void forget_speech(Unit& u) override { outside_.forget_speech(u); }
-    void leave_group(Unit& u) override { outside_.leave_group(u); }
+    void leave_group(Unit& u) override {
+        sim::set_unit_group(ai_, u, -1);  // 0x480250(unit, -1)
+        outside_.leave_group(u);
+    }
     void remove_projectiles(Unit& unit) override;
     void detach_from_carrier(Unit& u) override { transport_attach(u, nullptr, 0xFF, 1); }
     void clear_footprint(Unit& u) override { sim::clear_footprint(footprint_, u); }
@@ -506,8 +522,11 @@ private:
         bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override;
         std::uint8_t feature_flags(std::uint16_t f) override { return b.outside_.feature_flags(f); }
         std::int32_t intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) override;
-        void ai_own_unit(int table, Unit& u) override { b.outside_.ai_own_unit(table, u); }
-        void ai_rescore(int table) override { b.outside_.ai_rescore(table); }
+        // (the refresh's start brings the AI context up to date for the rest of it)
+        void ai_table_begin(int table) override { sim::ai_table_begin(b.ai(), table); }
+        void ai_own_unit(int table, Unit& u) override { sim::ai_table_own_unit(b.ai_, table, u); }
+        void ai_table_end(int table) override { sim::ai_table_end(b.ai_, table); }
+        void ai_rescore(int table) override { sim::ai_rescore(b.ai_, table); }
         void under_attack(Unit& u) override { b.outside_.under_attack_notice(u); }
     };
     struct EconomyHooks final : EconomySystems {
@@ -602,6 +621,33 @@ private:
     std::vector<ConstructionTypeInfo> construction_types_;  // by type index
     ConstructionEnvironment construction_env_;
     Construction construction_;
+    // The computer player (sim/ai.h): orders, factory queues, activation, placement, sight
+    // and weapon range for it.
+    struct AiHooks final : AiSystems {
+        Battle& b;
+        explicit AiHooks(Battle& battle) : b(battle) {}
+        std::uint8_t resolve(std::uint8_t intent, Unit& u, Unit* t, const std::array<std::int32_t, 3>* pos) override {
+            return sim::resolve_mission(b.targeting_, intent, u, t, pos);
+        }
+        void enqueue(std::uint8_t kind, bool queued, Unit& u, Unit* t, const std::array<std::int32_t, 3>* pos, std::int32_t p0,
+                     std::int32_t p1) override {
+            b.order(u, kind, queued, t, pos, p0, p1);
+        }
+        void build_menu(Unit& u, std::uint16_t type, bool weapon_menu) override;
+        void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
+        bool can_place(std::uint16_t type, std::int16_t x, std::int16_t z) override { return can_place_footprint(b.route_, type, 0, x, z, 1); }
+        bool structure_fits(std::uint16_t type, std::int16_t x, std::int16_t z) override { return sim::structure_fits(b.construction_, type, x, z); }
+        std::int32_t last_place_metal() override { return b.construction_env_.last_place_metal; }
+        bool point_in_sight(int player, const std::array<std::int32_t, 3>& pos) override;
+        bool weapon_in_range(Unit& u, const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& to, int slot) override {
+            return sim::weapon_in_range(b.weapons_, u, slot, from, to);
+        }
+    };
+    void sync_ai();
+    AiHooks ai_hooks_{*this};
+    std::vector<AiTypeInfo> ai_types_;  // by type index (taken at start_players and when the type table grows)
+    AiEnvironment ai_env_;
+    Ai ai_;
 };
 
 } // namespace sim

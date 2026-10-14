@@ -981,6 +981,7 @@ bool placement_blocked(const Construction& c, const MapCell& cell, i32 x, i32 z)
 } // namespace
 
 bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z) {
+    c.env.last_place_metal = 0;
     if (type >= c.types.size()) return false;
     const ConstructionTypeInfo& t = c.types[type];
     const i32 fx = t.footprint_x, fz = t.footprint_z;
@@ -995,6 +996,7 @@ bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell
             const u8 y = k < t.yard_map.size() ? t.yard_map[k] : 0;  // (past the end the original reads on)
             ++k;
             if (!cell) return false;
+            c.env.last_place_metal = static_cast<i32>(static_cast<u32>(c.env.last_place_metal) + cell->metal);
             if (y & 8) {
                 if (cell->height_min < lo) lo = cell->height_min;
                 if (cell->height_max > hi) hi = cell->height_max;

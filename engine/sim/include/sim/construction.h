@@ -85,6 +85,9 @@ struct ConstructionEnvironment {
     std::int32_t ai_difficulty = 0;     // 0 easy, 1 medium, others hard: AI players get part of refunds
     std::uint8_t sea_level = 0;
     std::uint16_t build_menu_focus = 0;  // unit id whose build menu is shown (0 none)
+    // Metal summed over the cells the last structure check (structure_fits) visited, up to
+    // where it stopped (0x51E688; the computer player reads it after a check).
+    std::int32_t last_place_metal = 0;
 };
 
 struct Construction {

@@ -267,6 +267,7 @@ add_executable(create_harness
     ${ROOT}/ta_compat/src/tnt.cpp
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/sight.cpp
     ${ROOT}/engine/sim/src/anim.cpp

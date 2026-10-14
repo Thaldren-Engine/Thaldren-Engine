@@ -17,6 +17,7 @@ else()
 endif()
 
 add_library(sim STATIC
+    engine/sim/src/ai.cpp
     engine/sim/src/anim.cpp
     engine/sim/src/battle.cpp
     engine/sim/src/effects.cpp
