@@ -241,6 +241,54 @@ Implementation: `ta_compat/src/unitdefs.cpp`. Checked with `ta_compat/tools/unit
   - DOWNLOADABLE is checked against **slot 0 of each file only**.
   - Up to 31 build options are appended (the buffer holds 30).
 
+### Weapon definitions (weapons\*.tdf → WeaponDef[256], 0x115 bytes, inline at GameState+0x2CF3)
+Implementation: `ta_compat/src/weapondefs.cpp`. Checked with `tools/weapondef_check`: all 256 slots identical to the live game (198 loaded, 9,141 fields).
+- **Loading:** `WeaponDef_LoadAllTdfFiles` (`0x0042E310`, called from `Game_LoadMapTnt`, i.e. every map load).
+  - Pre-clear only `aName[0]` and `bIndex = slot` in all 256 slots. Every other field keeps its previous value, so reloading a map leaves stale data in unused slots (a first battle starts zeroed).
+  - Then enumerate `Weapons\*.tdf`; loose files are ignored while the CD check is on. Every root section goes through `WeaponDef_LoadTdfProperties` (`0x0042E440`).
+- **Slot assignment:** slot = key `ID`. A missing ID is −1, which writes the record **before** the table (memory corruption). Later sections with the same ID overwrite earlier ones. The name is `strcpy`'d with no length limit (32-byte field).
+- **Scaled values** are `ftol(GetFloat × k)`, with the constants copied bit-exact from the exe:
+  - weaponvelocity and startvelocity: × 65536/30;
+  - weaponacceleration: × 65536/900;
+  - reloadtime, weapontimer, burstrate, duration, randomdecay, smokedelay, flighttime, holdtime, shakeduration: × 30;
+  - turnrate: × 1/30;
+  - minbarrelangle: default −11.25, multiplied by `0x3F91DF46A2529D34`, which is **not exactly π/180**, then stored as a float.
+- **Plain values:**
+  - Integers: range (default 0x7FFF), coverage, areaofeffect, burst, sprayangle, accuracy, tolerance, pitchtolerance, shakemagnitude, plus byte fields.
+  - Floats: energypershot, metalpershot, edgeeffectiveness.
+- **Flag bits:**
+
+  | Bit | Flag | Bit | Flag | Bit | Flag |
+  |---|---|---|---|---|---|
+  | 0 | lineofsight | 11 | soundtrigger | 21 | propeller |
+  | 1 | ballistic | 12 | guidance | 22 | noexplode |
+  | 2 | shellweapon | 13 | tracks | 23 | burnblow |
+  | 3 | beamweapon | 14 | unitsonly | 24 | twophase |
+  | 4 | vlaunch | 15 | groundbounce | 25 | cruise |
+  | 5 | meteor | 16 | waterweapon | 26 | commandfire |
+  | 6 | noradar | 17 | toairweapon | 27 | noautorange |
+  | 7 | paralyzer | 18 | smoketrail | 28 | stockpile |
+  | 8 | dropped | 19 | turret | 29 | targetable |
+  | 9 | startsmoke | 20 | selfprop | 30 | interceptor |
+  | 10 | endsmoke | | | | |
+
+- **Fire function** (`0x0049E010`): first match wins.
+  1. turret → `0x0049D580`
+  2. vlaunch → `0x0049DB70`
+  3. lineofsight or selfprop → `0x0049D9C0`
+  4. dropped → `0x0049DD60`
+
+  Otherwise unchanged.
+- **Model:**
+  - If an earlier slot (j < ID) has a stored model name equal to this one (stricmp), share that slot's model and set our own `aModelName[0]` = 0.
+  - Otherwise load `objects3d\<model>.3DO` and store the name.
+  - No `model` key → model pointer NULL, name unchanged.
+- **Explosions:**
+  - `explosiongaf` + `explosionart` gives the GAF sequence.
+  - The second sequence uses the water keys, or the lava keys if `MapInfo.nLavaWorld`.
+- **Sounds:** soundstart, soundhit and soundwater register their paths in the global sound bank (`SoundBank_EnsureNamed` `0x00429470`, appended after `allsound.tdf`). No key → −1.
+- **Damage:** `[DAMAGE]` `default` gives the default damage. The other keys are walked in the section's sorted key order and inserted into a stricmp-sorted vector of {name, damage}. The value is looked up by name, so the first case variant wins.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -264,6 +312,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | Weapon definition table — **exact vs live game: all 256 slots, 9,141 fields** | `0x0042E310`, `0x0042E440`, `0x0049E010`, `0x00429470`, `0x0042F7E0` | `ta_compat/src/weapondefs.cpp`, `tools/weapondef_check.cpp` |
 | 2026-10-13 | Unit definition table (all fields except 3DO height / COB) — **exact vs live game: 24,780 fields, 279 units, 56 category masks** | `0x0042A8D0`, `0x0042D2E0`, `0x0042BF40`, `0x0042DCF0`, `0x0042BE30`, `0x00440340`, `0x004402E0`, `0x00440420`, `0x0049E5B0`, `0x00488B10`, `0x00488C50`, `0x00488E70`, `0x00438760`, `0x004290F0`, `0x004BCA30`, `0x004BC4B0`, `0x004BC640`, `0x004BC370`, `0x004C58A0`, `0x004BB0F0`, `0x0042F580`, `0x0042E310` | `ta_compat/src/unitdefs.cpp`, `tools/unitdef_check.cpp`, capture `--dump-defs` |
 | 2026-10-13 | Bit-exact atof/atoi | `0x004E4560`, `0x004EAF00`, `0x004F3D10`, `0x004F8C40`, `0x004F9390`, `0x004F90D0`, `0x004F37C0`, `0x004F3610`, tables `0x005116F0`/`0x00511850` | `ta_compat/src/crt_strtod.cpp`, `tools/gen_pow10_table.py`, `ta_compat/tools/orig_harness` |
 | 2026-10-13 | TDF parser | `0x004C2F60`, `0x004C3120`, `0x004C33A0`, `0x004C3410`, `0x004C3E40`, `0x004C4340`, `0x004C4470`, `0x004C4630`–`0x004C48C0`, `0x004E4560`, `0x004E4ED0`, `0x004F8A70`, `0x004B6BA0` | `ta_compat/src/tdf.cpp`, `tools/tdf_check.cpp`, `tests/compat_tests.cpp` |

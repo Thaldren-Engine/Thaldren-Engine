@@ -54,6 +54,7 @@ constexpr DWORD kMoveInfoArray = 0x00512358;    // MoveInfo[32], 0x20 bytes each
 constexpr DWORD kCategoryTableBegin = 0x0051E6B4;
 constexpr DWORD kMissionTableBegin = 0x00512344;  // MissionOrderTableEntry*, 0x19 bytes each
 constexpr DWORD kTranslateLanguage = 0x0051FDC0;  // char[64]
+constexpr DWORD kOffSoundBank = 0x33A0B;          // {int count; ptr slots[256]; char names[256][32]; char paths[256][32]}
 
 struct Options {
     std::string exe;
@@ -239,6 +240,39 @@ bool dump_defs(const std::string& path) {
     std::vector<std::uint8_t> lang;
     put_str(lang, read_cstr(kTranslateLanguage));
     write_chunk(f, "LANG", lang);
+
+    // Per weapon slot: damage override pairs and explosion sequence names.
+    std::vector<std::uint8_t> wdmg, wseq;
+    for (std::uint32_t i = 0; i < 256; ++i) {
+        const std::uint8_t* w = &wd[i * kWeaponDefSize];
+        std::uint32_t dmap = 0, seq = 0, wseq_p = 0;
+        std::memcpy(&dmap, w + 100, 4);
+        std::memcpy(&seq, w + 120, 4);
+        std::memcpy(&wseq_p, w + 124, 4);
+        if (dmap) {
+            std::uint32_t b = 0, e = 0;
+            read_u32(dmap + 5, b);
+            read_u32(dmap + 9, e);
+            put_u32(wdmg, i);
+            put_u32(wdmg, (e - b) / 8);
+            for (std::uint32_t p = b; p < e; p += 8) {
+                std::uint32_t name = 0, dmg = 0;
+                read_u32(p, name);
+                read_u32(p + 4, dmg);
+                put_u32(wdmg, dmg);
+                put_str(wdmg, read_cstr(name));
+            }
+        }
+        put_u32(wseq, i);
+        put_str(wseq, seq ? read_cstr(seq + 8) : std::string());
+        put_str(wseq, wseq_p ? read_cstr(wseq_p + 8) : std::string());
+    }
+    write_chunk(f, "WDMG", wdmg);
+    write_chunk(f, "WSEQ", wseq);
+
+    std::vector<std::uint8_t> sbnk(8 + 256 * 4 + 256 * 32 * 2);  // +4 count, +8 slots, +0x408 names, +0x2408 paths
+    read_block(gs + kOffSoundBank, sbnk.data(), sbnk.size());
+    write_chunk(f, "SBNK", sbnk);
 
     std::vector<std::uint8_t> ft(static_cast<std::size_t>(ft_count) * 0x100);
     if (ft_ptr) read_block(ft_ptr, ft.data(), ft.size());
