@@ -37,6 +37,7 @@ constexpr DWORD kBpSrandTd = 0x004E4865;        // after TLS lookup: eax = per-t
 constexpr DWORD kBpRandTd = 0x004E4875;         // after TLS lookup: eax = per-thread data
 constexpr DWORD kBpSimStep = 0x004954C6;        // after dwGameTick++ in the step loop
 constexpr DWORD kOffRandState = 0x14;           // per-thread data: rand seed
+constexpr DWORD kBpArchiveOpen = 0x004BDD70;    // HPI open: [esp+4] = path, [esp+8] = keep open
 
 struct Options {
     std::string exe;
@@ -115,6 +116,21 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
     read_u32(ctx.Esp + 4, arg0);
 
     switch (addr) {
+    case kBpArchiveOpen: {
+        char path[264] = {};
+        SIZE_T n = 0;
+        ReadProcessMemory(g_process, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(arg0)), path, sizeof(path) - 1, &n);
+        std::uint32_t keep = 0;
+        read_u32(ctx.Esp + 8, keep);
+        std::string escaped;
+        for (const char* p = path; *p; ++p) {
+            if (*p == '\\' || *p == '"') escaped += '\\';
+            escaped += *p;
+        }
+        std::fprintf(g_out, "{\"ev\":\"archive_open\",\"path\":\"%s\",\"keep_open\":%u}\n", escaped.c_str(), keep);
+        std::fflush(g_out);
+        break;
+    }
     case kBpBattleRngSeed:
         std::fprintf(g_out, "{\"ev\":\"battle_seed\",\"tid\":%lu,\"seed\":%u", tid, arg0);
         if (opt.battle_seed) {
@@ -250,7 +266,10 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "unexpected image base 0x%08lX\n", base);
                 stop = true;
             } else {
-                for (DWORD a : {kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpRandTd, kBpBattleRngNext, kBpSimStep}) add_bp(a);
+                for (DWORD a : {kBpArchiveOpen, kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpRandTd, kBpBattleRngNext,
+                                kBpSimStep}) {
+                    add_bp(a);
+                }
             }
             if (ev.u.CreateProcessInfo.hFile) CloseHandle(ev.u.CreateProcessInfo.hFile);
             break;

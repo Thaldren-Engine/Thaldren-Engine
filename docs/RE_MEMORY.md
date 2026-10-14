@@ -152,9 +152,36 @@ Also applied: `0x00495490` `Game_RunSimulationStep` (runtime verified).
 _(name, size, field offsets)_
 
 ## File formats
-_(HPI, TNT, 3DO, COB, GAF, PCX, TDF/FBI, OTA, ... record only what has been verified)_
+_(record only what has been verified)_
+
+### HPI archives (.hpi / .ufo / .ccx / .gp3)
+Verified 2026-10-13: `hpi_check` decodes all 7,890 files in all 30 archives of the Steam install with 0 failures (9,630 LZ77 + 26,175 zlib chunks; every chunk checksum and size matches). Implementation: `ta_compat/src/hpi.cpp`, `ta_compat/src/inflate.cpp`.
+- **Header (20 bytes):** `"HAPI"`, u32 `0x00010000`, u32 directory size, u8 key (+3 pad), u32 root node offset.
+- **Trailer:** the file must end with `Copyright 0000 Cavedog Entertainment` (the 4 year digits are not compared).
+- **Scrambling:** if key ≠ 0, key' = `~((key >> 6) | (key << 2))` (8-bit). Every byte read from the archive after the 20-byte header becomes `(u8)filePos ^ key' ^ ~b`, where filePos is its absolute offset. This covers the directory, chunk tables and chunks.
+- **Directory (offsets relative to file start):**
+  - node = u32 count, u32 entries offset;
+  - entry (9 bytes) = u32 name offset (NUL-terminated), u32 data offset, u8 flags (bit 0 = directory, so data offset points to a child node; bit 1 = "shadowed", set at runtime);
+  - file record (9 bytes) = u32 data offset, u32 size, u8 compression (0 = stored).
+- **Compressed files:** u32 chunk sizes for each 64 KiB block (`ceil(size/65536)` entries) at the data offset, followed by the chunks back to back.
+- **SQSH chunk (19-byte header):**
+  - `"SQSH"`, u8 (unused), u8 method (1 = LZ77, 2 = zlib; > 3 is an error), u8 scrambled flag;
+  - u32 packed size @7, u32 unpacked size @11, u32 byte sum of the packed payload @15.
+  - If scrambled: `b[i] = (b[i] - i) ^ i`.
+  - It's an error if the output length ≠ unpacked size.
+- **LZ77:** 4 KiB zeroed window, write position starts at 1. Each flag byte is read LSB first:
+  - 0 = copy 1 literal byte;
+  - 1 = u16 LE `v`: offset = `v >> 4` (0 ends the stream), count = `(v & 15) + 2`. Copy `window[(offset + i) & 0xFFF]` one byte at a time; each output byte is also written to the window.
+- **zlib:** a standard zlib stream (header + DEFLATE + Adler-32).
+- **Lookup:** path split on `\`; within a node, entries are scanned **from last to first**, case-insensitively, and the first hit wins.
+- **Mount order** (`Hapi_ScanAndMountArchives`, verified at runtime): `rev31.GP3`, `*.CCX`, `*.UFO`, `*.HPI` **(at most 10 newly mounted)**, then CD drives.
+  - Globs come back in NTFS order (names compared upper-cased).
+  - Opening a file: a loose file on disk wins; otherwise the first mounted archive containing it.
+  - **On the Steam install, `totala3.hpi`, `totala4.hpi` and `worlds.hpi` are never mounted.**
 
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-13 | HPI archives + game VFS | `0x0041D4C0`, `0x004BB2E0`, `0x004BB4E0`, `0x004BB7C0`, `0x004BDD70`, `0x004BE010`, `0x004BE0B0`, `0x004BE400`, `0x004D1480`, `0x004D1970`, `0x004D1D20` | `ta_compat/src/hpi.cpp`, `inflate.cpp`, `tools/hpi_check.cpp` |
+| 2026-10-13 | Step scheduler + frame budget | `0x00495230`, `0x00495490`, `0x004E5050` | `engine/sim/src/world.cpp`, `step_budget.cpp` |
 | 2026-10-13 | Numeric core: trig, RNGs, ftol, fixed point | `0x004B6C30`–`0x004B7159`, `0x004E4860`, `0x004E4870`, `0x004E43A0`, `0x00509F00`, `0x0051FC88` | `engine/sim/*`, `tests/sim_tests.cpp` (1316 checks pass, MSVC) |
