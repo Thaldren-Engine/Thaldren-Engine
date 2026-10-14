@@ -919,6 +919,59 @@ Implementation: `engine/sim/src/projectile.cpp` (`sim/projectile.h`). Checked by
 **Original crashes the engine records** (`ProjectileTable::fault`, harness-confirmed): burst round with no weapon timer and speed 0 (a stale 0 in a fresh slot; no stock weapon is a timer-less burst), burn-blow shell with horizontal speed 0, and two `noexplode` interceptors setting each other off (endless recursion, stack overflow). Not modelled: feature ids ≥ the type count in area damage (reads past the table), a burst launcher whose dead owner survived the removal quirk (freed object state).
 **Hooks** (presentation or other systems): sounds (`0x0047F300`), puffs (`0x00472810`, `0x004729D0`), explosion art (`0x00420A30`), camera shake (`0x0041C640`), feature damage (`0x004244B0`: burning, accumulated damage, death anims, packet 0x0F), network (`0x00451DF0`), feature animation positions, weapon slots and motion speed.
 
+### Weapons: fire routines — smoke-tested: 50 scenarios, 2,820 fire-routine calls, 0 differences (large runs pending)
+Implementation: `sim::fire_weapon` (`engine/sim/src/fire.cpp`), plus `fire_vertical` and `find_intercept_target` (`projectile.cpp`). Checked in `tools/orig_harness/projectile_harness`, which calls the original routines directly on random slot states: aim flag, aim result, stockpile, aim angles and targets. It compares the result, the weapon slots, the projectile table, the packets and the RNG.
+
+The weapon type's routine is picked at load time (see "Weapon definitions"): turret, vertical launch, line of sight / self-propelled, or dropped. All four are stdcall (unit, slot, target unit or null, &target position) and return 1 when a shot went off. When the network flag (GS+0x2A44 bit 0) is set, a successful shot sends packet 0x0D (36 bytes):
+- start position (12), aim point (12), weapon index (1);
+- a byte whose bit 0 is the interceptor flag; **bits 1–7 are uninitialised stack** (the engine sends 0);
+- slot aim heading and pitch (2 + 2);
+- target id and shooter id (2 + 2);
+- slot index (1).
+
+**Turret** (`Weapon_FireTurret` `0x0049D580`):
+- **Preconditions:** the slot must be aiming (flag bit 0) and its aim result (+8) nonzero; otherwise return 0.
+- **Re-solve the aim:**
+  - Ballistic: from the aim-from piece, heading = atan2(from − target) − unit heading, pitch = ballistic solver.
+  - Line of sight: direct aim (`0x0049D910`).
+  - Otherwise: no solution.
+  - No solution: clear the aiming bit, set net flag 0x1000 (+0xBB bit 4), and return 0.
+- **Tolerance:** the script's aim (+0x16/+0x18) must be within tolerance of the fresh solution (`0x0049D880`). Otherwise clear the aiming bit and return 0.
+- **Muzzle** = the Query piece position. The shot uses **the script's aim, not the fresh one**: heading += unit heading (made absolute).
+- **Spread:**
+  - spread = (u16)(accuracy (+0x104) − (u16)((u32)(hp << 11) / max damage) + 0x800).
+  - If kills/12 > 1, spread /= kills/12.
+  - If spread ≠ 0: heading += NextMod(spread) − spread/2, then pitch += NextMod(spread) − spread/2 (16-bit, battle RNG).
+  - The register holding spread carries the weapon definition pointer's upper half; only the low 16 bits are used.
+- **Fire:** line-of-sight or self-propelled → directed shot (`0x0049C9C0`); ballistic → shell (`0x0049CDE0`); otherwise nothing.
+- **On success:** clear the aim result and the aiming bit, then send the packet with the muzzle as start.
+
+**Vertical launch** (`Weapon_FireVerticalLaunch` `0x0049DB70`):
+- Needs the aim result (not the aiming bit).
+- **Aim:** muzzle = Query piece. The slot's absolute heading = atan2_scaled(muzzle − target in x, z); pitch = atan2_scaled(−hi16(dy), hi16(trunc(hypot))). Both are stored in the slot.
+- **Interceptors** (flag bit 30) need a shot to chase (`Weapon_FindInterceptTarget` `0x0049D120`), else return 0:
+  - the slot must hold a stockpiled round;
+  - for each table entry (deleted ones too): another owner slot, weapon targetable (bit 29), and its aim point inside the square of half-width `coverage` (+0xE0, ×65536) around the unit. This is one unsigned compare per axis.
+  - The first such shot no other entry already chases wins.
+- **Missile** (`Projectile_FireVertical` `0x0049CC20`):
+  - like the directed shot, but yaw 0, elevation 0x4000 and velocity 0;
+  - speed from start velocity / velocity as usual; expiry from the range or the timer;
+  - the chased shot is stored; the slot's aim result is cleared as soon as a table slot is taken;
+  - fire scripts and RockUnit, then the start smoke.
+- **On success:** packet (muzzle start), clear the aim result and the aiming bit.
+
+**Line of sight / self-propelled** (`Weapon_FireLineOfSight` `0x0049D9C0`):
+- No aim checks. Muzzle and slot heading/pitch as for vertical launch.
+- **The unit itself must face the target:** the tolerance check compares the slot angles with the unit's heading and **its bank word** (+0x68), not its pitch.
+- Directed shot. The packet start is **the unit's position**, not the muzzle. The slot flags are left alone.
+
+**Dropped** (`Weapon_FireDropped` `0x0049DD60`):
+- Muzzle = Query piece. Shot set up as `Projectile_SpawnFromUnitMotion`:
+  - speed 0, yaw = unit heading;
+  - horizontal velocity = −(sin, cos)(heading) × the motion object's speed (+0x20).
+- No lifetime, target, scripts or smoke of its own. Packet with the muzzle as start.
+- **The original requires a motion object** (it reads +0x20 through it). Only aircraft carry dropped weapons.
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -942,6 +995,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Weapon fire routines (turret spread, vertical launch + interceptor search, line of sight, dropped) — **smoke: 2,820 fire-routine calls identical; large runs pending** | `0x0049D580`, `0x0049DB70`, `0x0049D9C0`, `0x0049DD60`, `0x0049CC20`, `0x0049D120` | `engine/sim/src/{fire,projectile}.cpp`, `tools/orig_harness/projectile_harness.cpp` |
 | 2026-10-14 | Weapon ballistic pitch solver + C runtime acos (FPATAN at PC53, double rounded) — **1,428,570 solver calls identical; acos 1,000,009 calls, 10 CPU knife-edge cases** | `0x0049A890`, `0x004E67F0`, `0x004E680D` | `engine/sim/src/{weapons,x87_math}.cpp`, `tools/orig_harness/ballistic_check.cpp` |
 | 2026-10-14 | Weapon slot pass + aiming (target position, veteran lead, sweet spot, aim-from/query pieces, direct and ballistic aim, aim scripts and sink, broadcast, range check, tolerance, reload, stockpile, shot payment, stale word) — **3,000 scenarios / 300,000 unit passes + 69,483 direct slot passes / 242,937 helper calls / 15,025 shots identical** | `0x0049E1A0`, `0x0048A1E0`, `0x0048A190`, `0x0043E3C0`, `0x0043E0B0`, `0x0043E2E0`, `0x0043E240`, `0x0049E570`, `0x0049D910`, `0x0049AA80`, `0x0049D880`, `0x00456200`, `0x004012A0`, `0x004B07C0`, `0x004B0A70`, `0x004B0BC0`, `0x00481490`, `0x0049E070` | `engine/sim/src/weapons.cpp`, `engine/sim/include/sim/weapon_slot.h`, `tools/orig_harness/weapons_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Unit order lists: mission table, order construct/insert/prepend/remove/clear/destroy, target links, primary and secondary processing, default missions, paralysis orders, stale-word effects (behaviours hooked) — **3,000 scenarios / 300,000 unit passes / 366,066 operations / 734,124 behaviour steps / 248,743 orders freed identical** | `0x0043B7C0`, `0x0043BAD0`, `0x0043A0C0`, `0x0043A1F0`, `0x0043AC60`, `0x0043ACB0`, `0x00439F80`, `0x00439EB0`, `0x0043C050`, `0x00438760`, `0x004895C0`, `0x00489650`, `0x00489690`, table `0x00512344` | `engine/sim/src/orders.cpp`, `tools/orig_harness/orders_harness.cpp`, `tests/sim_tests.cpp` |

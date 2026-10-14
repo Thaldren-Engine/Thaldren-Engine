@@ -556,6 +556,48 @@ bool spawn_from_motion(ProjectileWorld& w, const FireSlot& slot, Unit& owner, co
     return true;
 }
 
+bool fire_vertical(ProjectileWorld& w, const FireSlot& slot, Unit& owner, const Vec3i& muzzle, const Vec3i& aim, Unit* target,
+                   i32 intercept) {
+    Projectile* p = alloc_projectile(w.table);
+    if (!p) return false;
+    init_projectile(w, *p, *slot.weapon, muzzle, &aim, w.env.game_tick, &owner);
+    p->yaw = 0;
+    p->elevation = 0x4000;  // straight up
+    const WeaponType& wt = *slot.weapon;
+    p->speed = wt.start_velocity != 0 ? wt.start_velocity : (wt.acceleration == 0 ? wt.velocity : 0);
+    p->vel = {0, 0, 0};
+    const WeaponType& pw = *p->weapon;
+    if (pw.velocity != 0 && !(pw.flags & wf::kNoAutoRange))
+        p->expire_tick = (static_cast<u32>(pw.range) << 16) / static_cast<u32>(pw.velocity) + w.env.game_tick;
+    else
+        p->expire_tick = w.env.game_tick + pw.weapon_timer;
+    p->target = target;
+    p->intercepted = intercept;
+    p->burst_left = wt.burst;
+    launch_scripts(w, slot, owner);
+    if (wt.flags & wf::kStartSmoke) w.systems.spawn_muzzle_smoke(muzzle);
+    return true;
+}
+
+i32 find_intercept_target(ProjectileWorld& w, Unit& owner, int slot_index) {
+    const WeaponSlot& s = owner.weapons[static_cast<std::size_t>(slot_index)];
+    if (s.stockpile == 0 || !s.type) return -1;
+    const u32 half = static_cast<u32>(s.type->coverage) << 16, width = static_cast<u32>(s.type->coverage) << 17;
+    const u8 mine = static_cast<u8>(w.combat.ticks[owner.id].owner);
+    const i32 n = w.table.count;
+    for (i32 i = 0; i < n; ++i) {
+        const Projectile& p = w.table.slots[static_cast<std::size_t>(i)];
+        // Deleted shots still count; the square test is one unsigned compare per axis.
+        if (p.owner_slot == mine || !(p.weapon->flags & wf::kTargetable)) continue;
+        if (static_cast<u32>(owner.pos[0]) - static_cast<u32>(p.aim[0]) + half > width) continue;
+        if (static_cast<u32>(owner.pos[2]) - static_cast<u32>(p.aim[2]) + half > width) continue;
+        bool chased = false;
+        for (i32 j = 0; j < n && !chased; ++j) chased = w.table.slots[static_cast<std::size_t>(j)].intercepted == i;
+        if (!chased) return i;
+    }
+    return -1;
+}
+
 bool spawn_free_projectile(ProjectileWorld& w, const WeaponType& weapon, const Vec3i& pos, const Vec3i& vel, bool broadcast) {
     Projectile* p = alloc_projectile(w.table);
     if (!p) return false;

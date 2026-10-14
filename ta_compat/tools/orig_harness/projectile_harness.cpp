@@ -24,6 +24,7 @@
 
 #include "remote.h"
 #include "sim/combat.h"
+#include "sim/fire.h"
 #include "sim/pose.h"
 #include "sim/projectile.h"
 #include "sim/rng.h"
@@ -49,6 +50,8 @@ constexpr u32 kRelocate = 0x004CB4C0, kNegateXZ = 0x004CB590, kBuildState = 0x00
 constexpr u32 kCallNamed = 0x004B0940, kUnitPass = 0x0048AD30, kKillUnit = 0x004864B0;
 constexpr u32 kUpdate = 0x0049B720, kFireDirected = 0x0049C9C0, kFireBallistic = 0x0049CDE0, kSpawnMotion = 0x0049D000,
               kSpawnFree = 0x0049DF10, kDetonateMatching = 0x0049AF90;
+// The weapon fire routines (unit, slot, target unit, &target position).
+constexpr u32 kFireTurret = 0x0049D580, kFireVertical = 0x0049DB70, kFireLineOfSight = 0x0049D9C0, kFireDropped = 0x0049DD60;
 constexpr u32 kUnitVtable = 0x004FD698;
 constexpr u32 kUnitSize = 0x118, kPlayerSize = 0x14B, kProjSize = 0x6B, kWeaponSize = 0x115, kCellSize = 13;
 constexpr int kMaxUnits = 16, kFeatureTypes = 12, kAnimSlots = 24;
@@ -433,8 +436,8 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Pr
         rec(42, 0, {static_cast<u32>(player)});
     }
     // ProjectileSystems
-    const sim::WeaponType* slot_weapon(const sim::Unit& u, int k) override { return slots[u.id][static_cast<std::size_t>(k)].weapon; }
-    std::uint16_t slot_fire_heading(const sim::Unit& u, int k) override { return slots[u.id][static_cast<std::size_t>(k)].heading; }
+    const sim::WeaponType* slot_weapon(const sim::Unit& u, int k) override { return u.weapons[static_cast<std::size_t>(k)].type; }
+    std::uint16_t slot_fire_heading(const sim::Unit& u, int k) override { return u.weapons[static_cast<std::size_t>(k)].aim_heading; }
     i32 motion_speed(const sim::Unit& u) override { return motion_speeds[u.id]; }
     void play_sound(std::uint16_t sound, const sim::Vec3i& p) override {
         rec(60, 0, {sound, 0, 0, static_cast<u32>(p[0]), static_cast<u32>(p[1]), static_cast<u32>(p[2])});
@@ -457,7 +460,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Pr
 struct Stats {
     std::size_t scenarios = 0, ticks = 0, updates = 0, directed = 0, ballistic = 0, free_shots = 0, motion_shots = 0, matches = 0,
                 chases = 0, kills = 0, explosions = 0, damage_packets = 0, feature_hits = 0, max_live = 0, live_sum = 0, mismatches = 0,
-                failures = 0, faults = 0, both_crashed = 0, full_table = 0, water_hits = 0, damage_events = 0;
+                failures = 0, faults = 0, both_crashed = 0, full_table = 0, water_hits = 0, damage_events = 0, fire_routines = 0;
     std::size_t kind[12] = {};  // shot-steps by kind (see the report)
     std::size_t packets[256] = {};
 };
@@ -491,6 +494,18 @@ sim::WeaponType weapon_type_from(const ta::WeaponDefRecord& d, int slot) {
     w.edge_effectiveness = d.edge_effectiveness;
     w.shake_magnitude = d.shake_magnitude;
     w.shake_duration = d.shake_duration;
+    w.accuracy = static_cast<u16>(d.accuracy);
+    w.tolerance = static_cast<u16>(d.tolerance);
+    w.pitch_tolerance = static_cast<u16>(d.pitch_tolerance);
+    w.coverage = d.coverage;
+    w.min_barrel_angle = d.min_barrel_angle;
+    switch (d.fire) {
+    case ta::WeaponFireFn::Turret: w.fire = sim::WeaponFireRoutine::Turret; break;
+    case ta::WeaponFireFn::VLaunch: w.fire = sim::WeaponFireRoutine::VerticalLaunch; break;
+    case ta::WeaponFireFn::LineOfSight: w.fire = sim::WeaponFireRoutine::LineOfSight; break;
+    case ta::WeaponFireFn::Dropped: w.fire = sim::WeaponFireRoutine::Dropped; break;
+    default: w.fire = sim::WeaponFireRoutine::None; break;
+    }
     w.sound_start = static_cast<u16>(slot * 3);
     w.sound_hit = static_cast<u16>(slot * 3 + 1);
     w.sound_water = d.sound_water.empty() ? 0xFFFF : static_cast<u16>(slot * 3 + 2);
@@ -528,6 +543,11 @@ void write_weapon(harness::Remote& r, const Layout& L, const sim::WeaponType& w,
     put(0xFC, &w.flight_time, 2);
     put(0xFE, &w.hold_time, 2);
     put(0x10A, &w.index, 1);
+    put(0x104, &w.accuracy, 2);
+    put(0x106, &w.tolerance, 2);
+    put(0x108, &w.pitch_tolerance, 2);
+    put(0xE0, &w.coverage, 4);
+    put(0xC8, &w.min_barrel_angle, 4);
     put(0x111, &w.flags, 4);
     r.write(L.wdefs + static_cast<u32>(w.index) * kWeaponSize, d.data(), d.size());
 }
@@ -845,6 +865,12 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             r.write(sb + 0x18, &ss.pitch, 2);
             const std::uint8_t fl = static_cast<std::uint8_t>(s << 2);
             r.write(sb + 0x1B, &fl, 1);
+            sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
+            ws.type = ss.weapon;
+            ws.aux = static_cast<i32>(ss.aim_drop);
+            ws.aim_heading = ss.heading;
+            ws.aim_pitch = ss.pitch;
+            ws.flags = fl;
         }
         r.write(at + uHeading, &u.heading, 2);
         r.write(at + uPosX, &u.pos[0], 4);
@@ -1114,6 +1140,13 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             if (f32(uFlags) != u.flags) bad(un + "flags");
             if (f16(uDefIndex) != t.type_index) bad(un + "type index");
             if (static_cast<std::int16_t>(f16(uHp)) != u.hit_points) bad(un + "hit points");
+            for (int s = 0; s < 3; ++s) {
+                const sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
+                const u32 so = uSlots + static_cast<u32>(s) * 0x1C;
+                if (static_cast<std::int32_t>(f32(so + 8)) != ws.aim.result || f16(so + 0x16) != ws.aim_heading ||
+                    f16(so + 0x18) != ws.aim_pitch || f8(so + 0x1B) != ws.flags)
+                    bad(un + "weapon slot " + std::to_string(s));
+            }
             if (f16(uKills) != t.kill_count) bad(un + "kill count");
             u32 la = f32(uLastAttacker);
             norm_ptr(la);
@@ -1260,14 +1293,55 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         for (int op = 0; op < nops; ++op) {
             const int kind_of_op = static_cast<int>(seed % 8 == 3 ? g() % 12 : g() % 20);
             std::string what;
-            if (kind_of_op < 10) {  // launch from a weapon slot
+            if (kind_of_op < 10 && g() % 2 == 0) {  // a weapon's fire routine on a random slot state
                 const int oi = any_unit();
                 sim::Unit& owner = units[static_cast<std::size_t>(oi)];
                 if (!alive(oi) || !owner.script) continue;
                 const int k = static_cast<int>(g() % 3);
-                const SlotState& ss = world.slots[static_cast<std::size_t>(oi)][static_cast<std::size_t>(k)];
-                if (!ss.weapon) continue;
-                const sim::FireSlot slot{ss.weapon, k, ss.heading, ss.pitch, ss.aim_drop};
+                sim::WeaponSlot& ws = owner.weapons[static_cast<std::size_t>(k)];
+                if (!ws.type || ws.type->fire == sim::WeaponFireRoutine::None) continue;
+                // Dropped weapons read the bomb speed from the motion object (the original crashes without one).
+                if (ws.type->fire == sim::WeaponFireRoutine::Dropped && !tstate[static_cast<std::size_t>(oi)].has_motion) continue;
+                ws.flags = static_cast<std::uint8_t>((ws.flags & ~1u) | (g() % 4 ? 1u : 0u));
+                ws.aim.result = g() % 4 ? 1 : 0;
+                ws.stockpile = static_cast<std::uint8_t>(g() % 3);
+                if (g() % 2) ws.aim_heading = static_cast<u16>(g());
+                if (g() % 2) ws.aim_pitch = static_cast<u16>(static_cast<i32>(g() % 24000) - 12000);
+                const u32 sb = unit_addr(oi) + uSlots + static_cast<u32>(k) * 0x1C;
+                r.w32(sb + 0x08, static_cast<u32>(ws.aim.result));
+                r.write(sb + 0x16, &ws.aim_heading, 2);
+                r.write(sb + 0x18, &ws.aim_pitch, 2);
+                r.write(sb + 0x1A, &ws.stockpile, 1);
+                r.write(sb + 0x1B, &ws.flags, 1);
+                const sim::Vec3i aim = g() % 3 ? random_point() : jitter(owner.pos, 2000);
+                const int ti = g() % 3 == 0 ? 0 : any_unit();
+                sim::Unit* target = ti ? &units[static_cast<std::size_t>(ti)] : nullptr;
+                put_vec(L.args, aim);
+                u32 fn = kFireTurret;
+                switch (ws.type->fire) {
+                case sim::WeaponFireRoutine::VerticalLaunch: fn = kFireVertical; break;
+                case sim::WeaponFireRoutine::LineOfSight: fn = kFireLineOfSight; break;
+                case sim::WeaponFireRoutine::Dropped: fn = kFireDropped; break;
+                default: break;
+                }
+                const std::int32_t mine = sim::fire_weapon(pw, owner, k, target, aim);
+                u32 ret = 0;
+                if (!r.call(fn, 0, {unit_addr(oi), sb, ti ? unit_addr(ti) : 0u, L.args}, &ret)) return fail("fire routine " + std::to_string(fn) + " flags " + std::to_string(ws.type->flags) + " vel " + std::to_string(ws.type->velocity) + " stock " + std::to_string(ws.stockpile) + " aiming " + std::to_string(ws.flags & 1) + " result " + std::to_string(ws.aim.result));
+                ++st.fire_routines;
+                what = "fire routine";
+                if ((ret != 0) != (mine != 0)) {
+                    std::printf("scenario %u: fire routine result differs (orig %u ours %d)\n", seed, ret, mine);
+                    ++st.mismatches;
+                    return true;
+                }
+            } else if (kind_of_op < 10) {  // launch from a weapon slot
+                const int oi = any_unit();
+                sim::Unit& owner = units[static_cast<std::size_t>(oi)];
+                if (!alive(oi) || !owner.script) continue;
+                const int k = static_cast<int>(g() % 3);
+                const sim::WeaponSlot& ws = owner.weapons[static_cast<std::size_t>(k)];
+                if (!ws.type) continue;
+                const sim::FireSlot slot{ws.type, k, ws.aim_heading, ws.aim_pitch, static_cast<u32>(ws.aux)};
                 const sim::Vec3i muzzle = jitter(owner.pos, 20);
                 const sim::Vec3i aim = random_point();
                 const int ti = g() % 3 == 0 ? 0 : any_unit();
@@ -1276,7 +1350,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 put_vec(L.args + 16, aim);
                 const u32 slot_at = unit_addr(oi) + uSlots + static_cast<u32>(k) * 0x1C;
                 const int how = kind_of_op < 5 ? 0 : kind_of_op < 9 ? 1 : 2;
-                if (how == 1 && ss.weapon->velocity == 0) continue;
+                if (how == 1 && ws.type->velocity == 0) continue;
                 u32 ret = 0;
                 bool mine = false;
                 if (how == 0) {
@@ -1538,6 +1612,7 @@ int main(int argc, char** argv) {
                 st.kind[10], st.kind[11]);
     std::printf("packets sent: damage %zu, kill %zu, free shot %zu, detonate %zu\n", st.packets[0x0B], st.packets[0x0C], st.packets[0x0D],
                 st.packets[0x0E]);
+    std::printf("fire routines %zu\n", st.fire_routines);
     std::printf("mismatching scenarios %zu, engine faults %zu, original failures %zu (of which predicted crashes %zu)\n", st.mismatches,
                 st.faults, st.failures, st.both_crashed);
     return st.mismatches || st.failures != st.both_crashed ? 1 : 0;

@@ -174,7 +174,15 @@ bool fire_directed(ProjectileWorld& w, const FireSlot& slot, Unit& owner, const 
 // Shells launched at the slot's aim angles.
 bool fire_ballistic(ProjectileWorld& w, const FireSlot& slot, Unit& owner, const Vec3i& muzzle, const Vec3i& aim,
                     Unit* target);
-// A shot drifting with its owner's motion (unused by the original game).
+// Vertical launch (missile leaving straight up): false if the table is full.
+// `intercept` is the table slot of the shot an interceptor chases, or -1.
+bool fire_vertical(ProjectileWorld& w, const FireSlot& slot, Unit& owner, const Vec3i& muzzle, const Vec3i& aim,
+                   Unit* target, std::int32_t intercept);
+// The shot an interceptor in the owner's weapon `slot_index` should chase: one of another
+// player's targetable shots aimed inside its coverage square that no shot chases yet
+// (table slot, or -1). Needs a stockpiled round.
+std::int32_t find_intercept_target(ProjectileWorld& w, Unit& owner, int slot_index);
+// A shot drifting with its owner's motion: dropped weapons (bombs), also 0x49D000.
 bool spawn_from_motion(ProjectileWorld& w, const FireSlot& slot, Unit& owner, const Vec3i& pos);
 // An ownerless shot with a given velocity (meteors); optionally announced to the network.
 bool spawn_free_projectile(ProjectileWorld& w, const WeaponType& weapon, const Vec3i& pos, const Vec3i& vel, bool broadcast);

@@ -19,7 +19,8 @@ constexpr std::uint32_t kLineOfSight = 1u << 0, kBallistic = 1u << 1, kBeam = 1u
                         kUnitsOnly = 1u << 14, kGroundBounce = 1u << 15, kWaterWeapon = 1u << 16, kSmokeTrail = 1u << 18,
                         kTurret = 1u << 19, kSelfPropelled = 1u << 20, kPropeller = 1u << 21, kNoExplode = 1u << 22,
                         kBurnBlow = 1u << 23, kTwoPhase = 1u << 24, kCruise = 1u << 25, kCommandFire = 1u << 26,
-                        kNoAutoRange = 1u << 27, kStockpile = 1u << 28, kInterceptor = 1u << 30;
+                        kNoAutoRange = 1u << 27, kStockpile = 1u << 28, kTargetable = 1u << 29,
+                        kInterceptor = 1u << 30;
 }
 
 // Which fire routine a weapon type uses (picked from its flags when the types are loaded).
@@ -37,6 +38,8 @@ struct WeaponType {
     float min_barrel_angle = 0.0f;      // radians
     std::uint16_t reload_time = 0;      // ticks
     std::uint16_t tolerance = 0, pitch_tolerance = 0;  // aim tolerances (0 = defaults)
+    std::uint16_t accuracy = 0;         // spread of turret shots (angle units)
+    std::int32_t coverage = 0;          // interceptors: half-width of the square they defend (world units)
     std::uint16_t weapon_timer = 0;     // steps
     std::uint16_t turn_rate = 0;        // angle per step
     std::uint16_t burst = 0, burst_rate = 0, spray_angle = 0;

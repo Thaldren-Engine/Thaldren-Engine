@@ -228,6 +228,8 @@ add_executable(projectile_harness
     ${ROOT}/engine/sim/src/combat.cpp
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/fire.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
     ${ROOT}/engine/sim/src/projectile.cpp
     ${ROOT}/engine/sim/src/rng.cpp
     ${ROOT}/engine/sim/src/script_vm.cpp
