@@ -856,7 +856,7 @@ void test_projectiles() {
 
 // Records what reaches the outside of a battle; everything else does nothing.
 struct NullOutside : sim::BattleOutside {
-    int sounds = 0, explosions = 0, missions = 0;
+    int sounds = 0, explosions = 0, missions = 0, motions = 0, passability = 0, packets = 0;
     void motion_step(Unit&, std::uint32_t&) override {}
     std::int32_t motion_speed(const Unit&) override { return 0; }
     std::uint32_t motion_start_tick(const Unit&) override { return 0; }
@@ -870,9 +870,13 @@ struct NullOutside : sim::BattleOutside {
     void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
     void drop_unit(Unit&, std::int32_t) override {}
     void detach_from_carrier(Unit&) override {}
-    bool yard_cells_free(Unit&, std::int32_t) override { return false; }
-    void claim_yard_cells(Unit&) override {}
-    void clear_footprint(Unit&) override {}
+    void create_motion(Unit&) override { ++motions; }
+    void motion_cells_claimed(Unit&) override {}
+    void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override { ++passability; }
+    void passability_after_release(Unit&) override {}
+    void join_group(Unit&, std::int32_t) override {}
+    void stamp_line_of_sight(Unit&) override {}
+    void victory_unit_created(Unit&) override {}
     void release_unit(Unit&) override {}
     bool pay_energy(Unit&, float) override { return true; }
     void damage_feature(sim::MapCell&, std::int32_t, std::int32_t, const sim::WeaponType&) override {}
@@ -886,7 +890,7 @@ struct NullOutside : sim::BattleOutside {
     void player_out_of_units(int) override {}
     void commander_died(int) override {}
     std::uint32_t clock_ticks() override { return 0; }
-    void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override {}
+    void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override { ++packets; }
     void broadcast_player_units(int) override {}
     void broadcast_script_call(Unit&, std::int16_t) override {}
     void on_activate_flags_changed(Unit&, std::uint8_t, std::uint8_t) override {}
@@ -980,6 +984,91 @@ void test_battle() {
     CHECK_EQ(b.game_tick(), 21u);
 }
 
+// Unit creation and footprints through the battle: a structure claims its yard
+// cells, a mobile unit its ground cells, limits and table ranges are respected,
+// and death releases the cells.
+void test_unit_create() {
+    sim::HeightMap hm(32, 32);
+    NullOutside outside;
+    sim::BattleRng rng;
+    rng.set_state(777);
+    sim::Battle b(outside, hm, rng);
+    b.map.width = 32;
+    b.map.height = 32;
+    b.map.cells.resize(32 * 32);
+    for (auto& c : b.map.cells) c.metal = 3;
+    b.init_buckets();
+    CHECK_EQ(b.buckets.width, 4);
+    b.init_unit_table(10);
+    b.assign_unit_range(0, 1, 4);
+    b.assign_unit_range(1, 5, 8);
+    b.players[0].active = b.players[1].active = true;
+    b.players[0].controller = 1;
+    b.players[1].controller = 2;
+    b.types.resize(3);
+    // Type 1: a 2 x 2 structure that occupies its cells while closed and extracts metal.
+    sim::BattleUnitType& st = b.types[1];
+    st.info.max_damage = 500;
+    st.info.yard_map = {0x05, 0x04, 0x04, 0x01};
+    st.create.type_flags = sim::create_flags::kLoadable;
+    st.create.movement = 0;
+    st.create.footprint_x = st.create.footprint_z = 2;
+    st.create.build_angle = 0x1000;
+    st.create.extracts_metal = 0.5f;
+    st.create.max_per_player = 2;
+    // Type 2: a mobile 1 x 1 unit.
+    sim::BattleUnitType& mt = b.types[2];
+    mt.info.max_damage = 100;
+    mt.create.type_flags = sim::create_flags::kLoadable;
+    mt.create.movement = 1;
+    mt.create.footprint_x = mt.create.footprint_z = 1;
+    mt.create.build_angle = 0x4000;
+
+    const std::int32_t x = (100 << 16), z = (60 << 16);
+    Unit* s = b.create_unit(0, 1, x, 0, z, true, 1);
+    CHECK_EQ(s != nullptr, true);
+    if (!s) return;
+    CHECK_EQ(s->id, 1);
+    CHECK_EQ(s->hit_points, 500);
+    CHECK_EQ(s->cell_x, 5);  // (100 - 16 + 8) / 16
+    CHECK_EQ(s->cell_z, 3);
+    CHECK_EQ((s->flags & sim::footprint_flags::kStructure) != 0, true);
+    CHECK_EQ(b.map.cells[3 * 32 + 5].unit, 1);  // 0x05: occupied while closed, marked
+    CHECK_EQ(b.map.cells[3 * 32 + 6].unit, 1);
+    CHECK_EQ(b.map.cells[4 * 32 + 6].unit, 0);  // 0x01: only marked
+    CHECK_EQ(b.map.cells[4 * 32 + 6].flags & 2, 2);
+    CHECK_EQ(s->metal_extraction, 0.5f * 16.0f);  // four cells of metal 3 (+1 each)
+    CHECK_EQ(s->bucket, 0);
+    CHECK_EQ(b.buckets.heads[0] == s, true);
+    CHECK_EQ(outside.passability, 1);
+    CHECK_EQ(b.players[0].alive_count, 1);
+    CHECK_EQ(b.players[0].units_created, 1u);
+    // A second structure on the same spot: the first keeps the cells (its owner is not watched).
+    CHECK_EQ(b.create_unit(0, 1, x, 0, z, true, 1, 3) != nullptr, true);
+    CHECK_EQ(b.create_unit(0, 1, x, 0, z, true, 1) == nullptr, true);  // limit of 2 reached
+    CHECK_EQ(b.units[3].flags & sim::footprint_flags::kWantsCells, sim::footprint_flags::kWantsCells);
+    CHECK_EQ(s->flags & sim::footprint_flags::kHoldsWanted, sim::footprint_flags::kHoldsWanted);
+    CHECK_EQ(b.map.cells[3 * 32 + 5].unit, 1);
+    // A mobile unit gets a motion object and faces its build angle.
+    Unit* m = b.create_unit(1, 2, (200 << 16), 0, (200 << 16), false, 1);
+    CHECK_EQ(m != nullptr, true);
+    if (!m) return;
+    CHECK_EQ(m->id, 5);
+    CHECK_EQ(outside.motions, 1);
+    CHECK_EQ(m->heading, 0x4000);
+    CHECK_EQ(m->hit_points, 0);
+    CHECK_EQ(m->build_fraction_left, 1.0f);
+    CHECK_EQ(b.map.cells[12 * 32 + 12].unit, 5);
+    CHECK_EQ(b.create_unit(1, 2, 0, 0, 0, true, 1, 2) == nullptr, true);  // outside player 1's range
+    // Death releases the cells; the unit that wanted them claims them.
+    sim::clear_footprint(b.footprint_world(), *s);
+    CHECK_EQ(b.map.cells[3 * 32 + 5].unit, 3);
+    CHECK_EQ(s->bucket, sim::kNoBucket);
+    CHECK_EQ(b.footprint_world().fault.empty(), true);
+    // Unit 3's closed cells are its own now, so they are free for it.
+    CHECK_EQ(sim::yard_cells_free(b.footprint_world(), b.units[3], 0), true);
+}
+
 } // namespace
 
 int main() {
@@ -1002,6 +1091,7 @@ int main() {
     test_ground_settle();
     test_projectiles();
     test_battle();
+    test_unit_create();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -11,7 +11,8 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       combat_{units, ticks, players, combat_env_, *this},
       weapons_{units, ticks, players, weapon_env_, *this},
       projectile_world_{projectiles, combat_, heights_, map, features, projectile_env_, *this, rng_},
-      orders_{ticks, players, rng_, *this, 0} {
+      orders_{ticks, players, rng_, *this, 0},
+      footprint_{map, buckets, units, ticks, players, *this, {}} {
     types[0].info.max_damage = 0;  // the blank type of empty slots
     types[0].tick.damage_modifier = 0;
 }
@@ -62,6 +63,12 @@ void Battle::step_units_and_projectiles() {
 }
 
 Unit* Battle::unit_by_id(std::uint16_t id) { return id < units.size() ? &units[id] : nullptr; }
+
+void Battle::claim_yard_cells(Unit& u) {
+    // Yard opening (0x47DAC0) after the cells were found free and the yard flag changed.
+    claim_wanted_cells(footprint_, u);
+    outside_.update_passability(u.cell_x, u.cell_z, u.footprint_x, u.footprint_z);
+}
 
 void Battle::weapons(Unit& unit, std::uint32_t& stale_word) { process_weapon_slots(weapons_, unit, stale_word); }
 

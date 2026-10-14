@@ -61,6 +61,7 @@ struct PlayerSlot {
     std::array<std::uint8_t, 10> shares_vision{}; // by the other player's state index
     std::string commander_name;                  // unit name of this player's side commander
     float energy_stored = 0.0f, metal_stored = 0.0f;  // resources available to spend
+    std::uint32_t units_created = 0;             // units ever created for this player
 };
 
 // Addresses of the original's game state block and unit table. A few original
