@@ -27,6 +27,8 @@ struct UnitTypeInfo {
     // Structures: one byte per footprint cell, row by row (sim/footprint.h): bit 0 marks the
     // map cell (cell flag 2), bit 1 occupies the cell while the yard is open, bit 2 while closed.
     std::vector<std::uint8_t> yard_map;
+    std::uint16_t corpse = 0xFFFF;  // wreck feature type (sim/features.h), 0xFFFF = none
+    bool is_feature = false;        // type flag "is a feature": its wreck does not sink
 };
 
 namespace unit_flags {

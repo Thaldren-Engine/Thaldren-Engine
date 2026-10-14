@@ -109,6 +109,19 @@ struct MapGrid {
 struct FeatureTypeInfo {
     std::int16_t footprint_x = 0, footprint_z = 0;
     std::uint8_t height = 0;
+    // Map features (sim/features.h).
+    std::uint16_t flags = 0;          // feature_type_flags
+    std::uint16_t damage = 0;         // damage that destroys it
+    std::uint16_t spark_time = 0;     // steps a fire burns before it may spread
+    std::uint8_t spread_chance = 0;   // percent, per flammable neighbour
+    std::uint8_t reproduce = 0;       // percent per visit of the reproduction sweep
+    std::uint8_t reproduce_area = 0;  // cells around it a copy may land
+    const WeaponType* burn_weapon = nullptr;  // area damage when its fire spreads
+    std::uint16_t dead = 0xFFFF, burnt = 0xFFFF, reclamate = 0xFFFF;  // next stage (type index, 0xFFFF none)
+    // Animation sequences (sim/anim.h addresses, 0 = none): normal, burning, dying,
+    // reclaimed, each followed by its shadow.
+    std::array<std::uint32_t, 8> sequences{};
+    std::uint32_t model = 0;          // 3D features: their model (identity for the object state)
 };
 
 struct ProjectileEnvironment {
@@ -196,6 +209,9 @@ void detonate_projectile(ProjectileWorld& w, Projectile& p, Unit* hit);
 void detonate_matching(ProjectileWorld& w, const std::uint8_t* packet);
 // A dying unit's burst launchers are removed (each removal compacts the table at once).
 void remove_owner_bursts(ProjectileWorld& w, Unit& owner);
+// Area damage of `weapon` at `at` from a temporary, zeroed shot with no owner (player slot
+// 10): burning features spreading their fire use it (the original's 0x49A0C0).
+void area_damage_at(ProjectileWorld& w, const WeaponType& weapon, const Vec3i& at);
 // The explosion of a dying unit (its explode-as or self-destruct weapon).
 void detonate_unit_death(ProjectileWorld& w, Unit& unit, bool self_destruct);
 // Removes deleted shots, keeping order.

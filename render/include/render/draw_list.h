@@ -16,6 +16,7 @@ enum class DrawOp : std::uint8_t {
     Blit,       // copy the sprite, key pixels transparent
     BlitBlend,  // mix the sprite's non-key pixels with the frame through the blend table
     Line,       // one-colour line from (x, y) to (x1, y1)
+    BlitLight,  // lighten the frame under the sprite's non-key pixels through the light table
 };
 
 struct DrawCmd {
@@ -30,6 +31,9 @@ struct DrawCmd {
 struct DrawList {
     int width = 0, height = 0;
     std::uint8_t clear_index = 0;
+    // Light table for BlitLight, in the blend table's layout: entry [src * 256 + dst]
+    // (see light_blend_table). Needed only when the list holds BlitLight commands.
+    const BlendTable* light = nullptr;
     std::vector<DrawCmd> cmds;
     // Sprites made for this frame (model sprites, shadows, directly drawn pieces).
     std::vector<std::unique_ptr<Sprite8>> transient;
@@ -44,6 +48,9 @@ struct DrawList {
     void blend(const Sprite8* s, int x, int y, const ClipRect& clip, bool persistent) {
         cmds.push_back({DrawOp::BlitBlend, s, persistent, x, y, 0, 0, 0, clip});
     }
+    void lighten(const Sprite8* s, int x, int y, const ClipRect& clip, bool persistent) {
+        cmds.push_back({DrawOp::BlitLight, s, persistent, x, y, 0, 0, 0, clip});
+    }
     void line(int x0, int y0, int x1, int y1, std::uint8_t colour, const ClipRect& clip) {
         cmds.push_back({DrawOp::Line, nullptr, false, x0, y0, x1, y1, colour, clip});
     }
@@ -51,6 +58,11 @@ struct DrawList {
 
 // CPU reference backend: executes the list into an 8-bit frame.
 Image8 execute(const DrawList& list, const BlendTable& blend);
+
+// The game's light blit as a mixing table: a sprite pixel p in 0x4F..0x6E selects
+// light level p - 0x4F of the 32 x 256 light table (palettes\PALETTE.LHT), applied to
+// the frame pixel; other pixel values leave the frame alone.
+BlendTable light_blend_table(const std::vector<std::uint8_t>& light32);
 
 // Turns every Line command into a transient sprite holding exactly the
 // reference line's pixels, so backends without a line primitive stay exact.

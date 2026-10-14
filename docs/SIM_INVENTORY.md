@@ -179,5 +179,5 @@ The engine defines its **own** structs. These layouts are only for understanding
 2. ~~Sin/cos table~~ resolved: static, 640 entries, formula-generated (see RE_MEMORY).
 3. ~~RNG seeds~~ resolved: QPC for the battle RNG, `time(NULL)` for `rand()` (see RE_MEMORY).
 4. ~~`Math_RandMod` arithmetic~~ resolved from the disassembly (see RE_MEMORY).
-5. Which FX/debris/GAF-cursor work mutates sim state.
+5. ~~Which FX/debris work mutates sim state~~ resolved for features, world effects and debris (see RE_MEMORY "Features and wrecks", "Debris and effects", "Draw-time side effects"); the GAF texture cursors (`0x00415B30`) are still open.
 6. Command packet format (how orders enter the step).

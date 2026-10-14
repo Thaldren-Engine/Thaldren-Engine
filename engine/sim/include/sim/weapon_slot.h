@@ -50,6 +50,9 @@ struct WeaponType {
     float edge_effectiveness = 0.0f;
     std::int32_t shake_magnitude = 0, shake_duration = 0;
     std::uint16_t sound_start = 0xFFFF, sound_hit = 0xFFFF, sound_water = 0xFFFF;  // 0xFFFF = none
+    std::uint8_t fire_starter = 0;      // nonzero: sets flammable features on fire
+    // Explosion animations (sim/anim.h addresses, 0 = none): normal and water (or lava) impacts.
+    std::uint32_t explosion_seq = 0, water_explosion_seq = 0;
     // Damage by unit name, in the order of a case-insensitive sort (first spelling
     // of a name wins); other units take default_damage.
     std::vector<std::pair<std::string, std::int32_t>> damage;

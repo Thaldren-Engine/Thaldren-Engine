@@ -39,10 +39,6 @@ public:
     void victory_unit_created(Unit&) override {}
     void release_unit(Unit&) override {}
     bool pay_energy(Unit&, float) override { return true; }
-    void damage_feature(MapCell&, std::int32_t, std::int32_t, const WeaponType&) override {}
-    Vec3i feature_anim_pos(std::uint16_t) override { return {}; }
-    void spawn_wreck(Unit&, std::int32_t, bool) override {}
-    void explode_piece(Unit&, std::int32_t, std::int32_t) override {}
     void emit_sfx(Unit&, std::int32_t, std::int32_t) override {}
     void reveal_dead_unit(Unit&) override {}
     void forget_fog(Unit&) override {}
@@ -63,7 +59,6 @@ public:
     void play_sound(std::uint16_t, const Vec3i&) override {}
     void spawn_smoke(const Vec3i&) override {}
     void spawn_muzzle_smoke(const Vec3i&) override {}
-    void spawn_explosion(const Vec3i&, const WeaponType&, bool, bool) override {}
     void camera_shake(std::int32_t, std::int32_t, std::int32_t) override {}
 };
 

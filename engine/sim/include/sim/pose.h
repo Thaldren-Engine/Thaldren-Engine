@@ -10,12 +10,20 @@
 
 namespace sim {
 
+// A model primitive as the simulation sees it (pieces shattered by scripts, sim/effects.h).
+struct PosePrimitive {
+    std::vector<std::uint16_t> indices;
+    bool flat = false;  // flat colour (else textured)
+};
+
 // Static model tree (16.16 coordinates). Nodes may be stored in any order.
 struct PoseModelNode {
     std::string name;
     std::array<std::int32_t, 3> offset{};               // from the parent
     std::vector<std::array<std::int32_t, 3>> vertices;
     int sibling = -1, child = -1;
+    std::vector<PosePrimitive> primitives;              // in stored order (optional)
+    std::int32_t selection = -1;                         // selection primitive (0 or -1 after loading)
 };
 
 struct PoseModel {

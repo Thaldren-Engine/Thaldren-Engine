@@ -252,6 +252,7 @@ target_compile_options(raster_harness PRIVATE /W4 /permissive- /fp:precise)
 add_executable(create_harness
     create_harness.cpp
     ${ROOT}/ta_compat/src/battle_types.cpp
+    ${ROOT}/ta_compat/src/battle_features.cpp
     ${ROOT}/ta_compat/src/cob.cpp
     ${ROOT}/ta_compat/src/crt_strtod.cpp
     ${ROOT}/ta_compat/src/featuredefs.cpp
@@ -264,6 +265,9 @@ add_executable(create_harness
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/anim.cpp
+    ${ROOT}/engine/sim/src/effects.cpp
+    ${ROOT}/engine/sim/src/features.cpp
     ${ROOT}/engine/sim/src/route_search.cpp
     ${ROOT}/engine/sim/src/targeting.cpp
     ${ROOT}/engine/sim/src/missions.cpp
@@ -377,3 +381,31 @@ add_executable(route_harness
 )
 target_include_directories(route_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(route_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Map features, wrecks, world effects and debris vs sim/features.h and sim/effects.h.
+add_executable(feature_harness
+    feature_harness.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/engine/sim/src/anim.cpp
+    ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/effects.cpp
+    ${ROOT}/engine/sim/src/features.cpp
+    ${ROOT}/engine/sim/src/footprint.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/projectile.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(feature_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(feature_harness PRIVATE /W4 /permissive- /fp:precise)

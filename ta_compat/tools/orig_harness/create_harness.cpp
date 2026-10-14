@@ -267,10 +267,6 @@ struct Outside : sim::QuietBattleOutside {
     void detach_from_carrier(sim::Unit&) override {}
     void release_unit(sim::Unit&) override {}
     bool pay_energy(sim::Unit&, float) override { return true; }
-    void damage_feature(sim::MapCell&, i32, i32, const sim::WeaponType&) override {}
-    sim::Vec3i feature_anim_pos(std::uint16_t) override { return {}; }
-    void spawn_wreck(sim::Unit&, i32, bool) override {}
-    void explode_piece(sim::Unit&, i32 piece, i32 type) override { rec(11, {static_cast<u32>(piece), static_cast<u32>(type)}); }
     void emit_sfx(sim::Unit&, i32 piece, i32 type) override { rec(10, {static_cast<u32>(piece), static_cast<u32>(type)}); }
     void reveal_dead_unit(sim::Unit&) override {}
     void forget_fog(sim::Unit&) override {}
@@ -307,7 +303,6 @@ struct Outside : sim::QuietBattleOutside {
     void play_sound(std::uint16_t, const sim::Vec3i&) override {}
     void spawn_smoke(const sim::Vec3i&) override {}
     void spawn_muzzle_smoke(const sim::Vec3i&) override {}
-    void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override {}
     void camera_shake(i32, i32, i32) override {}
 };
 
