@@ -33,6 +33,7 @@
 #include "render/presenter.h"
 #include "sim/battle.h"
 #include "sim/battle_quiet.h"
+#include "sim/commands.h"
 #include "sim/rng.h"
 #include "sim/unit.h"
 #include "ta/ai_profile.h"
@@ -42,6 +43,7 @@
 #include "ta/cob.h"
 #include "ta/featuredefs.h"
 #include "ta/battle_types.h"
+#include "ta/battle_loader.h"
 #include "ta/sight_tables.h"
 #include "ta/gaf.h"
 #include "ta/hpi.h"
@@ -281,7 +283,7 @@ int main(int argc, char** argv) {
     // Battle mode: types converted from the definitions, units made by the engine's creation routine.
     struct BattleType {
         const ta::UnitDefRecord* def = nullptr;
-        ta::UnitTypeAssets assets;
+        const ta::UnitTypeAssets* assets = nullptr;  // the loader's (the battle's pose models point there)
         std::unique_ptr<ta::Model3doPiece> root;
         render::Model model;
     };
@@ -295,173 +297,92 @@ int main(int argc, char** argv) {
             return sim::mission_result::kContinue;
         }
     } outside;
-    sim::BattleRng battle_rng;
-    battle_rng.seed(0x12345678u);
-    std::vector<sim::WeaponType> weapon_types;
-    std::unique_ptr<sim::Battle> battle;
-    std::unique_ptr<ta::AnimImporter> anim_import;
+    // The battle is built by the loader the way the original builds one (ta/battle_loader.h):
+    // two players on the map with their commanders at the map's start positions, then the
+    // view's own units around the middle.
+    std::unique_ptr<ta::LoadedBattle> loaded;
+    sim::Battle* battle = nullptr;
+    ta::AnimImporter* anim_import = nullptr;
     std::vector<std::string> feature_models;  // 3D feature model names (FeatureTypeInfo::model - 1)
     if (battle_mode) {
-        weapon_types = ta::to_weapon_types(weapons);
-        battle = std::make_unique<sim::Battle>(outside, hm, battle_rng);
-        outside.battle = battle.get();
-        sim::Battle& b = *battle;
-        anim_import = std::make_unique<ta::AnimImporter>(vfs, b.anims);
-        ta::bind_weapon_explosions(weapons, weapon_types, *anim_import);  // before anything points into weapon_types
-        b.features = ta::to_feature_types(fdefs, weapon_types, *anim_import, &feature_models);
-        ta::load_effect_art(*anim_import, b.effect_art);
-        b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
-        b.settings.gravity = 112;
-        b.settings.damage_options = 8;  // weapons damage features
-        const int per_player = ai_players ? 150 : 50;
-        b.init_unit_table(static_cast<std::size_t>(2 * per_player + 1));
+        ta::BattleRequest req;
+        req.map = map_name;
+        req.sides[0] = "ARM";
+        req.sides[1] = "CORE";
         for (int p = 0; p < 2; ++p) {
-            sim::PlayerSlot& s = b.players[static_cast<std::size_t>(p)];
-            s.active = true;
-            s.controller = static_cast<std::uint8_t>(p == 0 && ai_players < 2 ? 1 : 2);
-            s.net_id = p + 1;
-            s.state = static_cast<std::uint8_t>(p);
-            b.alliances[static_cast<std::size_t>(p)][static_cast<std::size_t>(p)] = 1;  // allied with itself only
-            b.assign_unit_range(p, 1 + per_player * p, per_player + per_player * p);
-            // Skirmish start: 1000 of each, which is also the storage the commander brings.
-            b.init_player_economy(p);
-            sim::set_storage_bonus(s, b.player_economy[static_cast<std::size_t>(p)], 1000, 1000);
-            s.energy_stored = 1000.0f;
-            s.metal_stored = 1000.0f;
+            sim::StartPlayer& sp = req.start.players[static_cast<std::size_t>(p)];
+            // --ai: player 1 (or both) a computer player starting from its commander only.
+            sp.kind = ai_players && (p == 1 || ai_players >= 2) ? sim::PlayerKind::Computer : sim::PlayerKind::Local;
+            sp.net_id = p + 1;
+            sp.energy = sp.metal = 1000;
         }
-        b.settings.ai_difficulty = ai_players ? ai_difficulty : 2;  // hard: the AI's income is not scaled
-        b.map.width = hm.width();
-        b.map.height = hm.height();
-        b.map.cells.assign(static_cast<std::size_t>(b.map.width) * static_cast<std::size_t>(b.map.height), sim::MapCell{});
-        for (std::int32_t z = 0; z < b.map.height; ++z)
-            for (std::int32_t x = 0; x < b.map.width; ++x)
-                b.map.cells[static_cast<std::size_t>(z * b.map.width + x)].height = hm.at(x, z);
-        sim::refresh_height_range(b.map, 0, 0, static_cast<std::int16_t>(b.map.width), static_cast<std::int16_t>(b.map.height));
-        b.init_buckets();
-        b.reset_features_and_effects();
-        ta::place_tnt_features(b, tnt);
-        {
-            // Metal in the ground, wind and tide from the map's OTA (its first schema).
-            ta::MapEconomy me;
-            std::vector<std::uint8_t> ota;
-            if (vfs.read("maps\\" + map_name + ".ota", ota)) ta::read_map_economy(ota, 0, me);
-            ta::init_map_economy(b, tnt, me, fdefs);
-            b.step_wind();  // once while loading, as the original does
-            int metal_cells = 0;
-            for (const sim::MapCell& c : b.map.cells) metal_cells += c.metal != 0;
-            std::printf("map economy: surface metal %d, %d cells with metal, wind %d..%d, tidal strength %g\n", me.surface_metal,
-                        metal_cells, b.wind.min_speed, b.wind.max_speed, static_cast<double>(b.settings.tidal_strength));
-        }
-        b.settings.player_count = 2;
-        b.settings.units_per_player = static_cast<std::uint16_t>(per_player);
-        if (ai_players) b.settings.unit_limit = static_cast<std::uint16_t>(per_player);
-        b.move_classes = ta::to_move_classes(ctx);
+        req.start.ai_difficulty = ai_players ? ai_difficulty : 2;  // hard: the AI's income is not scaled
+        req.start.unit_limit = ai_players ? 150 : 50;
+        req.start.battle_rng_seed = 0x12345678u;
+        req.start.loading_rand_seed = 0xC0FFEEu;
+        req.start.crt_rand_state = 0xC0FFEEu;
         if (view_player >= 0) {
-            // Line of sight: fog, the map explored by the units, the shapes from the game files.
-            b.settings.fog_of_war = true;
-            b.settings.explore = true;
-            b.settings.true_sight = true_los;
-            b.settings.local_view = static_cast<std::uint8_t>(view_player);
-            std::string err;
-            if (!ta::load_sight_tables(vfs, b.sight_tables, err)) std::printf("sight tables: %s\n", err.c_str());
-            b.init_sight();
+            req.start.fog_of_war = true;
+            req.start.explore = true;
+            req.start.true_sight = true_los;
+            req.start.local_player = static_cast<std::uint8_t>(view_player);
         }
-        b.init_routes();
+        std::string err;
+        loaded = ta::load_battle(vfs, req, outside, err);
+        if (!loaded) {
+            std::fprintf(stderr, "battle: %s\n", err.c_str());
+            return 1;
+        }
+        battle = loaded->battle.get();
+        outside.battle = battle;
+        anim_import = loaded->anims.get();
+        feature_models = loaded->feature_models;
+        sim::Battle& b = *battle;
+        btypes.resize(b.types.size());
+        std::printf("map economy: surface metal cells %d, wind %d..%d, tidal strength %g, meteors %s\n",
+                    [&] {
+                        int n = 0;
+                        for (const sim::MapCell& c : b.map.cells) n += c.metal != 0;
+                        return n;
+                    }(),
+                    b.wind.min_speed, b.wind.max_speed, static_cast<double>(b.settings.tidal_strength), b.meteors.enabled ? "on" : "off");
+        // Render data of a battle type (built on first use).
         auto battle_type = [&](const std::string& name) -> std::uint16_t {
-            for (std::size_t k = 1; k < btypes.size(); ++k)
-                if (ta::stricmp_c(btypes[k]->def->unit_name, name) == 0) return static_cast<std::uint16_t>(k);
-            for (const auto& d : defs.units) {
-                if (ta::stricmp_c(d.unit_name, name) != 0) continue;
+            const std::uint16_t k = loaded->type_index(name);
+            if (!k || !loaded->type_assets[k]) return 0;
+            if (!btypes[k]) {
                 auto t = std::make_unique<BattleType>();
-                t->def = &d;
-                std::string err;
-                if (!ta::load_unit_assets(vfs, d, t->assets, err)) return 0;
-                auto m = ta::load_3do(t->assets.model_file, true);
+                t->def = loaded->type_defs[k];
+                t->assets = loaded->type_assets[k].get();
+                auto m = ta::load_3do(t->assets->model_file, true);
                 if (!m.root) return 0;
                 t->root = std::move(m.root);
                 t->model = ta::build_render_model(t->root.get(), textures);
-                ta::bind_pose_primitives(t->assets.pose_model, t->model);
-                b.types.emplace_back();
-                ta::to_battle_unit_type(d, t->assets, weapon_types, b.types.back());
-                ta::to_targeting_type(d, defs.categories, weapon_types, b.types.back().targeting);
-                btypes.push_back(std::move(t));
-                return static_cast<std::uint16_t>(btypes.size() - 1);
+                ta::bind_pose_primitives(loaded->type_assets[k]->pose_model, t->model);
+                btypes[k] = std::move(t);
             }
-            return 0;
+            return k;
         };
+        // Every type a unit may turn into needs its render data; build them all up front.
+        for (std::size_t k = 1; k < loaded->type_defs.size(); ++k)
+            if (loaded->type_defs[k]) battle_type(loaded->type_defs[k]->unit_name);
         struct Spawn {
             const char* name;
             int player, x, z;
         };
         const Spawn spawns[] = {
-            {"ARMCOM", 0, 1380, 1760}, {"ARMLLT", 0, 1460, 1720}, {"ARMLLT", 0, 1560, 1720}, {"ARMSTUMP", 0, 1340, 1680},
+            {"ARMLLT", 0, 1460, 1720}, {"ARMLLT", 0, 1560, 1720}, {"ARMSTUMP", 0, 1340, 1680},
             {"ARMHAM", 0, 1620, 1760}, {"ARMSOLAR", 0, 1300, 1800}, {"ARMMEX", 0, 1260, 1700}, {"ARMWIN", 0, 1240, 1820},
             {"ARMMAKR", 0, 1200, 1760}, {"CORMEX", 1, 1620, 2060}, {"CORSOLAR", 1, 1700, 2060}, {"CORWIN", 1, 1760, 2040},
-            {"CORCOM", 1, 1520, 1980}, {"CORLLT", 1, 1420, 2000}, {"CORAK", 1, 1580, 1940}, {"CORRAID", 1, 1680, 1980},
+            {"CORLLT", 1, 1420, 2000}, {"CORAK", 1, 1580, 1940}, {"CORRAID", 1, 1680, 1980},
             {"CORSTORM", 1, 1460, 1940},
             // Construction: a kbot lab and a construction kbot of player 0.
             {"ARMLAB", 0, 1180, 1560}, {"ARMCK", 0, 1300, 1600},
             // Aircraft: a scout, a bomber and an air transport of player 0.
             {"ARMPEEP", 0, 1280, 1880}, {"ARMTHUND", 0, 1230, 1660}, {"ARMATLAS", 0, 1520, 1820},
         };
-        // Computer players: every definition becomes the battle type of the same index, and the
-        // battle starts with the two commanders at the map's first two start positions.
-        std::vector<Spawn> ai_spawns;
-        std::vector<std::string> ai_spawn_names;
-        if (ai_players) {
-            btypes.resize(defs.units.size());
-            b.types.resize(defs.units.size());
-            int loaded = 0;
-            for (std::size_t k = 1; k < defs.units.size(); ++k) {
-                const ta::UnitDefRecord& d = defs.units[k];
-                auto t = std::make_unique<BattleType>();
-                t->def = &d;
-                std::string err;
-                if (ta::load_unit_assets(vfs, d, t->assets, err)) {
-                    auto m = ta::load_3do(t->assets.model_file, true);
-                    if (m.root) {
-                        t->root = std::move(m.root);
-                        t->model = ta::build_render_model(t->root.get(), textures);
-                        ta::bind_pose_primitives(t->assets.pose_model, t->model);
-                        ta::to_battle_unit_type(d, t->assets, weapon_types, b.types[k]);
-                        ta::to_targeting_type(d, defs.categories, weapon_types, b.types[k].targeting);
-                        ++loaded;
-                    }
-                }
-                ta::to_ai_type(d, weapon_types, b.types[k].ai);
-                btypes[k] = std::move(t);
-            }
-            std::printf("computer players: %d of %zu unit types loaded\n", loaded, defs.units.size() - 1);
-            std::array<std::array<int, 2>, 2> start{{{1380, 1760}, {1520, 1980}}};
-            std::vector<std::uint8_t> ota;
-            if (vfs.read("maps\\" + map_name + ".ota", ota)) {
-                const ta::TdfParseResult parsed = ta::tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
-                const ta::TdfSection* gh = parsed.root ? parsed.root->child("GlobalHeader") : nullptr;
-                const ta::TdfSection* sc = gh ? gh->child("Schema 0") : nullptr;
-                const ta::TdfSection* sp = sc ? sc->child("specials") : nullptr;
-                for (int k = 0; sp && k < 10; ++k)
-                    if (const ta::TdfSection* s = sp->child("special" + std::to_string(k))) {
-                        const std::string what = s->get_string("specialwhat", 0x40, "");
-                        for (int n = 0; n < 2; ++n)
-                            if (ta::stricmp_c(what, "StartPos" + std::to_string(n + 1)) == 0)
-                                start[static_cast<std::size_t>(n)] = {s->get_int("XPos", 0), s->get_int("ZPos", 0)};
-                    }
-            }
-            ai_spawn_names = {"ARMCOM", "CORCOM"};
-            for (int n = 0; n < 2; ++n)
-                ai_spawns.push_back({ai_spawn_names[static_cast<std::size_t>(n)].c_str(), n, start[static_cast<std::size_t>(n)][0],
-                                     start[static_cast<std::size_t>(n)][1]});
-            if (!scroll_given) {  // centred on the followed player's start (the view is 512 x 416 at 128, 32)
-                const std::size_t f = ai_players >= 2 ? 0 : 1;
-                scroll_x = std::max(0, start[f][0] - 256);
-                scroll_y = std::max(0, start[f][1] - 208);
-            }
-        } else {
-            for (const Spawn& s : spawns) battle_type(s.name);  // all types first: the type table must not grow under live units
-            battle_type("ARMPW");     // built by the lab
-            battle_type("ARMSOLAR");  // built by the construction kbot
-        }
-        for (const Spawn& s : ai_players ? std::vector<Spawn>(ai_spawns) : std::vector<Spawn>(std::begin(spawns), std::end(spawns))) {
+        for (const Spawn& s : spawns) {
+            if (ai_players) break;  // commanders only
             const std::uint16_t type = battle_type(s.name);
             if (!type) {
                 std::printf("unit type %s unavailable\n", s.name);
@@ -471,37 +392,45 @@ int main(int argc, char** argv) {
             if (!b.create_unit(s.player, type, s.x << 16, gy << 16, s.z << 16, true, 1))
                 std::printf("could not create %s\n", s.name);
         }
-        {  // resurrection: the unit type each wreck brings back
-            std::vector<std::string> type_names(btypes.size());
-            for (std::size_t k = 1; k < btypes.size(); ++k) type_names[k] = btypes[k]->def->unit_name;
-            ta::bind_resurrect_types(b.features, fdefs, type_names);
-        }
-        b.start_players();  // the players' weapon-target controllers and enemy lists (and the computer players)
-        if (ai_players) {
-            // The map's AI profile (its schema's aiprofile, else ai\default.txt), then the metal spots.
-            std::vector<std::uint8_t> ota;
-            vfs.read("maps\\" + map_name + ".ota", ota);
-            ta::AiProfileReport rep;
-            const std::string path = ta::ai_profile_path(ota, 0);
-            const bool found = ta::load_ai_profile(vfs, path, defs, b.ai(), rep);
-            std::printf("AI profile %s%s: %zu lines (%zu plan, %zu weight, %zu limit)%s%s\n", path.c_str(), found ? "" : " (missing)", rep.lines,
-                        rep.plans, rep.weights, rep.limits, b.ai().fault.empty() ? "" : " AI FAULT: ", b.ai().fault.c_str());
-            b.collect_ai_metal_sites();
-        }
-        if (view_player >= 0) b.rebuild_sight(true);  // the battle start
-        // Routing: the raider drives over to the far side of the other camp (route search + motion).
-        for (std::size_t i = 1; i < b.units.size(); ++i) {
-            if (b.ticks[i].type_index == 0 || !b.ticks[i].has_motion || b.ticks[i].type_index >= btypes.size()) continue;
-            if (ta::stricmp_c(btypes[b.ticks[i].type_index]->def->unit_name, "CORRAID") != 0) continue;
-            const std::int32_t to[3] = {1250 << 16, 0, 1640 << 16};
-            sim::enqueue_order(b.order_context(), b.units[i], sim::mission::kMoveGround, false, nullptr, to, 0, 0);
-        }
-        // Construction: the lab builds two kbots, the construction kbot a solar collector nearby.
-        for (std::size_t i = 1; i < b.units.size(); ++i) {
-            if (b.ticks[i].type_index == 0 || b.ticks[i].type_index >= btypes.size()) continue;
-            const std::string& name = btypes[b.ticks[i].type_index]->def->unit_name;
-            if (ta::stricmp_c(name, "ARMLAB") == 0) b.order_build_count(b.units[i], battle_type("ARMPW"), 2);
-            if (ta::stricmp_c(name, "ARMCK") == 0) b.order_mobile_build(b.units[i], battle_type("ARMSOLAR"), {1360 << 16, 0, 1540 << 16}, false);
+        // Commands through the command layer (sim/commands.h), as a player would give them.
+        auto units_of = [&](const char* name) {
+            std::vector<std::uint16_t> ids;
+            for (std::size_t i = 1; i < b.units.size(); ++i)
+                if (b.ticks[i].type_index != 0 && b.ticks[i].type_index < btypes.size() && btypes[b.ticks[i].type_index] &&
+                    ta::stricmp_c(btypes[b.ticks[i].type_index]->def->unit_name, name) == 0)
+                    ids.push_back(static_cast<std::uint16_t>(i));
+            return ids;
+        };
+        {
+            // The raider drives over to the far side of the other camp: selected, then a move.
+            sim::command::Command sel;
+            sel.kind = sim::command::Kind::Select;
+            sel.player = 1;
+            sel.units = units_of("CORRAID");
+            sim::command::apply(b, sel);
+            sim::command::Command mv;
+            mv.kind = sim::command::Kind::IssueMission;
+            mv.player = 1;
+            mv.mission = sim::mission::kMoveGround;
+            mv.has_pos = true;
+            mv.pos = {1250 << 16, 0, 1640 << 16};
+            sim::command::apply(b, mv);
+            // The lab builds two kbots, the construction kbot a solar collector nearby.
+            sim::command::Command lab;
+            lab.kind = sim::command::Kind::BuildCount;
+            lab.player = 0;
+            lab.units = units_of("ARMLAB");
+            lab.unit_type = battle_type("ARMPW");
+            lab.param0 = 2;
+            sim::command::apply(b, lab);
+            sim::command::Command ck;
+            ck.kind = sim::command::Kind::MobileBuild;
+            ck.player = 0;
+            ck.units = units_of("ARMCK");
+            ck.unit_type = battle_type("ARMSOLAR");
+            ck.pos = {1360 << 16, 0, 1540 << 16};
+            ck.has_pos = true;
+            sim::command::apply(b, ck);
         }
         // Aircraft: the scout flies across, the bomber makes a run on the storm kbot, the
         // transport picks up the hammer kbot and sets it down by the scout's path.
@@ -626,7 +555,7 @@ int main(int argc, char** argv) {
     }
     std::map<const sim::PoseModel*, const render::Model*> model_of_pose;
     for (const auto& bt : btypes)
-        if (bt) model_of_pose[&bt->assets.pose_model] = &bt->model;
+        if (bt) model_of_pose[&bt->assets->pose_model] = &bt->model;
 
     auto build_frame = [&](std::uint32_t at_tick) {
         scene.units.clear();
@@ -816,18 +745,12 @@ int main(int argc, char** argv) {
         if (f > 0)
             for (int k = 0; k < step; ++k, ++tick) {
                 if (battle) {
-                    battle->advance_tick();
-                    battle->step_units_and_projectiles();
-                    battle->step_effects();   // stage 5
-                    battle->players_stage();  // stage 6
-                    battle->step_features();  // stage 7
-                    battle->step_wind();      // stage 8
-                    battle->step_nano();      // stage 9 (the nano streams' part of the effect sweep)
+                    battle->step();  // one whole step in the original's order
                 } else {
                     for (auto& u : units) u->script->tick(1);
                 }
             }
-        if (battle) battle->expire_lingering_sight();  // once per frame (the original's 0x482130)
+        if (battle) battle->end_frame();  // once per frame (lingering sight, the original's 0x482130)
         if (battle && ai_players && !scroll_given) {
             // Follow the followed computer player's base: the middle of its structures.
             const sim::PlayerSlot& fp = battle->players[ai_players >= 2 ? 0 : 1];
@@ -960,17 +883,12 @@ int main(int argc, char** argv) {
         const std::uint64_t start = SDL_GetTicks();
         for (int n = 0; SDL_GetTicks() - start < static_cast<std::uint64_t>(window_seconds) * 1000u; ++n) {
             if (battle) {
-                battle->advance_tick();
-                battle->step_units_and_projectiles();
-                battle->step_effects();   // stage 5
-                battle->players_stage();  // stage 6
-                battle->step_features();  // stage 7
-                battle->step_nano();      // stage 9 (the nano streams' part of the effect sweep)
+                battle->step();
             } else {
                 for (auto& u : units) u->script->tick(1);
             }
             ++tick;
-            if (battle) battle->expire_lingering_sight();
+            if (battle) battle->end_frame();
             render::DrawList list = build_frame(tick);
             render::lines_to_sprites(list);
             if (!gpu->present_window(list, palette, 2, "battle_view")) break;

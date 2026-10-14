@@ -20,7 +20,11 @@ add_library(sim STATIC
     engine/sim/src/ai.cpp
     engine/sim/src/anim.cpp
     engine/sim/src/battle.cpp
+    engine/sim/src/battle_start.cpp
+    engine/sim/src/commands.cpp
+    engine/sim/src/commands_core.cpp
     engine/sim/src/effects.cpp
+    engine/sim/src/effect_lists.cpp
     engine/sim/src/features.cpp
     engine/sim/src/combat.cpp
     engine/sim/src/economy.cpp
@@ -28,6 +32,7 @@ add_library(sim STATIC
     engine/sim/src/footprint.cpp
     engine/sim/src/ground_settle.cpp
     engine/sim/src/heightmap.cpp
+    engine/sim/src/lockstep.cpp
     engine/sim/src/motion.cpp
     engine/sim/src/missions.cpp
     engine/sim/src/construction.cpp
@@ -42,12 +47,14 @@ add_library(sim STATIC
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp
     engine/sim/src/sight.cpp
+    engine/sim/src/sky.cpp
     engine/sim/src/step_budget.cpp
     engine/sim/src/targeting.cpp
     engine/sim/src/trig.cpp
     engine/sim/src/unit.cpp
     engine/sim/src/unit_create.cpp
     engine/sim/src/unit_tick.cpp
+    engine/sim/src/victory.cpp
     engine/sim/src/weapons.cpp
     engine/sim/src/world.cpp
     engine/sim/src/x87_math.cpp
@@ -62,6 +69,7 @@ add_library(ta_compat STATIC
     ta_compat/src/ai_profile.cpp
     ta_compat/src/battle_economy.cpp
     ta_compat/src/battle_features.cpp
+    ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
@@ -80,7 +88,7 @@ target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})

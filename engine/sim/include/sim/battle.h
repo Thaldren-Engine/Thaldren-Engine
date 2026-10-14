@@ -17,6 +17,7 @@
 #include "sim/economy.h"
 #include "sim/construction.h"
 #include "sim/effects.h"
+#include "sim/effect_lists.h"
 #include "sim/features.h"
 #include "sim/fire.h"
 #include "sim/footprint.h"
@@ -31,10 +32,12 @@
 #include "sim/targeting.h"
 #include "sim/route_search.h"
 #include "sim/sight.h"
+#include "sim/sky.h"
 #include "sim/unit.h"
 #include "sim/unit_create.h"
 #include "sim/unit_missions.h"
 #include "sim/unit_tick.h"
+#include "sim/victory.h"
 #include "sim/weapons.h"
 
 namespace sim {
@@ -90,6 +93,13 @@ struct BattleSettings {
     // event argument.
     std::int32_t reclaim_site_y = 0;
     std::uint32_t air_repair_patrol_site_address = 0;
+    std::int32_t provider = 2;              // the map info's kind of game: 1 campaign, 2 skirmish, 3 network
+    bool cd_mismatch = false;               // the copy-protection check failed (forces a defeat later)
+    bool shake_disabled = false;            // the player turned camera shaking off (no rand() draws)
+    bool net_frame_timing = true;           // network games: the end-of-step sharing and flush run (0x506DBC)
+    // Drawing a frame starts particle emitters for flaming and smoking debris pieces in the
+    // original (0x421550), which draws rand(); on: Battle::end_frame() does the same.
+    bool draw_side_effects = false;
     OriginalAddresses addresses;
     // The computer player (sim/ai.h): the map's surface metal (the OTA schema's SurfaceMetal)
     // and the stack word the constructors' build sites take their height from (an input).
@@ -197,6 +207,17 @@ public:
     virtual void broadcast_script_call_named(Unit&, std::int16_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t,
                                              std::int32_t) {}
     virtual void teleport_trail(const std::array<std::int32_t, 3>&, const std::array<std::int32_t, 3>&) {}
+    // Battle::step(): stage 2 (a network game's incoming packets, 0x453D40) and stage 10 (its
+    // outgoing flush); the per-frame work after a frame's steps besides lingering sight.
+    virtual void network_input() {}
+    virtual void network_flush() {}
+    // Battle start (sim/battle_start.h): a player record with a controller is set up
+    // (0x464700, in slot order): after its economy and sight counts, a record that is not a
+    // watched one (active with controller 3) gets its computer-player state and unit table
+    // (the original draws the battle generator 8 times there, 0x40A150). Then, after the
+    // commanders, the computer players' metal-site survey (0x4649D0).
+    virtual void ai_player_setup(int /*player*/) {}
+    virtual void ai_battle_ready() {}
 };
 
 class Battle final : UnitWorld,
@@ -229,6 +250,7 @@ public:
     FeatureState feature_state;       // feature animation slots (sim/features.h)
     EffectsState effects;             // world effects, shards, debris (sim/effects.h)
     NanoSprayState nano;              // nano lathe particle streams (sim/nano_spray.h)
+    EffectLists fx_lists;             // the other particle emitters of the effect sweep (sim/effect_lists.h)
     EffectsEnvironment effect_art;    // effect sequences (the rest is synced from the settings)
     Lcg15 crt_rand;                   // the C runtime rand() stream of the simulation thread
     ProjectileTable projectiles;
@@ -246,6 +268,9 @@ public:
     std::vector<PlayerEconomy> player_economy;
     WindState wind;
     EndGameState end_game;
+    VictoryState victory;  // outcome per player and the end of the game (sim/victory.h)
+    MeteorShower meteors;  // meteor showers (sim/sky.h), configured by the loader
+    CameraShake shake;     // the camera shake, whose decay draws rand() (sim/sky.h)
 
     // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
     // inclusive range of them (the entries' owner is fixed by it).
@@ -283,6 +308,11 @@ public:
     // Economy setup for a player at battle start (after its slot's state is set): everything
     // zero, its first 30-step turn at the current step (0x464700's economy part).
     void init_player_economy(int player);
+    // Battle start: the whole player set-up of one record (economy, then the computer-player
+    // controller and table: eight battle generator draws; none for a watched record), and the
+    // end of the set-up (the computer players' metal-site survey).
+    void setup_player(int player);
+    void battle_ready();
     // The economy context (construction, reclaim, transfers and tests use it with sim/economy.h).
     Economy& economy() {
         sync_settings();
@@ -317,6 +347,8 @@ public:
     UnitTickEnvironment& unit_env() { return unit_env_; }
 
     std::uint32_t game_tick() const { return unit_env_.game_tick; }
+    BattleRng& battle_rng() { return rng_; }                 // the battle random generator
+    const HeightMap& height_map() const { return heights_; }  // the terrain heights
 
     // The unit pass and then the projectile update of one step (the original's
     // stages 2 and 3; the caller advances the tick first and runs the other stages).
@@ -342,6 +374,22 @@ public:
     // Call once the feature types and animations are set (before placing map features).
     void reset_features_and_effects();
     void advance_tick() { ++unit_env_.game_tick; }
+    // One whole step in the original's order (Game_RunSimulationStep 0x495490, see
+    // docs/RE_MEMORY.md "Battle step"): tick, network input, units and projectiles, effects,
+    // players, features, wind, meteors, the effect sweep, network flush. Commands
+    // (sim/commands.h) are applied between steps. After the frame's steps (even none) the
+    // frame loop calls end_frame().
+    void step();
+    void end_frame();
+    // Stage 8's meteors (sim/sky.h): a scheduled shower, a meteor shot when one drops.
+    void step_meteor_shower();
+    // Victory (sim/victory.h, engine/sim/src/victory.cpp): the local player's checks in its turn
+    // of the players' stage, the network end check after the stage's loop, and a commander's
+    // death destroying its player's units (0x486F10).
+    void victory_turn(int slot);
+    void victory_stage_end();
+    void kill_team(int slot);
+    void deathmatch_respawn(int slot);
     // The route search's step: the first thing the players stage (0x464F80) does, after
     // the effects stage and before the players' own updates.
     void run_route_search();
@@ -368,6 +416,11 @@ public:
 
 private:
     void sync_settings();
+    void prune_retired_goals();
+    FxContext fx_context() {
+        return FxContext{fx_lists, crt_rand, unit_env_.game_tick, static_cast<std::int32_t>(nano.streams.size()), settings.sea_level, &heights_,
+                         wind.velocity[0], wind.velocity[2], settings.gravity};
+    }  // order goals the route search no longer reads (MotionContext::retired_goals)
     void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
                           std::int32_t z, bool fully_built);
     void build_script_and_pose(Unit& u, const UnitCreateType& type);
@@ -379,7 +432,7 @@ private:
     void claim_yard_cells(Unit& u) override;
     void on_activate_flags_changed(Unit& u, std::uint8_t g, std::uint8_t l) override { outside_.on_activate_flags_changed(u, g, l); }
     std::uint32_t random_mod(std::uint32_t n) override { return rng_.next_mod(n); }
-    void emit_sfx(Unit& u, std::int32_t p, std::int32_t t) override { outside_.emit_sfx(u, p, t); }
+    void emit_sfx(Unit& u, std::int32_t p, std::int32_t t) override;
     void explode_piece(Unit& u, std::int32_t p, std::int32_t t) override {
         sim::explode_piece(effects_world_, u, p, static_cast<std::uint32_t>(t));
     }
@@ -422,7 +475,10 @@ private:
     void release_unit(Unit& u) override { outside_.release_unit(u); }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
     void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
-    void commander_died(int p) override { outside_.commander_died(p); }
+    void commander_died(int p) override {
+        outside_.commander_died(p);  // the user interface part (0x491D70)
+        kill_team(p);
+    }
 
     // WeaponSystems
     std::int32_t fire(Unit& unit, int slot, Unit* target, WorldPos& target_pos) override;
@@ -433,10 +489,21 @@ private:
     std::uint16_t slot_fire_heading(const Unit& u, int slot) override { return u.weapons[static_cast<std::size_t>(slot)].aim_heading; }
     std::int32_t motion_speed(const Unit& u) override { return sim::motion_speed(ticks[u.id]); }
     void play_sound(std::uint16_t s, const Vec3i& p) override { outside_.play_sound(s, p); }
-    void spawn_smoke(const Vec3i& p) override { outside_.spawn_smoke(p); }
-    void spawn_muzzle_smoke(const Vec3i& p) override { outside_.spawn_muzzle_smoke(p); }
+    void spawn_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke(c, p, 9);
+        outside_.spawn_smoke(p);
+    }
+    void spawn_muzzle_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_muzzle_smoke(c, p, 9);
+        outside_.spawn_muzzle_smoke(p);
+    }
     void spawn_explosion(const Vec3i& p, const WeaponType& w, bool wa, bool iw) override { spawn_impact(effects_world_, p, w, wa, iw); }
-    void camera_shake(std::int32_t x, std::int32_t y, std::int32_t d) override { outside_.camera_shake(x, y, d); }
+    void camera_shake(std::int32_t x, std::int32_t y, std::int32_t d) override {
+        add_camera_shake(shake, x, y, d, settings.shake_disabled);
+        outside_.camera_shake(x, y, d);
+    }
     void damage_feature(MapCell& c, std::int32_t x, std::int32_t z, const WeaponType& w) override {
         sim::damage_feature(feature_world_, c, x, z, w);
     }
@@ -447,10 +514,22 @@ private:
     void free_object(std::uint32_t) override {}
     void area_damage(const WeaponType& w, const Vec3i& at) override { area_damage_at(projectile_world_, w, at); }
     void feature_packet(const std::uint8_t* p, bool to_host) override { outside_.feature_packet(p, to_host); }
-    void feature_smoke(const Vec3i& p) override { outside_.feature_smoke(p); }
-    void feature_steam(const Vec3i& p) override { outside_.feature_steam(p); }
+    void feature_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke(c, p, 5);
+        outside_.feature_smoke(p);
+    }
+    void feature_steam(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_steam(c, p, 4);
+        outside_.feature_steam(p);
+    }
     void feature_fire_sound(std::int16_t x, std::int16_t z) override { outside_.feature_fire_sound(x, z); }
-    void wreck_fire(const Vec3i& p) override { outside_.wreck_fire(p); }
+    void wreck_fire(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke_emitter(c, p, 15, 900, 9);
+        outside_.wreck_fire(p);
+    }
 
     // EffectsSystems
     bool unit_velocity(const Unit& u, Vec3i& v) override {
@@ -459,7 +538,11 @@ private:
         return true;
     }
     int unit_owner(const Unit& u) override { return u.id < ticks.size() ? ticks[u.id].owner : 0; }
-    void explosion_smoke(const Vec3i& p) override { outside_.explosion_smoke(p); }
+    void explosion_smoke(const Vec3i& p) override {
+        FxContext c = fx_context();
+        fx_smoke_emitter(c, p, 7, 15, 9);
+        outside_.explosion_smoke(p);
+    }
 
     // OrderSystems
     std::int32_t run_mission(Unit& u, MissionOrder& o, std::uint32_t& event) override { return run_mission_behaviour(missions_, u, o, event); }
@@ -595,6 +678,7 @@ private:
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;
+    std::vector<MissionOrder*> free_orders_;  // destroyed orders, reused last first (allocate_order)
     std::vector<SightType> sight_types_;  // by type index
     SightEnvironment sight_env_;
     SightWorld sight_world_;

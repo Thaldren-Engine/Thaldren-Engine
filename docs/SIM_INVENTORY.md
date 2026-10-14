@@ -24,12 +24,13 @@ Addresses are identical in both Ghidra programs.
 4. `Fx_TickWorldEffectsAndDebris` `0x00420F30`
 5. `Game_TickPlayersAndWatchMode` `0x00464F80`
 6. `Feature_TickAnimsReproduceAndFire` `0x00424050`
-7. `Gaf_AdvanceAllFrameCursors` `0x00415B30` (visual; check whether it affects sim state)
+7. `Gaf_AdvanceAllFrameCursors` `0x00415B30` (model texture animations: presentation only)
 8. `Game_UpdateRandomWindState` `0x00490C40` (built: `Wind_Step`, `Battle::step_wind`)
-9. `Meteor_TickShower` `0x00437DE0`
-10. `Camera_TickFollowEaseShakeClamp` (not sim; keep out of the engine sim)
-11. `Fx_SweepAndPruneListenerSlots`
-12. `Minimap_TickBlinkDirtyFlag` (not sim)
+9. `Meteor_TickShower` `0x00437DE0` (built: `sim/sky.h`, `Battle::step_meteor_shower`)
+10. `Camera_TickFollowEaseShakeClamp` `0x0041CA10` (the view is presentation, but its shake decay draws `rand()`: built, `sim/sky.h`)
+11. `Fx_SweepAndPruneListenerSlots` `0x00471EB0` (built: `sim/effect_lists.h` lists 0-5 and 7-9, nano list 6)
+12. `Minimap_TickBlinkDirtyFlag` `0x00466580` (not sim)
+The whole step is `Battle::step()`; battle start `sim::start_battle` / `ta::load_battle` (RE_MEMORY "Battle start").
 13. Networked: `Share_AutoAllyResourcesAndMap` (built: `Share_AutoShareResources`, `Battle::auto_share_resources`) + `Net_FlushPendingFrames`
 
 After all steps in a frame: `Los_ExpireLingeringSight` (`0x00482130`, built: `Battle::expire_lingering_sight`), chat HUD index.
@@ -85,7 +86,7 @@ Plan:
 - The engine keeps `rand()` as its own sim-only stream.
 - Golden tests capture `rand()` state from the debugger at each step boundary and inject it, so every other part of the sim can be compared exactly.
 
-### Multiplayer model (to verify)
+### Multiplayer model (verified by reading, see RE_MEMORY "Network and sync")
 The unit tick runs missions and motion only for units whose owner is controller type 1 or 2 (local human or local AI). It then calls `Net_BroadcastPlayerUnitStates`. Remote players' units (type 3) appear to be updated from received state, not simulated locally. `SpeedCtrl` throttles on remote players' `dwUnitStateSyncTick`.
 **So TA looks like owner-authoritative state broadcast, not pure lockstep.** Reproducing TA's behaviour means reproducing this model; the earlier "lockstep" assumption is suspended until this is verified.
 
@@ -138,9 +139,9 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Features** | Feature 13, FeatureDef 4 | Animation, reproduce, tree fire, reclaim, wreckage |
 | **Map / terrain** | Map 35, MapInfo 33, HeightMap 10, SpatialBucket 2 | Heights, footprints, passability |
 | **Environment** | Wind 1, Meteor 7 | Wind every 150–420 ticks; meteor showers |
-| **Victory / defeat** | VictoryCond 44, DefeatCond 25, VictoryConditions 13 | Checked every 30 ticks |
+| **Victory / defeat** | VictoryCond 44, DefeatCond 25, VictoryConditions 13 | Built for skirmish/network (`engine/sim/src/victory.cpp`, RE_MEMORY "Victory"); campaign condition classes open |
 | **Commands (input)** | Cmd 93, Orders 4 | How player orders enter the sim |
-| **Net lockstep / sync** | Net 66, Sync 59 | Later phase; checksums useful for tests |
+| **Net lockstep / sync** | Net 66, Sync 59 | The original replicates unit states (not lockstep); Sync = unit-definition checksums. Engine lockstep, checksums, command log/replay built (`sim/lockstep.h`, RE_MEMORY "Network and sync") |
 | **Debris / FX** | Fx 55, Debris 3 | **Open:** which parts change sim state (debris can deal damage?) and which are visual |
 | **Construction / reclaim / capture** | MissionTick 9, Unit 12 | Built (smoke-verified): see RE_MEMORY "Construction and reclaim" — build slices `0x41BA60`, factory `0x402640`, mobile build `0x403A20`, help `0x403F70`, repair `0x405300`, reclaim `0x404AD0`/`0x404730`, capture `0x404270`, yard placement `0x47D2E0`, transport packet `0x48AB70`. **Nano streams draw the C runtime rand() in the unit pass and stage 9 (not at draw time).** Open: RepairPatrol, Resurrect, aircraft builders |
 

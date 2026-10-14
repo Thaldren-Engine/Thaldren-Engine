@@ -39,6 +39,7 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
 }
 
 Battle::~Battle() {
+    for (MissionOrder* o : free_orders_) delete o;
     for (Unit& u : units)
         for (MissionOrder* list : {u.orders, u.secondary_orders})
             while (list) {
@@ -249,8 +250,22 @@ void Battle::start_players() {
     // controller type: groups, controller and roles, the table (eight random draws).
     ai_types_.clear();
     sync_ai();
+    // Records the battle start already set up (setup_player) keep theirs.
     for (int slot = 0; slot < 10; ++slot)
-        if (players[static_cast<std::size_t>(slot)].controller != 0) ai_create_player(ai_, slot);
+        if (players[static_cast<std::size_t>(slot)].controller != 0 && !ai_state.controllers[static_cast<std::size_t>(slot)].exists)
+            ai_create_player(ai_, slot);
+}
+
+void Battle::setup_player(int player) {
+    init_player_economy(player);
+    sync_ai();
+    ai_create_player(ai_, player);  // skips a watched record itself
+    outside_.ai_player_setup(player);
+}
+
+void Battle::battle_ready() {
+    collect_ai_metal_sites();
+    outside_.ai_battle_ready();
 }
 
 void Battle::sync_ai() {
@@ -297,9 +312,23 @@ bool Battle::AiHooks::point_in_sight(int player, const std::array<std::int32_t, 
     return sim::point_in_sight(b.sight_world_, player, pos);
 }
 
+void Battle::prune_retired_goals() {
+    // Kept while the route search or a unit's motion goal still points at one.
+    auto& r = motion_.retired_goals;
+    if (r.empty()) return;
+    for (std::size_t i = 0; i < r.size();) {
+        bool used = r[i].get() == route_search.order_goal;
+        for (std::size_t k = 1; k < ticks.size() && !used; ++k)
+            used = ticks[k].motion.goal && ticks[k].motion.goal->attached == r[i].get();
+        if (!used) r.erase(r.begin() + static_cast<std::ptrdiff_t>(i));
+        else ++i;
+    }
+}
+
 void Battle::players_stage() {
     sync_settings();
     sim::run_route_search(route_);  // the route search runs first
+    prune_retired_goals();
     for (int slot = 0; slot < 10; ++slot) {
         const PlayerSlot& p = players[static_cast<std::size_t>(slot)];
         if (!p.active || p.controller < 1 || p.controller > 3 || p.state == 10) continue;
@@ -317,6 +346,7 @@ void Battle::players_stage() {
         PlayerEconomy& account = player_economy[static_cast<std::size_t>(slot)];
         if (account.next_update_tick > unit_env_.game_tick) continue;
         account.next_update_tick += 30;
+        if (slot == settings.local_player) victory_turn(slot);
         outside_.player_victory_turn(slot);
         if (settlement_allowed(players[static_cast<std::size_t>(slot)], end_game)) {
             sync_settings();
@@ -329,6 +359,7 @@ void Battle::players_stage() {
         }
         outside_.player_sensor_turn(slot);
     }
+    victory_stage_end();
     outside_.players_stage_end();
 }
 
@@ -372,6 +403,7 @@ void Battle::init_routes() {
 void Battle::run_route_search() {
     sync_settings();
     sim::run_route_search(route_);
+    prune_retired_goals();
 }
 
 void Battle::refresh_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) {
@@ -439,6 +471,7 @@ void Battle::reset_features_and_effects() {
     sync_settings();
     feature_state.reset();
     effects.reset();
+    fx_lists.reset();
     init_feature_type_cursors(feature_world_);
 }
 
@@ -514,13 +547,119 @@ std::int32_t Battle::fire(Unit& unit, int slot, Unit* target, WorldPos& target_p
 MissionOrder* Battle::allocate_order() {
     // Orders carry the original's heap address (it can reach the stale stack
     // word); heap addresses vary between runs, so a plain sequence stands in.
+    // Freed orders are reused last-freed-first with their address, as a heap hands back
+    // the block it just took: goals and the route search keep plain pointers to orders
+    // that were destroyed, and what reaches them is then the order now living there.
+    if (!free_orders_.empty()) {
+        MissionOrder* o = free_orders_.back();
+        free_orders_.pop_back();
+        const std::uint32_t address = o->address;
+        *o = MissionOrder{};
+        o->address = address;
+        return o;
+    }
     auto* o = new MissionOrder;
     o->address = next_order_address_;
     next_order_address_ += 0x58;
     return o;
 }
 
-void Battle::free_order(MissionOrder* order) { delete order; }
+void Battle::free_order(MissionOrder* order) {
+    if (order->goal) motion_.retired_goals.push_back(order->goal);  // goals may still point here (prune_retired_goals)
+    order->goal.reset();
+    free_orders_.push_back(order);
+}
+
+void Battle::step() {
+    // Game_RunSimulationStep 0x495490, one pending step (docs/RE_MEMORY.md "Battle step").
+    advance_tick();                  // 1
+    if (settings.net_game) outside_.network_input();  // 2
+    step_units_and_projectiles();    // 3, 4
+    step_effects();                  // 5
+    players_stage();                 // 6
+    step_features();                 // 7
+    // 8: texture animation cursors (presentation), wind, meteors, camera (its shake decay).
+    step_wind();
+    step_meteor_shower();
+    step_camera_shake(shake, crt_rand);
+    {                                // 9: the effect sweep, lists 0-9 in order (6: nano streams)
+        FxContext c = fx_context();
+        step_effect_lists(c, 0, 6);
+        step_nano();
+        c.nano_streams = static_cast<std::int32_t>(nano.streams.size());
+        step_effect_lists(c, 7, EffectLists::kLists);
+    }
+    // The minimap blink counter (presentation) runs here.
+    if (settings.net_game && settings.net_frame_timing) {  // 10
+        auto_share_resources();
+        outside_.network_flush();
+    }
+}
+
+void Battle::step_meteor_shower() {
+    std::int32_t pos[3], vel[3];
+    if (!step_meteors(meteors, unit_env_.game_tick, map.width, map.height, crt_rand, pos, vel)) return;
+    sync_settings();
+    if (meteors.weapon) spawn_free_projectile(projectile_world_, *meteors.weapon, Vec3i{pos[0], pos[1], pos[2]}, Vec3i{vel[0], vel[1], vel[2]}, true);
+}
+
+void Battle::end_frame() {
+    // Drawing: every debris piece with smoke starts a puff, with fire a jittered flame
+    // (0x421550, before the frame's other drawing); then lingering sight expires.
+    if (settings.draw_side_effects)
+        for (int k = 0; k < kMaxDebris; ++k) {
+            if (effects.debris_block[static_cast<std::size_t>(k)] == -1) continue;
+            const DebrisPiece& d = effects.debris[static_cast<std::size_t>(k)];
+            FxContext c = fx_context();
+            if (d.flags & 2u) fx_smoke(c, d.move, 9);
+            if (d.flags & 1u) fx_flame_jittered(c, d.move, 9);
+        }
+    expire_lingering_sight();
+}
+
+void Battle::emit_sfx(Unit& u, std::int32_t piece, std::int32_t type) {
+    // A unit script's effect (0x480EB0): only for units the viewed player sees. The pose is
+    // brought up to date; the effect starts at the piece's first point and points at its
+    // second (types without 0x100), or at the piece's origin (0x100 types).
+    outside_.emit_sfx(u, piece, type);
+    if (!targeting_hooks_.unit_visible(settings.local_view, u)) return;
+    u.pose.sync(u.pitch, u.heading, u.bank);
+    if (piece < 0 || static_cast<std::size_t>(piece) >= u.pose.pieces.size()) {
+        effects.fault = "effect from a piece outside the object state";
+        return;
+    }
+    const PosePiece& pp = u.pose.pieces[static_cast<std::size_t>(piece)];
+    std::array<std::int32_t, 3> at{}, to{};
+    const auto add = [](std::int32_t a, std::int32_t b) { return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b)); };
+    const auto sub = [](std::int32_t a, std::int32_t b) { return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b)); };
+    if (!(static_cast<std::uint32_t>(type) & 0x100u)) {
+        if (pp.points.size() < 6) {
+            effects.fault = "effect from a piece with fewer than two points";
+            return;
+        }
+        at = {add(u.pos[0], pp.points[0]), add(u.pos[1], pp.points[1]), sub(u.pos[2], pp.points[2])};
+        to = {add(u.pos[0], pp.points[3]), add(u.pos[1], pp.points[4]), sub(u.pos[2], pp.points[5])};
+    } else {
+        at = {add(u.pos[0], pp.xform[0]), add(u.pos[1], pp.xform[1]), sub(u.pos[2], pp.xform[2])};
+    }
+    FxContext c = fx_context();
+    switch (type) {
+    case 0: fx_flame(c, at, to, 1, 6, 7); break;
+    case 1: fx_flame(c, at, to, 1, 7, 7); break;
+    case 2: fx_wake(c, at, to, 0x10, true, 2); break;
+    case 3: fx_wake(c, at, to, 8, true, 2); break;
+    case 4: fx_wake(c, to, at, 0x10, true, 2); break;
+    case 5: fx_wake(c, to, at, 8, true, 2); break;
+    case 0x101: fx_smoke(c, at, 9, false); break;
+    case 0x102: fx_smoke(c, at, 9, true); break;
+    case 0x103: {
+        const std::array<std::int32_t, 3> sea = {at[0], static_cast<std::int32_t>(static_cast<std::uint32_t>(settings.sea_level) << 16), at[2]};
+        fx_wake(c, at, sea, 8, false, 7);
+        break;
+    }
+    default: break;
+    }
+}
 
 void Battle::attach_unit(Unit& u, std::int32_t passenger, std::int32_t piece, std::int32_t mode) {
     sync_settings();

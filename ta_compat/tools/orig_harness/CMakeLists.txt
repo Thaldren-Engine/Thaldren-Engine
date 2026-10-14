@@ -1,4 +1,4 @@
-﻿# 32-bit Windows differential tester that runs routines from the original
+# 32-bit Windows differential tester that runs routines from the original
 # executable in-process. Configure separately with a 32-bit toolchain:
 #   cmake -S ta_compat/tools/orig_harness -B build-harness   (from a vcvars32 prompt)
 cmake_minimum_required(VERSION 3.24)
@@ -272,6 +272,15 @@ add_executable(create_harness
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/battle_start.cpp
+    ${ROOT}/engine/sim/src/commands.cpp
+    ${ROOT}/engine/sim/src/commands_core.cpp
+    ${ROOT}/engine/sim/src/effect_lists.cpp
+    ${ROOT}/engine/sim/src/lockstep.cpp
+    ${ROOT}/engine/sim/src/sky.cpp
+    ${ROOT}/engine/sim/src/step_budget.cpp
+    ${ROOT}/engine/sim/src/victory.cpp
+    ${ROOT}/engine/sim/src/world.cpp
     ${ROOT}/engine/sim/src/sight.cpp
     ${ROOT}/engine/sim/src/anim.cpp
     ${ROOT}/engine/sim/src/effects.cpp
@@ -494,3 +503,36 @@ add_executable(ai_harness
 )
 target_include_directories(ai_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(ai_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Effect particle lists (stage 9 of a step) vs sim/effect_lists.h.
+add_executable(fx_harness fx_harness.cpp
+    ${ROOT}/engine/sim/src/effect_lists.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+)
+target_include_directories(fx_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(fx_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Meteor showers and the camera shake (stage 8 of a step) vs sim/sky.h.
+add_executable(flow_harness flow_harness.cpp
+    ${ROOT}/engine/sim/src/sky.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+)
+target_include_directories(flow_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(flow_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# The user interface's order routine vs sim::command::issue_to_selected.
+add_executable(cmd_harness cmd_harness.cpp
+    ${ROOT}/engine/sim/src/commands_core.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+)
+target_include_directories(cmd_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(cmd_harness PRIVATE /W4 /permissive- /fp:precise)

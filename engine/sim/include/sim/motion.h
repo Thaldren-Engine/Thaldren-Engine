@@ -112,6 +112,11 @@ struct MotionContext {
     MotionEnvironment env;
     // Set when the original would have crashed (a division by zero).
     std::string fault;
+    // Order goals deleted while the route search may still read them: the search keeps a
+    // plain pointer to the goal it serves and reads it after its order replaced it (freed
+    // memory in the original, whose contents normally survive). Kept here until the search
+    // lets go (Battle prunes it after each route search step).
+    std::vector<std::shared_ptr<OrderGoal>> retired_goals;
 
     UnitTickState& tick(const Unit& u) { return ticks[u.id]; }
     const MotionType& type(const Unit& u) { return types[ticks[u.id].type_index]; }

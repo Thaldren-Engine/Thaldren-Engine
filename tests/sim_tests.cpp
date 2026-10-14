@@ -1,3 +1,4 @@
+#include <algorithm>
 // Simulation core tests. Expected values marked "golden" were produced by
 // running the original routines in Ghidra's emulator (see docs/RE_MEMORY.md).
 
@@ -10,6 +11,10 @@
 #include <string>
 
 #include "sim/ai.h"
+#include "sim/battle_start.h"
+#include "sim/commands.h"
+#include "sim/lockstep.h"
+#include "sim/sky.h"
 #include "sim/battle.h"
 #include "sim/battle_quiet.h"
 #include "sim/combat.h"
@@ -1656,6 +1661,105 @@ void test_ai() {
     CHECK_EQ(ai_build_score(ai, 0, 2), 0);
 }
 
+// Game flow: start-position shuffle, meteors, camera shake, command and turn encoding.
+void test_game_flow() {
+    {
+        // The shuffle swaps position p with one before it (never itself): two ids always swap
+        // once the first draw says to shuffle.
+        std::vector<std::int32_t> ids = {0, 1, 2, 3};
+        std::uint32_t state = 12345;
+        sim::shuffle_start_positions(ids, state);
+        std::vector<std::int32_t> sorted = ids;
+        std::sort(sorted.begin(), sorted.end());
+        CHECK_EQ(sorted == (std::vector<std::int32_t>{0, 1, 2, 3}), true);
+        sim::Lcg15 r;
+        r.set_state(12345);
+        for (int k = 0; k < 3; ++k) r.next();
+        CHECK_EQ(state, r.state());  // three draws for four players
+        std::vector<std::int32_t> one = {7};
+        std::uint32_t s1 = 1;
+        sim::shuffle_start_positions(one, s1);  // fewer than three: one deciding draw
+        CHECK_EQ(s1, 1u * 214013u + 2531011u);
+    }
+    {
+        // Meteors: the schedule draws four values even when showers are off, and only then.
+        sim::MeteorShower m;
+        m.configure(100, 2.0f, 10.0f, 60.0f);
+        CHECK_EQ(m.spawn_interval, 15);
+        CHECK_EQ(m.duration, 300);
+        CHECK_EQ(m.schedule_gap, 1800);
+        m.reset(nullptr);
+        CHECK_EQ(m.next_schedule, 15u);
+        sim::Lcg15 r;
+        r.set_state(99);
+        std::int32_t pos[3], vel[3];
+        for (std::uint32_t t = 1; t < 15; ++t) CHECK_EQ(sim::step_meteors(m, t, 64, 64, r, pos, vel), false);
+        CHECK_EQ(r.state(), 99u);
+        CHECK_EQ(sim::step_meteors(m, 15, 64, 64, r, pos, vel), false);  // disabled: scheduled, not active
+        sim::Lcg15 q;
+        q.set_state(99);
+        for (int k = 0; k < 4; ++k) q.next();
+        CHECK_EQ(r.state(), q.state());
+        CHECK_EQ(m.next_schedule, 15u + 300u + 1800u);
+        m.enabled = true;
+        m.next_schedule = 20;
+        CHECK_EQ(sim::step_meteors(m, 20, 64, 64, r, pos, vel), true);  // a meteor at once
+        CHECK_EQ(vel[1], -0xF0000);
+        CHECK_EQ(pos[1], 0xF0000 * 90);
+    }
+    {
+        // Camera shake: two draws per step while it lasts.
+        sim::CameraShake s;
+        sim::Lcg15 r;
+        r.set_state(5);
+        sim::add_camera_shake(s, 10, 10, 4, true);  // turned off: nothing
+        CHECK_EQ(s.shaking, false);
+        sim::add_camera_shake(s, 10, 10, 4, false);
+        CHECK_EQ(s.magnitude, 2);
+        int draws = 0;
+        for (int k = 0; k < 5; ++k) {
+            const std::uint32_t before = r.state();
+            sim::step_camera_shake(s, r);
+            if (r.state() != before) draws += 2;
+        }
+        CHECK_EQ(draws, 4);
+        CHECK_EQ(s.shaking, false);
+    }
+    {
+        sim::command::Command c;
+        c.kind = sim::command::Kind::MobileBuild;
+        c.player = 3;
+        c.flags = sim::command::flags::kQueued;
+        c.unit_type = 77;
+        c.has_pos = true;
+        c.pos = {1 << 20, -5, 3 << 20};
+        c.amount = 2.5f;
+        c.units = {4, 9, 300};
+        std::vector<std::uint8_t> bytes;
+        sim::command::encode(c, bytes);
+        std::size_t at = 0;
+        sim::command::Command d;
+        CHECK_EQ(sim::command::decode(bytes, at, d), true);
+        CHECK_EQ(at, bytes.size());
+        CHECK_EQ(d.kind == c.kind && d.player == 3 && d.queued() && d.unit_type == 77 && d.has_pos && d.pos == c.pos && d.amount == 2.5f &&
+                     d.units == c.units,
+                 true);
+        sim::TurnMessage m;
+        m.player = 1;
+        m.tick = 42;
+        m.checksum_tick = 40;
+        m.checksum = 0xDEADBEEF;
+        m.commands = {c, d};
+        bytes.clear();
+        m.encode(bytes);
+        sim::TurnMessage n;
+        CHECK_EQ(n.decode(bytes), true);
+        CHECK_EQ(n.player == 1 && n.tick == 42 && n.checksum == 0xDEADBEEF && n.commands.size() == 2, true);
+        bytes.pop_back();
+        CHECK_EQ(n.decode(bytes), false);
+    }
+}
+
 int main() {
     test_sin_table_matches_fixture();
     test_sin_table_formula();
@@ -1684,6 +1788,7 @@ int main() {
     test_economy();
     test_sight();
     test_ai();
+    test_game_flow();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
