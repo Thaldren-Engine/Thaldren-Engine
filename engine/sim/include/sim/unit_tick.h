@@ -4,18 +4,25 @@
 // percentage, environment damage, healing, orders and motion
 // (see docs/RE_MEMORY.md, "Unit tick").
 
+#include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "sim/unit.h"
 
 namespace sim {
 
-// Unit type data the unit pass needs (in addition to UnitTypeInfo).
+// Unit type data the unit pass and combat need (in addition to UnitTypeInfo).
 struct UnitTickTypeInfo {
     float wind_generator = 0.0f;
     std::uint16_t heal_time = 0;
-    std::uint32_t type_flags = 0;  // bit 12: immune to water damage
+    std::uint32_t type_flags = 0;           // bit 12: immune to water damage, bit 26: immune to paralysis
+    std::int32_t damage_modifier = 0x10000; // 16.16 scale of damage taken while armored
+    std::int32_t build_time = 0;
+    float build_cost_energy = 0.0f;
+    float build_cost_metal = 0.0f;
+    std::string name;                       // unit name, matched against the side's commander
 };
 
 // State of a unit only the unit pass touches.
@@ -29,6 +36,10 @@ struct UnitTickState {
     std::uint8_t last_damage_kind = 0;
     bool has_motion = false;
     const UnitTickTypeInfo* tick_type = nullptr;
+    std::uint16_t kill_count = 0;            // kills scored; raises the damage dealt (veterancy)
+    Unit* last_attacker = nullptr;
+    std::uint8_t last_attacker_slot = 10;    // player slot of the last attacker, 10 = none
+    float metal_make = 0.0f;                 // metal income of the unit's resource slot
 };
 
 namespace unit_tick_flags {
@@ -38,8 +49,14 @@ constexpr std::uint32_t kSelected = 0x10, kSelectable = 0x20, kDying = 0x4000, k
 struct PlayerSlot {
     bool active = false;
     std::uint8_t controller = 0;  // 1 local, 2 AI/remote-simulated, 3 watched (scripts only)
-    std::uint8_t state = 0;       // 10 = out of the game
+    std::uint8_t state = 0;       // alliance/view index; 10 = out of the game
     int first_unit = 0, last_unit = -1;  // inclusive range of the unit table owned by this slot
+    std::int32_t net_id = -1;
+    std::uint16_t units_killed = 0, units_lost = 0, commanders_killed = 0, commanders_lost = 0;
+    std::uint16_t alive_count = 0;               // live units owned
+    std::uint16_t flags = 0;                     // bit 0: still has its commander
+    std::array<std::uint8_t, 10> shares_vision{}; // by the other player's state index
+    std::string commander_name;                  // unit name of this player's side commander
 };
 
 struct UnitTickEnvironment {

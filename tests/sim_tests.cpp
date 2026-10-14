@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "sim/combat.h"
 #include "sim/fixed.h"
 #include "sim/heightmap.h"
 #include "sim/unit.h"
@@ -317,6 +318,119 @@ void test_script_vm() {
     CHECK_EQ(vm.fault().empty(), true);
 }
 
+struct CombatLog : sim::CombatSystems {
+    std::vector<std::string> calls;
+    bool pay = true;
+    std::vector<std::uint8_t> last_packet;
+    void retarget(Unit*, Unit&, std::uint16_t) override { calls.push_back("retarget"); }
+    void add_paralysis(Unit&, std::uint16_t) override { calls.push_back("paralysis"); }
+    bool pay_energy(Unit&, float) override { return pay; }
+    void stats_activity(std::int32_t) override {}
+    void network_send(std::int32_t, const std::uint8_t* p, std::int32_t size) override { last_packet.assign(p, p + size); }
+    void reveal_dead_unit(Unit&) override {}
+    void victory_unit_destroyed(Unit&) override {}
+    void clear_orders(Unit&) override {}
+    void forget_speech(Unit&) override {}
+    void leave_group(Unit&) override {}
+    void remove_projectiles(Unit&) override {}
+    void detach_from_carrier(Unit&) override {}
+    void clear_footprint(Unit&) override {}
+    void forget_fog(Unit&) override {}
+    void kill_counted(std::uint8_t, Unit&) override { calls.push_back("kill counted"); }
+    void detonate(Unit&, bool) override { calls.push_back("detonate"); }
+    void spawn_wreck(Unit&, std::int32_t level, bool burn) override { calls.push_back("wreck " + std::to_string(level) + (burn ? " burn" : "")); }
+    void release_unit(Unit&) override {}
+    void release_motion(Unit&) override {}
+    void player_out_of_units(int) override { calls.push_back("out of units"); }
+    void commander_died(int) override { calls.push_back("commander died"); }
+};
+
+void test_combat() {
+    sim::UnitTypeInfo type;
+    type.max_damage = 1000;
+    sim::UnitTickTypeInfo tick_type;
+    tick_type.damage_modifier = 0x8000;  // armor halves damage
+    tick_type.build_time = 100;
+    tick_type.name = "TANK";
+    std::vector<Unit> units(4);
+    std::vector<UnitTickState> ticks(4);
+    std::vector<PlayerSlot> players(10);
+    for (int p = 0; p < 2; ++p) {
+        players[static_cast<std::size_t>(p)].active = true;
+        players[static_cast<std::size_t>(p)].controller = static_cast<std::uint8_t>(p + 1);
+        players[static_cast<std::size_t>(p)].net_id = 100 + p;
+        players[static_cast<std::size_t>(p)].alive_count = 2;
+    }
+    players[1].commander_name = "tank";  // matched without regard to case
+    for (std::uint16_t i = 1; i <= 3; ++i) {
+        units[i].id = i;
+        units[i].type = &type;
+        units[i].hit_points = 500;
+        units[i].flags = unit_flags::kAlive;
+        ticks[i].type_index = 1;
+        ticks[i].tick_type = &tick_type;
+        ticks[i].owner = i == 1 ? 0 : 1;
+    }
+    sim::CombatEnvironment env;
+    env.local_player = 5;
+    CombatLog log;
+    sim::Combat c{units, ticks, players, env, log};
+
+    // Veterancy of the target: 12 kills = tier 2, so 92% of the damage.
+    ticks[2].kill_count = 12;
+    sim::apply_damage(c, &units[1], units[2], 100, sim::damage_kind::kWeapon, 0x1234);
+    CHECK_EQ(units[2].hit_points, 500 - 92);
+    CHECK_EQ(ticks[2].last_attacker == &units[1], true);
+    CHECK_EQ(ticks[2].last_attacker_slot, 0);
+    CHECK_EQ(ticks[2].damaged_timer, 0xF0);
+    units[2].activate_flags = unit_flags::kArmored;
+    sim::apply_damage(c, nullptr, units[2], 100, 0, 0);
+    CHECK_EQ(units[2].hit_points, 408 - 46);  // 50 after armor, then 92%
+    // A negative heal wraps to a huge unsigned amount and fills the unit up.
+    sim::apply_damage(c, nullptr, units[2], -5, sim::damage_kind::kHeal, 0);
+    CHECK_EQ(units[2].hit_points, 1000);
+    // Repair and self-heal give at most 1 hit point per step.
+    units[3].hit_points = 10;
+    CHECK_EQ(sim::repair_heal(c, units[3], units[3], 8.0f), true);
+    CHECK_EQ(units[3].hit_points, 11);
+    log.pay = false;
+    CHECK_EQ(sim::repair_heal(c, units[3], units[3], 8.0f), false);
+    CHECK_EQ(units[3].hit_points, 11);
+
+    // Lethal damage marks a playing owner's unit as dying; the kill happens later.
+    sim::apply_damage(c, &units[1], units[3], 2000, sim::damage_kind::kWeapon, 0);
+    CHECK_EQ((units[3].flags & unit_tick_flags::kDying) != 0, true);
+    CHECK_EQ(units[3].hit_points < 0, true);
+    ticks[3].prev_health_percent = 40;
+    log.calls.clear();
+    sim::kill_unit(c, units[3], ticks[3].last_damage_kind);
+    // Packet: severity from overkill and previous health, kind 1, no script so no wreck.
+    CHECK_EQ(log.last_packet.size(), 11u);
+    CHECK_EQ(log.last_packet[0], 0x0C);
+    CHECK_EQ(log.last_packet[3], 100);  // attacker's net id
+    CHECK_EQ(log.last_packet[10], 0x10);
+    CHECK_EQ(players[1].units_lost, 1);
+    CHECK_EQ(players[0].units_killed, 1);
+    CHECK_EQ(players[0].commanders_killed, 1);
+    CHECK_EQ(players[1].commanders_lost, 1);
+    CHECK_EQ(ticks[1].kill_count, 1);
+    CHECK_EQ(players[1].alive_count, 1);
+    CHECK_EQ(ticks[3].type_index, 0);
+    CHECK_EQ((units[3].flags & unit_flags::kAlive) != 0, false);
+    CHECK_EQ(log.calls.size(), 2u);  // no "commander died": game mode 0
+    CHECK_EQ(log.calls[0] == "kill counted" && log.calls[1] == "detonate", true);
+    // Corpse-only death: wreck level 1, no burning, no severity.
+    log.calls.clear();
+    sim::kill_unit(c, units[2], sim::damage_kind::kCorpseOnly);
+    CHECK_EQ(log.last_packet[10], 0x71);
+    CHECK_EQ(log.last_packet[9], 0);
+    CHECK_EQ(log.calls.size(), 2u);
+    CHECK_EQ(log.calls[0] == "wreck 1" && log.calls[1] == "out of units", true);
+    CHECK_EQ(sim::player_slot_by_net_id(players, 101), 1);
+    CHECK_EQ(sim::player_slot_by_net_id(players, -1), 10);
+    CHECK_EQ(sim::player_net_id(players, 10), -1);
+}
+
 } // namespace
 
 int main() {
@@ -333,6 +447,7 @@ int main() {
     test_script_vm();
     test_x87_rotation();
     test_heightmap_and_packing();
+    test_combat();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

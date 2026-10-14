@@ -565,6 +565,95 @@ After every step it compares the stub call log, all touched unit fields, every u
 
 **After all slots:** camera auto-follow, every 90 steps while GS+0x14373 bit1 is set (UI; it reads the keyboard for Shift).
 
+### Damage, healing and death — differential-tested: 3,000 scenarios, 600,000 unit passes, 656,853 combat operations, 26,934 kills, 0 differences
+Implementation: `engine/sim/src/combat.cpp` (`apply_damage`, `apply_damage_packet`, `repair_heal`, `kill_unit`, `apply_killed_packet`). Checked by `tools/orig_harness/combat_harness`. It works like `unitloop_harness`, but the original damage, heal and kill routines run for real. Random direct damage, heals, kills and received damage/kill packets are mixed with unit passes. After each operation it compares:
+- the stub log, including network packet bytes;
+- unit fields (hp, flags, type index, kill count, last attacker and slot, last damage kind, metal income, timers);
+- player counters;
+- scripts and poses.
+
+Unit types whose script has no `Killed` function (22 of 278) are left out (see the wreck quirk below).
+
+**Unit fields used:** +0xB8 kill count (u16), +0xBC the unit's resource slot (metal income float at +0xD4, its player at +0xEC), +0xF0 last attacker, +0xF4 last attacker's player slot (10 = none), +0xF5 last damage kind, +0xFF owner slot.
+**Player fields used** (0x14B record):
+- +0x04 net id; +0x27 lobby info (side byte at +0x95);
+- u16 counters: +0xFC units killed, +0xFE units lost, +0x104 commanders killed, +0x106 commanders lost;
+- +0x129 shares-vision bytes (indexed by the other player's +0x146);
+- +0x144 alive units (u16); +0x149 flags (bit 0 = still has its commander).
+**Side commander names:** GS+0x37F5F + side × 0x232.
+
+**Damage packet** (9 bytes): `0x0B`, target id u16, attacker id u16 (0 = none), amount u16, heading high byte, kind byte.
+**Kill packet** (11 bytes): `0x0C`, unit id u16, attacker's net id i32, attacker id u16, severity byte, (kind << 4) | wreck level.
+
+**Apply damage** (`Unit_ApplyDamageAndBroadcast` `0x00489BB0`, stdcall attacker, target, amount, kind, heading):
+- **Heal (kind 10):** the amount passes through unchanged.
+- **Other kinds:**
+  - If the *target* is armored and the amount < 30000, the amount becomes (int64 product of the type's damage modifier at +0x1AA and the amount) >> 16, arithmetic.
+  - The *target's* kills give a tier = min(kills / 5, 5).
+  - The amount sent is ((25 − tier) × amount × 4, wrapping in 32 bits) / 100, truncated, stored as 16 bits. Veterans take up to 20% less.
+- **Sending:** it builds the packet and applies it locally. Then, if the target's owner is active with controller 3 and kind ≠ 11, it sends the packet with a net id: the attacker owner's (+4), or with no attacker the first active player with controller 1|2 (`0x0044FDB0`, −1 if none).
+
+**Apply damage packet** (`0x00489CE0`): it looks units up by id (0 = none). It does nothing unless the target is alive and not dying (0x4000).
+- **Kind 10:** hp + (u16)amount. If the sum ≥ max damage, compared *unsigned*, hp = max. A negative heal therefore fills the unit.
+- **Otherwise**, in this order:
+  1. Damaged timer (+0xFA) = 0xF0 (`0x00467950`).
+  2. If kind ≠ 11, the retarget hook (`0x00406F80`, attacker, victim, amount) runs.
+  3. +0xF5 = kind.
+  4. With an attacker: +0xF0 = attacker, +0xF4 = attacker's owner slot. If either owner is the local player (GS+0x2A42), the statistics hook (`0x00494FF0`, 1) runs.
+- **Kind 2 (paralysis):** no hp change. If the target is still alive and not dying, its owner plays (1|2) and its type flags lack bit 26, the "paralyze" mission order gets the amount: it is added to the head order (+0x5C) if that order already is one, otherwise a new one is prepended. Engine: `add_paralysis` hook.
+- **Other kinds:** hp −= amount (16 bits).
+  - If hp ≤ 0 and the owner plays (1|2), the unit becomes dying (flags |= 0x4000) and the routine stops; the unit pass kills it.
+  - If hp ≤ 0 otherwise, hp = 0.
+  - **Kind 1 (weapon):** queue `HitByWeapon(cos·400, sin·400)` from the heading byte << 8, using the rounded multiply variants. Then queue `TakeDamage(pct)` with pct = (u32)(hp·100) / max, clamped 0..100.
+
+**Repair / self-heal step** (`Unit_ApplyRepairHealProgress` `0x0041BD10`, stdcall worker, target, float rate). It returns 0 if (int)hp ≥ (int)max. All type values are the *target's*:
+- Hit points: trunc((max × rate − 1) / build time (+0x1EA) + 1). Energy: the same with the build energy cost (+0x186) for max.
+  - Each operation rounds to double (x87 at 53 bits). Truncation keeps the low 32 bits of the int64 result; build time 0 gives 0.
+  - Each result is then **capped at 1**, so a step heals at most 1 hp.
+- The energy goes to the economy hook (`0x00401180`, &worker+0xBC, (float)energy). Only if that succeeds: apply damage (worker, target, hp, kind 10, 0), and return 1.
+
+**Kill a dying unit** (`Unit_BroadcastKilledPacket` `0x004864B0`, unit, kind). It does nothing unless the unit is alive.
+- **Commander:** the side's commander name is matched case-insensitively against the type name (def+0x20). For the commander, owner flags bit 0 is cleared.
+- **Severity and wreck:**
+  - Kind 7: wreck 1, severity 0.
+  - Kinds 4, 5, 9, or hp > 0: both 0.
+  - Otherwise: severity = ((u32)(−hp·100) / max + previous health % (+0xF7)) / 2 as signed, clamped 1..100. Then the script runs `Killed(severity, wreck)` in/out at once (CallInOut). Both values may change.
+  - **Quirk:** the wreck variable is uninitialised before that call. If the script has no `Killed` function, the stale stack value is used. The engine uses 0.
+- If the build fraction ≠ 0, wreck = 0.
+- It builds the kill packet: the net id is from the last attacker slot via `0x0044FFD0` (−1 for slot 10 or a slot with controller 0).
+- If the owner plays (1|2), it sends 11 bytes with the owner's net id.
+- Then it applies the packet with the death script skipped (the script already ran).
+- Afterwards: if it was the commander, the game mode (GS+0x37EF6) ≠ 0 and the owner plays, the commander-death hooks run (`0x00491D70`(1), then `0x00486F10`(owner slot)).
+
+**Apply kill packet** (`Unit_HandleKilledPacket` `0x004866D0`, packet, skip_script). It does nothing unless the unit is alive. In order:
+1. If the owner's +0x146 equals GS+0x2A43, the reveal hook runs (`0x00482910`, &pos, def+0x202, def+0x170, 60).
+2. Last attacker = unit by id. Last attacker slot = the first slot whose net id (as `0x0044FFD0` gives it) equals the packet's (`0x0044FE40`; −1 or no match gives 10).
+3. Hooks: victory (`0x004904C0`), clear orders (`0x00439EB0`, 1), speech (`0x0047F8C0`), group −1 (`0x00480250`), projectiles (`0x0049C880`).
+4. If carried: detach (`0x0048AAC0`, unit, 0, −1, 1).
+5. Each cargo unit takes damage (last attacker, 30000, kind 3 if the kill type is 3 else 6), then is detached. This loops while the cargo head is set.
+6. Footprint hook (`0x0047CBD0`). If map flags (GS+0x14281) bit 1 is set, the fog hook (`0x00482090`).
+7. If !skip_script and the signed severity > 0: queue `Killed(severity)` with run-now.
+8. **Statistics by kill type** (the high nibble):
+   - Types 1 and 6, and type 5 when the attacker slot is neither 10 nor the owner:
+     - owner units lost +1;
+     - if the attacker slot ≠ 10, the unit is fully built and the slots differ: attacker player units killed +1;
+     - for a commander: attacker commanders killed +1 (slot ≠ 10), owner commanders lost +1;
+     - if there is a last attacker, the unit is fully built and the slots differ: **attacker unit kills +1**;
+     - if the attacker slot is the local player: statistics hook (5).
+   - Type 3 (self-destruct): owner units lost +1 (and commanders lost for a commander), unless the local player's shares-vision byte for the owner's +0x146 is set.
+   - If counted and the attacker slot ≠ 10: kill-lead messages (network games only, provider type 2/3), then the kill flash if GS+0x37F06 bit 7 is set (`0x004948B0`, slot, owner +0x146). Engine: `kill_counted` hook.
+9. **Reclaim (type 5) with a last attacker:** m = (1 − build fraction) × metal cost (+0x18A), in doubles. The attacker's metal income (+0xD4) becomes, rounded to float:
+   - income − m × −0.5 for an AI (controller 2) on difficulty (GS+0x37EEE) 0;
+   - income − m × −0.7 for an AI on difficulty 1;
+   - income + m otherwise.
+10. If severity > 0 and the unit is fully built: detonate (`0x0049B000`, unit, kill type == 3).
+11. If wreck ≠ 0: spawn the wreck (`0x00486360`, unit, wreck, kill type ≠ 7).
+12. **Teardown:**
+    - release hook (`0x00489740`);
+    - delete the script, the object state and the motion object;
+    - type index = 0; clear alive and bits 0x30; the def becomes the game state's blank def (GS+0x1439B);
+    - owner alive count −1. At 0, the network/AI announcements run (provider types 3/2).
+
 ### atof (1998 C runtime string → double) — bit-exact, user rule: keep all quirks
 Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the original `atof` (`0x004E4560`) on **20,022,360 strings**, with **0 mismatches**. That covers all 22,360 distinct value strings in the game's TDF/FBI/OTA/GUI files plus 20M random edge-heavy strings. `atoi` was also checked with 0 mismatches. A modern `strtod` would differ on 3.25M of them, including 27 real game values.
 - **Pipeline:** skip C-locale isspace → `Crt_StrToLd12` (`0x004F3D10`) → `Crt_Ld12ToIeee` (`0x004F37C0`, double format descriptor at `0x00510CE0` = {maxexp 1024, minexp −1023, prec 53, expwidth 11, 64 bits, bias 1023}).
@@ -588,6 +677,7 @@ Verified 2026-10-13: `ta::crt_atof` (`ta_compat/src/crt_strtod.cpp`) matches the
 ## Feature log
 | Date | Feature | RE'd addresses | Engine files |
 |---|---|---|---|
+| 2026-10-14 | Damage, repair/self-heal, kills (packets, veterancy, severity/wreck, statistics, reclaim, teardown) — **3,000 scenarios / 600,000 unit passes / 656,853 combat operations / 26,934 kills identical** | `0x00489BB0`, `0x00489CE0`, `0x0041BD10`, `0x004864B0`, `0x004866D0`, `0x00467950`, `0x0044FDB0`, `0x0044FE40`, `0x0044FFD0` | `engine/sim/src/combat.cpp`, `tools/orig_harness/combat_harness.cpp`, `tests/sim_tests.cpp` |
 | 2026-10-14 | Per-step unit pass (wind, script step, timers, selection, health %, water damage, self-heal gates; subsystems as ordered hooks) — **1,000 scenarios / 253,024 passes / 65,843 script calls with real scripts identical** | `0x0048AD30`, `0x00437910`, `0x0048B090` (activation side calls `0x0047F780`, `0x0041C110`, `0x00451DF0`) | `engine/sim/src/unit_tick.cpp`, `tools/orig_harness/unitloop_harness.cpp` |
 | 2026-10-14 | Unit state, script unit values (GET/SET/transport), heightmap + TNT heights — **116,867 GET / 33,341 SET / 16,592 transport calls on all 278 units identical** | `0x00480770`, `0x00480B20`, `0x00481430`, `0x00481470`, `0x00485070`, `0x0043DEF0`, `0x0043E060`, `0x0048B090`, `0x0047DAC0`, `0x00483610` | `engine/sim/src/{unit,heightmap}.cpp`, `ta_compat/src/tnt.cpp`, `tools/orig_harness/unitvalue_harness.cpp` |
 | 2026-10-13 | Piece pose (object state build, script piece callbacks, transform sync) + bit-exact x87 FSINCOS rotation — **pose: 278 units / 110,000 ops identical; rotation: 524,288 calls identical; FSINCOS emulation = hardware on all 65,535 angles** | `0x0045A950`, `0x0045AEC0`, `0x0045AF90`, `0x0045AB10`, `0x0045B030`, `0x0045B0A0`, `0x0045B150`, `0x004B6CC0`, `0x004B7173`, `0x00480C30`–`0x00480DF0`, `0x0045AC20` | `engine/sim/src/pose.cpp`, `x87_trig.cpp`, `ta_compat/src/model3do.cpp` (`to_pose_model`), `tools/orig_harness/{pose_harness,x87_check,remote.h}` |

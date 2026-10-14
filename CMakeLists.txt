@@ -17,6 +17,7 @@ else()
 endif()
 
 add_library(sim STATIC
+    engine/sim/src/combat.cpp
     engine/sim/src/heightmap.cpp
     engine/sim/src/pose.cpp
     engine/sim/src/rng.cpp
