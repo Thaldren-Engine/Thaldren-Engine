@@ -77,13 +77,14 @@ public:
     virtual void builder_menu(Unit& built) = 0;
     virtual void build_menu_refresh(Unit& builder) = 0;
     virtual void orders_panel_changed() = 0;
+    // The map info's network provider type (3: reclaimed features are announced).
+    virtual std::int32_t network_provider() = 0;
 };
 
 struct ConstructionEnvironment {
     std::int32_t ai_difficulty = 0;     // 0 easy, 1 medium, others hard: AI players get part of refunds
     std::uint8_t sea_level = 0;
     std::uint16_t build_menu_focus = 0;  // unit id whose build menu is shown (0 none)
-    std::int32_t network_provider = 0;   // the map info's provider type (3: reclaims are announced)
 };
 
 struct Construction {

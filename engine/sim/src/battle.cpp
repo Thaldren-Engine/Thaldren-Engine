@@ -118,7 +118,6 @@ void Battle::sync_settings() {
     construction_env_.ai_difficulty = s.ai_difficulty;
     construction_env_.sea_level = s.sea_level;
     construction_env_.build_menu_focus = s.build_menu_focus;
-    construction_env_.network_provider = s.network_provider;
     route_.env.game_tick = unit_env_.game_tick;
     route_.env.sea_level = s.sea_level;
     route_.env.player_count = s.player_count;

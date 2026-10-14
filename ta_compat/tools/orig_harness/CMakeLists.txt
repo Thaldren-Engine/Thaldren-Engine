@@ -157,6 +157,7 @@ add_executable(orders_harness
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/nano_spray.cpp
     ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/rng.cpp
@@ -170,6 +171,7 @@ add_executable(orders_harness
 )
 target_include_directories(orders_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(orders_harness PRIVATE /W4 /permissive- /fp:precise)
+target_link_options(orders_harness PRIVATE /MAP)
 
 # Weapon ballistics (C runtime acos + pitch solver) vs sim/weapons.h.
 add_executable(ballistic_check ballistic_check.cpp
@@ -273,6 +275,7 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/targeting.cpp
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/nano_spray.cpp
     ${ROOT}/engine/sim/src/motion.cpp
     ${ROOT}/engine/sim/src/combat.cpp
     ${ROOT}/engine/sim/src/fire.cpp
@@ -343,6 +346,7 @@ add_executable(targeting_harness
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/nano_spray.cpp
     ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/rng.cpp

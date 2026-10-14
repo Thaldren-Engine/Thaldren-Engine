@@ -22,6 +22,12 @@ i32 wsub(i32 a, i32 b) { return static_cast<i32>(static_cast<u32>(a) - static_ca
 i32 hi16(i32 v) { return static_cast<i16>(static_cast<u32>(v) >> 16); }
 i32 square_hi(i32 v) { return static_cast<i32>(static_cast<u32>(static_cast<std::uint64_t>(static_cast<i64>(v) * v) >> 32)); }
 
+// The map cell at (x, z), null outside the map.
+const MapCell* map_cell(const MapGrid& map, i32 x, i32 z) {
+    if (x < 0 || x >= map.width || z < 0 || z >= map.height) return nullptr;
+    return &map.cells[static_cast<std::size_t>(z) * static_cast<std::size_t>(map.width) + static_cast<std::size_t>(x)];
+}
+
 // Unit and type flag bits used here.
 constexpr u32 kTypeBuilder = 0x40, kTypeCanFly = 0x800, kTypeAirBase = 0x200, kTypeActivateWhenBuilt = 0x40000,
               kTypeIsFeature = 0x1000000;
@@ -51,6 +57,7 @@ Construction& con(Missions& m) {
             void builder_menu(Unit&) override {}
             void build_menu_refresh(Unit&) override {}
             void orders_panel_changed() override {}
+            std::int32_t network_provider() override { return 0; }
         };
         static Null null;
         static Construction none{no_map, no_features, no_types, no_heights, null, env};
@@ -511,12 +518,12 @@ std::int32_t repair_unit(Missions& m, Unit& u, MissionOrder& o, u32 event) {
 u16 feature_at(Missions& m, const std::array<i32, 3>& pos, u32* cell_out, u32* footprint_out) {
     Construction& c = con(m);
     i16 x = static_cast<i16>(pos[0] >> 20), z = static_cast<i16>(pos[2] >> 20);
-    const MapCell* cell = c.map.cell(x, z);
+    const MapCell* cell = map_cell(c.map, x, z);
     if (!cell) return 0xFFFF;
     if (cell->feature == kFeaturePart) {
         z = static_cast<i16>(z - (cell->feature_aux & 0xFF));
         x = static_cast<i16>(x - (cell->feature_aux >> 8));
-        cell = c.map.cell(x, z);
+        cell = map_cell(c.map, x, z);
         if (!cell) {
             m.fault = "feature part pointing outside the map";
             return 0xFFFF;
@@ -917,7 +924,8 @@ void transfer_ownership(Missions& m, Unit& unit, int new_owner) {
         }
     }
     if (!plays(to)) return;
-    Unit* copy = c.systems.create_unit(new_owner, t.type_index, unit.pos, true, unit.flags & 3u);
+    // (The new owner is named by its record's index byte, which equals its slot in normal games.)
+    Unit* copy = c.systems.create_unit(to.state, t.type_index, unit.pos, true, unit.flags & 3u);
     if (!copy) return;
     copy->flags &= 0xFFC3FFFFu;
     copy->hit_points = unit.hit_points;
@@ -983,7 +991,7 @@ bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell
     for (i32 row = 0; row < fz; ++row)
         for (i32 col = 0; col < fx; ++col) {
             const i32 x = cell_x + col, z = cell_z + row;
-            const MapCell* cell = c.map.cell(x, z);
+            const MapCell* cell = map_cell(c.map, x, z);
             const u8 y = k < t.yard_map.size() ? t.yard_map[k] : 0;  // (past the end the original reads on)
             ++k;
             if (!cell) return false;
@@ -1030,7 +1038,7 @@ std::uint8_t structure_place_height(const Construction& c, std::uint16_t type, s
     std::size_t k = 0;
     for (i32 row = 0; row < fz; ++row)
         for (i32 col = 0; col < fx; ++col) {
-            const MapCell* cell = c.map.cell(cell_x + col, cell_z + row);
+            const MapCell* cell = map_cell(c.map, cell_x + col, cell_z + row);
             const u8 y = k < t.yard_map.size() ? t.yard_map[k] : 0;
             ++k;
             if (cell && (y & 8)) {
@@ -1055,7 +1063,7 @@ bool reclaim_feature(Missions& m, Unit& unit, const std::array<std::int32_t, 3>&
     Construction& c = con(m);
     // C division by 2^20 (toward zero), unlike the shifts elsewhere.
     const i32 x = pos[0] / 0x100000, z = pos[2] / 0x100000;
-    const MapCell* cell = c.map.cell(x, z);
+    const MapCell* cell = map_cell(c.map, x, z);
     if (!cell) return false;
     const FeatureTypeInfo* f = nullptr;
     if (cell->feature < kFirstSpecialFeature) {
@@ -1077,7 +1085,7 @@ bool reclaim_feature(Missions& m, Unit& unit, const std::array<std::int32_t, 3>&
     t.energy_make = with_income(m, unit, t.energy_make, static_cast<double>(f->energy));
     t.metal_make = with_income(m, unit, t.metal_make, static_cast<double>(f->metal));
     c.systems.kill_feature(x, z, true);
-    if (c.env.network_provider == 3) {
+    if (c.systems.network_provider() == 3) {
         const u8 pk[6] = {0x0F, 0xFF, static_cast<u8>(x), static_cast<u8>(x >> 8), static_cast<u8>(z), static_cast<u8>(z >> 8)};
         c.systems.network_send(owner_of(m, unit).net_id, pk, 6);
     }

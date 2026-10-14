@@ -29,6 +29,8 @@
 
 #include "remote.h"
 #include "sim/combat.h"
+#include "sim/construction.h"
+#include "sim/nano_spray.h"
 #include "sim/ground_settle.h"
 #include "sim/missions.h"
 #include "sim/orders.h"
@@ -81,7 +83,7 @@ struct Stub {
     int queue = 0;  // StubRet::Queue: which answer queue
 };
 // Answer queues of the mission behaviour stubs (index into Layout::queue).
-enum : int { qFireAtWill, qIssueAttack, qResolve, qResources, qEnemies, kQueues };
+enum : int { qFireAtWill, qIssueAttack, qResolve, qResources, qEnemies, qCreate, qPlace, kQueues };
 constexpr u32 kQueueSize = 0x2000;
 const Stub kStubs[] = {
     {0x0049E1A0, 1, 1},   // weapons(unit)
@@ -125,7 +127,17 @@ const Stub kStubs[] = {
     {0x0043B1F0, 3, 82, 0, StubRet::Queue, qIssueAttack},  // issue attack order(unit, target, forced)
     {0x004011C0, 2, 84, 0, StubRet::Queue, qResources},    // use resources if not stalled(float e, float m) [thiscall]
     {0x0041C150, 1, 85},                                   // build menu counts(unit)
-    {0x0041BCD0, 2, 87},                                   // unfinished unit decay(unit, steps)
+    // Construction (sim/construction.h): the systems its routines reach.
+    {0x00485F50, 8, 100, 0, StubRet::Queue, qCreate},      // create unit(player, type, x, y, z, built, layer, wanted)
+    {0x0047DB70, 4, 101, 0, StubRet::Queue, qPlace},       // can place(def, exclude, cell, mode)
+    {0x00438AD0, 2, 102},                                  // attach edge goal(cell, size) [thiscall on the order]
+    {0x00438A00, 3, 103},                                  // attach ring goal(&pos, outer, inner) [thiscall on the order]
+    {0x00456290, 7, 105},                                  // broadcast script call(unit, fn, argc, a, b, c, d)
+    {0x004AB060, 2, 106},                                  // load a menu layout(gui, name) -> 0
+    {0x004199B0, 2, 107},                                  // build menu counts(gui, unit)
+    {0x00423550, 3, 108},                                  // destroy feature(x, z, reclaimed)
+    {0x00435100, 0, 109, 0, StubRet::Silent},              // network provider type [thiscall] -> 0
+    {0x00490520, 1, 110},                                  // victory: unit changes hands(unit) [thiscall]
     {0x00438930, 2, 88},                                   // attach circle goal(&order pos, radius) [thiscall on the order]
 };
 constexpr int kGoalDetachId = 63, kAttachedDtorId = 64, kHandlerId = 65;
@@ -137,13 +149,19 @@ const Stub kAttachedDtor{0, 1, kAttachedDtorId};  // attached object vtable +0 (
 // logs 5 args and writes the queued kind to *out; nano beam(&from, &box, slot) logs both.
 const Stub kEnemies{0x0040AD80, 5, kEnemiesId, 3};
 const Stub kResolve{0x0043F0E0, 5, kResolveId, 0, StubRet::Queue, qResolve};
-constexpr u32 kEnemiesStub = 0x0040AD80, kResolveStub = 0x0043F0E0, kNanoStub = 0x004720D0;
+constexpr u32 kEnemiesStub = 0x0040AD80, kResolveStub = 0x0043F0E0, kNanoStub = 0x004720D0, kNanoReverseStub = 0x00472200;
+constexpr int kNanoReverseId = 104;
+constexpr u32 kGs519 = 0x519, kBuilderGuiName = 0x00502844;
+// Construction routines called directly.
+constexpr u32 kBuildProgress = 0x0041BA60, kDecay = 0x0041BCD0, kFinalize = 0x0041B8D0, kPulse = 0x00438650,
+              kCanReclaim = 0x00489960, kYardFits = 0x0047D2E0, kSnap = 0x0047DDC0, kReclaimYield = 0x004237D0,
+              kTransfer = 0x00488570, kNanoInit = 0x00473B50, kNanoAdvance = 0x00472EB0, kNanoVtable = 0x004FD5B8, kRand = 0x004E4870;
 
 std::size_t record_size(u32 id) {
     if (id == static_cast<u32>(kHandlerId)) return 5;
     if (id == static_cast<u32>(kEnemiesId)) return 10;
     if (id == static_cast<u32>(kResolveId)) return 7;
-    if (id == static_cast<u32>(kNanoId)) return 12;
+    if (id == static_cast<u32>(kNanoId) || id == static_cast<u32>(kNanoReverseId)) return 12;
     if (id == static_cast<u32>(kGoalDetachId) || id == static_cast<u32>(kAttachedDtorId)) return 3;
     for (const Stub& s : kStubs)
         if (static_cast<u32>(s.id) == id) return 2 + static_cast<std::size_t>(s.args + s.extra);
@@ -213,7 +231,8 @@ struct Step {
 struct Layout {
     u32 caller_pass = 0, caller_one = 0, caller_kill = 0, heap = 0, scenario_heap = 0, bump_ptr = 0, stubs = 0, log_ptr = 0, log_base = 0,
         ret_val = 0, gs = 0, units = 0, defs = 0, models = 0, cells = 0, schema = 0, names = 0, files = 0, pinfo = 0, empty_def = 0,
-        script = 0, clock = 0, motion = 0, vtables = 0, attached = 0, handler = 0, queues = 0, weapons = 0;
+        script = 0, clock = 0, motion = 0, vtables = 0, attached = 0, handler = 0, queues = 0, weapons = 0, rand_state = 0,
+        features = 0, nano = 0;
 };
 // ret_val block: +0 pay result, +0x10 stale in, +0x14 stale out, +0x18 kill kind, +0x1C kill unit,
 // +0x20 one-arg target function, +0x24 its argument, +0x28 EDI for the call.
@@ -235,13 +254,17 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
     L.names = r.alloc(0x1000);
     L.files = r.alloc(32u << 20);
     L.pinfo = r.alloc(0x1000);
-    L.empty_def = r.alloc(0x1000);
+    L.empty_def = L.defs;  // record 0 of the definition table
     L.script = r.alloc(0x10000);
     L.motion = r.alloc(0x2000);
     L.vtables = r.alloc(0x1000);
     L.attached = r.alloc(0x40000);
     L.queues = r.alloc(kQueues * kQueueSize);
     L.weapons = r.alloc(0x1000);
+    L.rand_state = r.alloc(0x1000);
+    L.features = r.alloc(0x10000);
+    L.nano = r.alloc(0x1000);
+    if (!L.rand_state || !L.features || !L.nano) return false;
     if (!L.queues || !L.weapons) return false;
     if (!L.heap || !L.stubs || !L.log_base || !L.gs || !L.units || !L.cells || !L.files || !L.pinfo || !L.empty_def || !L.script ||
         !L.motion || !L.vtables || !L.attached)
@@ -323,6 +346,41 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
         e.bytes({0x33, 0xC0, 0xC2, 0x0C, 0x00});
         e.align();
         if (!r.patch_jump(kNanoStub, at)) return false;
+    }
+    // Nano beam from a box to a point: logs the six box and three point words, then the slot.
+    {
+        const u32 at = here();
+        e.u8(0xA1); e.u32le(L.log_ptr);
+        e.u8(0xC7); e.u8(0x00); e.u32le(static_cast<u32>(kNanoReverseId));
+        e.bytes({0x89, 0x48, 0x04});
+        e.bytes({0x8B, 0x54, 0x24, 0x04});  // mov edx,[esp+4]
+        for (int k = 0; k < 6; ++k) {
+            e.bytes({0x8B, 0x4A, static_cast<std::uint8_t>(4 * k)});
+            e.bytes({0x89, 0x48, static_cast<std::uint8_t>(8 + 4 * k)});
+        }
+        e.bytes({0x8B, 0x54, 0x24, 0x08});  // mov edx,[esp+8]
+        for (int k = 0; k < 3; ++k) {
+            e.bytes({0x8B, 0x4A, static_cast<std::uint8_t>(4 * k)});
+            e.bytes({0x89, 0x48, static_cast<std::uint8_t>(0x20 + 4 * k)});
+        }
+        e.bytes({0x8B, 0x54, 0x24, 0x0C, 0x89, 0x50, 0x2C});  // slot
+        e.u8(0x83); e.u8(0x05); e.u32le(L.log_ptr); e.u8(0x30);
+        e.bytes({0x33, 0xC0, 0xC2, 0x0C, 0x00});
+        e.align();
+        if (!r.patch_jump(kNanoReverseStub, at)) return false;
+    }
+    // rand(): the C runtime's generator on our own state (the runtime is not initialised).
+    {
+        const u32 at = here();
+        e.u8(0xA1); e.u32le(L.rand_state);
+        e.u8(0x69); e.u8(0xC0); e.u32le(214013u);
+        e.u8(0x05); e.u32le(2531011u);
+        e.u8(0xA3); e.u32le(L.rand_state);
+        e.u8(0xC1); e.u8(0xE8); e.u8(0x10);
+        e.u8(0x25); e.u32le(0x7FFF);
+        e.u8(0xC3);
+        e.align();
+        if (!r.patch_jump(kRand, at)) return false;
     }
     const u32 goal_detach = here();
     emit_stub(e, kGoalDetach, L.log_ptr, L.ret_val);
@@ -415,7 +473,8 @@ bool setup(harness::Remote& r, Layout& L, const sim::HeightMap& hm, std::string&
     r.w32(L.gs + 0x14237, static_cast<u32>(hm.height()));
     r.w32(L.gs + 0x14377, L.models);
     r.w32(L.gs + 0x391E9, L.schema);
-    r.w32(L.gs + 0x1439B, L.empty_def);
+    r.w32(L.gs + 0x1439B, L.defs);
+    r.w32(L.gs + 0x1426F, L.features);
     std::vector<std::uint8_t> cells(static_cast<std::size_t>(hm.width()) * hm.height() * 13, 0);
     for (i32 z = 0; z < hm.height(); ++z)
         for (i32 x = 0; x < hm.width(); ++x) cells[(static_cast<std::size_t>(z) * hm.width() + x) * 13 + 4] = hm.at(x, z);
@@ -457,6 +516,9 @@ enum : u32 {
     pUnitsLost = 0xFE, pCommandersKilled = 0x104, pCommandersLost = 0x106, pSharesVision = 0x129, pAlive = 0x144, pState = 0x146,
     pFlags = 0x149,
     dName = 0x20, dModelMaxY = 0x16E, dEnergyCost = 0x186, dMetalCost = 0x18A, dCob = 0x18E, dMaxVelocity = 0x192,
+    dFootprint = 0x14A, dYardMap = 0x14E, dBuildOptions = 0x156, dModelMinY = 0x162, dAvgSize = 0x182,
+    dBuildDistance = 0x212, dMaxSlope = 0x228, dMaxWaterDepth = 0x1BE, dMinWaterDepth = 0x1C0, dBmCode = 0x22F, uFootprint = 0x7E,
+    uCell = 0x76, uEnergyMake = 0xBC,
     dDamageModifier = 0x1AA, dWindGen = 0x1D2, dBuildTime = 0x1EA, dMaxDamage = 0x1FA, dHealTime = 0x200, dWaterline = 0x22C,
     dDefaultMission = 0x230, dTypeFlags = 0x241, kDefSize = 0x249, dCanDo = 0x245, dWorkerTime = 0x1FE, dModelMinX = 0x15E,
     dModelMinZ = 0x166, dModelMaxX = 0x16A, dModelMaxZ = 0x172, uCloakHoldoff = 0xB0, pAllied = 0x108, gGravity = 0x14263,
@@ -498,7 +560,7 @@ struct MotionInfo {
 };
 
 struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::OrderSystems, sim::GroundSettleSystems,
-               sim::MissionSystems {
+               sim::MissionSystems, sim::ConstructionSystems {
     std::vector<sim::Unit>* units = nullptr;
     std::vector<sim::UnitTickState>* ticks = nullptr;
     std::vector<sim::PlayerSlot>* players = nullptr;
@@ -513,6 +575,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     std::vector<sim::GroundSettleType>* settle_types = nullptr;  // by type index
     const sim::HeightMap* hm = nullptr;
     sim::BattleRng rng;
+    sim::Lcg15 crt;  // the C runtime rand() stream
     std::vector<u32> log;
     std::vector<MotionInfo> motions;
     std::vector<Step> steps;
@@ -569,16 +632,17 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         stale = env->addresses.player(env->pass_slot);
     }
     void secondary_orders(sim::Unit& u, u32& stale) override {
+        if (std::getenv("OH_TRACE")) std::printf("  secondary %u\n", u.id);
         missions->caller = sim::MissionCaller::Secondary;
         sim::run_secondary_orders(*orders, u, stale);
     }
     void motion(sim::Unit& u, u32&) override { rec(6, 0x7E000000u | u.id, {tok(u)}); }
-    void settle_height(sim::Unit& u, u32& stale) override { settle(u, stale); }
+    void settle_height(sim::Unit& u, u32& stale) override { if (std::getenv("OH_TRACE")) std::printf("  settle %u\n", u.id); settle(u, stale); }
     void settle(sim::Unit& u, u32& stale) {
         const sim::UnitTickState& t = (*ticks)[u.id];
         sim::settle_on_ground(u, t.has_motion, (*settle_types)[t.type_index], env->sea_level, env->game_tick, *hm, *this, stale);
     }
-    void killed(sim::Unit& u, std::uint8_t kind, u32& stale) override { sim::kill_unit(*combat, u, kind, stale); }
+    void killed(sim::Unit& u, std::uint8_t kind, u32& stale) override { if (std::getenv("OH_TRACE")) std::printf("  kill %u\n", u.id); sim::kill_unit(*combat, u, kind, stale); }
     void broadcast_player_units(int player, u32&) override { rec(9, 0, {0x20000000u | static_cast<u32>(player)}); }
     void camera_follow_step(u32&) override {}
     // CombatSystems
@@ -591,7 +655,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     void stats_activity(i32 kind) override { rec(21, 0, {static_cast<u32>(kind)}); }
     void network_send(i32 net, const std::uint8_t* p, i32 size) override {
         u32 d[3] = {};
-        std::memcpy(d, p, static_cast<std::size_t>(size));
+        std::memcpy(d, p, static_cast<std::size_t>(size < 12 ? size : 12));
         rec(16, 0, {static_cast<u32>(net), 0, static_cast<u32>(size), d[0], d[1], d[2]});
     }
     void reveal_dead_unit(sim::Unit& u) override {
@@ -622,7 +686,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
     std::int32_t run_mission(sim::Unit& u, sim::MissionOrder& o, std::uint32_t& event) override {
         const std::uint8_t kind = o.kind;
         if (++behaviour_calls > 100000) {  // an order that never sleeps: the original hangs too
-            missions->fault = "endless behaviour loop";
+            if (missions->fault.empty()) missions->fault = "endless behaviour loop";
             return 7;
         }
         const std::uint32_t event_in = event;
@@ -683,7 +747,9 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         return &(*units)[(address - units_base) / kUnitSize];
     }
     void speech(sim::Unit& u, std::uint32_t id, sim::SpeechText text) override {
-        static constexpr u32 kTexts[] = {0, 0x005012DC, 0x005016AC, 0x005012CC};
+        static constexpr u32 kTexts[] = {0,          0x005012DC, 0x005016AC, 0x005012CC, 0x00501340, 0x00501310, 0x005012F8,
+                                         0x005015A4, 0x00501580, 0x0050155C, 0x00501544, 0x00501530, 0x005015BC, 0x005010CC,
+                                         0x00501638, 0x0050164C, 0x00501388, 0x005015D0, 0x00501618, 0x005015E0, 0x005013B8};
         rec(14, 0, {tok(u), id, kTexts[static_cast<int>(text)]});
     }
     void enemies_in_radius(int player, const std::array<i32, 3>& pos, i32 radius, std::vector<sim::Unit*>& out) override {
@@ -712,7 +778,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         return next_answer(qResources) != 0;
     }
     void build_counts_changed(sim::Unit& u) override { rec(85, 0, {tok(u)}); }
-    void unfinished_decay(sim::Unit& u, i32 n) override { rec(87, 0, {tok(u), static_cast<u32>(n)}); }
+    void unfinished_decay(sim::Unit& u, i32 n) override { sim::unfinished_decay(*missions, u, n); }
     void display_changed(sim::Unit& u) override { rec(15, 0, {tok(u)}); }
     void nano_beam(const std::array<i32, 3>& from, const std::array<i32, 6>& box) override {
         log.push_back(static_cast<u32>(kNanoId));
@@ -729,6 +795,43 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
         rec(kAttachedDtorId, o.attached, {1});
         o.attached = 0;
     }
+    // ConstructionSystems (the original's matching routines are logging stubs)
+    u32 defs_base = 0, gs_base = 0;
+    sim::Unit* create_unit(int player, std::uint16_t type, const std::array<i32, 3>& pos, bool built, u32 layer) override {
+        rec(100, 0, {static_cast<u32>(player) & 0xFF, type, static_cast<u32>(pos[0]), static_cast<u32>(pos[1]), static_cast<u32>(pos[2]),
+                     built ? 1u : 0u, layer, 0});
+        return unit_at(next_answer(qCreate));
+    }
+    bool can_place(std::uint16_t type, std::uint16_t exclude, std::int16_t x, std::int16_t z, u32 mode) override {
+        rec(101, 0, {defs_base + type * static_cast<u32>(kDefSize), exclude, static_cast<std::uint16_t>(x) | static_cast<u32>(static_cast<std::uint16_t>(z)) << 16, mode});
+        return next_answer(qPlace) != 0;
+    }
+    void transport_attach(sim::Unit& cargo, sim::Unit* t, std::uint8_t piece, std::uint8_t layer) override {
+        rec(32, 0, {tok(cargo), t ? tok(*t) : 0u, piece == 0xFF ? 0xFFFFFFFFu : piece, layer});
+    }
+    void attach_edge_goal(sim::Unit&, sim::MissionOrder& o, u32 cell, u32 size) override { rec(102, o.address, {cell, size}); }
+    void attach_ring_goal(sim::Unit&, sim::MissionOrder& o, const std::array<i32, 3>& pos, i32 outer, i32 inner) override {
+        u32 at = 0;
+        for (const sim::Unit& u : *units)
+            if (&u.pos == &pos) at = 0x42000000u | u.id;
+        rec(103, o.address, {at, static_cast<u32>(outer), static_cast<u32>(inner)});
+    }
+    void nano_beam_reverse(const std::array<i32, 6>& box, const std::array<i32, 3>& to) override {
+        log.push_back(static_cast<u32>(kNanoReverseId));
+        log.push_back(0);
+        for (i32 v : box) log.push_back(static_cast<u32>(v));
+        for (i32 v : to) log.push_back(static_cast<u32>(v));
+        log.push_back(6);
+    }
+    void kill_feature(i32 x, i32 z, bool reclaimed) override { rec(108, 0, {static_cast<u32>(x), static_cast<u32>(z), reclaimed ? 1u : 0u}); }
+    void victory_unit_transferred(sim::Unit& u) override { rec(110, 0, {tok(u)}); }
+    void broadcast_script_call_args(sim::Unit& u, std::int16_t fn, i32 argc, i32 a) override {
+        rec(105, 0, {tok(u), static_cast<u32>(static_cast<i32>(fn)), static_cast<u32>(argc), static_cast<u32>(a), 0, 0, 0});
+    }
+    void builder_menu(sim::Unit&) override { rec(106, 0, {gs_base + kGs519, kBuilderGuiName}); }
+    void build_menu_refresh(sim::Unit& u) override { rec(107, 0, {gs_base + kGs519, tok(u)}); }
+    void orders_panel_changed() override {}
+    i32 network_provider() override { return 0; }
     // GroundSettleSystems
     std::int32_t motion_speed(sim::Unit& u) override { return motions[u.id].speed; }
     std::uint32_t motion_start_tick(sim::Unit& u) override { return motions[u.id].start; }
@@ -741,7 +844,8 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Or
 
 struct Stats {
     std::size_t scenarios = 0, ticks = 0, ops = 0, handler_calls = 0, orders_made = 0, orders_freed = 0, settles = 0,
-                deaths = 0, paralysis = 0, mismatches = 0, failures = 0, faults = 0;
+                deaths = 0, paralysis = 0, mismatches = 0, failures = 0, faults = 0, placements = 0, placements_ok = 0,
+                reclaimed_features = 0, nano_streams = 0, nano_steps = 0;
     std::map<std::string, std::size_t> by_op, secondary_stale, pass_stale;
     std::map<u32, std::size_t> settle_paths;
 };
@@ -768,6 +872,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     std::vector<int> pick;
     std::vector<sim::GroundSettleType> settle_types(ntypes + 1);
     std::vector<sim::MissionTypeInfo> mission_types(ntypes + 1);
+    std::vector<sim::ConstructionTypeInfo> con_types(ntypes + 1);
     u32 file_at = L.files;
     for (int k = 0; k < ntypes; ++k) {
         std::size_t ti = g() % types.size();
@@ -810,7 +915,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         sim::MissionTypeInfo& mt = mission_types[static_cast<std::size_t>(k + 1)];
         const u32 countdowns[] = {5, 5, 5, 0, 1, 3, 6, 7};
         mt.abilities = (g() % 2 ? 1u << 2 : 0u) | (g() % 2 ? 1u << 4 : 0u) | (g() % 2 ? 1u << 13 : 0u) |
-                       (countdowns[g() % 8] << 20) | static_cast<u32>(g() & 0x8F03u);
+                       (countdowns[g() % 8] << 20) | static_cast<u32>(g() & 0x9F03u);
         mt.worker_time = static_cast<std::uint16_t>(g() % 4 == 0 ? g() : g() % 400);
         t.info.model_min_x = -static_cast<i32>(g() % 0x200000);
         t.info.model_min_z = -static_cast<i32>(g() % 0x200000);
@@ -823,7 +928,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         if (g() % 10 == 0) t.settle.max_velocity = -t.settle.max_velocity;
         t.tick_info.default_mission = static_cast<std::uint8_t>(g() % 2 ? 0 : g() % 3 == 0 ? t.def->default_mission : 1 + g() % 67);
         settle_types[static_cast<std::size_t>(k + 1)] = t.settle;
-        t.remote_def = L.defs + static_cast<u32>(k) * 0x400;
+        t.remote_def = L.defs + static_cast<u32>(k + 1) * kDefSize;
         std::vector<std::uint8_t> d(kDefSize, 0);
         auto put = [&](u32 off, const void* p, std::size_t n) { std::memcpy(&d[off], p, n); };
         put(dName, t.tick_info.name.c_str(), (std::min)(t.tick_info.name.size() + 1, std::size_t{32}));
@@ -846,6 +951,45 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         put(dModelMinZ, &t.info.model_min_z, 4);
         put(dModelMaxX, &t.info.model_max_x, 4);
         put(dModelMaxZ, &t.info.model_max_z, 4);
+        // Construction data: footprint, yard map, build distance, placement limits, costs.
+        sim::ConstructionTypeInfo& ct = con_types[static_cast<std::size_t>(k + 1)];
+        ct.footprint_x = static_cast<std::int16_t>(1 + g() % 4);
+        ct.footprint_z = static_cast<std::int16_t>(1 + g() % 4);
+        ct.movement = static_cast<std::uint8_t>(g() % 2);
+        ct.build_distance = static_cast<std::uint16_t>(g() % 4 == 0 ? g() % 40 : 60 + g() % 400);
+        const i32 avg = static_cast<i32>(g() % 0x400000);
+        ct.reclaim_reach = static_cast<std::int16_t>(static_cast<u32>(avg) >> 16);
+        ct.has_build_options = g() % 4 != 0;
+        ct.waterline = t.settle.waterline;
+        ct.max_slope = static_cast<std::uint8_t>(g() % 3 == 0 ? g() : g() % 30);
+        ct.max_water_depth = static_cast<std::int16_t>(g() % 3 == 0 ? 0 : g() % 200);
+        ct.min_water_depth = static_cast<std::int16_t>(g() % 3 == 0 ? -10000 : static_cast<i32>(g() % 60) - 30);
+        ct.yard_map.resize(static_cast<std::size_t>(ct.footprint_x * ct.footprint_z));
+        static const std::uint8_t kYard[] = {0x00, 0x35, 0x8F, 0x2B, 0x31, 0x2D, 0x6F, 0x2F, 0x37, 0x29};
+        for (auto& y : ct.yard_map) y = g() % 6 == 0 ? static_cast<std::uint8_t>(g()) : kYard[g() % 10];
+        const u32 yard_at = L.defs + 0x8000 + static_cast<u32>(k) * 0x100;
+        r.write(yard_at, ct.yard_map.data(), ct.yard_map.size());
+        const u32 options = ct.has_build_options ? L.defs + 0xA000 : 0u;
+        const u32 fp = static_cast<std::uint16_t>(ct.footprint_x) | static_cast<u32>(static_cast<std::uint16_t>(ct.footprint_z)) << 16;
+        const std::uint16_t bd = ct.build_distance;
+        t.info.model_min_y = -static_cast<i32>(g() % 0x100000);
+        t.tick_info.build_time = static_cast<i32>(g() % 8 == 0 ? 0 : 1 + g() % 20000);
+        t.tick_info.build_cost_energy = g() % 8 == 0 ? 0.0f : static_cast<float>(g() % 200000) / 7.0f;
+        t.tick_info.build_cost_metal = g() % 8 == 0 ? 0.0f : static_cast<float>(g() % 20000) / 3.0f;
+        put(dEnergyCost, &t.tick_info.build_cost_energy, 4);
+        put(dMetalCost, &t.tick_info.build_cost_metal, 4);
+        put(dBuildTime, &t.tick_info.build_time, 4);
+        put(dFootprint, &fp, 4);
+        put(dYardMap, &yard_at, 4);
+        put(dBuildOptions, &options, 4);
+        put(dModelMinY, &t.info.model_min_y, 4);
+        put(dAvgSize, &avg, 4);
+        put(dBuildDistance, &bd, 2);
+        put(dMaxSlope, &ct.max_slope, 1);
+        put(dMaxWaterDepth, &ct.max_water_depth, 2);
+        put(dMinWaterDepth, &ct.min_water_depth, 2);
+        put(dWaterline, &ct.waterline, 1);
+        put(dBmCode, &ct.movement, 1);
         r.write(t.remote_def, d.data(), d.size());
         r.w32(L.models + static_cast<u32>(k + 1) * 4, t.remote_model);
     }
@@ -948,6 +1092,84 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     r.w32(L.gs + gUnitsEnd, L.units + static_cast<u32>(units.size() - 1) * kUnitSize);
     sim::Missions missions{octx, units, combat, world, world, mission_types, allied, menv};
     world.missions = &missions;
+    // Construction: the map cells (heights, height ranges, metal, features, occupants, marks)
+    // and a few feature types, the same on both sides.
+    sim::MapGrid grid;
+    grid.width = hm.width();
+    grid.height = hm.height();
+    grid.cells.resize(static_cast<std::size_t>(grid.width) * grid.height);
+    for (i32 z = 0; z < grid.height; ++z)
+        for (i32 x = 0; x < grid.width; ++x) {
+            sim::MapCell& c = grid.cells[static_cast<std::size_t>(z) * grid.width + x];
+            c.height = hm.at(x, z);
+            std::uint8_t lo = c.height, hi = c.height;
+            for (int dz = 0; dz < 2; ++dz)
+                for (int dx = 0; dx < 2; ++dx)
+                    if (x + dx < grid.width && z + dz < grid.height) {
+                        const std::uint8_t h = hm.at(x + dx, z + dz);
+                        lo = (std::min)(lo, h);
+                        hi = (std::max)(hi, h);
+                    }
+            c.height_min = lo;
+            c.height_max = hi;
+        }
+    const int nfeatures = 6;
+    std::vector<sim::FeatureTypeInfo> feature_types(static_cast<std::size_t>(nfeatures));
+    {
+        std::vector<std::uint8_t> fd(static_cast<std::size_t>(nfeatures) * 0x100, 0);
+        for (int f = 0; f < nfeatures; ++f) {
+            sim::FeatureTypeInfo& ft = feature_types[static_cast<std::size_t>(f)];
+            ft.footprint_x = static_cast<std::int16_t>(1 + g() % 3);
+            ft.footprint_z = static_cast<std::int16_t>(1 + g() % 3);
+            ft.height = static_cast<std::uint8_t>(g() % 4 == 0 ? 0 : g() % 60);
+            ft.flags = static_cast<std::uint16_t>((g() % 4 ? 0x80u : 0u) | (g() % 2 ? 0x40u : 0u) | (g() % 3 == 0 ? 1u : 0u) |
+                                                  (g() % 5 == 0 ? 0x200u : 0u) | (g() % 5 == 0 ? 0x20u : 0u));
+            ft.metal = static_cast<float>(g() % 3000) / 7.0f;
+            ft.energy = g() % 3 == 0 ? 0.0f : static_cast<float>(g() % 9000) / 3.0f;
+            std::uint8_t* d = &fd[static_cast<std::size_t>(f) * 0x100];
+            std::memcpy(d + 0x94, &ft.footprint_x, 2);
+            std::memcpy(d + 0x96, &ft.footprint_z, 2);
+            std::memcpy(d + 0xEC, &ft.energy, 4);
+            std::memcpy(d + 0xF0, &ft.metal, 4);
+            std::memcpy(d + 0xFA, &ft.height, 1);
+            std::memcpy(d + 0xFE, &ft.flags, 2);
+        }
+        r.write(L.features, fd.data(), fd.size());
+        // Sometimes the last type lies past the table's count.
+        r.w32(L.gs + 0x14253, static_cast<u32>(g() % 4 == 0 ? nfeatures - 1 : nfeatures));
+        if (r.r32(L.gs + 0x14253) != static_cast<u32>(nfeatures)) feature_types.pop_back();
+    }
+    std::vector<int> feature_cells;
+    auto put_features_around = [&](i32 wx, i32 wz) {
+        const i32 cx = wx >> 4, cz = wz >> 4;
+        const int n = static_cast<int>(g() % 30);
+        for (int k = 0; k < n; ++k) {
+            const i32 x = cx + static_cast<i32>(g() % 24) - 12, z = cz + static_cast<i32>(g() % 24) - 12;
+            if (x < 0 || z < 0 || x >= grid.width || z >= grid.height) continue;
+            sim::MapCell& c = grid.cells[static_cast<std::size_t>(z) * grid.width + x];
+            const u32 roll = g() % 10;
+            if (roll < 5) {
+                c.feature = static_cast<std::uint16_t>(g() % nfeatures);
+                feature_cells.push_back(z * grid.width + x);
+            } else if (roll < 7) {  // a part of a bigger feature: back to a cell up to 2 rows / columns back
+                c.feature = 0xFFFE;  // a part of a bigger feature
+                c.feature_aux = static_cast<std::uint16_t>((g() % 3) | (g() % 3) << 8);
+                feature_cells.push_back(z * grid.width + x);
+            } else if (roll < 8) {
+                c.feature = static_cast<std::uint16_t>(0xFFFB + g() % 3);
+            }
+            if (g() % 4 == 0) c.unit = static_cast<std::uint16_t>(g() % 3 == 0 ? 1 + g() % kMaxUnits : 0);
+            if (g() % 6 == 0) c.flags = static_cast<std::uint8_t>(c.flags | (g() % 2 ? 2 : 1));
+            c.metal = static_cast<std::uint8_t>(g());
+        }
+    };
+    sim::ConstructionEnvironment conv;
+    sim::Construction con{grid, feature_types, con_types, hm, world, conv};
+    missions.construction = &con;
+    world.defs_base = L.defs;
+    world.gs_base = L.gs;
+    world.crt.set_state(static_cast<u32>(g()));
+    r.w32(L.rand_state, world.crt.state());
     world.units_base = L.units;
     world.units = &units;
     world.ticks = &tstate;
@@ -977,6 +1199,9 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         ++players[static_cast<std::size_t>(t.owner)].alive_count;
     }
     if (present.empty()) return true;
+    // The last two units stand in for units being created (the creation stub hands them out).
+    std::vector<int> newborn;
+    if (present.size() > 4) newborn.assign(present.end() - 2, present.end());
     for (int p = 0; p < 3; ++p)
         r.write(L.gs + 0x1B63 + static_cast<u32>(p) * kPlayerSize + pAlive, &players[static_cast<std::size_t>(p)].alive_count, 2);
     u32 attached_next = L.attached + 0x10;
@@ -1058,6 +1283,24 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(at + uActivate, &u.activate_flags, 1);
         u.group = g() % 2 ? 0u : static_cast<u32>(g() % 10);
         r.w32(at + uGroup, u.group);
+        // Construction inputs: footprint and cells, kills, the resource slot's incomes, build stance.
+        u.footprint_x = static_cast<std::int16_t>(1 + g() % 4);
+        u.footprint_z = static_cast<std::int16_t>(1 + g() % 4);
+        u.cell_x = static_cast<std::int16_t>((u.pos[0] >> 20) - u.footprint_x / 2);
+        u.cell_z = static_cast<std::int16_t>((u.pos[2] >> 20) - u.footprint_z / 2);
+        t.kill_count = static_cast<std::uint16_t>(g() % 4 == 0 ? g() % 40 : 0);
+        t.metal_make = static_cast<float>(g() % 1000) / 9.0f;
+        t.energy_make = static_cast<float>(g() % 1000) / 7.0f;
+        u.script_flags = static_cast<std::uint8_t>(g() % 2);
+        r.write(at + uFootprint, &u.footprint_x, 2);
+        r.write(at + uFootprint + 2, &u.footprint_z, 2);
+        r.write(at + uCell, &u.cell_x, 2);
+        r.write(at + uCell + 2, &u.cell_z, 2);
+        r.write(at + uKills, &t.kill_count, 2);
+        r.write(at + uMetalMake, &t.metal_make, 4);
+        r.write(at + uEnergyMake, &t.energy_make, 4);
+        r.write(at + uScriptFlags, &u.script_flags, 1);
+        put_features_around(u.pos[0] >> 16, u.pos[2] >> 16);
         // Weapon slot targets and flags (the weapon-target routines run for real).
         for (int s = 0; s < 3; ++s) {
             sim::WeaponSlot& ws = u.weapons[static_cast<std::size_t>(s)];
@@ -1098,6 +1341,23 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         u.script = std::make_unique<sim::ScriptInstance>(lt.cob.program, *hosts[static_cast<std::size_t>(i)], 30);
         u.script->set_step_limit(50000000);
     }
+    {
+        std::vector<std::uint8_t> cb(grid.cells.size() * 13, 0);
+        for (std::size_t k = 0; k < grid.cells.size(); ++k) {
+            const sim::MapCell& c = grid.cells[k];
+            std::uint8_t* d = &cb[k * 13];
+            std::memcpy(d, &c.unit, 2);
+            std::memcpy(d + 2, &c.unit2, 2);
+            d[4] = c.height;
+            d[5] = c.height_max;
+            d[6] = c.height_min;
+            d[7] = c.metal;
+            std::memcpy(d + 8, &c.feature, 2);
+            std::memcpy(d + 10, &c.feature_aux, 2);
+            d[12] = c.flags;
+        }
+        r.write(L.cells, cb.data(), cb.size());
+    }
     ++st.scenarios;
     env.addresses.game_state = L.gs;
     env.addresses.unit_table = L.units;
@@ -1134,10 +1394,14 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             i += n;
             const u32 id = rec[0];
             if (remote && id != 6 && id != kHandlerId && (id < 10 || id > 13) && id != 61 && id != kGoalDetachId && id != kAttachedDtorId &&
-                id != 84 && id != 88)
+                id != 84 && id != 88 && id != 102 && id != 103)
                 rec[1] = 0;
             if (id == static_cast<u32>(kEnemiesId)) rec[3] = rec[6] = 0;  // stack addresses
             if (id == static_cast<u32>(kResolveId)) rec[2] = rec[6] = 0;  // out and position pointers
+            if (id == 100) {  // the player and type arguments carry stale upper bits
+                rec[2] &= 0xFF;
+                rec[3] &= 0xFFFF;
+            }
             if (id == 53 && !world.all_orders.count(rec[2])) continue;
             if (id == 16) {
                 rec[3] = 0;
@@ -1184,6 +1448,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         if (static_cast<i32>(r.r32(L.gs + 0x14353)) != env_live) bad("live unit count");
         if (r.r32(kBattleRngState) != world.rng.state()) bad("battle RNG state");
         if (r.r32(L.clock) != world.clock) bad("clock reads");
+        if (r.r32(L.rand_state) != world.crt.state()) bad("rand() state");
         for (int p = 0; p < 10; ++p) {
             const sim::PlayerSlot& s = players[static_cast<std::size_t>(p)];
             std::vector<std::uint8_t> rp(kPlayerSize);
@@ -1202,7 +1467,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             auto f16 = [&](u32 off) { std::uint16_t v; std::memcpy(&v, &ru[off], 2); return v; };
             auto f32 = [&](u32 off) { u32 v; std::memcpy(&v, &ru[off], 4); return v; };
             const std::string un = "unit " + std::to_string(i) + " ";
-            if (f32(uFlags) != u.flags) bad(un + "flags");
+            if (f32(uFlags) != u.flags) bad(un + "flags orig " + std::to_string(f32(uFlags)) + " ours " + std::to_string(u.flags));
             if (f16(uDefIndex) != t.type_index) bad(un + "type index");
             if (static_cast<std::int16_t>(f16(uHp)) != u.hit_points) bad(un + "hit points");
             if (f8(uLastDamageKind) != t.last_damage_kind) bad(un + "last damage kind");
@@ -1210,6 +1475,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             if (f8(uActivate) != u.activate_flags || f8(uScriptFlags) != u.script_flags) bad(un + "activate/script flags");
             if (f16(uNetDirty) != u.net_dirty) bad(un + "pending events");
             if (f32(uCloakHoldoff) != u.cloak_holdoff_tick) bad(un + "decloak hold-off");
+            if (f32(uBuildLeft) != fbits(u.build_fraction_left)) bad(un + "build fraction");
+            if (f32(uMetalMake) != fbits(t.metal_make) || f32(uEnergyMake) != fbits(t.energy_make)) bad(un + "resource incomes");
             if (f32(uGroup) != u.group) bad(un + "group");
             if (static_cast<i32>(f32(uPosX)) != u.pos[0] || static_cast<i32>(f32(uPosY)) != u.pos[1] || static_cast<i32>(f32(uPosZ)) != u.pos[2])
                 bad(un + "position");
@@ -1381,6 +1648,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                     break;
                 }
                 case qResources: v.push_back(g() % 4 ? 1u : 0u); break;
+                case qCreate: v.push_back(g() % 4 == 0 || newborn.empty() ? 0u : unit_addr(newborn[g() % newborn.size()])); break;
+                case qPlace: v.push_back(g() % 3 ? 1u : 0u); break;
                 default: {
                     const u32 count = targets.empty() ? 0u : g() % 4;
                     v.push_back(count);
@@ -1410,6 +1679,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         o.events = g() % 2 ? 0 : waits[g() % 9];
         o.step = static_cast<std::uint8_t>(g() % 4);
         if (o.kind == sim::mission::kGuardNoMove && o.step == 2) o.step = 1;  // step 2 needs the target found in step 1
+        if (o.kind == sim::mission::kMobileBuild && o.step >= 2 && !o.target.unit) o.step = 1;  // steps 2-3 need the unit being built
         const u32 bits[] = {0x4, 0x4000, 0x10000, 0x400000, 0x800000, 0x200, 0x400};
         if (g() % 2) o.flags ^= bits[g() % 7];
         // (Not for real behaviours: one that always finishes would then run forever, as in the original.)
@@ -1430,6 +1700,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     };
     // Builds a new order with the original constructor and insertion routines (and ours).
     auto create_order = [&](int i) -> bool {
+        if (std::find(newborn.begin(), newborn.end(), i) != newborn.end()) return true;  // units the creation stub hands out get no orders
         auto kind = static_cast<std::uint8_t>(g() % 4 == 0 ? sim::mission::kParalyze : g() % sim::mission::kCount);
         // Half of the others are behaviours that run for real.
         if (g() % 2)
@@ -1437,7 +1708,13 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         // Queued moves and patrols, which a finished unit copies from its builder (GetBuilt).
         if (g() % 10 == 0) kind = g() % 2 ? sim::mission::kQueuedMove : sim::mission::kQueuedPatrol;
         if (g() % 16 == 0) kind = sim::mission::kGetBuilt;
+        // Construction behaviours a third of the time, mostly on live targets.
+        static const std::uint8_t kCon[] = {sim::mission::kBuildingBuild, sim::mission::kMobileBuild, sim::mission::kHelpBuild,
+                                            sim::mission::kRepairUnit,    sim::mission::kReclaim,     sim::mission::kReclaimUnit,
+                                            sim::mission::kCapture,       sim::mission::kBeCarried,   sim::mission::kPark};
+        if (g() % 3 == 0) kind = kCon[g() % 9];
         int ti = g() % 3 == 0 ? 0 : static_cast<int>(1 + g() % kMaxUnits);
+        if (sim::construction_kind(kind) && g() % 4) ti = present[g() % present.size()];
         if (kind == sim::mission::kGetBuilt && ti == i) ti = 0;  // its builder's orders are walked while it gets new ones
         sim::Unit* target = ti ? &units[static_cast<std::size_t>(ti)] : nullptr;
         std::array<i32, 3> pos = {static_cast<i32>(g()), static_cast<i32>(g()), static_cast<i32>(g())};
@@ -1458,6 +1735,25 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             break;
         }
         case sim::mission::kAttackUnitType: p0 = static_cast<i32>(1 + g() % 4); break;  // unit type index
+        case sim::mission::kBuildingBuild:  // unit type, count
+            p0 = static_cast<i32>(1 + g() % ntypes);
+            p1 = static_cast<i32>(g() % 5) - 1;
+            break;
+        case sim::mission::kMobileBuild: {  // unit type, at a spot near the builder
+            p0 = static_cast<i32>(1 + g() % ntypes);
+            p2 = static_cast<i32>(g() % 13);
+            const sim::Unit& b = units[static_cast<std::size_t>(i)];
+            pos = {b.pos[0] + static_cast<i32>((g() % 400) << 16) - (200 << 16), b.pos[1], b.pos[2] + static_cast<i32>((g() % 400) << 16) - (200 << 16)};
+            break;
+        }
+        case sim::mission::kRepairUnit: p2 = g() % 3 == 0 ? static_cast<i32>(g() % 600) : 0; break;  // leash
+        case sim::mission::kReclaim:  // at a feature cell
+            if (!feature_cells.empty() && g() % 4) {
+                const int c = feature_cells[g() % feature_cells.size()];
+                pos = {static_cast<i32>(((c % grid.width) << 20) | (g() & 0xFFFFF)), static_cast<i32>(g() % 255) << 16,
+                       static_cast<i32>(((c / grid.width) << 20) | (g() & 0xFFFFF))};
+            }
+            break;
         case sim::mission::kWait:  // steps, radius
             p0 = static_cast<i32>(g() % 400) - 50;
             p1 = g() % 2 ? 0 : static_cast<i32>(g() % 2000);
@@ -1481,7 +1777,8 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         // an event, which only works in the primary list (in the secondary list it would run
         // again at once, forever).
         const bool unfinished = units[static_cast<std::size_t>(i)].build_fraction_left != 0.0f;
-        if (g() % 3 == 0 && kind != sim::mission::kAttackSpecial && !(kind == sim::mission::kGetBuilt && unfinished)) {
+        if (g() % 3 == 0 && kind != sim::mission::kAttackSpecial && !(kind == sim::mission::kGetBuilt && unfinished) &&
+            !sim::construction_kind(kind)) {  // (construction steps that restart at once would run forever there)
             o->flags |= sim::order_flags::kSecondary;
             r.w32(mem + oFlags, o->flags);
         }
@@ -1534,11 +1831,189 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         r.write(L.gs + gLocalPlayer, &cenv.local_player, 1);
         r.write(L.gs + gLocalView, &cenv.local_view, 1);
         r.w32(L.gs + gGameMode, 0);
-        r.w32(L.gs + gDifficulty, 0);
+        cenv.ai_difficulty = static_cast<i32>(g() % 3);
+        conv.ai_difficulty = cenv.ai_difficulty;
+        conv.sea_level = env.sea_level;
+        r.w32(L.gs + gDifficulty, static_cast<u32>(cenv.ai_difficulty));
+        r.w32(L.gs + 0x37E9C, 0);  // no build menu shown
         const std::uint8_t zero8 = 0;
         r.write(L.gs + gMapFlags, &zero8, 1);
         r.write(L.gs + gFlash, &zero8, 1);
         r.w32(L.ret_val, world.pay_result);
+    };
+
+    // Construction routines called directly on both sides (sim/construction.h, sim/nano_spray.h).
+    // Returns false when the original failed; `what` names the operation ("" = skipped).
+    auto construction_op = [&](int i, std::string& what) -> bool {
+        sim::Unit& u = units[static_cast<std::size_t>(i)];
+        const int j = any_unit();
+        sim::Unit& v = units[static_cast<std::size_t>(j)];
+        auto set_fraction = [&](sim::Unit& x) {
+            const float fr[] = {0.0f, 1.0f, 0.5f, 0.001f, 0.999f, static_cast<float>(g() % 1000) / 1000.0f};
+            x.build_fraction_left = fr[g() % 6];
+            r.write(unit_addr(x.id) + uBuildLeft, &x.build_fraction_left, 4);
+            if (g() % 3 == 0) {
+                x.hit_points = static_cast<std::int16_t>(g() % 3 == 0 ? g() : g() % 3000);
+                r.write(unit_addr(x.id) + uHp, &x.hit_points, 2);
+            }
+        };
+        const int op = static_cast<int>(g() % 10);
+        if (std::getenv("OH_TRACE")) std::printf("  construction op %d (units %d, %d)\n", op, i, j);
+        u32 res = 0;
+        switch (op) {
+        case 0: {  // one slice of building or unbuilding
+            set_fraction(v);
+            const float works[] = {static_cast<float>(g() % 40), -static_cast<float>(g() % 40), 0.0f,
+                                   static_cast<float>(g() % 100000) / 7.0f, -static_cast<float>(g() % 3000) / 3.0f};
+            const float w = works[g() % 5];
+            const bool mine = sim::apply_build_progress(missions, u, v, w);
+            if (!r.call(kBuildProgress, 0, {unit_addr(i), unit_addr(j), fbits(w)}, &res)) return fail("build progress");
+            if ((res != 0) != mine) { std::printf("scenario %u: build progress result orig %u ours %d\n", seed, res, mine); ++st.mismatches; return true; }
+            what = "build progress";
+            break;
+        }
+        case 1: {  // decay of an unfinished unit
+            set_fraction(u);
+            const i32 n = static_cast<i32>(g() % 40);
+            sim::unfinished_decay(missions, u, n);
+            if (!r.call(kDecay, 0, {unit_addr(i), static_cast<u32>(n)})) return fail("decay");
+            what = "unfinished decay";
+            break;
+        }
+        case 2: {  // finishing
+            set_fraction(v);
+            const bool with = g() % 8 != 0;
+            sim::finalize_built_unit(missions, &u, with ? &v : nullptr);
+            if (!r.call(kFinalize, 0, {unit_addr(i), with ? unit_addr(j) : 0u})) return fail("finalize");
+            what = "finalize";
+            break;
+        }
+        case 3: {  // reclaim pulse and reclaim permission
+            const i32 n = static_cast<i32>(g() % 30);
+            const i32 mine = sim::reclaim_pulse(missions, u, v, n);
+            if (!r.call(kPulse, 0, {unit_addr(i), unit_addr(j), static_cast<u32>(n)}, &res)) return fail("reclaim pulse");
+            u32 res2 = 0;
+            const bool can = sim::can_reclaim(missions, u, v);
+            if (!r.call(kCanReclaim, unit_addr(i), {unit_addr(j)}, &res2)) return fail("can reclaim");
+            if (static_cast<i32>(res) != mine || (res2 != 0) != can) {
+                std::printf("scenario %u: reclaim pulse orig %d ours %d, can reclaim orig %u ours %d\n", seed, static_cast<i32>(res), mine, res2, can);
+                ++st.mismatches;
+                return true;
+            }
+            what = "reclaim pulse";
+            break;
+        }
+        case 4:
+        case 5: {  // yard map placement and the snapped position
+            const std::uint16_t type = static_cast<std::uint16_t>(1 + g() % ntypes);
+            const std::int16_t x = static_cast<std::int16_t>((u.pos[0] >> 20) + static_cast<i32>(g() % 16) - 8);
+            const std::int16_t z = static_cast<std::int16_t>((u.pos[2] >> 20) + static_cast<i32>(g() % 16) - 8);
+            const bool mine = sim::structure_fits(con, type, x, z);
+            const u32 cell = static_cast<std::uint16_t>(x) | static_cast<u32>(static_cast<std::uint16_t>(z)) << 16;
+            if (!r.call(kYardFits, 0, {L.defs + type * static_cast<u32>(kDefSize), cell, 0, 0}, &res)) return fail("yard placement");
+            std::array<i32, 3> pos = {static_cast<i32>(static_cast<u32>(x) << 20) | static_cast<i32>(g() & 0xFFFFF), static_cast<i32>(g()),
+                                      static_cast<i32>(static_cast<u32>(z) << 20) | static_cast<i32>(g() & 0xFFFFF)};
+            r.write(L.names + 0x200, pos.data(), 12);
+            sim::snap_to_footprint(con, type, pos);
+            if (!r.call(kSnap, 0, {L.defs + type * static_cast<u32>(kDefSize), L.names + 0x200})) return fail("snap");
+            std::array<i32, 3> theirs{};
+            r.read(L.names + 0x200, theirs.data(), 12);
+            ++st.placements;
+            if (res) ++st.placements_ok;
+            if ((res != 0) != mine || theirs != pos) {
+                std::printf("scenario %u: placement of type %u at (%d, %d): orig %u ours %d, snapped orig (%x %x %x) ours (%x %x %x)\n", seed, type, x, z,
+                            res, mine, theirs[0], theirs[1], theirs[2], pos[0], pos[1], pos[2]);
+                ++st.mismatches;
+                return true;
+            }
+            what = "placement";
+            break;
+        }
+        case 6: {  // reclaiming a feature
+            std::array<i32, 3> pos = {static_cast<i32>(g()), 0, static_cast<i32>(g())};
+            if (!feature_cells.empty() && g() % 6) {
+                const int c = feature_cells[g() % feature_cells.size()];
+                pos = {static_cast<i32>(((c % grid.width) << 20) | (g() & 0xFFFFF)), 0, static_cast<i32>(((c / grid.width) << 20) | (g() & 0xFFFFF))};
+            }
+            r.write(L.names + 0x200, pos.data(), 12);
+            const bool mine = sim::reclaim_feature(missions, u, pos);
+            if (!missions.fault.empty()) return true;
+            if (!r.call(kReclaimYield, 0, {unit_addr(i), L.names + 0x200}, &res)) return fail("feature reclaim");
+            if ((res != 0) != mine) { std::printf("scenario %u: feature reclaim orig %u ours %d\n", seed, res, mine); ++st.mismatches; return true; }
+            if (res) ++st.reclaimed_features;
+            what = "feature reclaim";
+            break;
+        }
+        case 7: {  // ownership transfer
+            const int to = static_cast<int>(g() % 3);
+            if (j == i) return true;
+            sim::transfer_ownership(missions, u, to);
+            if (!r.call(kTransfer, 0, {unit_addr(i), L.gs + 0x1B63 + static_cast<u32>(to) * kPlayerSize, 0})) return fail("transfer");
+            what = "transfer ownership";
+            break;
+        }
+        default: {  // a nano stream: start, then the effect sweep for a few steps
+            std::array<i32, 6> a{}, b{};
+            for (int k = 0; k < 3; ++k) {
+                a[static_cast<std::size_t>(k)] = static_cast<i32>(g() % 0x10000000);
+                a[static_cast<std::size_t>(k + 3)] = a[static_cast<std::size_t>(k)] + (g() % 3 ? static_cast<i32>(g() % 0x400000) : 0);
+                b[static_cast<std::size_t>(k)] = a[static_cast<std::size_t>(k)] + static_cast<i32>(g() % 0x2000000) - 0x1000000;
+                b[static_cast<std::size_t>(k + 3)] = b[static_cast<std::size_t>(k)] + static_cast<i32>(g() % 0x800000);
+            }
+            if (g() % 2) std::swap(a, b);
+            const u32 obj = L.nano;
+            std::vector<std::uint8_t> z(0x4C, 0);
+            r.write(obj, z.data(), z.size());
+            r.w32(obj, kNanoVtable);
+            r.write(L.names + 0x300, a.data(), 24);
+            r.write(L.names + 0x320, b.data(), 24);
+            u32 tick = env.game_tick;
+            sim::NanoSprayState ns;
+            sim::spawn_nano_stream(ns, world.crt, tick, a, b, 1);
+            if (!r.call(kNanoInit, obj, {L.names + 0x300, L.names + 0x320, 1})) return fail("nano start");
+            auto check = [&](const char* when) {
+                bool ok = r.r32(L.rand_state) == world.crt.state();
+                const u32 begin = r.r32(obj + 0x10), end = r.r32(obj + 0x14);
+                const std::size_t n = begin ? (end - begin) / 0x30 : 0;
+                const sim::NanoStream* sm = ns.streams.empty() ? nullptr : &ns.streams[0];
+                const std::size_t mine_n = sm ? sm->particles.size() : 0;
+                ok = ok && n == mine_n;
+                for (std::size_t k = 0; ok && k < n; ++k) {
+                    u32 w[12];
+                    r.read(begin + static_cast<u32>(k) * 0x30, w, 48);
+                    const sim::NanoParticle& q = sm->particles[k];
+                    for (int c = 0; c < 3; ++c)
+                        ok = ok && w[c] == static_cast<u32>(q.pos[static_cast<std::size_t>(c)]) && w[3 + c] == static_cast<u32>(q.target[static_cast<std::size_t>(c)]) &&
+                             w[6 + c] == static_cast<u32>(q.vel[static_cast<std::size_t>(c)]);
+                    ok = ok && w[9] == q.flags && w[10] == q.colour && static_cast<i32>(w[11]) == q.expire;
+                }
+                if (sm) ok = ok && static_cast<i32>(r.r32(obj + 4)) == sm->deadline && r.r32(obj + 8) == sm->next_emit;
+                if (!ok) {
+                    std::printf("scenario %u: nano stream differs %s (particles orig %zu ours %zu, rand orig %08x ours %08x)\n", seed, when, n, mine_n,
+                                r.r32(L.rand_state), world.crt.state());
+                    ++st.mismatches;
+                }
+                return ok;
+            };
+            if (!check("after start")) return true;
+            ++st.nano_streams;
+            for (int step = 0; step < 40; ++step) {
+                tick += 1;
+                r.w32(L.gs + 0x38A47, tick);
+                const u32 begin = r.r32(obj + 0x10), end = r.r32(obj + 0x14);
+                const bool done = !begin || end == begin;
+                sim::step_nano_streams(ns, world.crt, tick);
+                if (done) break;
+                if (!r.call(kNanoAdvance, obj, {})) return fail("nano sweep");
+                if (!check("in the sweep")) return true;
+                ++st.nano_steps;
+            }
+            r.w32(L.gs + 0x38A47, env.game_tick);
+            what = "nano stream";
+            break;
+        }
+        }
+        return true;
     };
 
     set_env(0);
@@ -1566,8 +2041,11 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             sim::Unit& u = units[static_cast<std::size_t>(i)];
             deal_steps();
             std::string what;
-            int kind_of_op = static_cast<int>(g() % 14);
-            if (kind_of_op >= 12) kind_of_op = kind_of_op == 12 ? 0 : 3;
+            int kind_of_op = static_cast<int>(g() % 17);
+            if (kind_of_op == 12) kind_of_op = 0;
+            else if (kind_of_op == 13) kind_of_op = 3;
+            else if (kind_of_op >= 14) kind_of_op = 20;  // a construction routine called directly
+            if (std::getenv("OH_TRACE")) std::printf("  op %d on unit %d\n", kind_of_op, i);
             if (kind_of_op < 2) {
                 if (!create_order(i)) return false;
                 what = "create order";
@@ -1632,6 +2110,9 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
                 ++st.settles;
                 ++st.settle_paths[stale == before ? 0u : stale];
                 what = "settle";
+            } else if (kind_of_op == 20) {
+                if (!construction_op(i, what)) return what.empty() ? true : false;
+                if (what.empty()) continue;
             } else if (kind_of_op == 5) {  // clear orders
                 const bool all = g() % 2;
                 sim::clear_orders(octx, u, all);
@@ -1716,7 +2197,14 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
 
 } // namespace
 
+LONG WINAPI report_crash(EXCEPTION_POINTERS* e) {
+    std::printf("harness crash %08lx at %p (module base %p)\n", e->ExceptionRecord->ExceptionCode, e->ExceptionRecord->ExceptionAddress,
+                static_cast<void*>(GetModuleHandleA(nullptr)));
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int main(int argc, char** argv) {
+    SetUnhandledExceptionFilter(report_crash);
     if (argc < 3) {
         std::fprintf(stderr, "usage: orders_harness <TotalA.exe> <game_dir> [scenarios] [ticks] [first scenario]\n");
         return 2;
@@ -1798,6 +2286,8 @@ int main(int argc, char** argv) {
         std::printf("\n");
     }
     std::printf("real behaviour steps that changed their event argument: %zu\n", g_event_slot_writes);
+    std::printf("construction: placements %zu (%zu fit), features reclaimed %zu, nano streams %zu (%zu sweep steps)\n", st.placements,
+                st.placements_ok, st.reclaimed_features, st.nano_streams, st.nano_steps);
     std::printf("mismatching scenarios %zu, engine faults %zu, original failures %zu\n", st.mismatches, st.faults, st.failures);
     return st.mismatches || st.failures ? 1 : 0;
 }

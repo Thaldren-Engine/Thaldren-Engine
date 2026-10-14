@@ -519,6 +519,7 @@ private:
         void builder_menu(Unit& u) override { b.outside_.builder_menu(u); }
         void build_menu_refresh(Unit& u) override { b.outside_.build_menu_refresh(u); }
         void orders_panel_changed() override { b.outside_.orders_panel_changed(); }
+        std::int32_t network_provider() override { return b.settings.network_provider; }
         // TransportLinks
         void bucket_unlink(Unit& u) override { sim::bucket_unlink(b.footprint_, u); }
         void bucket_prepend(Unit& u) override { sim::bucket_prepend(b.footprint_, u); }
