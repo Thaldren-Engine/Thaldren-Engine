@@ -28,6 +28,7 @@ add_library(sim STATIC
     engine/sim/src/orders.cpp
     engine/sim/src/pose.cpp
     engine/sim/src/projectile.cpp
+    engine/sim/src/route_search.cpp
     engine/sim/src/rng.cpp
     engine/sim/src/script_vm.cpp
     engine/sim/src/step_budget.cpp

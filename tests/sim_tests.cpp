@@ -858,8 +858,7 @@ void test_projectiles() {
 
 // Records what reaches the outside of a battle; everything else does nothing.
 struct NullOutside : sim::QuietBattleOutside {
-    int sounds = 0, explosions = 0, passability = 0, packets = 0;
-    void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override { ++passability; }
+    int sounds = 0, explosions = 0, packets = 0;
     void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override { ++packets; }
     void play_sound(std::uint16_t, const sim::Vec3i&) override { ++sounds; }
     void spawn_explosion(const sim::Vec3i&, const sim::WeaponType&, bool, bool) override { ++explosions; }
@@ -981,6 +980,11 @@ void test_unit_create() {
     mt.create.movement = 1;
     mt.create.footprint_x = mt.create.footprint_z = 1;
     mt.create.build_angle = 0x4000;
+    // One movement class of 1 x 1 cells: its grid is built from the empty flat map.
+    b.move_classes[0].named = true;
+    b.move_classes[0].footprint_x = b.move_classes[0].footprint_z = 1;
+    b.init_routes();
+    CHECK_EQ(b.move_classes[0].grade(5, 3), 3u);
 
     const std::int32_t x = (100 << 16), z = (60 << 16);
     Unit* s = b.create_unit(0, 1, x, 0, z, true, 1);
@@ -998,7 +1002,8 @@ void test_unit_create() {
     CHECK_EQ(s->metal_extraction, 0.5f * 16.0f);  // four cells of metal 3 (+1 each)
     CHECK_EQ(s->bucket, 0);
     CHECK_EQ(b.buckets.heads[0] == s, true);
-    CHECK_EQ(outside.passability, 1);
+    CHECK_EQ(b.move_classes[0].grade(5, 3), 0u);  // the structure's cells block the class now
+    CHECK_EQ(b.move_classes[0].grade(4, 2), 1u);  // next to it: rough
     CHECK_EQ(b.players[0].alive_count, 1);
     CHECK_EQ(b.players[0].units_created, 1u);
     // A second structure on the same spot: the first keeps the cells (its owner is not watched).

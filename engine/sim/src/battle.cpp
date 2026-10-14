@@ -14,7 +14,8 @@ Battle::Battle(BattleOutside& outside, const HeightMap& heights, BattleRng& rng)
       orders_{ticks, players, rng_, *this, 0},
       footprint_{map, buckets, units, ticks, players, *this, {}},
       motion_{units, ticks, players, motion_types_, heights_, motion_hooks_, {}, {}},
-      missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_} {
+      missions_{orders_, units, combat_, *this, mission_hooks_, mission_types_, alliances, mission_env_},
+      route_{map, units, ticks, players, route_types_, move_classes, feature_blocks, explored, route_search, motion_, route_hooks_, {}, {}} {
     alliances.resize(kPlayerRecords);
     types[0].info.max_damage = 0;  // the blank type of empty slots
     types[0].tick.damage_modifier = 0;
@@ -78,6 +79,35 @@ void Battle::sync_settings() {
     mission_env_.sea_level = s.sea_level;
     mission_env_.gravity = s.gravity;
     mission_env_.addresses = s.addresses;
+    route_types_.resize(types.size());
+    for (std::size_t k = 0; k < types.size(); ++k) {
+        route_types_[k] = types[k].route;
+        route_types_[k].footprint_x = types[k].create.footprint_x;
+        route_types_[k].footprint_z = types[k].create.footprint_z;
+        route_types_[k].movement = types[k].create.movement;
+    }
+    route_.env.game_tick = unit_env_.game_tick;
+    route_.env.sea_level = s.sea_level;
+    route_.env.player_count = s.player_count;
+    route_.env.units_per_player = s.units_per_player;
+}
+
+void Battle::init_routes() {
+    sync_settings();
+    const std::size_t blocks = static_cast<std::size_t>(map.width >> 1) * static_cast<std::size_t>(map.height >> 1);
+    if (explored.size() != blocks) explored.assign(blocks, 0xFFFF);
+    build_passability(route_);
+    init_route_search(route_);
+}
+
+void Battle::run_route_search() {
+    sync_settings();
+    sim::run_route_search(route_);
+}
+
+void Battle::refresh_passability(std::int16_t x, std::int16_t z, std::int16_t w, std::int16_t h) {
+    sync_settings();
+    sim::update_passability(route_, x, z, w, h);
 }
 
 void Battle::step_units_and_projectiles() {
@@ -91,7 +121,7 @@ Unit* Battle::unit_by_id(std::uint16_t id) { return id < units.size() ? &units[i
 void Battle::claim_yard_cells(Unit& u) {
     // Yard opening (0x47DAC0) after the cells were found free and the yard flag changed.
     claim_wanted_cells(footprint_, u);
-    outside_.update_passability(u.cell_x, u.cell_z, u.footprint_x, u.footprint_z);
+    sim::update_passability(route_, u.cell_x, u.cell_z, u.footprint_x, u.footprint_z);
 }
 
 void Battle::weapons(Unit& unit, std::uint32_t& stale_word) { process_weapon_slots(weapons_, unit, stale_word); }

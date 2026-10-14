@@ -39,4 +39,7 @@ bool load_unit_assets(Vfs& vfs, const UnitDefRecord& d, UnitTypeAssets& out, std
 void to_battle_unit_type(const UnitDefRecord& d, const UnitTypeAssets& assets, const std::vector<sim::WeaponType>& weapons,
                          sim::BattleUnitType& out);
 
+// The movement classes of gamedata\moveinfo.tdf (a class is in use when it has a name).
+std::array<sim::MoveClass, sim::kMoveClasses> to_move_classes(const UnitDefContext& ctx);
+
 } // namespace ta

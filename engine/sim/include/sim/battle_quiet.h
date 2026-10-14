@@ -9,10 +9,9 @@ namespace sim {
 
 class QuietBattleOutside : public BattleOutside {
 public:
-    // Moves are always allowed (the placement check is not built yet); flat buckets.
-    bool can_place(Unit&, std::int16_t, std::int16_t, std::uint32_t) override { return true; }
+    // Flat buckets; structures fit anywhere.
     std::uint8_t bucket_height(const Unit&) override { return 0; }
-    void route_search_forget(MotionGoal&) override {}
+    bool structure_fits(std::uint16_t, std::int16_t, std::int16_t) override { return true; }
     void update_sight(Unit&) override {}
     void enemies_in_radius(int, const std::array<std::int32_t, 3>&, std::int32_t, std::vector<Unit*>&) override {}
     Unit* fire_at_will_target(Unit&) override { return nullptr; }
@@ -29,8 +28,6 @@ public:
     void attach_unit(Unit&, std::int32_t, std::int32_t, std::int32_t) override {}
     void drop_unit(Unit&, std::int32_t) override {}
     void detach_from_carrier(Unit&) override {}
-    void update_passability(std::int16_t, std::int16_t, std::int16_t, std::int16_t) override {}
-    void passability_after_release(Unit&) override {}
     void join_group(Unit&, std::int32_t) override {}
     void stamp_line_of_sight(Unit&) override {}
     void victory_unit_created(Unit&) override {}
