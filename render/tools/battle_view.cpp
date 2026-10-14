@@ -308,7 +308,16 @@ int main(int argc, char** argv) {
             } else {
                 std::size_t diff = 0;
                 for (std::size_t i = 0; i < g.pixels.size() && i < frame.pixels.size(); ++i) diff += g.pixels[i] != frame.pixels[i];
-                std::printf("  GPU vs CPU reference: %zu differing pixels\n", diff);
+                std::printf("  GPU (%s) vs CPU reference: %zu differing pixels\n", gpu->driver().c_str(), diff);
+                std::vector<std::uint8_t> rgba;
+                if (gpu->render_rgba(list, palette, rgba)) {
+                    std::size_t rdiff = 0;
+                    for (std::size_t i = 0; i < frame.pixels.size(); ++i) {
+                        const render::Rgb& c = palette[frame.pixels[i]];
+                        rdiff += rgba[i * 4] != c.r || rgba[i * 4 + 1] != c.g || rgba[i * 4 + 2] != c.b;
+                    }
+                    std::printf("  GPU palette resolve vs CPU reference: %zu differing pixels\n", rdiff);
+                }
                 char name[32];
                 std::snprintf(name, sizeof name, "gpu_%04d.bmp", f);
                 render::write_bmp(prefix + name, g, palette);

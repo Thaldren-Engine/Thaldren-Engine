@@ -10,6 +10,9 @@ add_library(render STATIC
 target_include_directories(render PUBLIC include)
 target_link_libraries(render PUBLIC sim)
 target_compile_options(render PRIVATE ${WARN_FLAGS})
+if(MSVC)
+    target_compile_definitions(render PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # Importers from the original game's graphics into the renderer's formats.
 add_library(ta_compat_render STATIC ${CMAKE_SOURCE_DIR}/ta_compat/src/render_assets.cpp)
