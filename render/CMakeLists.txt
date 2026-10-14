@@ -43,6 +43,11 @@ if(TARGET render_gpu)
 endif()
 target_compile_options(battle_view PRIVATE ${WARN_FLAGS})
 
+# GAF inspection tool (sequence listing and frame dumps).
+add_executable(gaf_dump ${CMAKE_SOURCE_DIR}/ta_compat/tools/gaf_dump.cpp)
+target_link_libraries(gaf_dump PRIVATE ta_compat_render)
+target_compile_options(gaf_dump PRIVATE ${WARN_FLAGS})
+
 add_executable(render_tests tests/render_tests.cpp)
 target_link_libraries(render_tests PRIVATE render)
 target_compile_options(render_tests PRIVATE ${WARN_FLAGS})

@@ -18,6 +18,12 @@ int main(int argc, char** argv) {
     }
     ta::Vfs vfs;
     vfs.mount_game_dir(argv[1]);
+    const std::string path = argv[2];
+    if (path.find_first_of("*?") != std::string::npos) {
+        // A wildcard lists the matching files in the game's enumeration order.
+        for (const std::string& name : vfs.enumerate(path)) std::printf("%s\n", name.c_str());
+        return 0;
+    }
     std::vector<std::uint8_t> data;
     std::string source;
     if (!vfs.read(argv[2], data, &source)) {
