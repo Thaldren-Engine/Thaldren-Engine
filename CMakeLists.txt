@@ -30,6 +30,9 @@ add_library(sim STATIC
     engine/sim/src/motion.cpp
     engine/sim/src/missions.cpp
     engine/sim/src/construction.cpp
+    engine/sim/src/unit_missions_common.cpp
+    engine/sim/src/air_missions.cpp
+    engine/sim/src/ground_missions.cpp
     engine/sim/src/nano_spray.cpp
     engine/sim/src/orders.cpp
     engine/sim/src/pose.cpp

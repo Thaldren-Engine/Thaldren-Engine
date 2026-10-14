@@ -1,6 +1,7 @@
 #include "sim/missions.h"
 
 #include "sim/construction.h"
+#include "sim/unit_missions.h"
 
 #include "sim/weapons.h"
 #include "sim/x87.h"
@@ -699,7 +700,7 @@ bool mission_implemented(std::uint8_t kind) {
     case mission::kMoveGround: case mission::kPatrol: case mission::kQueuedMove: case mission::kQueuedPatrol:
         return true;
     default:
-        return construction_kind(kind);
+        return construction_kind(kind) || unit_mission_kind(kind);
     }
 }
 
@@ -733,7 +734,10 @@ std::int32_t run_mission_behaviour(Missions& m, Unit& u, MissionOrder& o, std::u
     case mission::kPatrol: return patrol(m, u, o, event);
     case mission::kQueuedMove:
     case mission::kQueuedPatrol: return queued_move(m, o);
-    default: return construction_kind(o.kind) ? run_construction_behaviour(m, u, o, event) : m.systems.run_other(u, o, event);
+    default:
+        if (construction_kind(o.kind)) return run_construction_behaviour(m, u, o, event);
+        if (unit_mission_kind(o.kind)) return run_unit_mission(m, u, o, event);
+        return m.systems.run_other(u, o, event);
     }
 }
 
