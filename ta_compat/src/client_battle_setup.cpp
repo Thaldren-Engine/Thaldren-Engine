@@ -16,6 +16,15 @@
 #include "ta/model3do.h"
 #include "ta/sight_tables.h"
 
+// AI adapter: with the AI agent's computer player present, AI players get their type data,
+// the map's metal sites and the profile (ai\*.txt); otherwise they stand still.
+#if __has_include("ta/ai_profile.h")
+#define CLIENT_HAVE_AI 1
+#include "ta/ai_profile.h"
+#else
+#define CLIENT_HAVE_AI 0
+#endif
+
 namespace ta {
 
 struct ClientWorld::Outside : sim::QuietBattleOutside {
@@ -151,6 +160,9 @@ bool ClientWorld::setup_battle(std::string& error) {
     {
         MapEconomy me;
         if (!ota.empty()) read_map_economy(ota, 0, me);
+#if CLIENT_HAVE_AI
+        b.settings.surface_metal = me.surface_metal < 0 ? 0 : me.surface_metal;
+#endif
         init_map_economy(b, tnt_, me, fdefs_);
         b.step_wind();
     }
@@ -186,6 +198,9 @@ bool ClientWorld::setup_battle(std::string& error) {
                 bind_pose_primitives(t->assets.pose_model, t->model);
                 to_battle_unit_type(d, t->assets, weapon_types_, b.types.back());
                 to_targeting_type(d, defs_.categories, weapon_types_, b.types.back().targeting);
+#if CLIENT_HAVE_AI
+                to_ai_type(d, weapon_types_, b.types.back().ai);
+#endif
                 t->ok = true;
                 ++loaded;
             }
@@ -221,6 +236,13 @@ bool ClientWorld::setup_battle(std::string& error) {
         }
     }
     b.start_players();
+#if CLIENT_HAVE_AI
+    {
+        AiProfileReport report;
+        if (!load_ai_profile(vfs_, ai_profile_path(ota, 0), defs_, b.ai(), report)) std::printf("no computer player profile\n");
+        b.collect_ai_metal_sites();
+    }
+#endif
     b.rebuild_sight(true);
     return true;
 }
