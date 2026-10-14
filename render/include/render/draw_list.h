@@ -17,6 +17,7 @@ enum class DrawOp : std::uint8_t {
     BlitBlend,  // mix the sprite's non-key pixels with the frame through the blend table
     Line,       // one-colour line from (x, y) to (x1, y1)
     BlitLight,  // lighten the frame under the sprite's non-key pixels through the light table
+    BlitRemap,  // replace the frame under the sprite's non-key pixels through the remap table (fog)
 };
 
 struct DrawCmd {
@@ -34,6 +35,8 @@ struct DrawList {
     // Light table for BlitLight, in the blend table's layout: entry [src * 256 + dst]
     // (see light_blend_table). Needed only when the list holds BlitLight commands.
     const BlendTable* light = nullptr;
+    // Table for BlitRemap, same layout (see gray_remap_table). Needed only with BlitRemap commands.
+    const BlendTable* remap = nullptr;
     std::vector<DrawCmd> cmds;
     // Sprites made for this frame (model sprites, shadows, directly drawn pieces).
     std::vector<std::unique_ptr<Sprite8>> transient;
@@ -51,6 +54,9 @@ struct DrawList {
     void lighten(const Sprite8* s, int x, int y, const ClipRect& clip, bool persistent) {
         cmds.push_back({DrawOp::BlitLight, s, persistent, x, y, 0, 0, 0, clip});
     }
+    void remap_under(const Sprite8* s, int x, int y, const ClipRect& clip, bool persistent) {
+        cmds.push_back({DrawOp::BlitRemap, s, persistent, x, y, 0, 0, 0, clip});
+    }
     void line(int x0, int y0, int x1, int y1, std::uint8_t colour, const ClipRect& clip) {
         cmds.push_back({DrawOp::Line, nullptr, false, x0, y0, x1, y1, colour, clip});
     }
@@ -63,6 +69,12 @@ Image8 execute(const DrawList& list, const BlendTable& blend);
 // light level p - 0x4F of the 32 x 256 light table (palettes\PALETTE.LHT), applied to
 // the frame pixel; other pixel values leave the frame alone.
 BlendTable light_blend_table(const std::vector<std::uint8_t>& light32);
+
+// The game's grey remap (the original's 0x4BAD30): every palette colour maps to the colour
+// nearest (squared RGB distance, searched among colours whose r + g + b lies within 40 of
+// the target's, in order of r + g + b) to its grey (r + g + b) / 3. Returned as a mixing
+// table: entry [src * 256 + dst] = grey of dst, for any src.
+BlendTable gray_remap_table(const Palette& palette);
 
 // Turns every Line command into a transient sprite holding exactly the
 // reference line's pixels, so backends without a line primitive stay exact.

@@ -138,7 +138,10 @@ void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
         const int sy = hi16(u.pos[2] - (c.scroll_y << 16)) - (ui.ground_height >> 1) + c.origin_y;
         out.blend(out.keep(std::move(sh)), ux + 5, sy, clip, false);
     }
-    out.blit(out.keep(std::move(sprite)), ux, uy, clip, false);
+    if (ui.translucent)
+        out.blend(out.keep(std::move(sprite)), ux, uy, clip, false);
+    else
+        out.blit(out.keep(std::move(sprite)), ux, uy, clip, false);
 
     // Pieces that are not cached are drawn straight onto the frame each time.
     bool any = false;
@@ -241,6 +244,108 @@ void draw_projectile(const BattleScene& s, const ProjectileInstance& p, DrawList
         }
         break;
     }
+}
+
+// C division by 32 (truncation) and the matching remainder.
+int div32(int v) { return v / 32; }
+int mod32(int v) { return v % 32; }
+
+// The fog grid over the view and its drawing (the original's 0x4843C0 / 0x4848E0).
+void draw_fog(const BattleScene& s, DrawList& out) {
+    const FogOfWar& f = *s.fog;
+    const Camera& c = s.camera;
+    const int gw = c.view_width / 16 / 2 + ((c.view_width & 31) ? 3 : 2);
+    const int gh = c.view_height / 16 / 2 + ((c.view_height & 31) ? 3 : 2);
+    std::vector<std::array<std::uint8_t, 2>> cells(static_cast<std::size_t>(gw) * static_cast<std::size_t>(gh), {0, 0});
+    const int x0 = mod32(c.scroll_x) < 16 ? div32(c.scroll_x) - 1 : div32(c.scroll_x);
+    const int z0 = mod32(c.scroll_y) < 16 ? div32(c.scroll_y) - 1 : div32(c.scroll_y);
+    const bool fog = !f.unseen.empty();
+    auto mark = [&](int which, int gx, int gz) {
+        // The block's corner bit in the four cells around it.
+        const std::pair<int, int> at[4] = {{gx, gz}, {gx - 1, gz}, {gx, gz - 1}, {gx - 1, gz - 1}};
+        const std::uint8_t bit[4] = {1, 2, 4, 8};
+        for (int k = 0; k < 4; ++k)
+            if (static_cast<unsigned>(at[k].first) < static_cast<unsigned>(gw) && static_cast<unsigned>(at[k].second) < static_cast<unsigned>(gh))
+                cells[static_cast<std::size_t>(at[k].second * gw + at[k].first)][static_cast<std::size_t>(which)] |= bit[k];
+    };
+    for (int bz = z0; bz < z0 + gh; ++bz)
+        for (int bx = x0; bx < x0 + gw; ++bx) {
+            if (static_cast<unsigned>(bx) >= static_cast<unsigned>(f.blocks_x) || static_cast<unsigned>(bz) >= static_cast<unsigned>(f.blocks_z))
+                continue;
+            const std::size_t at = static_cast<std::size_t>(bz) * static_cast<std::size_t>(f.blocks_x) + static_cast<std::size_t>(bx);
+            if (fog && at < f.unseen.size() && f.unseen[at]) mark(1, bx - x0, bz - z0);
+            if (at < f.unexplored.size() && f.unexplored[at]) mark(0, bx - x0, bz - z0);
+        }
+    // Map edges: the corners outside the map copy the ones inside.
+    auto fix = [&](int gx, int gz, std::uint8_t if_bit, std::uint8_t set_bit) {
+        for (int which = 0; which < 2; ++which) {
+            if (which == 1 && !fog) continue;
+            auto& v = cells[static_cast<std::size_t>(gz * gw + gx)][static_cast<std::size_t>(which)];
+            if (v & if_bit) v |= set_bit;
+        }
+    };
+    if (z0 < 0)
+        for (int gx = 0; gx < gw; ++gx) {
+            fix(gx, 0, 4, 1);
+            fix(gx, 0, 8, 2);
+        }
+    if (f.blocks_z < z0 + gh && gh >= 2)
+        for (int gx = 0; gx < gw; ++gx) {
+            fix(gx, gh - 2, 1, 4);
+            fix(gx, gh - 2, 2, 8);
+        }
+    if (x0 < 0)
+        for (int gz = 0; gz < gh; ++gz) {
+            fix(0, gz, 8, 4);
+            fix(0, gz, 2, 1);
+        }
+    if (f.blocks_x < x0 + gw && gw >= 2)
+        for (int gz = 0; gz < gh; ++gz) {
+            fix(gw - 2, gz, 4, 8);
+            fix(gw - 2, gz, 1, 2);
+        }
+    // Drawing.
+    const ClipRect clip = c.view_clip();
+    const int mx = mod32(c.scroll_x), mz = mod32(c.scroll_y);
+    const int ox = c.origin_x + (mx > 15 ? 16 : -16) - mx;
+    const int oz = c.origin_y + (mz > 15 ? 16 : -16) - mz;
+    const int phase = div32(c.scroll_x + 16) + div32(c.scroll_y + 16);
+    out.remap = f.gray_table;
+    const Sprite8* black_cell = nullptr;
+    const Sprite8* grey_cell = nullptr;
+    for (int gz = 0; gz < gh; ++gz)
+        for (int gx = 0; gx < gw; ++gx) {
+            const auto& v = cells[static_cast<std::size_t>(gz * gw + gx)];
+            const int x = ox + gx * 32, y = oz + gz * 32;
+            const std::size_t seq = static_cast<std::size_t>((gx + gz + phase) & 3);
+            if (v[0] == 0xF) {
+                if (!black_cell) {
+                    Sprite8 b;
+                    b.width = b.height = 32;
+                    b.has_key = false;
+                    b.pixels.assign(32 * 32, f.fill);
+                    black_cell = out.keep(std::move(b));
+                }
+                out.blit(black_cell, x, y, clip, false);
+                continue;
+            }
+            if (v[1] != 0 && f.gray_table) {
+                if (v[1] == 0xF) {
+                    if (!grey_cell) {
+                        Sprite8 g;
+                        g.width = g.height = 32;
+                        g.key = 1;
+                        g.pixels.assign(32 * 32, 0);
+                        grey_cell = out.keep(std::move(g));
+                    }
+                    out.remap_under(grey_cell, x, y, clip, false);
+                } else if (f.gray[seq] && static_cast<std::size_t>(v[1] - 1) < f.gray[seq]->size()) {
+                    out.remap_under(&(*f.gray[seq])[static_cast<std::size_t>(v[1] - 1)], x, y, clip, true);
+                }
+            }
+            if (v[0] != 0 && f.black[seq] && static_cast<std::size_t>(v[0] - 1) < f.black[seq]->size())
+                out.blit(&(*f.black[seq])[static_cast<std::size_t>(v[0] - 1)], x, y, clip, true);
+        }
 }
 
 } // namespace
@@ -358,6 +463,7 @@ DrawList build_draw_list(const BattleScene& s) {
     for (const auto& row : rows)
         for (const UnitInstance* ui : row)
             if (!ui->ground) draw_unit(s, *ui, out);
+    if (s.fog) draw_fog(s, out);
     return out;
 }
 

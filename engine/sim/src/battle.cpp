@@ -155,6 +155,11 @@ bool Battle::unit_seen_by(int viewer, const Unit& unit) {
     return sim::unit_visible(sight_world_, viewer, unit);
 }
 
+bool Battle::point_seen_by(int viewer, const std::array<std::int32_t, 3>& pos) {
+    sync_settings();
+    return point_in_sight(sight_world_, viewer, pos);
+}
+
 void Battle::update_sight(Unit& u) {
     if (!sight_ready_) {
         outside_.update_sight(u);

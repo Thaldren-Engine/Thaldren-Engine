@@ -168,6 +168,9 @@ bool unit_visible(SightWorld& w, int viewer, const Unit& unit);
 bool position_explored(const SightWorld& w, int owner, const std::array<std::int32_t, 3>& pos);
 // Sight of the viewed player at a block (presentation): seen (fog) or explored (no fog).
 bool block_seen(const SightWorld& w, int viewer, std::int32_t bx, std::int32_t bz);
+// The same at a 16.16 world point (block of whole x, whole z minus half the height): what the
+// drawing of shots and the radar marks of whatever is seen test.
+bool point_in_sight(const SightWorld& w, int viewer, const std::array<std::int32_t, 3>& pos);
 
 // The sensor pass (the viewed player's turn of the players' stage): radar and sonar marks
 // from the viewed player's active sensors, enemy jammers, cloak hold-offs near visible

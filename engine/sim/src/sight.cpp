@@ -556,6 +556,10 @@ bool position_explored(const SightWorld& w, int owner, const std::array<std::int
 
 bool block_seen(const SightWorld& w, int viewer, std::int32_t bx, std::int32_t bz) { return block_bit(w, viewer, bx, bz); }
 
+bool point_in_sight(const SightWorld& w, int viewer, const std::array<std::int32_t, 3>& pos) {
+    return point_seen(w, viewer, pos[0], pos[1], pos[2]);
+}
+
 void update_sensors(SightWorld& w) {
     using namespace sight_unit_flags;
     if (w.env.player_count < 2) return;

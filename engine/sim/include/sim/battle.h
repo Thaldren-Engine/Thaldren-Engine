@@ -236,8 +236,10 @@ public:
     // Once per drawn frame, after that frame's steps (even none): lingering sight of dead
     // units expires (the original runs it per frame, so it depends on the frame rate).
     void expire_lingering_sight();
-    // Whether player record `viewer` sees the unit (line of sight test).
+    // Whether player record `viewer` sees the unit (line of sight test), and the block test at
+    // a point (shots are drawn where the viewed player sees).
     bool unit_seen_by(int viewer, const Unit& unit);
+    bool point_seen_by(int viewer, const std::array<std::int32_t, 3>& pos);
     std::uint32_t sight_faults() const { return sight_world_.faults; }
 
     // Per-step inputs the original reads from its game state.
