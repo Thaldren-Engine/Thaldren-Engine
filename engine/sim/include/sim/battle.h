@@ -173,6 +173,7 @@ public:
     ProjectileWorld& projectile_world() { return projectile_world_; }
     OrderContext& order_context() { return orders_; }
     FootprintWorld& footprint_world() { return footprint_; }
+    UnitWorld& unit_world() { return *this; }  // for unit_get_value / unit_set_value / unit_set_activate
 
 private:
     void sync_settings();
