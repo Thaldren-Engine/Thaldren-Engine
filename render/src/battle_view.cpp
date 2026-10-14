@@ -120,13 +120,38 @@ void draw_feature(const BattleScene& s, const FeatureInstance& f, DrawList& out)
     }
 }
 
+void draw_unit_as(const BattleScene& s, const UnitInstance& ui, DrawList& out, bool carried);
+
 void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
+    if (ui.unit->carrier) return;  // carried units are drawn with their carrier
+    draw_unit_as(s, ui, out, false);
+    // Units on board (a factory's pad): after the carrier, each in its own place (the original
+    // composites them into the carrier's two-plane sprite with a depth test; approximated).
+    for (const sim::Unit* cu = ui.unit->cargo_head; cu; cu = cu->cargo_next) {
+        if (cu->flags & 0x20000u) continue;  // hidden on board
+        for (const UnitInstance& other : s.units)
+            if (other.unit == cu) draw_unit_as(s, other, out, true);
+    }
+}
+
+void draw_unit_as(const BattleScene& s, const UnitInstance& ui, DrawList& out, bool carried) {
     const sim::Unit& u = *ui.unit;
-    if (!ui.model || u.carrier) return;  // carried units are drawn by their carrier (not modelled yet)
+    if (!ui.model) return;
     const Camera& c = s.camera;
     const ClipRect clip = c.view_clip();
     const sim::PoseState pose = pose_for_drawing(u.pose, u.pitch, u.heading, u.bank);
-    Sprite8 sprite = rasterize_model_sprite(*ui.model, pose, ui.params);
+    // Units under construction: structures (and units on a pad) get the construction look on
+    // their two-plane sprite; mobile units elsewhere are drawn over again with their textures.
+    Sprite8 sprite;
+    if (u.build_fraction_left != 0.0f && (carried || (u.flags & 0x20000000u))) {
+        std::vector<std::uint8_t> depth;
+        ModelDrawParams all = ui.params;
+        all.all_pieces = true;
+        sprite = rasterize_model_sprite_depth(*ui.model, pose, all, depth);
+        apply_nanoframe(sprite, depth, *ui.model, pose, all, u.build_fraction_left, u.id, s.game_tick);
+    } else {
+        sprite = rasterize_model_sprite(*ui.model, pose, ui.params);
+    }
     const int ux = screen_x(c, u.pos[0]);
     const int uy = screen_y(c, u.pos[1], u.pos[2]);
     if (ui.shadow && s.unit_shadows) {
@@ -334,6 +359,15 @@ DrawList build_draw_list(const BattleScene& s) {
         for (int k = 0; k < cols_n; ++k)
             if (const FeatureInstance* f = feature_at(col0 + k, row0 + r))
                 if (f->height >= 10) draw_feature(s, *f, out);
+    }
+    // Nano lathe particles (the effect list 6): single pixels in their colour.
+    for (const NanoDotInstance& d : s.nano) {
+        const int x = screen_x(c, d.pos[0]), y = screen_y(c, d.pos[1], d.pos[2]);
+        Sprite8 dot;
+        dot.width = dot.height = 1;
+        dot.key = static_cast<std::uint8_t>(d.colour ^ 1);
+        dot.pixels.assign(1, d.colour);
+        out.blit(out.keep(std::move(dot)), x, y, c.view_clip(), false);
     }
     for (const ProjectileInstance& p : s.projectiles) draw_projectile(s, p, out);
     // World effects (the original's 0x420B00): debris pieces, then every effect's glow, then

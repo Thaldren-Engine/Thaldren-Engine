@@ -344,8 +344,12 @@ int main(int argc, char** argv) {
             {"ARMHAM", 0, 1620, 1760}, {"ARMSOLAR", 0, 1300, 1800},
             {"CORCOM", 1, 1520, 1980}, {"CORLLT", 1, 1420, 2000}, {"CORAK", 1, 1580, 1940}, {"CORRAID", 1, 1680, 1980},
             {"CORSTORM", 1, 1460, 1940},
+            // Construction: a kbot lab and a construction kbot of player 0.
+            {"ARMLAB", 0, 1180, 1560}, {"ARMCK", 0, 1300, 1600},
         };
         for (const Spawn& s : spawns) battle_type(s.name);  // all types first: the type table must not grow under live units
+        battle_type("ARMPW");     // built by the lab
+        battle_type("ARMSOLAR");  // built by the construction kbot
         for (const Spawn& s : spawns) {
             const std::uint16_t type = battle_type(s.name);
             if (!type) {
@@ -363,6 +367,13 @@ int main(int argc, char** argv) {
             if (ta::stricmp_c(btypes[b.ticks[i].type_index]->def->unit_name, "CORRAID") != 0) continue;
             const std::int32_t to[3] = {1250 << 16, 0, 1640 << 16};
             sim::enqueue_order(b.order_context(), b.units[i], sim::mission::kMoveGround, false, nullptr, to, 0, 0);
+        }
+        // Construction: the lab builds two kbots, the construction kbot a solar collector nearby.
+        for (std::size_t i = 1; i < b.units.size(); ++i) {
+            if (b.ticks[i].type_index == 0 || b.ticks[i].type_index >= btypes.size()) continue;
+            const std::string& name = btypes[b.ticks[i].type_index]->def->unit_name;
+            if (ta::stricmp_c(name, "ARMLAB") == 0) b.order_build_count(b.units[i], battle_type("ARMPW"), 2);
+            if (ta::stricmp_c(name, "ARMCK") == 0) b.order_mobile_build(b.units[i], battle_type("ARMSOLAR"), {1360 << 16, 0, 1540 << 16}, false);
         }
     }
 
@@ -544,6 +555,10 @@ int main(int argc, char** argv) {
                 scene.effects.push_back(ei);
             }
             scene.light = light_table.empty() ? nullptr : &light_table;
+            scene.game_tick = b.game_tick();
+            scene.nano.clear();
+            for (const sim::NanoStream& ns : b.nano.streams)
+                for (const sim::NanoParticle& np : ns.particles) scene.nano.push_back({np.pos, static_cast<std::uint8_t>(np.colour)});
             for (std::size_t i = 1; i < b.units.size(); ++i) {
                 const sim::UnitTickState& t = b.ticks[i];
                 if (t.type_index == 0 || t.type_index >= btypes.size()) continue;
@@ -607,6 +622,7 @@ int main(int argc, char** argv) {
                     battle->step_effects();   // stage 5
                     battle->players_stage();  // stage 6
                     battle->step_features();  // stage 7
+                battle->step_nano();      // stage 9 (the nano streams' part of the effect sweep)
                 } else {
                     for (auto& u : units) u->script->tick(1);
                 }
@@ -623,6 +639,15 @@ int main(int argc, char** argv) {
                 for (const auto& slot : battle->units[i].weapons) aimed += slot.target_z == sim::kUnitTarget && slot.target_x != 0;
             }
             std::printf("  live units %d, weapon slots aimed at a unit %d, shots in flight %d\n", live, aimed, battle->projectiles.count);
+            int nano = 0;
+            for (const auto& ns : battle->nano.streams) nano += static_cast<int>(ns.particles.size());
+            for (std::size_t i = 1; i < battle->units.size(); ++i)
+                if (battle->ticks[i].type_index != 0 && battle->units[i].build_fraction_left != 0.0f)
+                    std::printf("  under construction: unit %zu (%s) %.3f left, hp %d%s\n", i, btypes[battle->ticks[i].type_index]->def->unit_name.c_str(),
+                                static_cast<double>(battle->units[i].build_fraction_left), battle->units[i].hit_points,
+                                battle->units[i].carrier ? " on a pad" : "");
+            std::printf("  nano streams %zu, particles %d, rand() state %08x%s%s\n", battle->nano.streams.size(), nano, battle->crt_rand.state(),
+                        battle->missions().fault.empty() ? "" : " MISSION FAULT: ", battle->missions().fault.c_str());
             int alive = 0, wrecks = 0, burning = 0;
             for (std::size_t i = 1; i < battle->units.size(); ++i) alive += battle->ticks[i].type_index != 0;
             for (const auto& c : battle->map.cells)
@@ -679,6 +704,7 @@ int main(int argc, char** argv) {
                 battle->step_effects();   // stage 5
                 battle->players_stage();  // stage 6
                 battle->step_features();  // stage 7
+                battle->step_nano();      // stage 9 (the nano streams' part of the effect sweep)
             } else {
                 for (auto& u : units) u->script->tick(1);
             }
