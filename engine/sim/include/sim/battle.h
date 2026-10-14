@@ -3,9 +3,8 @@
 // together in the original's order (see docs/RE_MEMORY.md, "Battle step").
 //
 // The systems built so far call each other directly here; everything else —
-// systems not built yet (motion, mission behaviours, transport, economy,
-// features, line of sight), presentation, network and user interface — goes to
-// one BattleOutside interface.
+// systems not built yet (mission behaviours, transport, line of sight, AI),
+// presentation, network and user interface — goes to one BattleOutside interface.
 
 #include <array>
 #include <cstdint>
@@ -14,6 +13,7 @@
 
 #include "sim/anim.h"
 #include "sim/combat.h"
+#include "sim/economy.h"
 #include "sim/effects.h"
 #include "sim/features.h"
 #include "sim/fire.h"
@@ -44,6 +44,7 @@ struct BattleUnitType {
     MissionTypeInfo mission;
     TargetingTypeInfo targeting;
     RouteType route;  // movement class and placement limits (footprint and movement come from `create`)
+    EconomyType economy;  // production, upkeep and storage (sim/economy.h)
 };
 
 // Settings and per-step inputs shared by the systems.
@@ -69,6 +70,7 @@ struct BattleSettings {
     std::uint16_t units_per_player = 0;  // size of a player's part of the unit table
     bool lava_world = false;          // lava instead of water splashes
     std::uint8_t feature_network_role = 0;  // feature damage: 0 alone, 1 network host, 2 other machine
+    float tidal_strength = 0.0f;      // the map's tidal strength (tidal generators)
     OriginalAddresses addresses;
 };
 
@@ -93,25 +95,32 @@ public:
     virtual void ai_rescore(int table) = 0;
     // Players' stage (0x464F80; its route search turn at the start is built in): an AI player's
     // own controller work (0x408C40 before its weapon-target pass); after each player's sight
-    // updates the rest of its turn (view sight, watch mode and victory checks, economy,
-    // sensors); the end-of-stage checks.
+    // updates the view player's minimap composite (0x466DC0, every step); the end-of-stage checks.
     virtual void ai_controller_step(int player) = 0;
     virtual void player_stage_rest(int player) = 0;
     virtual void players_stage_end() = 0;
-    virtual bool use_resources_if_not_stalled(Unit& unit, float energy, float metal) = 0;
+    // Each player's 30-step turn in the players' stage, around its economy settlement (built
+    // in, sim/economy.h): before it the local player's victory and defeat checks (they may
+    // start the end of the game: Battle::end_game); after it the view player's radar, sonar
+    // and cloak detection (0x467440), fog minimap and network view state.
+    virtual void player_victory_turn(int) {}
+    virtual void player_sensor_turn(int) {}
+    // Network game: resources and the explored map shared automatically (packet 0x16;
+    // kind 1 energy, 2 metal, from Battle::auto_share_resources).
+    virtual void resources_shared(int /*kind*/, int /*from*/, int /*to*/, float /*amount*/) {}
+    virtual void explored_map_shared(int /*from*/, int /*to*/) {}
     // Unit creation and footprints (sim/unit_create.h, sim/footprint.h): the parts owned by
     // other systems. Group list membership (0x480250, group 0 for a new unit), line of sight (0x482AC0) and
     // the victory conditions' unit-created notification (0x490580).
     virtual void join_group(Unit& unit, std::int32_t group) = 0;
     virtual void stamp_line_of_sight(Unit& unit) = 0;
     virtual void victory_unit_created(Unit& unit) = 0;
-    // Not built yet: mission behaviours, attack retargeting, transport, economy, features.
+    // Not built yet: mission behaviours, attack retargeting, transport.
     virtual std::int32_t run_mission(Unit& unit, MissionOrder& order, std::uint32_t& event) = 0;
     virtual void attach_unit(Unit& unit, std::int32_t passenger, std::int32_t piece, std::int32_t mode) = 0;
     virtual void drop_unit(Unit& unit, std::int32_t passenger) = 0;
     virtual void detach_from_carrier(Unit& unit) = 0;
     virtual void release_unit(Unit& unit) = 0;
-    virtual bool pay_energy(Unit& worker, float amount) = 0;
     virtual void emit_sfx(Unit& unit, std::int32_t piece, std::int32_t type) = 0;
     virtual void reveal_dead_unit(Unit& unit) = 0;
     virtual void forget_fog(Unit& unit) = 0;
@@ -191,6 +200,12 @@ public:
     std::vector<std::uint8_t> feature_blocks;  // by feature type: nonzero when it blocks movement
     std::vector<std::uint16_t> explored;       // per 2 x 2 cells: bit p = player p has seen it
     RouteSearch route_search;
+    // Resources (sim/economy.h): each player record's economy besides its stored amounts
+    // (PlayerSlot::energy_stored / metal_stored), the wind, and the victory state the
+    // settlement checks.
+    std::vector<PlayerEconomy> player_economy;
+    WindState wind;
+    EndGameState end_game;
 
     // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
     // inclusive range of them (the entries' owner is fixed by it).
@@ -218,6 +233,21 @@ public:
     // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
     void players_stage();
     Targeting& targeting() { return targeting_; }
+    // Economy setup for a player at battle start (after its slot's state is set): everything
+    // zero, its first 30-step turn at the current step (0x464700's economy part).
+    void init_player_economy(int player);
+    // The economy context (construction, reclaim, transfers and tests use it with sim/economy.h).
+    Economy& economy() {
+        sync_settings();
+        return economy_;
+    }
+    // Stage 8 (after the features; the animation cursors between them are presentation):
+    // the wind may change (0x490C40). The new drift reaches the projectiles and fires through
+    // settings.wind_drift, wind generators through the next settlement, and their scripts
+    // through the next unit pass.
+    void step_wind();
+    // Network games, at the end of a step: the local player's automatic sharing (0x457D30).
+    void auto_share_resources();
 
     // Per-step inputs the original reads from its game state.
     UnitTickEnvironment& unit_env() { return unit_env_; }
@@ -294,7 +324,7 @@ private:
     // CombatSystems
     void retarget(Unit* a, Unit& v, std::uint16_t) override { retarget_attack(b_targeting(), a, v); }
     void add_paralysis(Unit& victim, std::uint16_t amount) override;
-    bool pay_energy(Unit& w, float amount) override { return outside_.pay_energy(w, amount); }
+    bool pay_energy(Unit& w, float amount) override { return add_energy_use_if_not_stalled(ticks[w.id], amount); }  // 0x401180
     void stats_activity(std::int32_t kind) override { outside_.stats_activity(kind); }
     void network_send(std::int32_t net, const std::uint8_t* p, std::int32_t size) override { outside_.network_send(net, p, size); }
     void reveal_dead_unit(Unit& u) override { outside_.reveal_dead_unit(u); }
@@ -403,7 +433,7 @@ private:
         }
         void unfinished_decay(Unit& u, std::int32_t ticks) override { b.outside_.unfinished_decay(u, ticks); }
         void display_changed(Unit& u) override { b.outside_.display_changed(u); }
-        bool use_resources_if_not_stalled(Unit& u, float e, float m) override { return b.outside_.use_resources_if_not_stalled(u, e, m); }
+        bool use_resources_if_not_stalled(Unit& u, float e, float m) override { return add_use_if_not_stalled(b.ticks[u.id], e, m); }
         void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
         void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override { b.outside_.nano_beam(from, box); }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
@@ -426,6 +456,11 @@ private:
         void ai_own_unit(int table, Unit& u) override { b.outside_.ai_own_unit(table, u); }
         void ai_rescore(int table) override { b.outside_.ai_rescore(table); }
         void under_attack(Unit& u) override { b.outside_.under_attack_notice(u); }
+    };
+    struct EconomyHooks final : EconomySystems {
+        Battle& b;
+        explicit EconomyHooks(Battle& battle) : b(battle) {}
+        void set_cloaked(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kCloaked, on); }  // 0x48B090
     };
     Targeting& b_targeting() { return targeting_; }
     std::uint32_t clock_ticks() override { return outside_.clock_ticks(); }
@@ -461,6 +496,10 @@ private:
     RouteHooks route_hooks_{*this};
     std::vector<RouteType> route_types_;  // by type index
     RouteContext route_;
+    EconomyHooks economy_hooks_{*this};
+    std::vector<EconomyType> economy_types_;  // by type index
+    EconomyEnvironment economy_env_;
+    Economy economy_;
     std::vector<std::unique_ptr<UnitScriptHost>> script_hosts_;  // by unit id
     std::int16_t camera_countdown_ = 0;
     std::uint32_t next_order_address_ = 0x01000000;

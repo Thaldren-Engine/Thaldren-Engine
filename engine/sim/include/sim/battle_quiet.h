@@ -1,6 +1,6 @@
 #pragma once
 // A BattleOutside that does nothing: no motion, no mission behaviours (they
-// report "continue"), energy always paid, everything in sight, no AI, no
+// report "continue"), everything in sight, no AI, no
 // presentation, network or user interface. Tools and tests derive from it
 // and override what they need.
 
@@ -25,7 +25,6 @@ public:
     void players_stage_end() override {}
     void under_attack_notice(Unit&) override {}
     void unfinished_decay(Unit&, std::int32_t) override {}
-    bool use_resources_if_not_stalled(Unit&, float, float) override { return true; }
     void speech(Unit&, std::uint32_t, SpeechText) override {}
     void display_changed(Unit&) override {}
     void build_counts_changed(Unit&) override {}
@@ -38,7 +37,6 @@ public:
     void stamp_line_of_sight(Unit&) override {}
     void victory_unit_created(Unit&) override {}
     void release_unit(Unit&) override {}
-    bool pay_energy(Unit&, float) override { return true; }
     void emit_sfx(Unit&, std::int32_t, std::int32_t) override {}
     void reveal_dead_unit(Unit&) override {}
     void forget_fog(Unit&) override {}

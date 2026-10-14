@@ -273,6 +273,7 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/missions.cpp
     ${ROOT}/engine/sim/src/motion.cpp
     ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/economy.cpp
     ${ROOT}/engine/sim/src/fire.cpp
     ${ROOT}/engine/sim/src/footprint.cpp
     ${ROOT}/engine/sim/src/ground_settle.cpp

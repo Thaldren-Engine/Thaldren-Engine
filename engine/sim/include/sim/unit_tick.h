@@ -59,6 +59,10 @@ struct UnitTickState {
     float metal_make = 0.0f;                 // metal income of the unit's resource slot
     std::array<std::int32_t, 3> velocity{};  // of the motion object (16.16 per tick), when has_motion
     float energy_use = 0.0f, metal_use = 0.0f;  // spent by the unit's resource slot (weapon shots)
+    // The rest of the unit's resource slot (sim/economy.h): production, paid use and the
+    // unpaid backlog ("stall") since the last settlement, and the last settlement's figures.
+    float energy_make = 0.0f, energy_use_paid = 0.0f, energy_stall = 0.0f, energy_make_prev = 0.0f, energy_use_prev = 0.0f;
+    float metal_use_paid = 0.0f, metal_stall = 0.0f, metal_make_prev = 0.0f, metal_use_prev = 0.0f;
     MotionState motion;                         // when has_motion
 };
 
