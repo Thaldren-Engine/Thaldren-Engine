@@ -499,6 +499,19 @@ int main(int argc, char** argv) {
                     if (cell.feature >= sim::kFirstSpecialFeature || cell.feature >= b.features.size()) continue;
                     const sim::FeatureTypeInfo& t = b.features[cell.feature];
                     const auto& rec = fdefs.records()[cell.feature];
+                    if (view_player >= 0 && (rec.flags & ta::feature_flags::kNoDrawUnderGray) && ((cell.flags >> 3) & 0xF) != view_player) {
+                        // Hidden in the fog unless a footprint corner is seen (0x4658E0): the
+                        // corners' blocks at (16 x, 16 z - height / 2) and 16 cells further.
+                        auto corner = [&](int cx, int cz) {
+                            return std::array<std::int32_t, 3>{
+                                static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(cx * 16)) << 16),
+                                static_cast<std::int32_t>(static_cast<std::uint32_t>(cell.height) << 16),
+                                static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(cz * 16)) << 16)};
+                        };
+                        if (!b.point_seen_by(view_player, corner(x, z)) &&
+                            !b.point_seen_by(view_player, corner(x + t.footprint_x, z + t.footprint_z)))
+                            continue;
+                    }
                     render::FeatureInstance f;
                     f.cell_x = x;
                     f.cell_z = z;
