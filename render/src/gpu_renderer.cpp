@@ -45,6 +45,34 @@ struct GpuRenderer::Impl {
     SDL_GPUTexture* rgba = nullptr;
     // Persistent sprite textures (terrain tiles, feature frames, ...).
     std::unordered_map<const Sprite8*, SDL_GPUTexture*> cache;
+    // Textures of one-frame sprites (particles, nanoframes, text, ...), kept by size after the
+    // frame that used them and reused by later frames: creating and releasing hundreds of GPU
+    // textures every frame is what made busy scenes (nano spray) slow.
+    std::unordered_map<std::uint64_t, std::vector<SDL_GPUTexture*>> pool;
+    std::unordered_map<SDL_GPUTexture*, std::uint64_t> pool_size_of;
+    static std::uint64_t size_key(int w, int h) { return static_cast<std::uint64_t>(static_cast<std::uint32_t>(w)) << 32 | static_cast<std::uint32_t>(h); }
+    SDL_GPUTexture* transient_texture(int w, int h) {
+        const std::uint64_t k = size_key(w, h);
+        auto it = pool.find(k);
+        if (it != pool.end() && !it->second.empty()) {
+            SDL_GPUTexture* t = it->second.back();
+            it->second.pop_back();
+            return t;
+        }
+        SDL_GPUTexture* t = texture(w, h, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+        if (t) pool_size_of[t] = k;
+        return t;
+    }
+    void return_transient(SDL_GPUTexture* t) {
+        const auto it = pool_size_of.find(t);
+        std::vector<SDL_GPUTexture*>* list = it != pool_size_of.end() ? &pool[it->second] : nullptr;
+        if (list && list->size() < 4096) {
+            list->push_back(t);
+            return;
+        }
+        if (it != pool_size_of.end()) pool_size_of.erase(it);
+        SDL_ReleaseGPUTexture(dev, t);
+    }
     BlendTable blend;
     // Window output.
     SDL_GPUShader* quad_vs = nullptr;
@@ -63,6 +91,8 @@ struct GpuRenderer::Impl {
         if (quad_vs) SDL_ReleaseGPUShader(dev, quad_vs);
         if (resolve_fs) SDL_ReleaseGPUShader(dev, resolve_fs);
         for (auto& [k, t] : cache) SDL_ReleaseGPUTexture(dev, t);
+        for (auto& [k, v] : pool)
+            for (SDL_GPUTexture* t : v) SDL_ReleaseGPUTexture(dev, t);
         if (light_table) SDL_ReleaseGPUTexture(dev, light_table);
         if (remap_table) SDL_ReleaseGPUTexture(dev, remap_table);
         for (SDL_GPUTexture* t : {table, dummy, palette, frame, frame_copy, rgba})
@@ -205,7 +235,8 @@ struct GpuRenderer::Impl {
                     continue;
                 }
             }
-            t = texture(c.sprite->width, c.sprite->height, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);
+            t = c.persistent ? texture(c.sprite->width, c.sprite->height, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER)
+                             : transient_texture(c.sprite->width, c.sprite->height);
             if (!t) return fail("SDL_CreateGPUTexture (sprite)");
             ups.push_back({t, c.sprite->width, c.sprite->height, 1, c.sprite->pixels.data()});
             frame_tex[c.sprite] = t;
@@ -277,7 +308,7 @@ struct GpuRenderer::Impl {
         if (!fence) return fail("SDL_SubmitGPUCommandBufferAndAcquireFence");
         SDL_WaitForGPUFences(dev, true, &fence, 1);
         SDL_ReleaseGPUFence(dev, fence);
-        for (SDL_GPUTexture* t : transient) SDL_ReleaseGPUTexture(dev, t);
+        for (SDL_GPUTexture* t : transient) return_transient(t);
         transient.clear();
         (void)tb;
         return true;

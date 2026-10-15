@@ -1,6 +1,8 @@
 #include "client/front.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <sstream>
 
@@ -117,6 +119,15 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
 #endif
     std::size_t next = 0;
     int total_steps = 0;
+    // CLIENT_PROFILE=N: every N frames, the average time of each part of a frame, with the CPU
+    // and (when there is a GPU) the GPU path drawn every frame as a window would.
+    const int profile = std::getenv("CLIENT_PROFILE") ? std::max(1, std::atoi(std::getenv("CLIENT_PROFILE"))) : 0;
+#ifdef CLIENT_HAVE_SDL
+    if (profile && !gpu) gpu = render::GpuRenderer::create(content.blend);
+#endif
+    using clock = std::chrono::steady_clock;
+    double t_sim = 0, t_list = 0, t_cpu = 0, t_lines = 0, t_gpu = 0;
+    std::size_t cmds = 0, lines = 0;
     for (int f = 0; f < o.frames && !client.quit_requested(); ++f) {
         const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);
         for (; next < o.script.size() && o.script[next].frame <= f; ++next) {
@@ -124,10 +135,37 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
             e.time_ms = now;
             client.handle(e);
         }
+        const auto t0 = clock::now();
         total_steps += client.frame(now);
+        const auto t1 = clock::now();
         const auto sounds = client.take_sounds();
         if (!sounds.empty()) std::printf("frame %d: %zu sound(s)\n", f, sounds.size());
         render::DrawList list = client.draw();
+        if (profile) {
+            const auto t2 = clock::now();
+            const render::Image8 img = render::execute(list, content.blend);
+            const auto t3 = clock::now();
+            for (const auto& c : list.cmds) lines += c.op == render::DrawOp::Line;
+            cmds += list.cmds.size();
+            render::lines_to_sprites(list);
+            const auto t4 = clock::now();
+#ifdef CLIENT_HAVE_SDL
+            render::Image8 g;
+            if (gpu) gpu->render(list, g);
+#endif
+            const auto t5 = clock::now();
+            auto ms = [](clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
+            t_sim += ms(t1 - t0), t_list += ms(t2 - t1), t_cpu += ms(t3 - t2), t_lines += ms(t4 - t3), t_gpu += ms(t5 - t4);
+            if ((f + 1) % profile == 0) {
+                const double n = profile;
+                std::printf("profile frames %d-%d: sim %.2f ms, draw list %.2f ms (%zu cmds, %zu lines), cpu raster %.2f ms, "
+                            "lines->sprites %.2f ms, gpu %.2f ms\n",
+                            f + 1 - profile, f, t_sim / n, t_list / n, cmds / static_cast<std::size_t>(profile),
+                            lines / static_cast<std::size_t>(profile), t_cpu / n, t_lines / n, t_gpu / n);
+                t_sim = t_list = t_cpu = t_lines = t_gpu = 0;
+                cmds = lines = 0;
+            }
+        }
         if (std::find(o.screenshot_frames.begin(), o.screenshot_frames.end(), f) != o.screenshot_frames.end()) {
             const render::Image8 img = render::execute(list, content.blend);
             save(img, content.palette, o.screenshot_prefix, f);
