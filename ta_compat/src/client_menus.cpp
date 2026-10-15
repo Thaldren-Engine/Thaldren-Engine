@@ -36,6 +36,7 @@ std::string upper(std::string s) {
 }
 
 bool ieq(const std::string& a, const std::string& b) { return upper(a) == upper(b); }
+bool g_link_empty(const GuiGadget& g) { return g.link.empty(); }
 
 std::unique_ptr<TdfSection> parse_tdf(const std::vector<std::uint8_t>& f) {
     return tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root;
@@ -251,7 +252,16 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
     L->enter_default = head.crdefault;
     L->escape_default = head.escdefault;
     L->default_focus = head.defaultfocus;
-    if (const char* bg = background_of(gui)) L->background = picture(bg, &L->palette);
+    if (const char* bg = background_of(gui)) {
+        L->background = picture(bg, &L->palette);
+        // Only some screens put their picture's palette on the display (the main menu, the end of
+        // a battle); the others keep the one shown before, the main menu's, and their interface
+        // colours come from it.
+        if (gui != "MAINMENU" && gui != "ENDMSN") {
+            const render::Palette* menu_pal = nullptr;
+            if (picture("FrontendX", &menu_pal) && menu_pal) L->palette = menu_pal;
+        }
+    }
     const render::Palette& pal = L->palette ? *L->palette : content_.palette;
     for (int k = 0; k < 256; ++k) L->colours[static_cast<std::size_t>(k)] = gui_colour(pal, k);
     const std::string own_gaf = "anims\\" + gui + ".GAF";
@@ -419,7 +429,7 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
         for (std::size_t i = 0; i < ws.size() && i < gs.size(); ++i) {
             Widget& w = ws[i];
             const bool button = w.kind == WidgetKind::Button && (gs[i].attribs & 0x1800) == 0 && (gs[i].attribs & 0x10000) == 0;
-            const bool label = false;  // labels show no quick key in the original's frames (see RE_MEMORY "Front end")
+            const bool label = gs[i].id == 5 && !w.text.empty() && !g_link_empty(gs[i]);  // only labels linked to a gadget
             if (!button && !label) continue;
             if (button && w.stages > 0) continue;
             w.quickkey = w.quickkey_char = 0;

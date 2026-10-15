@@ -27,6 +27,7 @@ int row_height(const MenuContent& mc) { return mc.font ? mc.font->height + 1 : 1
 LayoutScreen::LayoutScreen(const ScreenLayout* layout) : layout_(layout) {
     if (!layout_) return;
     widgets_ = layout_->widgets;
+    focus_limit_ = widgets_.size();
     ox_ = layout_->x;
     oy_ = layout_->y;
     for (std::size_t i = 0; i < widgets_.size(); ++i)
@@ -206,6 +207,13 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
                 if (w.kind == WidgetKind::Button && w.active && w.quickkey && w.quickkey == std::tolower(k)) {
                     press_button_ = 1;
                     press(fe, w);
+                    return;
+                } else if (w.kind == WidgetKind::Label && w.active && w.quickkey && w.quickkey == std::tolower(k) && !w.link.empty()) {
+                    // A linked label's key presses the gadget it names.
+                    if (Widget* t = widget(w.link); t && t->active && t->kind == WidgetKind::Button) {
+                        press_button_ = 1;
+                        press(fe, *t);
+                    }
                     return;
                 }
         return;
@@ -439,7 +447,7 @@ void LayoutScreen::place(int fw, int fh) {
     if (focus_gadget_ < 0) {
         const long long here = x + 5000LL * y;
         long long best = here + 100000000LL;
-        for (std::size_t i = 1; i < widgets_.size(); ++i) {
+        for (std::size_t i = 1; i < widgets_.size() && i < focus_limit_; ++i) {
             const Widget& w = widgets_[i];
             if (!w.active || (w.attribs & 0x400)) continue;
             const bool ok = (w.kind == WidgetKind::Button && !w.grayed) || (w.kind == WidgetKind::ListBox && !(w.attribs & 0x100)) ||
@@ -471,6 +479,23 @@ void LayoutScreen::reassign_quick_keys(const std::vector<Widget>& before) {
             used.push_back(lc);
             break;
         }
+    }
+}
+
+void LayoutScreen::set_caption(Widget& w, const std::string& text) {
+    w.text = text;
+    if (w.kind != WidgetKind::Button || (w.attribs & 0x10000)) return;
+    w.quickkey = w.quickkey_char = 0;
+    if (w.stages > 0) return;
+    for (const char ch : text) {
+        if (ch == ' ') continue;
+        const int lc = std::tolower(static_cast<unsigned char>(ch));
+        bool used = false;
+        for (const Widget& o : widgets_) used |= &o != &w && o.quickkey == lc;
+        if (used) continue;
+        w.quickkey = lc;
+        w.quickkey_char = static_cast<unsigned char>(ch);
+        break;
     }
 }
 

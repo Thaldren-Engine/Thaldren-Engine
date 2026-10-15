@@ -125,6 +125,9 @@ public:
     // screen (an options page joins its menu's screen): the first caption character, not a space,
     // that no earlier gadget has.
     void reassign_quick_keys(const std::vector<Widget>& before);
+    // Sets a gadget's caption the way the original does: a plain button (no attribute 0x10000)
+    // takes a new quick key from it (the first character, not a space, no other gadget has).
+    void set_caption(Widget& w, const std::string& text);
 
 
 protected:
@@ -156,6 +159,7 @@ protected:
     // The focus ring around the focused gadget (shaded outlines through the light table).
     void draw_focus_ring(FrontEnd& fe, render::Image8& out);
     bool placed_ = false;
+    std::size_t focus_limit_ = 0;  // gadgets the first focus is chosen from (those of the description)
     bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     int held_ = -1;                // index of the pressed button (pointer down)

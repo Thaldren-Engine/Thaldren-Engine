@@ -9,6 +9,7 @@
 #include <ctime>
 
 #include "client/canvas.h"
+#include "render/raster.h"
 #include "sim/battle.h"
 #include "sim/economy.h"
 #include "sim/rng.h"
@@ -172,8 +173,12 @@ protected:
             const int n = fe.settings().get_int("textlines", 10);
             m->text = n == 0 ? "None" : std::to_string(n);
         }
-        if (Widget* v = widget("VIDVAL"))
-            v->text = std::to_string(fe.settings().get_int("DisplaymodeWidth", 640)) + " X " + std::to_string(fe.settings().get_int("DisplaymodeHeight", 480));
+        // "W X H" of the current mode when the list has it; otherwise the label keeps its text.
+        if (Widget* v = widget("VIDVAL")) {
+            const int mw = fe.settings().get_int("DisplaymodeWidth", 640), mh = fe.settings().get_int("DisplaymodeHeight", 480);
+            for (const auto& m : modes_)
+                if (m[0] == mw && m[1] == mh) v->text = std::to_string(mw) + " X " + std::to_string(mh);
+        }
     }
     static void set(Widget& w, int range, int v) {
         w.range = range;
@@ -528,6 +533,8 @@ protected:
         const auto* team_art = art_.sequence(gaf, "TEAMICONSx");
         colours_ = art_.sequence("textures\\logos.gaf", "32xlogos");
         for (int i = 0; i < n; ++i, y += step) {
+            // Appended after the screen was set up: no quick keys; metal and energy carry attribute
+            // 0x10000 as in the original.
             auto add = [&](WidgetKind k, const std::string& name, int x, int w, const std::vector<render::Sprite8>* frames, const std::string& help) {
                 Widget wd;
                 wd.kind = k;
@@ -537,15 +544,14 @@ protected:
                 wd.w = frames && !frames->empty() ? frames->front().width : w;
                 wd.h = frames && !frames->empty() ? frames->front().height : 20;
                 wd.frames = frames;
-                wd.attribs = 2;
-                wd.status = 0x10000;
+                wd.attribs = name == "Metal" || name == "Energy" ? 2 | 0x10000 : 2;
                 wd.text.clear();
                 help_[wd.name] = help;
                 widgets_.push_back(wd);
             };
             add(WidgetKind::Button, "Player", 45, 112, name_art, "");
             add(WidgetKind::Button, "Side", 163, 45, side_art, "");
-            add(WidgetKind::Button, "Color", 214, 20, nullptr, "");
+            add(WidgetKind::Surface, "Color", 214, 20, nullptr, "");  // a hotspot: only the logo is drawn
             add(WidgetKind::Button, "Allies", 241, 40, team_art, "Click to select an allegiance symbol.");
             add(WidgetKind::Button, "Metal", 286, 45, res_art, "Left click to increase metal. Right click to decrease metal.");
             add(WidgetKind::Button, "Energy", 337, 45, res_art, "Left click to increase energy. Right click to decrease energy.");
@@ -559,7 +565,7 @@ protected:
             const std::string n = std::to_string(i);
             const bool on = r.kind != 0;
             if (Widget* w = widget("Player" + n)) {
-                w->text = r.kind == 1 ? "Player" : r.kind == 2 ? "Computer" : "Open";
+                set_caption(*w, r.kind == 1 ? "Player" : r.kind == 2 ? "Computer" : "Open");
                 w->active = true;
             }
             if (Widget* w = widget("Side" + n)) {
@@ -628,9 +634,17 @@ protected:
         for (std::size_t i = 0; i < rows_.size(); ++i) {
             const Widget* w = widget("Color" + std::to_string(i));
             if (!w || !w->active || !colours_ || colours_->empty()) continue;
+            // The colour's logo mapped onto the box as a textured quad: corners on the box's
+            // edges, texture corners (1,1) .. (w-1,h-1) (the scan rules leave the last row and column).
             const render::Sprite8& s = (*colours_)[static_cast<std::size_t>(rows_[i].colour) % colours_->size()];
-            const render::ClipRect c{ox_ + w->x, oy_ + w->y, ox_ + w->x + w->w - 1, oy_ + w->y + w->h - 1};
-            render::blit(out, c, s, ox_ + w->x + (w->w - s.width) / 2 + s.x_offset, oy_ + w->y + (w->h - s.height) / 2 + s.y_offset);
+            const int x0 = ox_ + w->x, y0 = oy_ + w->y, x1 = x0 + w->w - 1, y1 = y0 + w->h - 1;
+            const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+            const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+            render::RasterTarget t;
+            t.pixels = out.pixels.data();
+            t.pitch = out.width;
+            t.clip = out.bounds();
+            render::textured_quad_uv(t, v, uv, s);
         }
     }
 

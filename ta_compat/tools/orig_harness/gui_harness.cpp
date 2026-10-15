@@ -134,6 +134,7 @@ public:
         r_.w32(kDisplay + 0xD0, r_.alloc(0x1000));  // dim remap
         r_.w16(kDisplay + kDcFlags, static_cast<std::uint16_t>(r_.r32(kDisplay + kDcFlags) | 0x20 | 0x40 | 0x80 | 0x200));
         r_.w32(kDisplay + 0xF2, 30);  // the key queue's capacity
+        r_.w32(kDisplay + 0x44, 1);   // "DIB" display: the windowed display-mode list, no DirectDraw
         r_.w32(kDisplay + 0xE8, 30);  // ticks per second
         set_screen(640, 480);
         if (!r_.call(0x004B62D0, 0, {30})) return false;  // the periodic timer table (30 ticks a second)
