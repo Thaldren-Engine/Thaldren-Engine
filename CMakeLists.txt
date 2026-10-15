@@ -35,6 +35,7 @@ add_library(sim STATIC
     engine/sim/src/heightmap.cpp
     engine/sim/src/lockstep.cpp
     engine/sim/src/motion.cpp
+    engine/sim/src/net_units.cpp
     engine/sim/src/missions.cpp
     engine/sim/src/construction.cpp
     engine/sim/src/unit_missions_common.cpp
@@ -68,6 +69,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 add_library(net STATIC
     engine/net/src/codec.cpp
     engine/net/src/frames.cpp
+    engine/net/src/net_battle.cpp
     engine/net/src/protocol.cpp
     engine/net/src/transport.cpp
 )
@@ -108,6 +110,10 @@ foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_che
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
 endforeach()
+
+add_executable(net_play ta_compat/tools/net_play.cpp)
+target_link_libraries(net_play PRIVATE ta_compat net)
+target_compile_options(net_play PRIVATE ${WARN_FLAGS})
 
 add_executable(fpu_profile_check tools/fpu_profile_check.cpp)
 target_link_libraries(fpu_profile_check PRIVATE sim)

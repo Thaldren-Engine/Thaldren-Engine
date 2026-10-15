@@ -13,6 +13,7 @@
 
 #include "sim/ai.h"
 #include "sim/anim.h"
+#include "sim/bitstream.h"
 #include "sim/combat.h"
 #include "sim/economy.h"
 #include "sim/construction.h"
@@ -25,6 +26,7 @@
 #include "sim/heightmap.h"
 #include "sim/missions.h"
 #include "sim/motion.h"
+#include "sim/net_units.h"
 #include "sim/nano_spray.h"
 #include "sim/orders.h"
 #include "sim/projectile.h"
@@ -414,6 +416,21 @@ public:
         return effects_world_;
     }
 
+    // Network play (sim/net_units.h, engine/sim/src/net_units.cpp): received packets that
+    // change units, and the unit state packets. `slot` is the sending player's slot.
+    Unit* apply_unit_packet(int slot, const std::uint8_t* packet);                       // 0x09 (0x4861D0)
+    std::vector<std::uint8_t> unit_state_packet(int slot);                              // 0x2C (0x48B710)
+    std::uint32_t apply_unit_state_packet(int slot, const std::uint8_t* packet, std::size_t size);  // 0x2C (0x48B920): its step
+    void apply_transport_packet(const std::uint8_t* packet);                            // 0x0A (0x48AB70)
+    void apply_fire_packet(const std::uint8_t* packet);                                 // 0x0D (0x49D270)
+    void apply_script_packet(const std::uint8_t* packet);                               // 0x10
+    void apply_activate_packet(const std::uint8_t* packet);                             // 0x11
+    void apply_finished_packet(const std::uint8_t* packet);                             // 0x12 (0x41B8D0)
+    void apply_ownership_packet(int new_owner, const std::uint8_t* packet);             // 0x14 (0x488570)
+    void share_explored_map(int from, int to);                                          // 0x16 kind 3
+    NetUnitInputs net_inputs;
+    NetUnitState& net_state() { return *net_; }
+
 private:
     void sync_settings();
     void prune_retired_goals();
@@ -770,6 +787,9 @@ private:
         void remove_feature(std::int32_t cell) override { sim::remove_feature(b.feature_world_, cell, false); }
         void wreck_attitude(const MapCell& origin, Unit& u) override;
     };
+    std::shared_ptr<NetUnitState> net_ = std::make_shared<NetUnitState>();
+    void apply_full_state(BitReader& r, Unit& u);
+    void write_full_state(BitWriter& w, const Unit& u) const;
     UnitMissionHooks unit_mission_hooks_{*this};
     std::vector<UnitMissionTypeInfo> unit_mission_types_;  // by type index
     std::vector<UnitTickTypeInfo> tick_types_;             // by type index (copies, for lookups by index)
