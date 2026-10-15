@@ -99,6 +99,10 @@ bool load_mission(Vfs& vfs, const std::string& file, int difficulty, MissionInfo
 std::vector<sim::MissionUnitOrder> parse_initial_orders(const std::string& text, const std::function<std::uint16_t(const std::string&)>& type_index,
                                                         MissionParseState& state);
 
+// The win and loss goal keys of a mission's [GlobalHeader] (0x48E010).
+class TdfSection;
+void read_mission_goals(const TdfSection& global_header, MissionParseState& state, sim::MissionGoals& out);
+
 // A battle request for a mission: two players (0: the human on the campaign's side, 1: the
 // computer on the other side), the mission's options and its start (units, goals, amounts).
 struct MissionRequest {

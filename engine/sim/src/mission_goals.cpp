@@ -281,6 +281,80 @@ std::array<i32, 3> screen_to_terrain(const Battle& b, i32 x, i32 y) {
     return {px, static_cast<i32>(static_cast<u32>(h) << 16), pz};
 }
 
+void give_mission_orders(MissionOrderSink& sink, Unit& u, bool mobile, const std::vector<MissionUnitOrder>& orders,
+                         const std::function<Unit*(const std::string&)>& find) {
+    // 0x487BF0's issuing: every order queued; units given orders become unselectable until a
+    // closing make-selectable order (unless an order already ends the list).
+    using K = MissionUnitOrder::Kind;
+    bool any = false, end = false;
+    for (const MissionUnitOrder& o : orders) {
+        switch (o.kind) {
+        case K::AttackAt:
+        case K::Move:
+        case K::Unload:
+        case K::Patrol: {
+            const std::uint8_t intent = o.kind == K::AttackAt ? 3 : o.kind == K::Move ? 2 : o.kind == K::Unload ? 5 : 9;
+            const std::uint8_t kind = sink.resolve(intent, u, nullptr, &o.pos);
+            sink.order(u, kind, nullptr, &o.pos, o.kind == K::Patrol ? o.param : 0, 0);
+            any = true;
+            if (o.kind == K::AttackAt || o.kind == K::Patrol) end = true;
+            break;
+        }
+        case K::AttackType:
+            sink.order(u, mission::kAttackUnitType, nullptr, nullptr, o.type, 0);
+            any = true;
+            break;
+        case K::Build:
+            if (mobile) sink.order(u, mission::kMobileBuild, nullptr, &o.pos, o.type, o.count);
+            else sink.order(u, mission::kBuildingBuild, nullptr, nullptr, o.type, o.count);
+            any = true;
+            break;
+        case K::BuildWeapon:
+            sink.order(u, mission::kBuildWeapon, nullptr, nullptr, 0, o.count);
+            break;
+        case K::SelfDestruct:
+            sink.order(u, mission::kSelfDestructFg, nullptr, nullptr, 1, 0);
+            any = end = true;
+            break;
+        case K::Guard:
+            if (Unit* target = find(o.ref)) {
+                const std::uint8_t kind = sink.resolve(7, u, target, nullptr);
+                sink.order(u, kind, target, nullptr, 0, 0);
+                any = true;
+            }
+            break;
+        case K::LoadInto:
+            if (Unit* carrier = find(o.ref)) sink.load_into(u, *carrier);
+            break;
+        case K::StandingOrders: {
+            // Values not given keep the unit's current ones (the parser starts from them).
+            const u32 move = o.count < 0 ? (u.flags >> 18) & 3u : static_cast<u32>(o.count) & 3u;
+            const u32 fire = o.param < 0 ? (u.flags >> 20) & 3u : static_cast<u32>(o.param) & 3u;
+            u.flags = (u.flags & 0xFFC3FFFFu) | ((fire << 2 | move) << 18);
+            break;
+        }
+        case K::MakeSelectable:
+            sink.order(u, mission::kMakeSelectable, nullptr, nullptr, 0, 0);
+            any = end = true;
+            break;
+        case K::WaitForAttack: {
+            Unit* target = o.ref_given ? find(o.ref) : nullptr;
+            sink.order(u, mission::kWaitForAttack, target ? target : &u, nullptr, 0, 0);
+            any = true;
+            break;
+        }
+        case K::Wait:
+            sink.order(u, mission::kWait, nullptr, nullptr, o.param, o.count);
+            any = true;
+            break;
+        }
+    }
+    if (any) {
+        u.flags &= ~unit_tick_flags::kSelectable;
+        if (!end) sink.order(u, mission::kMakeSelectable, nullptr, nullptr, 0, 0);
+    }
+}
+
 bool place_mission_units(Battle& b, const std::vector<MissionUnit>& list, const MissionOrderParser& parse, std::string& error) {
     std::vector<Unit*> placed(list.size(), nullptr);
     for (std::size_t i = 0; i < list.size(); ++i) {
@@ -314,80 +388,23 @@ bool place_mission_units(Battle& b, const std::vector<MissionUnit>& list, const 
         }
         return nullptr;
     };
+    struct Sink final : MissionOrderSink {
+        Battle& b;
+        explicit Sink(Battle& battle) : b(battle) {}
+        std::uint8_t resolve(std::uint8_t intent, Unit& u, Unit* target, const std::array<i32, 3>* pos) override {
+            return resolve_mission(b.targeting(), intent, u, target, pos);
+        }
+        void order(Unit& u, std::uint8_t kind, Unit* target, const std::array<i32, 3>* pos, i32 p0, i32 p1) override {
+            b.order(u, kind, true, target, pos, p0, p1);
+        }
+        void load_into(Unit& u, Unit& carrier) override { b.transport_attach(u, &carrier, 0xFF, 0); }
+    } sink(b);
     for (std::size_t i = 0; i < list.size(); ++i) {
         Unit* u = placed[i];
         if (!u || !list[i].has_orders || !parse) continue;
         const std::vector<MissionUnitOrder> orders = parse(list[i].order_text);
-        bool any = false, end = false;
         b.economy();  // synchronise the shared settings before resolving intents
-        Targeting& t = b.targeting();
-        for (const MissionUnitOrder& o : orders) {
-            using K = MissionUnitOrder::Kind;
-            switch (o.kind) {
-            case K::AttackAt:
-            case K::Move:
-            case K::Unload:
-            case K::Patrol: {
-                const std::uint8_t intent = o.kind == K::AttackAt ? 3 : o.kind == K::Move ? 2 : o.kind == K::Unload ? 5 : 9;
-                const std::uint8_t kind = resolve_mission(t, intent, *u, nullptr, &o.pos);
-                b.order(*u, kind, true, nullptr, &o.pos, o.kind == K::Patrol ? o.param : 0, 0);
-                any = true;
-                if (o.kind == K::AttackAt || o.kind == K::Patrol) end = true;
-                break;
-            }
-            case K::AttackType:
-                b.order(*u, mission::kAttackUnitType, true, nullptr, nullptr, o.type, 0);
-                any = true;
-                break;
-            case K::Build:
-                if (b.ticks[u->id].has_motion) b.order(*u, mission::kMobileBuild, true, nullptr, &o.pos, o.type, o.count);
-                else b.order(*u, mission::kBuildingBuild, true, nullptr, nullptr, o.type, o.count);
-                any = true;
-                break;
-            case K::BuildWeapon:
-                b.order(*u, mission::kBuildWeapon, true, nullptr, nullptr, 0, o.count);
-                break;
-            case K::SelfDestruct:
-                b.order(*u, mission::kSelfDestructFg, true, nullptr, nullptr, 1, 0);
-                any = end = true;
-                break;
-            case K::Guard:
-                if (Unit* target = find(o.ref)) {
-                    const std::uint8_t kind = resolve_mission(t, 7, *u, target, nullptr);
-                    b.order(*u, kind, true, target, nullptr, 0, 0);
-                    any = true;
-                }
-                break;
-            case K::LoadInto:
-                if (Unit* carrier = find(o.ref)) b.transport_attach(*u, carrier, 0xFF, 0);
-                break;
-            case K::StandingOrders: {
-                // Values not given keep the unit's current ones (the parser starts from them).
-                const u32 move = o.count < 0 ? (u->flags >> 18) & 3u : static_cast<u32>(o.count) & 3u;
-                const u32 fire = o.param < 0 ? (u->flags >> 20) & 3u : static_cast<u32>(o.param) & 3u;
-                u->flags = (u->flags & 0xFFC3FFFFu) | ((fire << 2 | move) << 18);
-                break;
-            }
-            case K::MakeSelectable:
-                b.order(*u, mission::kMakeSelectable, true, nullptr, nullptr, 0, 0);
-                any = end = true;
-                break;
-            case K::WaitForAttack: {
-                Unit* target = o.ref_given ? find(o.ref) : nullptr;
-                b.order(*u, mission::kWaitForAttack, true, target ? target : u, nullptr, 0, 0);
-                any = true;
-                break;
-            }
-            case K::Wait:
-                b.order(*u, mission::kWait, true, nullptr, nullptr, o.param, o.count);
-                any = true;
-                break;
-            }
-        }
-        if (any) {
-            u->flags &= ~unit_tick_flags::kSelectable;
-            if (!end) b.order(*u, mission::kMakeSelectable, true, nullptr, nullptr, 0, 0);
-        }
+        give_mission_orders(sink, *u, b.ticks[u->id].has_motion, orders, find);
     }
     if (list.empty()) b.mission_goals.active = false;
     return true;

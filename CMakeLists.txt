@@ -74,6 +74,7 @@ add_library(ta_compat STATIC
     ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
     ta_compat/src/campaign.cpp
+    ta_compat/src/mission_text.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp

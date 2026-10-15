@@ -115,6 +115,19 @@ struct MissionUnit {
 // units in placement order, after every unit is placed, as the original parses them).
 using MissionOrderParser = std::function<std::vector<MissionUnitOrder>(const std::string&)>;
 
+// Where a placed unit's first orders go (the battle; tests log them).
+class MissionOrderSink {
+public:
+    virtual ~MissionOrderSink() = default;
+    // The mission kind an intent gives (0x43F0E0) and the queued order itself (0x43ADC0).
+    virtual std::uint8_t resolve(std::uint8_t intent, Unit& unit, Unit* target, const std::array<std::int32_t, 3>* pos) = 0;
+    virtual void order(Unit& unit, std::uint8_t kind, Unit* target, const std::array<std::int32_t, 3>* pos, std::int32_t p0, std::int32_t p1) = 0;
+    virtual void load_into(Unit& unit, Unit& carrier) = 0;  // transport attach (0x48AAC0, piece 0xFF, layer 0)
+};
+// Gives one placed unit its orders (`mobile`: it has a motion object; `find`: a unit by name).
+void give_mission_orders(MissionOrderSink& sink, Unit& unit, bool mobile, const std::vector<MissionUnitOrder>& orders,
+                         const std::function<Unit*(const std::string&)>& find);
+
 // The battle start of a mission: places the units (types, positions, health, facing), then
 // gives every placed unit its first orders. Returns false (with a reason) where the original
 // stops the program (a unit for a player that does not play).
