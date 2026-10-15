@@ -23,6 +23,8 @@ public:
     virtual ~Transport() = default;
     // `to` = a player's net id, or 0 for every player on the other machines.
     virtual void send(std::int32_t from, std::int32_t to, std::vector<std::uint8_t> bytes) = 0;
+    // A message without guaranteed delivery (the original turns guarantees off for its pings).
+    virtual void send_unguaranteed(std::int32_t from, std::int32_t to, std::vector<std::uint8_t> bytes) { send(from, to, std::move(bytes)); }
     virtual bool receive(Message& out) = 0;
     // The players this machine hosts (messages addressed to them come here).
     virtual void set_local_players(const std::vector<std::int32_t>& ids) = 0;
@@ -56,5 +58,24 @@ private:
 // lists the sender machine's players (registration).
 std::unique_ptr<Transport> tcp_host(std::uint16_t port, std::string& error);
 std::unique_ptr<Transport> tcp_join(const std::string& address, std::uint16_t port, std::string& error);
+
+// UDP: datagrams with the session's own delivery guarantee, as the original's session service
+// gives "guaranteed" messages over UDP: every guaranteed datagram is acknowledged and sent again
+// until it is (every 100 ms, up to 100 times); duplicates are dropped; datagrams are handed on
+// in arrival order, so messages can arrive out of order (the frame receiver puts frames back in
+// order as the original does). The host relays between the others. Datagram: u8 kind (1
+// guaranteed, 2 not guaranteed, 3 acknowledgement, 4 registration), u32 number, i32 from,
+// i32 to, bytes. `loss` drops that share of outgoing datagrams (tests), drawn from `seed`.
+struct UdpOptions {
+    double loss = 0.0;
+    std::uint32_t seed = 1;
+};
+std::unique_ptr<Transport> udp_host(std::uint16_t port, std::string& error, UdpOptions options = {});
+std::unique_ptr<Transport> udp_join(const std::string& address, std::uint16_t port, std::string& error, UdpOptions options = {});
+// Counters of a UDP transport (0 for others): datagrams sent again, duplicates dropped.
+struct UdpCounters {
+    std::uint64_t resent = 0, duplicates = 0, dropped_by_loss = 0, delivered = 0;
+};
+UdpCounters udp_counters(const Transport& t);
 
 } // namespace net

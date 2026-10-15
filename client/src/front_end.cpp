@@ -3,6 +3,8 @@
 // run with scripted input and screenshots). See client/front_end.h.
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <cstdio>
 #include <set>
 
@@ -422,8 +424,10 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             std::printf("screenshot %sloading.bmp\n", o.screenshot_prefix.c_str());
         };
         int f = 0;
+        const auto wall_start = std::chrono::steady_clock::now();
         for (; f < o.frames && !run.done(); ++f) {
             const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);
+            if (o.realtime) std::this_thread::sleep_until(wall_start + std::chrono::milliseconds(now));
             feed_script(f, now);
             run.frame(now);
             run.play_pending_sounds();

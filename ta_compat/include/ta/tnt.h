@@ -16,6 +16,7 @@ struct TntInfo {
     std::int32_t sea_level = 0;    // TA maps; stored as a byte by the game
     std::uint32_t tile_count = 0;
     std::uint32_t feature_count = 0;
+    std::int32_t gravity = 0;      // 0x1020 maps: header word 13 (0x2000 maps have none)
 };
 
 // Reads the header and fills `heights` with the per-cell height bytes.

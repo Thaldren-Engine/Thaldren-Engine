@@ -36,6 +36,7 @@ add_library(sim STATIC
     engine/sim/src/lockstep.cpp
     engine/sim/src/journal.cpp
     engine/sim/src/motion.cpp
+    engine/sim/src/net_states.cpp
     engine/sim/src/net_units.cpp
     engine/sim/src/missions.cpp
     engine/sim/src/mission_goals.cpp
@@ -75,6 +76,7 @@ add_library(net STATIC
     engine/net/src/net_battle.cpp
     engine/net/src/protocol.cpp
     engine/net/src/transport.cpp
+    engine/net/src/udp_transport.cpp
 )
 target_include_directories(net PUBLIC engine/net/include)
 target_link_libraries(net PUBLIC sim)

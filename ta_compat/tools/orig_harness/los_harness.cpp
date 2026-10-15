@@ -175,7 +175,7 @@ bool setup(harness::Remote& r, Layout& L) {
 
 struct Stats {
     std::size_t scenarios = 0, steps = 0, ops = 0, mismatches = 0, failures = 0, faults = 0, visible_true = 0, explored_true = 0,
-                radar_marks = 0, sonar_marks = 0, jammed = 0, holds = 0, lingering_max = 0, crashes_confirmed = 0, heap_reads = 0;
+                radar_marks = 0, sonar_marks = 0, jammed = 0, holds = 0, lingering_max = 0, crashes_confirmed = 0, heap_reads = 0, bucket_heights = 0;
     std::map<std::string, std::size_t> by_op;
 };
 
@@ -382,12 +382,18 @@ bool run_scenario(harness::Remote& r, const Layout& L, int steps, unsigned seed,
             for (int x = 0; x < W; ++x) s.heights.at(x, z) = static_cast<u8>(std::clamp(h[static_cast<std::size_t>(z * W + x)] + rnd(4), 0, 255));
     }
     const u32 cells = r.alloc(static_cast<SIZE_T>(W) * H * 13);
+    sim::MapGrid tops;  // the cells' height tops (+5), which the spatial buckets' heights come from
+    tops.width = W;
+    tops.height = H;
+    tops.cells.resize(static_cast<std::size_t>(W) * H);
     {
         std::vector<std::uint8_t> c(static_cast<std::size_t>(W) * H * 13, 0);
         for (int z = 0; z < H; ++z)
             for (int x = 0; x < W; ++x) {
+                const u8 top = rnd(4) == 0 ? static_cast<u8>(rnd(256)) : s.heights.at(x, z);
                 c[static_cast<std::size_t>(z * W + x) * 13 + 4] = s.heights.at(x, z);
-                c[static_cast<std::size_t>(z * W + x) * 13 + 5] = s.heights.at(x, z);
+                c[static_cast<std::size_t>(z * W + x) * 13 + 5] = top;
+                tops.cells[static_cast<std::size_t>(z * W + x)].height_max = top;
             }
         r.write(cells, c.data(), c.size());
     }
@@ -422,6 +428,23 @@ bool run_scenario(harness::Remote& r, const Layout& L, int steps, unsigned seed,
             ++st.mismatches;
             return true;
         }
+        // The spatial buckets' heights (record byte 1, what aircraft cruise above).
+        sim::UnitBuckets ub;
+        ub.resize_for_map(W, H);
+        sim::build_bucket_heights(ub, tops, sea);
+        const u32 grid = r.r32(L.gs + gGrid);
+        for (std::size_t i = 0; i < ub.top.size(); ++i)
+            if (r.rd<u8>(grid + static_cast<u32>(i) * 10 + 1) != ub.top[i]) {
+                std::printf("scenario %u: bucket %zu height %u, engine %u\n", seed, i, r.rd<u8>(grid + static_cast<u32>(i) * 10 + 1), ub.top[i]);
+                ++st.mismatches;
+                return true;
+            }
+        if (r.rd<u8>(r.r32(L.gs + 0x142B7) + 1) != 0) {
+            std::printf("scenario %u: off-map bucket height differs\n", seed);
+            ++st.mismatches;
+            return true;
+        }
+        st.bucket_heights += ub.top.size();
     }
     // Types (1..kTypes-1), synthetic.
     s.types.resize(kTypes);
@@ -794,6 +817,7 @@ int main(int argc, char** argv) {
     std::printf("operations:\n");
     for (const auto& [k, v] : st.by_op) std::printf("  %s: %zu\n", k.c_str(), v);
     std::printf("rings read in front of the table (sight below 32, true sight): %zu\n", st.heap_reads);
+    std::printf("spatial bucket heights compared: %zu\n", st.bucket_heights);
     std::printf("mismatching scenarios %zu, engine faults %zu (original crashes predicted and confirmed %zu), unexpected original failures %zu\n",
                 st.mismatches, st.faults, st.crashes_confirmed, st.failures);
     return st.mismatches || st.failures ? 1 : 0;

@@ -55,7 +55,11 @@ std::int32_t make_net_id() {
 class RoomScreen final : public Screen {
 public:
     RoomScreen(const NetMenuConfig& cfg, std::unique_ptr<net::Transport> t, bool host)
-        : cfg_(cfg), transport_(std::move(t)), room_(std::make_unique<net::BattleRoom>(*transport_, host, make_net_id(), cfg.player_name)) {
+        : cfg_(cfg), transport_(std::move(t)), session_(std::make_shared<net::NetSession>(*transport_)),
+          room_(std::make_unique<net::BattleRoom>(*session_, host, make_net_id(), cfg.player_name)) {
+        // This machine's C runtime rand(): the host's start position shuffle draws it (an input
+        // from the clock, as the menus leave it).
+        crt_rand_.set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
         if (cfg_.unit_checks) room_->set_unit_checks(cfg_.unit_checks());
         room_->set_map_ready(true);
         room_->on_chat = [this](const std::string& l) { push(l); };
@@ -65,6 +69,7 @@ public:
         if (launched_) fe.pop();  // back from the game
     }
     void handle(FrontEnd& fe, const InputEvent& e) override {
+        if (!room_) return;  // handed to the game
         if (e.type == InputEvent::Type::KeyDown) {
             if (e.key == keys::kEscape) {
                 fe.pop();
@@ -85,7 +90,8 @@ public:
         if (e.type != InputEvent::Type::MouseDown || e.button != 1) return;
         fe.play_sound(fe.menu_content().click_sound);
         if (side_.hit(e.x, e.y)) room_->set_side(static_cast<std::uint8_t>(++side_value_ & 1));
-        else if (colour_.hit(e.x, e.y)) room_->set_colour(static_cast<std::uint8_t>(++colour_value_ % 10));
+        else if (colour_.hit(e.x, e.y)) room_->next_logo();
+        else if (team_.hit(e.x, e.y)) room_->next_ally_team();
         else if (ready_.hit(e.x, e.y)) room_->set_ready(ready_value_ = !ready_value_);
         else if (computer_.hit(e.x, e.y) && room_->is_host()) room_->add_computer(1);
         else if (start_.hit(e.x, e.y) && room_->is_host()) {
@@ -95,30 +101,34 @@ public:
         }
     }
     void frame(FrontEnd& fe, std::uint32_t now_ms) override {
-        room_->frame(now_clock(now_ms));
-        if (room_->started() && !launched_) launch(fe);
+        if (!room_) return;
+        room_->frame(now_clock(now_ms), &crt_rand_);
+        if (room_->refused() && !launched_) push(room_->error());
+        if (room_->loaded() && !launched_) launch(fe);
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
         background(fe, out, "BATTLROOM");
+        if (!room_) return;
         draw_line(fe, out, std::string(room_->is_host() ? "Battle room (host)" : "Battle room") + "  -  map " + room_->map(), 20, 16);
         int y = 44;
         for (int s = 0; s < 10; ++s) {
             const net::RoomPlayer& p = room_->players()[static_cast<std::size_t>(s)];
             if (!p.net_id) continue;
-            std::string line = std::to_string(s + 1) + ". " + p.name + "  " + (p.side ? "CORE" : "ARM") + "  colour " +
-                               std::to_string(p.colour) + (p.kind == 2 ? "  computer" : "") + (p.ready() || p.kind == 2 || (p.flags & net::room::kHost) ? "  ready" : "") +
+            std::string line = std::to_string(s + 1) + ". " + p.name + "  " + (p.side ? "CORE" : "ARM") + "  logo " +
+                               std::to_string(p.logo) + (p.ally_team < 5 ? "  team " + std::to_string(p.ally_team + 1) : "") + (p.kind == 2 ? "  computer" : "") + (p.ready() || p.kind == 2 || (p.flags & net::room::kHost) ? "  ready" : "") +
                                (p.latency_ms ? "  " + std::to_string(p.latency_ms) + " ms" : "");
             draw_line(fe, out, line, 20, y, s != room_->local_slot());
             y += 16;
         }
         const int by = out.height - 120;
-        side_ = {20, by, 90, 20, "Side"};
-        colour_ = {120, by, 90, 20, "Colour"};
-        ready_ = {220, by, 90, 20, ready_value_ ? "Ready!" : "Ready"};
-        computer_ = {320, by, 110, 20, "Computer"};
-        start_ = {440, by, 90, 20, "Start"};
-        back_ = {540, by, 80, 20, "Back"};
-        for (Box* b : {&side_, &colour_, &ready_, &back_}) draw_box(fe, out, *b, b == &ready_ && ready_value_);
+        side_ = {20, by, 80, 20, "Side"};
+        colour_ = {105, by, 80, 20, "Colour"};
+        team_ = {190, by, 80, 20, "Team"};
+        ready_ = {275, by, 80, 20, ready_value_ ? "Ready!" : "Ready"};
+        computer_ = {360, by, 95, 20, "Computer"};
+        start_ = {460, by, 80, 20, "Start"};
+        back_ = {545, by, 75, 20, "Back"};
+        for (Box* b : {&side_, &colour_, &team_, &ready_, &back_}) draw_box(fe, out, *b, b == &ready_ && ready_value_);
         if (room_->is_host()) {
             draw_box(fe, out, computer_);
             draw_box(fe, out, start_, room_->can_start());
@@ -146,30 +156,39 @@ private:
         const auto t = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         req->start.battle_rng_seed = t;
         req->start.loading_rand_seed = t ^ 0x5A5A5A5Au;
+        req->start.crt_rand_state = crt_rand_.state();
+        req->settings = &fe.settings();
         auto transport = std::make_shared<std::unique_ptr<net::Transport>>(std::move(transport_));
+        auto session = session_;
         auto net = std::make_shared<std::unique_ptr<net::NetBattle>>();
-        req->wrap_outside = [transport, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
-            *net = std::make_unique<net::NetBattle>(client_outside, **transport);
+        const auto players = room_->players();
+        req->wrap_outside = [session, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
+            *net = std::make_unique<net::NetBattle>(client_outside, *session);
             return **net;
         };
-        req->attach = [net](sim::Battle& b) { (*net)->attach(b); };
+        req->attach = [net, players](sim::Battle& b) {
+            (*net)->attach(b);
+            (*net)->set_room(players);
+        };
         const NetMenuConfig cfg = cfg_;
         room_.reset();  // the room's transport now belongs to the game
-        fe.start_battle([cfg, req, transport, net](const LoadProgress& progress, std::string& error) -> std::unique_ptr<BattleSession> {
+        fe.start_battle([cfg, req, transport, session, net](const LoadProgress& progress, std::string& error) -> std::unique_ptr<BattleSession> {
             if (!cfg.load_network_game) {
                 error = "network games need the importer's loader";
                 return nullptr;
             }
             std::unique_ptr<BattleSession> inner = cfg.load_network_game(*req, progress, error);
             if (!inner || !*net) return nullptr;
-            return std::make_unique<NetBattleSession>(std::move(*transport), std::move(*net), std::move(inner));
+            return std::make_unique<NetBattleSession>(std::move(*transport), session, std::move(*net), std::move(inner));
         });
     }
 
     NetMenuConfig cfg_;
     std::unique_ptr<net::Transport> transport_;
+    std::shared_ptr<net::NetSession> session_;
     std::unique_ptr<net::BattleRoom> room_;
-    Box side_, colour_, ready_, computer_, start_, back_;
+    Box side_, colour_, team_, ready_, computer_, start_, back_;
+    sim::Lcg15 crt_rand_;
     int side_value_ = 0, colour_value_ = 0;
     bool ready_value_ = false, launched_ = false;
     std::string typed_;
@@ -179,6 +198,12 @@ private:
 class ConnectScreen final : public Screen {
 public:
     explicit ConnectScreen(const NetMenuConfig& cfg) : cfg_(cfg) {}
+    // The player's name from the user's settings (the options' nickname).
+    NetMenuConfig with_name(FrontEnd& fe) const {
+        NetMenuConfig c = cfg_;
+        c.player_name = fe.settings().get_text("Nickname", cfg_.player_name);
+        return c;
+    }
     void handle(FrontEnd& fe, const InputEvent& e) override {
         if (e.type == InputEvent::Type::KeyDown) {
             if (e.key == keys::kEscape) fe.pop();
@@ -194,7 +219,7 @@ public:
             std::string err;
             auto t = net::tcp_host(cfg_.port, err);
             if (!t) message_ = "cannot host: " + err;
-            else fe.push(std::make_unique<RoomScreen>(cfg_, std::move(t), true));
+            else fe.push(std::make_unique<RoomScreen>(with_name(fe), std::move(t), true));
         } else if (join_.hit(e.x, e.y)) {
             join(fe);
         } else if (back_.hit(e.x, e.y)) {
@@ -218,7 +243,7 @@ private:
         std::string err;
         auto t = net::tcp_join(address_.empty() ? "127.0.0.1" : address_, cfg_.port, err);
         if (!t) message_ = "cannot join: " + err;
-        else fe.push(std::make_unique<RoomScreen>(cfg_, std::move(t), false));
+        else fe.push(std::make_unique<RoomScreen>(with_name(fe), std::move(t), false));
     }
     NetMenuConfig cfg_;
     std::string address_, message_;
@@ -233,9 +258,9 @@ void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config) {
     hooks.multiplayer_menu = [config](FrontEnd& fe) { return make_multiplayer_menu(fe, config); };
 }
 
-NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, std::unique_ptr<net::NetBattle> net,
-                                   std::unique_ptr<BattleSession> inner)
-    : transport_(std::move(transport)), net_(std::move(net)), inner_(std::move(inner)) {
+NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, std::shared_ptr<net::NetSession> session,
+                                   std::unique_ptr<net::NetBattle> net, std::unique_ptr<BattleSession> inner)
+    : transport_(std::move(transport)), session_(std::move(session)), net_(std::move(net)), inner_(std::move(inner)) {
     // The client's step budget waits for the slowest remote player; its pause and speed keys
     // send packet 0x19 and received ones apply here.
     GameClient& c = inner_->client();

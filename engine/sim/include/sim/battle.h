@@ -65,7 +65,12 @@ struct BattleUnitType {
 // Settings and per-step inputs shared by the systems.
 struct BattleSettings {
     std::uint8_t sea_level = 0;
+    // Gravity in world units (16.16) per step per step (GS+0x14263; the map load turns the map's
+    // value per second squared into it, see RE_MEMORY "Motion").
     std::int32_t gravity = 0;
+    // The map info's own "gravity" value as written (map info +0xD3C: 0 when the key is
+    // missing, -1 without a map info). Only the bomb run's drop lead reads it (AirStrike).
+    std::int32_t map_gravity = -1;
     bool net_game = false;            // network game: state broadcasts and packets
     std::uint8_t local_player = 0;
     std::uint8_t local_view = 0;
@@ -90,7 +95,6 @@ struct BattleSettings {
     std::uint8_t feature_network_role = 0;  // feature damage: 0 alone, 1 network host, 2 other machine
     float tidal_strength = 0.0f;      // the map's tidal strength (tidal generators)
     std::uint16_t build_menu_focus = 0;     // unit whose build menu this machine shows (user interface)
-    std::int32_t network_provider = 0;      // the map info's provider type (3: reclaims are announced)
     // Inputs the original takes from stale stack memory (sim/unit_missions.h): the y of the
     // reclaim sites repair patrols find, and the address the air repair patrol leaves in its
     // event argument.
@@ -288,7 +292,11 @@ public:
     // inclusive range of them (the entries' owner is fixed by it).
     void init_unit_table(std::size_t count);
     void assign_unit_range(int player, int first, int last);
-    void init_buckets() { buckets.resize_for_map(map.width, map.height); }
+    // After the map's heights and height ranges (and the sea level) are set.
+    void init_buckets() {
+        buckets.resize_for_map(map.width, map.height);
+        build_bucket_heights(buckets, map, settings.sea_level);
+    }
     // Once the map (heights, features) and the unit ranges are set, before units are made:
     // builds the movement classes' grids and sets up the route search (the original does
     // this while loading the battle). An `explored` map of the wrong size becomes all seen.
@@ -400,6 +408,12 @@ public:
     // death destroying its player's units (0x486F10).
     void victory_turn(int slot);
     void victory_stage_end();
+    // `stale_word`: the kill routine's wreck word for the units that go through it (owners that
+    // do not play): what the caller's stack holds there (a network player leaving, 0x452CC0:
+    // an input); each such kill leaves its final wreck level in it, the detonation leaves it.
+    void kill_team(int slot, std::uint32_t& stale_word);
+    // Commander death: the player plays, so its units only take the damage path (no kill
+    // routine call, the word is never read).
     void kill_team(int slot);
     void deathmatch_respawn(int slot);
     // The route search's step: the first thing the players stage (0x464F80) does, after
@@ -451,6 +465,11 @@ private:
         return FxContext{fx_lists, crt_rand, unit_env_.game_tick, static_cast<std::int32_t>(nano.streams.size()), settings.sea_level, &heights_,
                          wind.velocity[0], wind.velocity[2], settings.gravity};
     }  // order goals the route search no longer reads (MotionContext::retired_goals)
+    // The shared effect-object pool (0x51E610: 1000 objects for the effect lists and the nano
+    // streams) has an object left and is not blocked: a nano stream spawn needs one.
+    bool effect_pool_free() const {
+        return !fx_lists.blocked && fx_lists.live() + static_cast<int>(nano.streams.size()) < EffectLists::kPool;
+    }
     void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
                           std::int32_t z, bool fully_built);
     void build_script_and_pose(Unit& u, const UnitCreateType& type);
@@ -510,7 +529,13 @@ private:
         outside_.release_unit(u);
     }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
-    void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
+    void player_out_of_units(int p) override {
+        // The message that a player is out of units picks its wording with one C runtime
+        // rand() (skirmish 0x47BD70, "obliterated"; network game 0x450380, "has left", while
+        // this machine's player is present — always, here). The message itself is presentation.
+        if (settings.provider == 2 || settings.provider == 3) crt_rand.next();
+        outside_.player_out_of_units(p);
+    }
     void commander_died(int p) override {
         outside_.commander_died(p);  // the user interface part (0x491D70)
         kill_team(p);
@@ -611,7 +636,14 @@ private:
         void claim_footprint(Unit& u) override { sim::claim_footprint(b.footprint_, u); }
         void update_sight(Unit& u) override { b.update_sight(u); }
         bool off_map(const Unit& u) override { return u.bucket == kOffMapBucket; }
-        std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
+        std::uint8_t bucket_height(const Unit& u) override {  // the unit's bucket record, second byte
+            if (u.bucket == kOffMapBucket) return 0;
+            if (u.bucket < 0 || static_cast<std::size_t>(u.bucket) >= b.buckets.top.size()) {
+                if (b.motion_.fault.empty()) b.motion_.fault = "cruise height of a unit without a spatial bucket (the original reads a null record)";
+                return 0;
+            }
+            return b.buckets.top[static_cast<std::size_t>(u.bucket)];
+        }
         void route_search_forget(MotionGoal& g) override { sim::route_search_forget(b.route_search, g); }
         void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
         // Goal objects need a nonzero handle: an order with handle 0 counts as having no goal
@@ -637,7 +669,7 @@ private:
         bool use_resources_if_not_stalled(Unit& u, float e, float m) override { return add_use_if_not_stalled(b.ticks[u.id], e, m); }
         void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
         void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override {
-            spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, point_box(from), box);
+            if (b.effect_pool_free()) spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, point_box(from), box);
             b.outside_.nano_beam(from, box);
         }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
@@ -738,7 +770,7 @@ private:
             sim::attach_ring_goal(b.motion_, o, pos, outer, inner);
         }
         void nano_beam_reverse(const std::array<std::int32_t, 6>& box, const std::array<std::int32_t, 3>& to) override {
-            spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, box, point_box(to));
+            if (b.effect_pool_free()) spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, box, point_box(to));
         }
         void kill_feature(std::int32_t x, std::int32_t z, bool reclaimed) override { sim::kill_feature(b.feature_world_, x, z, reclaimed); }
         void victory_unit_transferred(Unit& u) override {
@@ -750,7 +782,7 @@ private:
         void builder_menu(Unit& u) override { b.outside_.builder_menu(u); }
         void build_menu_refresh(Unit& u) override { b.outside_.build_menu_refresh(u); }
         void orders_panel_changed() override { b.outside_.orders_panel_changed(); }
-        std::int32_t network_provider() override { return b.settings.network_provider; }
+        std::int32_t network_provider() override { return b.settings.provider; }
         // TransportLinks
         void bucket_unlink(Unit& u) override { sim::bucket_unlink(b.footprint_, u); }
         void bucket_prepend(Unit& u) override { sim::bucket_prepend(b.footprint_, u); }
@@ -809,7 +841,13 @@ private:
                                    std::int32_t c3) override;
         std::int32_t reclaim_site_y() override { return b.outside_.reclaim_site_y(b.settings.reclaim_site_y); }
         void place_unit(Unit& u, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) override { sim::place_unit(b.motion_, u, pos, layer); }
-        void teleport_trail(Unit& u, const std::array<std::int32_t, 3>& to) override { b.outside_.teleport_trail(u.pos, to); }
+        void teleport_trail(Unit& u, const std::array<std::int32_t, 3>& to) override {
+            // Flame dots from where the unit stands to where it goes (0x471FD0: 30 steps, effect
+            // list 5); their particles draw the C runtime rand() in the effect sweep.
+            FxContext c = b.fx_context();
+            fx_dots(c, u.pos, to, 30, 5);
+            b.outside_.teleport_trail(u.pos, to);
+        }
         void remove_feature(std::int32_t cell) override { sim::remove_feature(b.feature_world_, cell, false); }
         void wreck_attitude(const MapCell& origin, Unit& u) override;
     };

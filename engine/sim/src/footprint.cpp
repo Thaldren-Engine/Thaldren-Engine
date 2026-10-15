@@ -109,6 +109,46 @@ void UnitBuckets::resize_for_map(std::int32_t cells_x, std::int32_t cells_z) {
     off_map = nullptr;
 }
 
+void build_bucket_heights(UnitBuckets& b, const MapGrid& map, std::uint8_t sea_level) {
+    const std::int32_t w = b.width, h = b.height;
+    if (w <= 0 || h <= 0) {
+        b.top.clear();
+        return;
+    }
+    std::vector<std::uint8_t> ground(static_cast<std::size_t>(w * h), sea_level);
+    for (std::int32_t z = 0; z < map.height; ++z)
+        for (std::int32_t x = 0; x < map.width; ++x) {
+            std::uint8_t& g = ground[static_cast<std::size_t>((z >> 3) * w + (x >> 3))];
+            const std::uint8_t top = map.cells[static_cast<std::size_t>(z * map.width + x)].height_max;
+            if (g < top) g = top;
+        }
+    // Along each row: a bucket takes the highest of the pairs it belongs to (the last one
+    // only its own pair; a lone bucket nothing).
+    std::vector<std::uint8_t> rows(ground.size(), 0);
+    for (std::int32_t z = 0; z < h; ++z) {
+        std::uint8_t prev = 0, pair = 0;
+        for (std::int32_t x = 0; x + 1 < w; ++x) {
+            const std::uint8_t a = ground[static_cast<std::size_t>(z * w + x)], c = ground[static_cast<std::size_t>(z * w + x + 1)];
+            pair = a < c ? c : a;
+            rows[static_cast<std::size_t>(z * w + x)] = prev < pair ? pair : prev;
+            prev = pair;
+        }
+        rows[static_cast<std::size_t>(z * w + w - 1)] = pair;
+    }
+    // The same down each column, over the row results.
+    b.top.assign(ground.size(), 0);
+    for (std::int32_t x = 0; x < w; ++x) {
+        std::uint8_t prev = 0, pair = 0;
+        for (std::int32_t z = 0; z + 1 < h; ++z) {
+            const std::uint8_t a = rows[static_cast<std::size_t>(z * w + x)], c = rows[static_cast<std::size_t>((z + 1) * w + x)];
+            pair = a < c ? c : a;
+            b.top[static_cast<std::size_t>(z * w + x)] = prev < pair ? pair : prev;
+            prev = pair;
+        }
+        b.top[static_cast<std::size_t>((h - 1) * w + x)] = pair;
+    }
+}
+
 void footprint_origin(std::int32_t x, std::int32_t z, std::int16_t fx, std::int16_t fz, std::int16_t& cell_x,
                       std::int16_t& cell_z) {
     // Centre minus half the footprint, rounded to the nearest cell (32-bit wrapping).

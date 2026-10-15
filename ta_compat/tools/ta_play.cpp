@@ -23,12 +23,20 @@
 //                       (see client/front.h) and write --shots a,b,c as <--out PREFIX>NNNN.bmp
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
 //   --no-pointer        frames without the pointer (as the original's screen surface has them)
+//   --realtime          headless: run the frames at wall-clock speed (network games)
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 #include "client/front.h"
 #include "client/game_client.h"
@@ -78,12 +86,27 @@ int main(int argc, char** argv) {
         else if (a == "--cpu") front.gpu = false;
         else if (a == "--no-sound") front.sound = false;
         else if (a == "--seed") setup.seed = static_cast<std::uint32_t>(std::strtoul(next().c_str(), nullptr, 0));
-        else if (a == "--headless") front.headless = true;
+        else if (a == "--headless") {
+            front.headless = true;
+#ifdef _WIN32
+            // Headless runs never show error dialogs; a crash prints where it happened.
+            SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+            SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+                const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleA(nullptr));
+                const auto at = reinterpret_cast<std::uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
+                std::fprintf(stderr, "crash: exception %08lx at module offset 0x%llx\n", ep->ExceptionRecord->ExceptionCode,
+                             static_cast<unsigned long long>(at - base));
+                std::fflush(stderr);
+                return EXCEPTION_EXECUTE_HANDLER;
+            });
+#endif
+        }
         else if (a == "--frames") front.frames = std::atoi(next().c_str());
         else if (a == "--script") script_file = next();
         else if (a == "--out") front.screenshot_prefix = next();
         else if (a == "--gpu-check") front.gpu_check = true;
         else if (a == "--no-pointer") front.draw_pointer = false;
+        else if (a == "--realtime") front.realtime = true;
         else if (a == "--shots") {
             std::stringstream ss(next());
             for (std::string t; std::getline(ss, t, ',');) front.screenshot_frames.push_back(std::atoi(t.c_str()));
