@@ -83,6 +83,11 @@ public:
         read(at, &v, sizeof v);
         return v;
     }
+    // Makes `n` bytes at `at` writable (import table slots of the mapped image).
+    bool make_writable(u32 at, SIZE_T n) {
+        DWORD old = 0;
+        return VirtualProtectEx(pi_.hProcess, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(at)), n, PAGE_READWRITE, &old) != 0;
+    }
     // Replaces the code at `at` with a jump to `target` (makes the page writable first).
     bool patch_jump(u32 at, u32 target) {
         DWORD old = 0;
