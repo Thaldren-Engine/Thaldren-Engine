@@ -7,12 +7,14 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include "sim/features.h"
 #include "sim/missions.h"
 #include "sim/orders.h"
 #include "sim/targeting.h"
 #include "sim/unit_tick.h"
+#include "sim/x87_trig.h"
 
 namespace client {
 namespace {
@@ -112,28 +114,44 @@ bool GameClient::selectable(const sim::Unit& u) const {
 }
 
 std::uint16_t GameClient::unit_at(int sx, int sy) const {
-    // The drawn unit whose box (the model's extent around its screen point) holds the
-    // point; the nearest centre wins.
+    // The original's pick test: each drawn unit's model base rectangle (the bounds' four
+    // bottom corners, turned with the unit, projected) must hold the point strictly inside
+    // every edge; of several, the type with the smallest size rank wins (the first of equals).
     std::uint16_t best = 0;
-    int best_d = 1 << 30;
+    std::int64_t best_rank = 0x7fff0000;
     for (const UnitScreen& s : on_screen_) {
         if (s.id >= b_.units.size() || b_.ticks[s.id].type_index == 0) continue;
         const std::uint16_t t = b_.ticks[s.id].type_index;
         if (t >= c_.types.size()) continue;
         const UnitTypeLook& look = c_.types[t];
-        const int r = std::max({std::abs(look.box_min[0] >> 16), std::abs(look.box_max[0] >> 16), std::abs(look.box_min[2] >> 16),
-                                std::abs(look.box_max[2] >> 16), 8});
-        const int top = s.y - r - (look.box_max[1] >> 17);
-        if (sx < s.x - r || sx > s.x + r || sy < top || sy > s.y + r) continue;
-        const int d = (sx - s.x) * (sx - s.x) + (sy - s.y) * (sy - s.y);
-        if (d < best_d) {
-            best_d = d;
+        const sim::Unit& u = b_.units[s.id];
+        // The model's own bounds (its pieces at rest), as the original reads them from the model.
+        const auto& mn = look.box_min;
+        const auto& mx = look.box_max;
+        const std::int32_t corners[4][3] = {{mn[0], mn[1], mn[2]}, {mx[0], mn[1], mn[2]}, {mx[0], mn[1], mx[2]}, {mn[0], mn[1], mx[2]}};
+        const std::int16_t angles[3] = {u.pitch, static_cast<std::int16_t>(u.heading), u.bank};
+        int px[4], py[4];
+        for (int k = 0; k < 4; ++k) {
+            std::int32_t r[3];
+            sim::x87::rotate_point_3d(corners[k], r, angles);
+            px[k] = static_cast<std::int16_t>(static_cast<std::uint32_t>(r[0] + u.pos[0] - scroll_x_ * 0x10000) >> 16) + 128;
+            py[k] = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[2] - scroll_y_ * 0x10000 - r[2]) >> 16) -
+                    (static_cast<std::int16_t>(static_cast<std::uint32_t>(r[1] + u.pos[1]) >> 16) >> 1) + 32;
+        }
+        bool inside = true;
+        for (int k = 0; k < 4 && inside; ++k) {
+            const int n = (k + 1) % 4;
+            const int a = (px[n] - px[k]) * (sy - py[k]);
+            const int b = (py[n] - py[k]) * (sx - px[k]);
+            if (b - a == 0 || b < a) inside = false;
+        }
+        if (inside && look.pick_rank < best_rank) {
+            best_rank = look.pick_rank;
             best = s.id;
         }
     }
     return best;
 }
-
 int GameClient::selected_count() const {
     int n = 0;
     for (std::size_t i = 1; i < b_.units.size(); ++i)
@@ -165,6 +183,17 @@ int GameClient::frame(std::uint32_t now_ms) {
         else tracked_ = 0;
     }
     hover_ = in_view(mouse_x_, mouse_y_) ? unit_at(mouse_x_, mouse_y_) : 0;
+    if (!in_view(mouse_x_, mouse_y_) && on_minimap(mouse_x_, mouse_y_)) {
+        // On the minimap: the nearest radar dot within 2 pixels (squared distance under 4).
+        int bd = 99999;
+        for (const UnitScreen& d : mm_dots_) {
+            const int dd = (d.x - mouse_x_) * (d.x - mouse_x_) + (d.y - mouse_y_) * (d.y - mouse_y_);
+            if (dd < 4 && dd < bd) {
+                bd = dd;
+                hover_ = d.id;
+            }
+        }
+    }
     hover_feature_ = in_view(mouse_x_, mouse_y_) && !hover_ ? feature_under(mouse_x_, mouse_y_) : -1;
     speech_step();
     if (panel_dirty_) refresh_panel();

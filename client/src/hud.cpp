@@ -398,6 +398,7 @@ void GameClient::draw_minimap(render::Image8& o) {
     const render::ClipRect mm{mm_x_, mm_y_, mm_x_ + mm_w_ - 1, mm_y_ + mm_h_ - 1};
     const int mw = std::max(1, map_width_px()), mh = std::max(1, map_height_px());
     const bool sensors = b_.settings.fog_of_war || b_.settings.explore;
+    mm_dots_.clear();
     // Radar dots: shown units without the line of sight options, units marked by radar or
     // sonar, and own units; in the owner's colour.
     for (std::size_t i = 1; i < b_.units.size(); ++i) {
@@ -410,6 +411,7 @@ void GameClient::draw_minimap(render::Image8& o) {
                        (static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[1]) >> 16) >> 1)) *
                           mm_h_ / mh +
                       mm_y_;
+        mm_dots_.push_back({static_cast<std::uint16_t>(i), x, y});
         if (c_.radar_dots && !c_.radar_dots->empty()) {
             const auto& dots = *c_.radar_dots;
             render::blit(o, mm, dots[static_cast<std::size_t>(t.owner) % dots.size()], x, y);

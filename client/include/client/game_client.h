@@ -195,6 +195,7 @@ private:
     int build_page_ = 0;
     bool panel_dirty_ = true;
     std::vector<UnitScreen> on_screen_;  // units drawn in the last frame (screen positions)
+    std::vector<UnitScreen> mm_dots_;    // radar dots drawn on the minimap in the last frame
     std::uint32_t last_click_ms_ = 0;
     std::uint16_t last_click_unit_ = 0;
     struct Line {

@@ -458,6 +458,9 @@ bool ClientWorld::build_content(std::string& error) {
         const UnitDefRecord& d = defs_.units[k];
         client::UnitTypeLook& look = c.types[k];
         look.name = d.name;
+        look.pick_min = {d.model_min_x, d.model_min_y, d.model_min_z};
+        look.pick_max = {d.model_max_x, d.model_max_y, d.model_max_z};
+        look.pick_rank = ((static_cast<std::int64_t>(d.model_size_y) * 0x8000 >> 16) + d.model_size_z) * static_cast<std::int64_t>(d.model_size_x) >> 16;
         look.description = d.description;
         for (const std::string& cm : commanders)
             if (stricmp_c(cm, d.unit_name) == 0) look.commander = true;

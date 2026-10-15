@@ -108,6 +108,10 @@ struct UnitTypeLook {
     // Box around the model at rest (16.16, unit space): the selection outline.
     std::array<std::int32_t, 3> box_min{}, box_max{};
     bool commander = false;
+    // The pointer's pick test (on box_min / box_max): the rank among several hits (smaller
+    // wins: (size y / 2 + size z) * size x >> 16 of the type definition's model sizes).
+    std::array<std::int32_t, 3> pick_min{}, pick_max{};  // the definition's bounds (footprint x, z)
+    std::int64_t pick_rank = 0;
 };
 
 // A decoded sound: signed 16-bit samples.
