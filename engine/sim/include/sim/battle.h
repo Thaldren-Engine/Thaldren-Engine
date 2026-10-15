@@ -461,6 +461,11 @@ private:
         return FxContext{fx_lists, crt_rand, unit_env_.game_tick, static_cast<std::int32_t>(nano.streams.size()), settings.sea_level, &heights_,
                          wind.velocity[0], wind.velocity[2], settings.gravity};
     }  // order goals the route search no longer reads (MotionContext::retired_goals)
+    // The shared effect-object pool (0x51E610: 1000 objects for the effect lists and the nano
+    // streams) has an object left and is not blocked: a nano stream spawn needs one.
+    bool effect_pool_free() const {
+        return !fx_lists.blocked && fx_lists.live() + static_cast<int>(nano.streams.size()) < EffectLists::kPool;
+    }
     void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
                           std::int32_t z, bool fully_built);
     void build_script_and_pose(Unit& u, const UnitCreateType& type);
@@ -660,7 +665,7 @@ private:
         bool use_resources_if_not_stalled(Unit& u, float e, float m) override { return add_use_if_not_stalled(b.ticks[u.id], e, m); }
         void build_counts_changed(Unit& u) override { b.outside_.build_counts_changed(u); }
         void nano_beam(const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 6>& box) override {
-            spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, point_box(from), box);
+            if (b.effect_pool_free()) spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, point_box(from), box);
             b.outside_.nano_beam(from, box);
         }
         void drop_goal_object(Unit& u, MissionOrder& o) override { release_order_goal(b.motion_, u, o); }
@@ -761,7 +766,7 @@ private:
             sim::attach_ring_goal(b.motion_, o, pos, outer, inner);
         }
         void nano_beam_reverse(const std::array<std::int32_t, 6>& box, const std::array<std::int32_t, 3>& to) override {
-            spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, box, point_box(to));
+            if (b.effect_pool_free()) spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, box, point_box(to));
         }
         void kill_feature(std::int32_t x, std::int32_t z, bool reclaimed) override { sim::kill_feature(b.feature_world_, x, z, reclaimed); }
         void victory_unit_transferred(Unit& u) override {
