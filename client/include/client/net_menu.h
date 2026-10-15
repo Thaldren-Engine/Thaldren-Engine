@@ -30,6 +30,8 @@ struct NetGameRequest {
     // and after the battle exists and is started: attach(battle).
     std::function<sim::BattleOutside&(sim::BattleOutside& client_outside)> wrap_outside;
     std::function<void(sim::Battle&)> attach;
+    // The user's settings (client options of the battle: screen, speeds, interface type).
+    const Settings* settings = nullptr;
 };
 
 struct NetMenuConfig {
@@ -49,7 +51,8 @@ void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config);
 // network clock, polls while the game is paused, sends chat and shows received lines.
 class NetBattleSession final : public BattleSession {
 public:
-    NetBattleSession(std::unique_ptr<net::Transport> transport, std::unique_ptr<net::NetBattle> net, std::unique_ptr<BattleSession> inner);
+    NetBattleSession(std::unique_ptr<net::Transport> transport, std::shared_ptr<net::NetSession> session, std::unique_ptr<net::NetBattle> net,
+                     std::unique_ptr<BattleSession> inner);
     sim::Battle& battle() override { return inner_->battle(); }
     Content& content() override { return inner_->content(); }
     GameClient& client() override { return inner_->client(); }
@@ -64,6 +67,7 @@ public:
 
 private:
     std::unique_ptr<net::Transport> transport_;
+    std::shared_ptr<net::NetSession> session_;
     std::unique_ptr<net::NetBattle> net_;
     std::unique_ptr<BattleSession> inner_;
 };

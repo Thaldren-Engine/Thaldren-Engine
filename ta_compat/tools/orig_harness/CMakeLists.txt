@@ -277,6 +277,7 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
     ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
     ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/commands.cpp
     ${ROOT}/engine/sim/src/commands_core.cpp
@@ -558,6 +559,7 @@ add_executable(goal_harness
     ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
     ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
     ${ROOT}/engine/sim/src/commands.cpp
@@ -614,6 +616,7 @@ add_executable(order_harness
     ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
     ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
     ${ROOT}/engine/sim/src/commands.cpp
@@ -719,3 +722,57 @@ add_executable(render_harness
 )
 target_include_directories(render_harness PRIVATE ${ROOT}/render/include ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(render_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Unit state packets (whole states, goal states) vs sim/net_units.h.
+add_executable(netstate_harness
+    netstate_harness.cpp
+    ${ROOT}/engine/sim/src/ai.cpp
+    ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
+    ${ROOT}/engine/sim/src/net_units.cpp
+    ${ROOT}/engine/sim/src/battle_start.cpp
+    ${ROOT}/engine/sim/src/commands.cpp
+    ${ROOT}/engine/sim/src/commands_core.cpp
+    ${ROOT}/engine/sim/src/effect_lists.cpp
+    ${ROOT}/engine/sim/src/lockstep.cpp
+    ${ROOT}/engine/sim/src/journal.cpp
+    ${ROOT}/engine/sim/src/sky.cpp
+    ${ROOT}/engine/sim/src/step_budget.cpp
+    ${ROOT}/engine/sim/src/victory.cpp
+    ${ROOT}/engine/sim/src/mission_goals.cpp
+    ${ROOT}/engine/sim/src/world.cpp
+    ${ROOT}/engine/sim/src/sight.cpp
+    ${ROOT}/engine/sim/src/anim.cpp
+    ${ROOT}/engine/sim/src/effects.cpp
+    ${ROOT}/engine/sim/src/features.cpp
+    ${ROOT}/engine/sim/src/route_search.cpp
+    ${ROOT}/engine/sim/src/targeting.cpp
+    ${ROOT}/engine/sim/src/missions.cpp
+    ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/unit_missions_common.cpp
+    ${ROOT}/engine/sim/src/air_missions.cpp
+    ${ROOT}/engine/sim/src/ground_missions.cpp
+    ${ROOT}/engine/sim/src/nano_spray.cpp
+    ${ROOT}/engine/sim/src/motion.cpp
+    ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/economy.cpp
+    ${ROOT}/engine/sim/src/fire.cpp
+    ${ROOT}/engine/sim/src/footprint.cpp
+    ${ROOT}/engine/sim/src/ground_settle.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/projectile.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/unit_create.cpp
+    ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(netstate_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(netstate_harness PRIVATE /W4 /permissive- /fp:precise)

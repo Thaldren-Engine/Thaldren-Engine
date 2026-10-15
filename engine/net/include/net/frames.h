@@ -91,23 +91,37 @@ public:
     // A frame's packet sequence contained a size-0 type: the original loops forever there.
     bool stuck() const { return stuck_; }
 
+    // Frames that waited for an earlier one (out-of-order arrivals) and their replays.
+    std::uint64_t restamps() const { return restamps_; }
+
 private:
     struct Item {
         std::uint32_t release;
         std::vector<std::uint8_t> packet;
+    };
+    struct Frame {
+        bool present = false;
+        std::int32_t from = 0, to = 0;
+        std::vector<std::uint8_t> bytes;
+        bool spread = true;
     };
     struct Sender {
         std::int32_t id = -1, to = -1;
         std::deque<Item> queue;
         std::int32_t last_sequence = -1;  // -1: none yet
         std::uint32_t base_tick = 0;      // never set by the original after creation (0)
+        Frame held;                       // a frame that came after a gap
     };
+    static constexpr std::int32_t kNone = 0x7FFFFFFF;
     Sender* sender(std::int32_t id);
     static bool ready(const Item& it, std::uint32_t tick);
-    void split(Sender& s, const std::vector<std::uint8_t>& frame, std::uint32_t tick);
+    bool take_head(Sender& s, std::uint32_t tick, Delivered& out);
+    void split(Sender& s, const std::vector<std::uint8_t>& frame, std::uint32_t tick, bool spread);
 
-    std::vector<Sender> senders_;
-    std::uint64_t dropped_ = 0, bad_ = 0, order_mismatches_ = 0;
+    std::deque<Sender> senders_;
+    Frame current_, deferred_;
+    std::int32_t replay_ = kNone;
+    std::uint64_t dropped_ = 0, bad_ = 0, order_mismatches_ = 0, restamps_ = 0;
     bool stuck_ = false;
 };
 
