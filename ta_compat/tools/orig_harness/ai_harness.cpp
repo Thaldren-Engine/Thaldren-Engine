@@ -40,6 +40,7 @@
 #include "sim/rng.h"
 #include "sim/targeting.h"
 #include "sim/unit.h"
+#include "sim/unit_missions.h"
 #include "sim/unit_tick.h"
 #include "sim/weapons.h"
 #include "ta/ai_profile.h"
@@ -61,7 +62,7 @@ constexpr u32 kGameStatePtr = 0x00511DE8, kBattleRngState = 0x0051FC88, kTablePt
 constexpr u32 kPlaceMetal = 0x0051E688, kGate = 0x00501774;
 constexpr u32 kGroupsInit = 0x00480190, kControllerCtor = 0x00408CB0, kTableCreate = 0x0040B320, kController = 0x00408C40;
 constexpr u32 kAssign = 0x00408830, kRefresh = 0x0040B2C0, kRescore = 0x00409730, kPick = 0x0040BDB0, kScore = 0x0040BB00;
-constexpr u32 kSeek = 0x0040BFE0, kNearest = 0x004071F0, kSetGroup = 0x00480250, kPlan = 0x00406C90, kWeight = 0x00406DB0;
+constexpr u32 kAirBases = 0x0040B530, kSeek = 0x0040BFE0, kNearest = 0x004071F0, kSetGroup = 0x00480250, kPlan = 0x00406C90, kWeight = 0x00406DB0;
 constexpr u32 kLimit = 0x00406E40, kWeightMask = 0x00409DC0, kLimitMask = 0x00409E90, kMetalSites = 0x0040B370;
 constexpr u32 kSwitch = 0x00408670, kScoutTick = 0x00408100, kScoutDtor = 0x00408600;
 constexpr u32 kUnitSize = 0x118, kPlayerSize = 0x14B, kDefSize = 0x249, kWeaponSize = 0x115;
@@ -443,7 +444,7 @@ struct Stats {
     bool restart = false;  // the scenario ended at a confirmed crash of the original
     std::map<std::string, std::size_t> by_op;
     std::size_t enqueues = 0, menus = 0, activations = 0, sites = 0, sites_found = 0, picks = 0, picks_made = 0, regroups = 0, refreshes = 0,
-                rescores = 0, nearest = 0, profile = 0;
+                rescores = 0, nearest = 0, profile = 0, air_base_searches = 0, air_bases_found = 0;
     std::map<int, std::size_t> calls, intents;  // stub calls by kind, resolutions by intent
 };
 
@@ -616,6 +617,14 @@ bool run_scenario(harness::Remote& r, const Layout& L, ta::Vfs& vfs, const ta::U
                 const u16 c = usable[g() % usable.size()];
                 if (!ai_types[c].structure && (ai_types[c].type_flags & 0x10000u) && (ai_types[c].abilities & 0x10u) &&
                     !(ai_types[c].type_flags & 0x840u)) {
+                    type = c;
+                    break;
+                }
+            }
+        } else if (g() % 12 == 0) {  // air base builders (pads), for the air base search
+            for (int tries = 0; tries < 200; ++tries) {
+                const u16 c = usable[g() % usable.size()];
+                if ((ai_types[c].type_flags & 0x240u) == 0x240u) {
                     type = c;
                     break;
                 }
@@ -1012,7 +1021,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, ta::Vfs& vfs, const ta::U
         plant();
         // Mix: controller step x6, a role directly x3, regroup, refresh x2, rescore, pick, score,
         // site, nearest enemy, group move, profile x2, tweaks x2.
-        static constexpr int kMix[] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 13};
+        static constexpr int kMix[] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 13, 14};
         int op = kMix[g() % (sizeof kMix / sizeof kMix[0])];
         if (const char* only = std::getenv("AI_HARNESS_ONLY_OP")) op = std::atoi(only);
         std::string what;
@@ -1261,6 +1270,30 @@ bool run_scenario(harness::Remote& r, const Layout& L, ta::Vfs& vfs, const ta::U
             sim::ai_switch_by_economy(ai, units[static_cast<std::size_t>(i)]);
             if (!r.call(kSwitch, 0, {unit_addr(i)})) return fail("switch");
             what = "economy switch";
+        } else if (op == 14) {  // the table's activated air bases within a radius (0x40B530)
+            const int p = ai_player();
+            const Pos at = units[static_cast<std::size_t>(any_unit())].pos;
+            const i32 radius = g() % 3 == 0 ? 0xF00 : static_cast<i32>(g() % 0x1800);
+            std::vector<sim::Unit*> mine;
+            const bool ok = sim::air_bases_in_radius(tstate.tables[static_cast<std::size_t>(p)], ticks, at, radius, mine);
+            const u32 vec = L.out + 0x60;
+            const std::array<u32, 4> empty{};
+            r.write(vec, empty.data(), 16);
+            r.write(L.out + 0x80, &at, 12);
+            if (!r.call(kAirBases, 0, {static_cast<u32>(p), L.out + 0x80, static_cast<u32>(radius), vec})) return fail("air bases");
+            const u32 begin = r.r32(vec + 4), end = r.r32(vec + 8);
+            std::vector<u32> theirs;
+            for (u32 a = begin; a && a < end; a += 4) theirs.push_back(r.r32(a));
+            std::vector<u32> ours;
+            for (sim::Unit* u : mine) ours.push_back(unit_addr(u->id));
+            if (!ok || theirs != ours) {
+                std::printf("scenario %u step %d: air bases differ (orig %zu ours %zu)\n", seed, step, theirs.size(), ours.size());
+                ++st.mismatches;
+                return true;
+            }
+            ++st.air_base_searches;
+            st.air_bases_found += ours.size();
+            what = "air bases";
         } else {  // profile text through the command dispatcher (0x4B7A30)
             std::string text;
             if (!profile_lines.empty()) {
@@ -1458,6 +1491,7 @@ int main(int argc, char** argv) {
     std::printf("orders enqueued %zu, regroups %zu, refreshes %zu, rescores %zu, picks %zu (%zu chose a type), sites %zu (%zu found), "
                 "nearest-enemy calls %zu, profile commands %zu\n",
                 st.enqueues, st.regroups, st.refreshes, st.rescores, st.picks, st.picks_made, st.sites, st.sites_found, st.nearest, st.profile);
+    std::printf("air base searches %zu (%zu bases listed)\n", st.air_base_searches, st.air_bases_found);
     static const char* kNames[] = {"resolve", "order", "build menu", "activate", "place check", "yard check", "range check", "explored", "visible"};
     std::printf("stub calls:");
     for (const auto& [k, v] : st.calls) std::printf(" %s %zu,", k >= kResolveId && k <= kVisibleId ? kNames[k - kResolveId] : "?", v);

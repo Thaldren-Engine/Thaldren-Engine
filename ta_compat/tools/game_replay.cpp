@@ -656,8 +656,9 @@ int main(int argc, char** argv) {
                         }
                 auto it = ours.find(trace_unit);
                 const sim::UnitTickState& t = b.ticks[static_cast<std::size_t>(trace_unit)];
-                std::printf("trace %u (%s): original %s\n          engine   %s  velocity %d,%d,%d\n", b.game_tick(), tname(t.type_index), theirs.c_str(),
-                            it != ours.end() ? list(it->second.v).c_str() : "-", t.velocity[0], t.velocity[1], t.velocity[2]);
+                std::printf("trace %u (%s): original %s\n          engine   %s  velocity %d,%d,%d tilt %d,%d,%d\n", b.game_tick(), tname(t.type_index),
+                            theirs.c_str(), it != ours.end() ? list(it->second.v).c_str() : "-", t.velocity[0], t.velocity[1], t.velocity[2],
+                            t.motion.tilt[0], t.motion.tilt[1], t.motion.tilt[2]);
             }
             std::vector<std::string> diff = compare(b, e);
             if (ignore_cells)

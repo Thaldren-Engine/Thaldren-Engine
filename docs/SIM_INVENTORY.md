@@ -128,7 +128,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | Subsystem | Functions | Key entry points |
 |---|---|---|
 | **COB script VM** | UnitScript 68, Cob 18 | `UnitScript_ExecSlot` `0x004B0DA0`, `AdvancePieceAnims` `0x004B1C00`, `LoadCob` `0x004B2450`, Get/SetUnitValue `0x00480770`/`0x00480B20`, FireWeapon* `0x0049C9C0`.. |
-| **Missions / orders** | MissionTick 66, MissionOrder 32, MissionOrderTable 20, AirManeuverOrder 14 | Ground, building, VTOL and air handlers `0x00401C20`–`0x004152F0`. **All 68 kinds built** (smoke-verified): see RE_MEMORY "Mission behaviours", "Construction and reclaim", "Movement behaviours (ground)" and "Aircraft and transports". Inputs: the reclaim-site y and the air repair patrol's stack address (uninitialised / run-varying); the teleport trail's rand() draws are not modelled. |
+| **Missions / orders** | MissionTick 66, MissionOrder 32, MissionOrderTable 20, AirManeuverOrder 14 | Ground, building, VTOL and air handlers `0x00401C20`–`0x004152F0`. **All 68 kinds built** (smoke-verified): see RE_MEMORY "Mission behaviours", "Construction and reclaim", "Movement behaviours (ground)" and "Aircraft and transports". Inputs: the reclaim-site y and the air repair patrol's stack address (uninitialised / run-varying). The teleport trail's flame dots are simulated (rand() in the effect sweep). |
 | **Movement** | UnitMotion 13, MoveInfo 16 | `UnitMotion_Tick` `0x0043DD20`, fly physics `0x0043D290` |
 | **Pathfinding** | PathGoal 44, PathOrder 22, PathOrderAttach 3 | The route search `RouteSearch_Step` `0x0040EB70` (the reference program's "AiSearch": a pathfinder, not AI) and the movement classes' passability: built, see RE_MEMORY "Route search" |
 | **Weapons / projectiles** | Weapon 23, WeaponDef 9, WeaponFire 4, Projectile 12, Explosion 4 | Ballistic aim `0x0049A9xx`, area damage `0x0049A388` |
@@ -142,8 +142,8 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Victory / defeat** | VictoryCond 44, DefeatCond 25, VictoryConditions 13 | Built for skirmish/network (`engine/sim/src/victory.cpp`, RE_MEMORY "Victory") and campaigns (`sim/mission_goals.h`, RE_MEMORY "Campaign"; smoke-verified) |
 | **Commands (input)** | Cmd 93, Orders 4 | How player orders enter the sim |
 | **Net lockstep / sync** | Net 66, Sync 59 | The original replicates unit states (not lockstep); Sync = unit-definition checksums. Built: the original's model (`engine/net`, `net_units.cpp`; wire format differential-tested in `net_harness`), the battle room with the checksum exchange (`net/lobby.h`), TCP and loopback transports; the engine lockstep tool (`sim/lockstep.h`) remains for tests. Open: DirectPlay interoperability, the side record's unread bytes, resend/out-of-order frame paths |
-| **Debris / FX** | Fx 55, Debris 3 | **Open:** which parts change sim state (debris can deal damage?) and which are visual |
-| **Construction / reclaim / capture** | MissionTick 9, Unit 12 | Built (smoke-verified): see RE_MEMORY "Construction and reclaim" — build slices `0x41BA60`, factory `0x402640`, mobile build `0x403A20`, help `0x403F70`, repair `0x405300`, reclaim `0x404AD0`/`0x404730`, capture `0x404270`, yard placement `0x47D2E0`, transport packet `0x48AB70`. **Nano streams draw the C runtime rand() in the unit pass and stage 9 (not at draw time).** Open: RepairPatrol, Resurrect, aircraft builders |
+| **Debris / FX** | Fx 55, Debris 3 | Built: world effects, shards, debris, the effect particle lists and the nano streams with their shared 1000-object pool (RE_MEMORY "Debris and effects", "Effect particle lists", "Simulation completeness"); drawing only: model texture cursors `0x415B30`, explosion art frames |
+| **Construction / reclaim / capture** | MissionTick 9, Unit 12 | Built (smoke-verified): see RE_MEMORY "Construction and reclaim" — build slices `0x41BA60`, factory `0x402640`, mobile build `0x403A20`, help `0x403F70`, repair `0x405300`, reclaim `0x404AD0`/`0x404730`, capture `0x404270`, yard placement `0x47D2E0`, transport packet `0x48AB70`. **Nano streams draw the C runtime rand() in the unit pass and stage 9 (not at draw time).** RepairPatrol, Resurrect and the aircraft builders are built ("Aircraft and transports") |
 
 ---
 
@@ -181,5 +181,8 @@ The engine defines its **own** structs. These layouts are only for understanding
 2. ~~Sin/cos table~~ resolved: static, 640 entries, formula-generated (see RE_MEMORY).
 3. ~~RNG seeds~~ resolved: QPC for the battle RNG, `time(NULL)` for `rand()` (see RE_MEMORY).
 4. ~~`Math_RandMod` arithmetic~~ resolved from the disassembly (see RE_MEMORY).
-5. ~~Which FX/debris work mutates sim state~~ resolved for features, world effects and debris (see RE_MEMORY "Features and wrecks", "Debris and effects", "Draw-time side effects"); the GAF texture cursors (`0x00415B30`) are still open.
-6. Command packet format (how orders enter the step).
+5. ~~Which FX/debris work mutates sim state~~ resolved for features, world effects and debris (see RE_MEMORY "Features and wrecks", "Debris and effects", "Draw-time side effects"); the GAF texture cursors (`0x00415B30`) only advance model texture animation frames (drawing).
+6. ~~Command packet format~~ resolved: there are no command packets (RE_MEMORY "Commands").
+
+## 9. What is left outside the simulation (2026-10-15)
+Every `BattleOutside` virtual and every C runtime `rand()` caller is classified in RE_MEMORY "Simulation completeness". Nothing in the simulation is left on a hook. What stays outside, and why: run-varying inputs (the wall clock for the hover bob, stale stack words of the AI site height, the reclaim sites and the network handlers `0x452CC0` / `0x4861D0`, heap addresses); frame- or camera-driven `rand()` draws of the original (the speech queue, modelled by the client; lightning drawing; CD audio); presentation and the network.
