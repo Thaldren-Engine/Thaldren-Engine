@@ -30,6 +30,8 @@ struct NetGameRequest {
     // and after the battle exists and is started: attach(battle).
     std::function<sim::BattleOutside&(sim::BattleOutside& client_outside)> wrap_outside;
     std::function<void(sim::Battle&)> attach;
+    // The user's settings (client options of the battle: screen, speeds, interface type).
+    const Settings* settings = nullptr;
 };
 
 struct NetMenuConfig {

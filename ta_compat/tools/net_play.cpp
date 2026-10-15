@@ -206,7 +206,6 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
         ends.push_back(&hub.add_machine());
         rooms.push_back(std::make_unique<net::BattleRoom>(*ends.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
         rooms.back()->set_side(static_cast<std::uint8_t>(s & 1));
-        rooms.back()->set_colour(static_cast<std::uint8_t>(s));
     }
     // Every machine's unit definition checksums (the room compares them).
     {
@@ -222,33 +221,37 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
     rooms[0]->set_map_ready(true);
     rooms[0]->set_options(0, 0, 250, 100, 100, true);  // 10000 energy and metal
     std::uint32_t clock = 1000;
-    for (int pass = 0; pass < 200 && !rooms[0]->started(); ++pass) {
+    // Each machine's C runtime rand() (the host's start position shuffle draws it; an input).
+    std::vector<sim::Lcg15> crt(rooms.size());
+    for (std::size_t k = 0; k < crt.size(); ++k) crt[k].set_state(0xC0FFEEu + static_cast<std::uint32_t>(k));
+    const bool fixed = std::getenv("NET_PLAY_SHUFFLE") == nullptr;
+    rooms[0]->set_options(0, 0, 250, 100, 100, fixed);  // 10000 energy and metal
+    for (int pass = 0; pass < 400 && !std::all_of(rooms.begin(), rooms.end(), [](const auto& r) { return r->loaded(); }); ++pass) {
         clock += 2;
-        for (auto& r : rooms) r->frame(clock);
+        for (std::size_t k = 0; k < rooms.size(); ++k) rooms[k]->frame(clock, &crt[k]);
         if (pass == 4)
-            for (std::size_t k = 0; k < rooms.size(); ++k) {
-                // NET_PLAY_POSITIONS=a,b,c: start positions chosen in the room.
-                if (const char* e = std::getenv("NET_PLAY_POSITIONS")) {
-                    std::string v(e);
-                    std::size_t at = 0;
-                    for (std::size_t i = 0; i < k && at != std::string::npos; ++i) at = v.find(',', at) == std::string::npos ? std::string::npos : v.find(',', at) + 1;
-                    if (at != std::string::npos && at < v.size()) rooms[k]->set_start_position(static_cast<std::int8_t>(std::atoi(v.c_str() + at)));
-                }
-                if (k == 0) continue;
+            for (std::size_t k = 1; k < rooms.size(); ++k) {
                 rooms[k]->set_map_ready(true);
                 rooms[k]->set_ready(true);
+                rooms[k]->next_logo();
             }
-        if (pass > 6 && rooms[0]->can_start()) rooms[0]->start();
-    }
-    for (int pass = 0; pass < 10; ++pass) {
-        clock += 2;
-        for (auto& r : rooms) r->frame(clock);
+        if (pass > 6 && !rooms[0]->started() && rooms[0]->can_start()) rooms[0]->start();
     }
     for (auto& r : rooms)
-        if (!r->started()) {
-            std::printf("battle room: the game did not start\n");
+        if (!r->loaded()) {
+            std::printf("battle room: the game did not start (started %d)\n", r->started());
             return 1;
         }
+    for (std::size_t k = 0; k < rooms.size(); ++k) {
+        const auto bs = rooms[k]->battle_start();
+        std::printf("machine %zu: slot %d, start positions", k, rooms[k]->local_slot());
+        for (int s = 0; s < machines; ++s) std::printf(" %d", bs.players[static_cast<std::size_t>(s)].start_position);
+        std::printf(", logos");
+        for (int s = 0; s < machines; ++s) std::printf(" %d", rooms[k]->players()[static_cast<std::size_t>(s)].logo);
+        std::printf(", groups");
+        for (int s = 0; s < machines; ++s) std::printf(" %d", rooms[k]->players()[static_cast<std::size_t>(s)].group);
+        std::printf(", disabled units %zu\n", rooms[k]->disabled_units().size());
+    }
     std::printf("battle room: %d players seated, game started by the host\n", machines);
     for (int s = 0; s < machines; ++s) {
         auto m = std::make_unique<Machine>();
@@ -268,7 +271,7 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
         req.start = room.battle_start();
         req.start.battle_rng_seed = seed * 7919u + static_cast<std::uint32_t>(k) * 104729u + 1u;
         req.start.loading_rand_seed = seed + static_cast<std::uint32_t>(k);
-        req.start.crt_rand_state = 0xC0FFEEu + static_cast<std::uint32_t>(k);
+        req.start.crt_rand_state = crt[k].state();
         std::string err;
         m.lb = ta::load_battle(vfs, req, *m.net, err, [&](sim::Battle& b) { m.net->attach(b); });
         if (!m.lb) {

@@ -56,6 +56,9 @@ class RoomScreen final : public Screen {
 public:
     RoomScreen(const NetMenuConfig& cfg, std::unique_ptr<net::Transport> t, bool host)
         : cfg_(cfg), transport_(std::move(t)), room_(std::make_unique<net::BattleRoom>(*transport_, host, make_net_id(), cfg.player_name)) {
+        // This machine's C runtime rand(): the host's start position shuffle draws it (an input
+        // from the clock, as the menus leave it).
+        crt_rand_.set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
         if (cfg_.unit_checks) room_->set_unit_checks(cfg_.unit_checks());
         room_->set_map_ready(true);
         room_->on_chat = [this](const std::string& l) { push(l); };
@@ -85,7 +88,8 @@ public:
         if (e.type != InputEvent::Type::MouseDown || e.button != 1) return;
         fe.play_sound(fe.menu_content().click_sound);
         if (side_.hit(e.x, e.y)) room_->set_side(static_cast<std::uint8_t>(++side_value_ & 1));
-        else if (colour_.hit(e.x, e.y)) room_->set_colour(static_cast<std::uint8_t>(++colour_value_ % 10));
+        else if (colour_.hit(e.x, e.y)) room_->next_logo();
+        else if (team_.hit(e.x, e.y)) room_->next_ally_team();
         else if (ready_.hit(e.x, e.y)) room_->set_ready(ready_value_ = !ready_value_);
         else if (computer_.hit(e.x, e.y) && room_->is_host()) room_->add_computer(1);
         else if (start_.hit(e.x, e.y) && room_->is_host()) {
@@ -95,8 +99,9 @@ public:
         }
     }
     void frame(FrontEnd& fe, std::uint32_t now_ms) override {
-        room_->frame(now_clock(now_ms));
-        if (room_->started() && !launched_) launch(fe);
+        room_->frame(now_clock(now_ms), &crt_rand_);
+        if (room_->refused() && !launched_) push(room_->error());
+        if (room_->loaded() && !launched_) launch(fe);
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
         background(fe, out, "BATTLROOM");
@@ -105,8 +110,8 @@ public:
         for (int s = 0; s < 10; ++s) {
             const net::RoomPlayer& p = room_->players()[static_cast<std::size_t>(s)];
             if (!p.net_id) continue;
-            std::string line = std::to_string(s + 1) + ". " + p.name + "  " + (p.side ? "CORE" : "ARM") + "  colour " +
-                               std::to_string(p.colour) + (p.kind == 2 ? "  computer" : "") + (p.ready() || p.kind == 2 || (p.flags & net::room::kHost) ? "  ready" : "") +
+            std::string line = std::to_string(s + 1) + ". " + p.name + "  " + (p.side ? "CORE" : "ARM") + "  logo " +
+                               std::to_string(p.logo) + (p.kind == 2 ? "  computer" : "") + (p.ready() || p.kind == 2 || (p.flags & net::room::kHost) ? "  ready" : "") +
                                (p.latency_ms ? "  " + std::to_string(p.latency_ms) + " ms" : "");
             draw_line(fe, out, line, 20, y, s != room_->local_slot());
             y += 16;
@@ -146,6 +151,8 @@ private:
         const auto t = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         req->start.battle_rng_seed = t;
         req->start.loading_rand_seed = t ^ 0x5A5A5A5Au;
+        req->start.crt_rand_state = crt_rand_.state();
+        req->settings = &fe.settings();
         auto transport = std::make_shared<std::unique_ptr<net::Transport>>(std::move(transport_));
         auto net = std::make_shared<std::unique_ptr<net::NetBattle>>();
         req->wrap_outside = [transport, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
@@ -169,7 +176,8 @@ private:
     NetMenuConfig cfg_;
     std::unique_ptr<net::Transport> transport_;
     std::unique_ptr<net::BattleRoom> room_;
-    Box side_, colour_, ready_, computer_, start_, back_;
+    Box side_, colour_, team_, ready_, computer_, start_, back_;
+    sim::Lcg15 crt_rand_;
     int side_value_ = 0, colour_value_ = 0;
     bool ready_value_ = false, launched_ = false;
     std::string typed_;
@@ -179,6 +187,12 @@ private:
 class ConnectScreen final : public Screen {
 public:
     explicit ConnectScreen(const NetMenuConfig& cfg) : cfg_(cfg) {}
+    // The player's name from the user's settings (the options' nickname).
+    NetMenuConfig with_name(FrontEnd& fe) const {
+        NetMenuConfig c = cfg_;
+        c.player_name = fe.settings().get_text("Nickname", cfg_.player_name);
+        return c;
+    }
     void handle(FrontEnd& fe, const InputEvent& e) override {
         if (e.type == InputEvent::Type::KeyDown) {
             if (e.key == keys::kEscape) fe.pop();
@@ -194,7 +208,7 @@ public:
             std::string err;
             auto t = net::tcp_host(cfg_.port, err);
             if (!t) message_ = "cannot host: " + err;
-            else fe.push(std::make_unique<RoomScreen>(cfg_, std::move(t), true));
+            else fe.push(std::make_unique<RoomScreen>(with_name(fe), std::move(t), true));
         } else if (join_.hit(e.x, e.y)) {
             join(fe);
         } else if (back_.hit(e.x, e.y)) {
@@ -218,7 +232,7 @@ private:
         std::string err;
         auto t = net::tcp_join(address_.empty() ? "127.0.0.1" : address_, cfg_.port, err);
         if (!t) message_ = "cannot join: " + err;
-        else fe.push(std::make_unique<RoomScreen>(cfg_, std::move(t), false));
+        else fe.push(std::make_unique<RoomScreen>(with_name(fe), std::move(t), false));
     }
     NetMenuConfig cfg_;
     std::string address_, message_;

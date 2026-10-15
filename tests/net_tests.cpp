@@ -167,21 +167,100 @@ static void test_room() {
     CHECK(host.can_start());
     const auto& dis = b.disabled_units();
     CHECK(std::find(dis.begin(), dis.end(), 3u) != dis.end());
-    CHECK(host.start());
-    for (int k = 0; k < 5; ++k) {
+    a.next_ally_team();  // team 0
+    b.next_ally_team();
+    for (int k = 0; k < 4; ++k) {
         clock += 2;
+        host.frame(clock);
         a.frame(clock);
         b.frame(clock);
     }
+    CHECK(host.players()[static_cast<std::size_t>(a.local_slot())].ally_team == 0);
+    CHECK(host.start());
+    sim::Lcg15 rh, ra, rb;
+    net::LoopbackHub* unused = nullptr;
+    (void)unused;
+    for (int k = 0; k < 20 && !(host.loaded() && a.loaded() && b.loaded()); ++k) {
+        clock += 2;
+        host.frame(clock, &rh);
+        a.frame(clock, &ra);
+        b.frame(clock, &rb);
+    }
     CHECK(a.started() && b.started());
-    const sim::BattleStart sa = a.battle_start(), sh = host.battle_start();
+    CHECK(host.loaded() && a.loaded() && b.loaded());
+    const sim::BattleStart sa = a.battle_start(), sh = host.battle_start(), sb = b.battle_start();
     CHECK(sa.provider == 3 && sa.unit_limit == 200 && sa.commander_mode == 1 && sa.fog_of_war && sa.fixed_locations);
     CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].kind == sim::PlayerKind::Local);
     CHECK(sa.players[0].kind == sim::PlayerKind::Remote && sa.players[1].kind == sim::PlayerKind::Remote);
     CHECK(sh.players[0].kind == sim::PlayerKind::Local && sh.players[1].kind == sim::PlayerKind::Computer);
     CHECK(sh.players[static_cast<std::size_t>(a.local_slot())].kind == sim::PlayerKind::Remote);
     CHECK(a.map() == "Moon Quartet");
-    for (int s = 0; s < 10; ++s) CHECK(sa.players[static_cast<std::size_t>(s)].start_position == sh.players[static_cast<std::size_t>(s)].start_position);
+    // Fixed locations: positions in slot order, as the host assigned them (each machine knows its own).
+    CHECK(sh.players[0].start_position == 0 && sh.players[1].start_position == 1);
+    CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].start_position == a.local_slot());
+    CHECK(sb.players[static_cast<std::size_t>(b.local_slot())].start_position == b.local_slot());
+    CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].ally_group == 0);
+    // Logos: all different; groups: the host's machine 1 (its computer player too), the others their own.
+    std::vector<int> logos;
+    for (const auto& p : host.players())
+        if (p.net_id) logos.push_back(p.logo);
+    std::sort(logos.begin(), logos.end());
+    CHECK(std::adjacent_find(logos.begin(), logos.end()) == logos.end() && logos.back() < 10);
+    CHECK(host.players()[0].group == 1 && host.players()[1].group == 1);
+    CHECK(host.players()[static_cast<std::size_t>(a.local_slot())].group > 1 && host.players()[static_cast<std::size_t>(b.local_slot())].group > 1 &&
+          host.players()[static_cast<std::size_t>(a.local_slot())].group != host.players()[static_cast<std::size_t>(b.local_slot())].group);
+    CHECK(a.players()[static_cast<std::size_t>(b.local_slot())].group == host.players()[static_cast<std::size_t>(b.local_slot())].group);
+    // The join gate: a latecomer is refused.
+    net::Transport& t3 = hub.add_machine();
+    net::BattleRoom late(t3, false, 0x400, "Late");
+    for (int k = 0; k < 6; ++k) {
+        clock += 2;
+        late.frame(clock);
+        host.frame(clock, &rh);
+    }
+    late.frame(clock + 2);
+    CHECK(late.refused() && late.local_slot() < 0);
+}
+
+static void test_room_shuffle() {
+    // Start positions shuffled on the host's C runtime rand() (two players: one draw decides).
+    int shuffled = 0;
+    for (std::uint32_t seed = 1; seed < 9; ++seed) {
+        net::LoopbackHub hub;
+        net::Transport& th = hub.add_machine();
+        net::Transport& t1 = hub.add_machine();
+        net::BattleRoom host(th, true, 0x100, "Host");
+        net::BattleRoom a(t1, false, 0x200, "Alice");
+        host.set_map_ready(true);
+        host.set_options(0, 0, 250, 10, 10, false);
+        sim::Lcg15 rh, ra;
+        rh.set_state(seed * 7919u);
+        const std::uint32_t before = rh.state();
+        std::uint32_t clock = 100;
+        for (int k = 0; k < 60 && !(host.loaded() && a.loaded()); ++k) {
+            clock += 2;
+            host.frame(clock, &rh);
+            a.frame(clock, &ra);
+            if (k == 3) {
+                a.set_map_ready(true);
+                a.set_ready(true);
+            }
+            if (k > 5 && !host.started() && host.can_start()) host.start();
+        }
+        CHECK(host.loaded() && a.loaded());
+        const int ph = host.battle_start().players[0].start_position, pa = a.battle_start().players[1].start_position;
+        CHECK(ph != pa && ph >= 0 && ph < 2 && pa >= 0 && pa < 2);
+        // One draw when not shuffling, two when shuffling (the decision and the swap).
+        sim::Lcg15 x;
+        x.set_state(before);
+        x.next();
+        if (ph == 1) {
+            ++shuffled;
+            x.next();
+        }
+        CHECK(rh.state() == x.state());
+    }
+    CHECK(shuffled > 0 && shuffled < 8);
 }
 
 int main() {
@@ -190,6 +269,7 @@ int main() {
     test_frames();
     test_loopback();
     test_room();
+    test_room_shuffle();
     std::printf("net_tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
