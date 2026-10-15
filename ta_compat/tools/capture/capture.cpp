@@ -19,7 +19,10 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <tlhelp32.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -80,7 +83,12 @@ constexpr DWORD kBpBuildMenu = 0x00419B00;      // build menu command (name, uni
 constexpr DWORD kBpIssueSelected = 0x0048CF30;  // Unit_IssueOrdersToSelected (interface)
 constexpr DWORD kBpAiConstructors = 0x00408100; // Ai_RoleConstructorsTick: site height = [esp-0x2C]
 constexpr DWORD kBpReclaimSites = 0x0047EA40;   // Map_PickReclaimSites: site y = [esp-8]
-constexpr DWORD kBpDxCheck = 0x004266A5;        // after the DirectX version check (0x4B5070): eax 0 shows a notice
+constexpr DWORD kBpVtolRepairPatrol = 0x004152F0;  // Mission_VtolRepairPatrol: site record at [entry ESP - 0x2C]
+constexpr DWORD kBpHoverClock = 0x0048A66F;      // Unit_FitToSlope after its clock call (0x4B6340): eax = clock
+constexpr DWORD kBpExplTablesBegin = 0x00420620; // battle loading: the explosion tables are built (loading thread rand())
+constexpr DWORD kBpExplTablesEnd = 0x00419560;   // the next loading call after them
+constexpr DWORD kBpDxCheck = 0x004266A5;       // after the DirectX version check (0x4B5070): eax 0 shows a notice
+constexpr DWORD kBpSoundNotice = 0x00426721;   // after the sound driver check (0x4CFF20): eax != 0 shows a notice
 constexpr DWORD kOffPlayers = 0x1B63, kPlayerSize = 0x14B, kUnitSize = 0x118;
 constexpr DWORD kOffLocalPlayer = 0x2A42, kOffLocalView = 0x2A43;
 constexpr DWORD kOffProjCount = 0x141F3, kOffProjTable = 0x141F7, kProjSize = 0x6B, kMaxProjectiles = 300;
@@ -99,6 +107,8 @@ struct Options {
     std::string dump_defs;        // write definition tables at the first sim step
     bool game = false;            // whole-game capture (digests, orders, frames, stale words)
     bool auto_skirmish = false;   // press the menus' quick keys until a skirmish starts
+    std::uint32_t timeout_s = 900;  // the game is ended after this many seconds
+    std::string script;           // the local player's scripted actions (see Script below)
 };
 
 struct Breakpoint {
@@ -424,6 +434,11 @@ bool g_in_step = false;           // between the step start and the step end bre
 bool g_battle_loading = false;    // the battle seed was seen (the menus are done)
 bool g_start_written = false;
 std::uint32_t g_unit_table = 0;
+// --watch: a data breakpoint on one unit field (set on the simulation thread at the first step).
+unsigned g_watch_unit = 0, g_watch_len = 0;
+int g_watch_off = 0;
+DWORD g_watch_addr = 0;
+bool g_watch_armed = false;
 
 std::uint32_t game_state() {
     std::uint32_t gs = 0;
@@ -479,6 +494,7 @@ void write_start(DWORD tid) {
     const std::uint32_t gs = game_state();
     if (!gs) return;
     read_u32(gs + 0x14357, g_unit_table);
+    if (g_watch_len) g_watch_addr = g_unit_table + g_watch_unit * kUnitSize + static_cast<DWORD>(g_watch_off);
     std::uint8_t lp = 0, lv = 0;
     read_block(gs + kOffLocalPlayer, &lp, 1);
     read_block(gs + kOffLocalView, &lv, 1);
@@ -647,6 +663,13 @@ void write_digest(DWORD tid) {
                         line += "," + std::to_string(get<std::uint32_t>(gb, 0xC + 4u * static_cast<std::uint32_t>(k)));
                 }
             }
+            // Motion velocity (+8) and tilt (+0x14), [] without motion.
+            line += "],[";
+            if (const std::uint32_t mo = get<std::uint32_t>(u, o + 0)) {
+                std::int32_t vt[6] = {};
+                read_block(mo + 8, vt, sizeof vt);
+                for (int k = 0; k < 6; ++k) line += (k ? "," : "") + std::to_string(vt[k]);
+            }
             line += "]]";
             first = false;
         }
@@ -704,6 +727,438 @@ void write_order(const char* fn, const CONTEXT& ctx, bool build_count) {
                  static_cast<std::int32_t>(a[6]), static_cast<std::int32_t>(a[7]));
 }
 
+HDESK g_desktop = nullptr;
+ULONGLONG g_deadline = 0;
+
+// --- Scripted input for the local player ----------------------------------------------------
+//
+// A script is a text file of actions, one per line ('#' starts a comment):
+//   <tick> build   <builder> <TYPE> <dx> <dz> [q]          mobile build order (intent 14) of TYPE
+//   <tick> factory <factory> <TYPE> <count>                 the build menu button (+count, -count)
+//   <tick> order   <unit> <intent> <target|-> <dx> <dz> [q] any intent (2 move, 3 attack, 5 unload,
+//                                                           6 pick up, 7 guard, 8 repair, 9 patrol,
+//                                                           10 stop, 12 reclaim, ...)
+// Units are named by type: "ARMCOM" = the last finished live unit of that type of the local player,
+// "ARMPW:2" = its second (by id), "ARMPW*" = every one (one call each); a target "ENEMY" = the
+// enemy unit nearest to the acting unit, "-" = none. dx/dz are world units from the acting unit
+// (a target's position when dx = dz = "t"). An action runs at the first frame end at or after its
+// tick at which all its units exist (actions run in file order, one call per frame). Each call
+// goes through the original's own routines, as the interface makes them, so the capture's order
+// records see it like any other interface order: intents through Unit_ResolveMissionKind
+// (0x43F0E0) then the interface's per-unit order (0x43AFC0); factories through the build menu
+// command (0x419B00). The calls run on the simulation thread between steps (at the frame end
+// breakpoint), from a small stub written into the game's memory.
+struct ScriptAction {
+    std::uint32_t tick = 0;
+    std::string kind, unit, type, target;
+    std::int32_t intent = 0, count = 0, dx = 0, dz = 0;
+    bool queued = false, at_target = false;
+    std::string line;
+};
+std::vector<ScriptAction> g_script;
+std::size_t g_script_next = 0;
+std::vector<std::pair<std::uint32_t, std::uint32_t>> g_pending_calls;  // (unit, target) left of an "every one" action
+DWORD g_stub = 0;              // stub page in the game (code at +0, data at +0x800)
+DWORD g_stub_end = 0;          // its final int3
+bool g_hijacking = false;      // a stub call is running
+bool g_skip_frame_end = false; // the frame end breakpoint hit again after a call: pass it
+CONTEXT g_saved_ctx{};
+DWORD g_hijack_tid = 0;
+std::int32_t g_local_resources = 0;  // start energy and metal of the local player (0: as set)
+
+bool load_script(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) return false;
+    char buf[512];
+    while (std::fgets(buf, sizeof buf, f)) {
+        std::string l = buf;
+        if (const auto h = l.find('#'); h != std::string::npos) l.resize(h);
+        std::vector<std::string> w;
+        std::size_t p = 0;
+        while (p < l.size()) {
+            while (p < l.size() && std::isspace(static_cast<unsigned char>(l[p]))) ++p;
+            std::size_t q = p;
+            while (q < l.size() && !std::isspace(static_cast<unsigned char>(l[q]))) ++q;
+            if (q > p) w.push_back(l.substr(p, q - p));
+            p = q;
+        }
+        if (w.size() < 3) continue;
+        ScriptAction a;
+        a.line = l;
+        while (!a.line.empty() && (a.line.back() == '\n' || a.line.back() == '\r')) a.line.pop_back();
+        a.tick = parse_u32(w[0].c_str());
+        a.kind = w[1];
+        a.unit = w[2];
+        auto num = [&](std::size_t i) { return i < w.size() ? std::atoi(w[i].c_str()) : 0; };
+        if (a.kind == "build" && w.size() >= 6) {
+            a.type = w[3];
+            a.dx = num(4);
+            a.dz = num(5);
+            a.queued = w.size() > 6 && w[6] == "q";
+        } else if (a.kind == "factory" && w.size() >= 5) {
+            a.type = w[3];
+            a.count = num(4);
+        } else if (a.kind == "order" && w.size() >= 7) {
+            a.intent = num(3);
+            a.target = w[4];
+            a.at_target = w[5] == "t";
+            a.dx = num(5);
+            a.dz = num(6);
+            a.queued = w.size() > 7 && w[7] == "q";
+        } else {
+            std::fprintf(stderr, "script: bad line: %s\n", a.line.c_str());
+            continue;
+        }
+        g_script.push_back(a);
+    }
+    std::fclose(f);
+    return true;
+}
+
+struct LiveUnit {
+    std::uint32_t addr;
+    int id;
+    std::uint16_t type;
+    std::int32_t x, y, z;
+    int owner;
+    bool finished;
+};
+std::vector<LiveUnit> live_units() {
+    std::vector<LiveUnit> out;
+    const std::uint32_t gs = game_state();
+    if (!gs || !g_unit_table) return out;
+    std::uint32_t last_ptr = 0;
+    read_u32(gs + kOffPlayers + 9 * kPlayerSize + 0x6B, last_ptr);
+    const int last = unit_id_of(last_ptr);
+    if (last <= 0) return out;
+    std::vector<std::uint8_t> u(static_cast<std::size_t>(last + 1) * kUnitSize);
+    read_block(g_unit_table, u.data(), u.size());
+    for (int id = 1; id <= last; ++id) {
+        const std::size_t o = static_cast<std::size_t>(id) * kUnitSize;
+        const auto type = get<std::uint16_t>(u, o + 0xA6);
+        const auto flags = get<std::uint32_t>(u, o + 0x110);
+        if (!type || !(flags & 0x10000000u) || get<std::int16_t>(u, o + 0x108) <= 0) continue;
+        float left = 0;
+        std::memcpy(&left, &u[o + 0x104], 4);
+        out.push_back({g_unit_table + static_cast<std::uint32_t>(id) * kUnitSize, id, type, get<std::int32_t>(u, o + 0x6A),
+                       get<std::int32_t>(u, o + 0x6E), get<std::int32_t>(u, o + 0x72), u[o + 0xFF], left == 0.0f});
+    }
+    return out;
+}
+
+// Unit definition index of a unit name (0: none).
+std::uint16_t def_index(const std::string& name) {
+    const std::uint32_t gs = game_state();
+    std::uint32_t count = 0, table = 0;
+    read_u32(gs + kOffUnitDefCount, count);
+    read_u32(gs + kOffUnitDefs, table);
+    for (std::uint32_t k = 1; k < count && k < 2000; ++k)
+        if (_stricmp(read_cstr(table + k * kUnitDefSize + 0x20).c_str(), name.c_str()) == 0) return static_cast<std::uint16_t>(k);
+    return 0;
+}
+
+// Units of the local player matching a selector (see the script description).
+std::vector<LiveUnit> select_units(const std::vector<LiveUnit>& all, const std::string& sel, int local) {
+    std::string name = sel;
+    int nth = 0;
+    bool every = false;
+    if (const auto h = sel.find(':'); h != std::string::npos) {
+        name = sel.substr(0, h);
+        nth = std::atoi(sel.c_str() + h + 1);
+    } else if (!sel.empty() && sel.back() == '*') {
+        name = sel.substr(0, sel.size() - 1);
+        every = true;
+    }
+    const std::uint16_t type = def_index(name);
+    std::vector<LiveUnit> mine;
+    for (const LiveUnit& u : all)
+        if (u.owner == local && u.type == type && u.finished) mine.push_back(u);
+    if (mine.empty() || every) return mine;
+    if (nth > 0) return nth <= static_cast<int>(mine.size()) ? std::vector<LiveUnit>{mine[static_cast<std::size_t>(nth - 1)]} : std::vector<LiveUnit>{};
+    return {mine.back()};
+}
+
+void emit_push(std::vector<std::uint8_t>& c, std::uint32_t v) {
+    c.push_back(0x68);
+    put_u32(c, v);
+}
+void emit_call(std::vector<std::uint8_t>& c, std::uint32_t target) {
+    const std::uint32_t at = g_stub + static_cast<std::uint32_t>(c.size());
+    c.push_back(0xE8);
+    put_u32(c, target - (at + 5));
+}
+
+// Builds the stub for one call; returns false when nothing is to be done.
+bool build_call(const ScriptAction& a, const LiveUnit& u, const LiveUnit* target, std::vector<std::uint8_t>& code,
+                std::vector<std::uint8_t>& data) {
+    const std::uint32_t d = g_stub + 0x800;  // data: +0 position (3 ints), +12 resolved kind, +16 name
+    code.clear();
+    data.assign(0x60, 0);
+    std::int32_t pos[3] = {u.x + (a.dx << 16), u.y, u.z + (a.dz << 16)};
+    if (a.at_target && target) pos[0] = target->x, pos[1] = target->y, pos[2] = target->z;
+    if (a.kind == "factory") {
+        const std::string n = a.type;
+        std::memcpy(&data[16], n.c_str(), std::min<std::size_t>(n.size(), 40));
+        emit_push(code, static_cast<std::uint32_t>(a.count));
+        emit_push(code, u.addr);
+        emit_push(code, d + 16);
+        emit_call(code, kBpBuildMenu);
+    } else {
+        std::uint32_t intent = static_cast<std::uint32_t>(a.intent), p0 = 0;
+        if (a.kind == "build") {
+            intent = 14;
+            p0 = def_index(a.type);
+            if (!p0) return false;
+            pos[0] = (pos[0] >> 20) << 20;  // whole cells, as placement gives
+            pos[2] = (pos[2] >> 20) << 20;
+        }
+        std::memcpy(&data[0], pos, 12);
+        const std::uint32_t t = target ? target->addr : 0;
+        // Unit_ResolveMissionKind(&kind, intent, unit, target, &pos)
+        emit_push(code, d);
+        emit_push(code, t);
+        emit_push(code, u.addr);
+        emit_push(code, intent);
+        emit_push(code, d + 12);
+        emit_call(code, 0x0043F0E0);
+        // movzx eax, byte [d + 12]; test eax, eax; jz end
+        code.insert(code.end(), {0x0F, 0xB6, 0x05});
+        put_u32(code, d + 12);
+        code.insert(code.end(), {0x85, 0xC0, 0x74, 0x00});
+        const std::size_t jz = code.size() - 1;
+        // the interface's per-unit order (kind, queued, unit, target, &pos, p0, p1)
+        emit_push(code, 0);
+        emit_push(code, p0);
+        emit_push(code, d);
+        emit_push(code, t);
+        emit_push(code, u.addr);
+        emit_push(code, a.queued ? 1u : 0u);  // queued (shift held)
+        code.push_back(0x50);                 // push eax (the kind)
+        emit_call(code, kBpIssueOrCancel);
+        code[jz] = static_cast<std::uint8_t>(code.size() - (jz + 1));
+    }
+    code.push_back(0xCC);
+    return true;
+}
+
+// At a frame end on the simulation thread: start the next due script call (returns true when
+// the thread now runs a stub).
+bool script_step(DWORD tid, CONTEXT& ctx) {
+    if (!g_stub || g_script_next >= g_script.size()) return false;
+    const ScriptAction& a = g_script[g_script_next];
+    if (game_tick() < a.tick) return false;
+    std::uint8_t local = 0;
+    read_block(game_state() + kOffLocalPlayer, &local, 1);
+    const std::vector<LiveUnit> all = live_units();
+    std::vector<LiveUnit> units = select_units(all, a.unit, local);
+    if (units.empty()) return false;  // wait for it
+    const LiveUnit* target = nullptr;
+    std::vector<LiveUnit> targets;
+    if (!a.target.empty() && a.target != "-") {
+        if (a.target == "ENEMY") {
+            long long best = -1;
+            for (const LiveUnit& e : all) {
+                if (e.owner == local || e.owner >= 10) continue;
+                const long long dx = (e.x - units[0].x) >> 16, dz = (e.z - units[0].z) >> 16, dd = dx * dx + dz * dz;
+                if (best < 0 || dd < best) {
+                    best = dd;
+                    targets = {e};
+                }
+            }
+        } else {
+            targets = select_units(all, a.target, local);
+        }
+        if (targets.empty()) return false;
+        target = &targets[0];
+    }
+    // "every one": one unit per frame, the selector's units in id order.
+    static std::size_t sub = 0;
+    if (sub >= units.size()) sub = 0;
+    const LiveUnit u = units[sub];
+    std::vector<std::uint8_t> code, data;
+    const bool ok = build_call(a, u, target, code, data);
+    if (++sub >= units.size() || !ok) {
+        sub = 0;
+        ++g_script_next;
+    }
+    std::fprintf(g_out, "{\"ev\":\"script\",\"tick\":%u,\"action\":\"%s\",\"unit\":%d,\"target\":%d,\"ok\":%d}\n", game_tick(),
+                 json_escape(a.line).c_str(), u.id, target ? target->id : 0, ok ? 1 : 0);
+    if (!ok) return false;
+    SIZE_T n = 0;
+    WriteProcessMemory(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(g_stub)), code.data(), code.size(), &n);
+    WriteProcessMemory(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(g_stub + 0x800)), data.data(), data.size(), &n);
+    FlushInstructionCache(g_process, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(g_stub)), code.size());
+    g_stub_end = g_stub + static_cast<DWORD>(code.size()) - 1;
+    g_saved_ctx = ctx;  // Eip = the frame end breakpoint
+    g_hijacking = true;
+    g_hijack_tid = tid;
+    ctx.Eip = g_stub;
+    return true;
+}
+
+// --- Keeping the game off the user's display -------------------------------------------------
+//
+// The game is started with "-d", which makes it draw into a GDI DIB section in memory instead
+// of taking DirectDraw (the display context's DirectDraw flag is the inverse of that option's
+// bit 0, see Gfx_RecreateDisplaySurfaces 0x4B5510), on its own hidden desktop. Imports that
+// could still reach the user's machine are replaced, at the loader breakpoint (imports bound,
+// entry point not run), by stubs returning a fixed value: DirectDraw (the movie player creates
+// one of its own), DirectSound and other sound output, the CD audio commands, the system
+// volume, the cursor position, the foreground window, hot keys, system parameters (the game
+// switches mouse trails off) and message boxes. A monitor thread watches the user's display
+// mode and desktop and ends the game at the first change.
+struct ImportStub {
+    const char* name;
+    std::uint32_t result;
+    std::uint16_t arg_bytes;
+};
+constexpr ImportStub kImportStubs[] = {
+    {"DirectDrawCreate", 0x80004005u, 12},  {"DirectSoundCreate", 0x88780078u, 12}, {"mciSendStringA", 263, 16},
+    {"PlaySoundA", 0, 12},                  {"waveOutSetVolume", 0, 8},             {"auxSetVolume", 0, 8},
+    {"SetCursorPos", 1, 8},                 {"SetForegroundWindow", 1, 4},          {"RegisterHotKey", 1, 16},
+    {"SystemParametersInfoA", 1, 16},       {"MessageBoxA", 1, 16},
+};
+bool g_imports_patched = false;
+
+void patch_imports() {
+    g_imports_patched = true;
+    const DWORD base = 0x00400000;
+    std::uint32_t e_lfanew = 0, imp_rva = 0;
+    read_u32(base + 0x3C, e_lfanew);
+    read_u32(base + e_lfanew + 0x80, imp_rva);  // optional header data directory 1 (imports)
+    const auto page = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(
+        VirtualAllocEx(g_process, nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)));
+    DWORD next = page;
+    for (DWORD d = base + imp_rva;; d += 20) {
+        std::uint32_t desc[5] = {};
+        if (!read_block(d, desc, sizeof desc) || !desc[3]) break;
+        const std::string dll = read_cstr(base + desc[3]);
+        const DWORD names = base + (desc[0] ? desc[0] : desc[4]), iat = base + desc[4];
+        for (DWORD k = 0;; ++k) {
+            std::uint32_t thunk = 0;
+            if (!read_u32(names + 4 * k, thunk) || !thunk) break;
+            if (thunk & 0x80000000u) continue;  // by ordinal
+            const std::string fn = read_cstr(base + thunk + 2);
+            for (const ImportStub& s : kImportStubs) {
+                if (fn != s.name) continue;
+                // mov eax, result ; ret arg_bytes
+                std::uint8_t code[8] = {0xB8, 0, 0, 0, 0, 0xC2, 0, 0};
+                std::memcpy(code + 1, &s.result, 4);
+                std::memcpy(code + 6, &s.arg_bytes, 2);
+                SIZE_T n = 0;
+                WriteProcessMemory(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(next)), code, sizeof code, &n);
+                DWORD old = 0;
+                VirtualProtectEx(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(iat + 4 * k)), 4, PAGE_READWRITE, &old);
+                write_u32(iat + 4 * k, next);
+                std::fprintf(g_out, "{\"ev\":\"import_stub\",\"dll\":\"%s\",\"name\":\"%s\",\"stub\":%lu}\n", json_escape(dll).c_str(),
+                             s.name, next);
+                next += 8;
+            }
+        }
+    }
+    FlushInstructionCache(g_process, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(page)), 0x1000);
+    std::fflush(g_out);
+}
+
+volatile LONG g_safety_stop = 0;
+DWORD g_game_pid = 0;
+DWORD WINAPI safety_monitor(LPVOID) {
+    DEVMODEA start{};
+    start.dmSize = sizeof start;
+    EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &start);
+    while (g_process) {
+        DEVMODEA now{};
+        now.dmSize = sizeof now;
+        EnumDisplaySettingsA(nullptr, ENUM_CURRENT_SETTINGS, &now);
+        bool bad = now.dmPelsWidth != start.dmPelsWidth || now.dmPelsHeight != start.dmPelsHeight ||
+                   now.dmBitsPerPel != start.dmBitsPerPel || now.dmDisplayFrequency != start.dmDisplayFrequency;
+        // Any window of the game on the user's desktop (EnumWindows lists this thread's desktop).
+        struct Find {
+            DWORD pid;
+            bool found;
+        } f{g_game_pid, false};
+        EnumWindows(
+            [](HWND w, LPARAM lp) -> BOOL {
+                auto* x = reinterpret_cast<Find*>(lp);
+                DWORD pid = 0;
+                GetWindowThreadProcessId(w, &pid);
+                if (pid == x->pid) x->found = true;
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&f));
+        bad = bad || f.found;
+        if (bad && g_process) {
+            InterlockedExchange(&g_safety_stop, 1);
+            TerminateProcess(g_process, 0x5AFE);
+            std::fprintf(stderr, "SAFETY STOP: %s\n", f.found ? "a game window appeared on the user's desktop" : "the display mode changed");
+            return 1;
+        }
+        Sleep(50);
+    }
+    return 0;
+}
+
+bool another_game_running() {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32 pe{};
+    pe.dwSize = sizeof pe;
+    bool found = false;
+    for (BOOL ok = Process32First(snap, &pe); ok && !found; ok = Process32Next(snap, &pe))
+        found = _stricmp(pe.szExeFile, "TotalA.exe") == 0;
+    CloseHandle(snap);
+    return found;
+}
+
+DWORD WINAPI watchdog(LPVOID) {
+    while (GetTickCount64() < g_deadline) Sleep(1000);
+    if (g_process) TerminateProcess(g_process, 0xDEAD);
+    return 0;
+}
+
+// The game's frame as it drew it (GDI mode: the DIB section described at display context + 0x50:
+// width, height, pitch, pixels; palette at + 0x214), written as an 8-bit BMP.
+std::string g_frames_dir;
+bool dump_frame(const std::string& path) {
+    std::uint32_t dc = 0;
+    if (!read_u32(kDisplayContextPtr, dc) || !dc) return false;
+    std::uint32_t s[4] = {};
+    if (!read_block(dc + 0x50, s, sizeof s) || !s[3] || !s[0] || !s[1] || s[0] > 4096 || s[1] > 4096 || s[2] < s[0]) return false;
+    std::vector<std::uint8_t> px(static_cast<std::size_t>(s[2]) * s[1]);
+    if (!read_block(s[3], px.data(), px.size())) return false;
+    std::uint8_t pal[1024] = {};
+    read_block(dc + 0x214, pal, sizeof pal);
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const std::uint32_t row = (s[0] + 3) & ~3u, off = 14 + 40 + 1024, size = off + row * s[1];
+    std::vector<std::uint8_t> h;
+    h.push_back('B');
+    h.push_back('M');
+    put_u32(h, size);
+    put_u32(h, 0);
+    put_u32(h, off);
+    put_u32(h, 40);
+    put_u32(h, s[0]);
+    put_u32(h, static_cast<std::uint32_t>(-static_cast<std::int32_t>(s[1])));  // top-down
+    h.push_back(1);
+    h.push_back(0);
+    h.push_back(8);
+    h.push_back(0);
+    for (int k = 0; k < 6; ++k) put_u32(h, k == 1 ? row * s[1] : 0);
+    std::fwrite(h.data(), 1, h.size(), f);
+    for (int i = 0; i < 256; ++i) {
+        const std::uint8_t q[4] = {pal[i * 4 + 2], pal[i * 4 + 1], pal[i * 4], 0};  // PALETTEENTRY r,g,b -> BGR
+        std::fwrite(q, 1, 4, f);
+    }
+    std::vector<std::uint8_t> line(row, 0);
+    for (std::uint32_t y = 0; y < s[1]; ++y) {
+        std::memcpy(line.data(), &px[static_cast<std::size_t>(y) * s[2]], s[0]);
+        std::fwrite(line.data(), 1, row, f);
+    }
+    std::fclose(f);
+    return true;
+}
+
 // Presses the menus' quick keys (main menu S, single player S = skirmish, skirmish S = start)
 // and dismisses message boxes, until the battle starts loading.
 DWORD g_pid = 0;
@@ -735,7 +1190,8 @@ DWORD WINAPI menu_driver(LPVOID) {
     // to the process's visible top-level windows.
     for (int round = 0; round < 90 && !g_battle_loading; ++round) {
         WindowSearch s;
-        EnumWindows(find_windows, reinterpret_cast<LPARAM>(&s));
+        EnumDesktopWindows(g_desktop, find_windows, reinterpret_cast<LPARAM>(&s));
+        if (!g_frames_dir.empty()) dump_frame(g_frames_dir + "\\menu_" + std::to_string(round) + ".bmp");
         if (s.dialog) {
             PostMessageA(s.dialog, WM_COMMAND, IDOK, 0);
         } else {
@@ -778,6 +1234,11 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
         if (opt.max_ticks && game_tick() >= opt.max_ticks) return true;
         break;
     case kBpFrameEnd: {
+        if (g_skip_frame_end) {  // back from a script call: this frame end is already logged
+            g_skip_frame_end = false;
+            if (script_step(tid, ctx)) {}  // the next call of an "every unit" action, if any
+            break;
+        }
         std::uint32_t brng = 0;
         std::uint8_t view = 0;
         std::uint16_t map_flags = 0;
@@ -790,6 +1251,27 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
         const std::uint32_t rs = rand_state_for(tid, known);
         std::fprintf(g_out, "{\"ev\":\"frame\",\"tick\":%u,\"rand\":%u,\"brng\":%u,\"view\":%u,\"map_flags\":%u}\n", game_tick(), rs, brng,
                      view, map_flags);
+        script_step(tid, ctx);
+        break;
+    }
+    case kBpVtolRepairPatrol: {
+        // The air repair patrol's metal site record lives in its frame; its address becomes the
+        // order's event word when a site is found (a run-varying stack address: an input).
+        std::fprintf(g_out, "{\"ev\":\"stale\",\"what\":\"air_repair_site\",\"tick\":%u,\"in_step\":%d,\"value\":%u}\n", game_tick(),
+                     g_in_step ? 1 : 0, ctx.Esp - 0x2Cu);
+        break;
+    }
+    case kBpHoverClock:
+        // The hover bob's wall clock in steps (0x4B6340 from Unit_FitToSlope): an input.
+        std::fprintf(g_out, "{\"ev\":\"stale\",\"what\":\"clock\",\"tick\":%u,\"in_step\":%d,\"value\":%u}\n", game_tick(), g_in_step ? 1 : 0,
+                     ctx.Eax);
+        break;
+    case kBpExplTablesBegin:
+    case kBpExplTablesEnd: {
+        bool known = false;
+        const std::uint32_t rs = rand_state_for(tid, known);
+        std::fprintf(g_out, "{\"ev\":\"loading_rand\",\"at\":\"%s\",\"tid\":%lu,\"state\":%u,\"known\":%d}\n",
+                     addr == kBpExplTablesBegin ? "explosion_tables" : "after_explosion_tables", tid, rs, known ? 1 : 0);
         break;
     }
     case kBpShuffleRandA:
@@ -799,6 +1281,9 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
         std::fprintf(g_out, "{\"ev\":\"shuffle_rand\",\"tid\":%lu,\"at\":%lu,\"state\":%u,\"known\":%d}\n", tid, addr, rs, known ? 1 : 0);
         break;
     }
+    case kBpSoundNotice:
+        ctx.Eax = 0;  // no "No sound driver" notice (sound output is stubbed: start-up interface only)
+        break;
     case kBpDxCheck:
         ctx.Eax = 1;  // version accepted: no notice to answer (start-up interface only)
         break;
@@ -842,6 +1327,19 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
     }
     case kBpBattleRngSeed:
         g_battle_loading = true;
+        if (g_local_resources > 0) {
+            // As if the player had picked these start amounts in the skirmish menu: the skirmish
+            // player table (GS+0x29A0, 0x18 bytes per slot: +0xC metal, +0x10 energy).
+            std::uint32_t gs = game_state(), table = 0;
+            std::uint8_t local = 0;
+            read_u32(gs + 0x29A0, table);
+            read_block(gs + kOffLocalPlayer, &local, 1);
+            if (table && local < 10) {
+                write_u32(table + local * 0x18u + 0xC, static_cast<std::uint32_t>(g_local_resources));
+                write_u32(table + local * 0x18u + 0x10, static_cast<std::uint32_t>(g_local_resources));
+                std::fprintf(g_out, "{\"ev\":\"local_resources\",\"player\":%u,\"amount\":%d}\n", local, g_local_resources);
+            }
+        }
         std::fprintf(g_out, "{\"ev\":\"battle_seed\",\"tid\":%lu,\"seed\":%u", tid, arg0);
         if (opt.battle_seed) {
             write_u32(ctx.Esp + 4, *opt.battle_seed);
@@ -951,6 +1449,19 @@ bool parse_args(int argc, char** argv, Options& opt) {
         else if (a == "--dump-defs" && (v = next())) opt.dump_defs = v;
         else if (a == "--game") opt.game = true;
         else if (a == "--auto-skirmish") opt.auto_skirmish = true;
+        else if (a == "--timeout" && (v = next())) opt.timeout_s = parse_u32(v);
+        else if (a == "--script" && (v = next())) opt.script = v;
+        else if (a == "--frames" && (v = next())) g_frames_dir = v;
+        else if (a == "--watch" && (v = next())) {
+            // unit id : field offset : length (1, 2 or 4): log every write to that unit field
+            unsigned id = 0, off = 0, len = 0;
+            if (std::sscanf(v, "%u:%i:%u", &id, &off, &len) == 3 && (len == 1 || len == 2 || len == 4)) {
+                g_watch_unit = id;
+                g_watch_off = off;
+                g_watch_len = len;
+            }
+        }
+        else if (a == "--local-resources" && (v = next())) g_local_resources = static_cast<std::int32_t>(parse_u32(v));
         else {
             std::fprintf(stderr, "unknown or incomplete argument: %s\n", a.c_str());
             return false;
@@ -975,16 +1486,44 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (!opt.script.empty() && !load_script(opt.script)) {
+        std::fprintf(stderr, "cannot read the script %s\n", opt.script.c_str());
+        return 1;
+    }
+    // Only one copy of the game can run (a second one exits at once): refuse to start next to one.
+    if (another_game_running()) {
+        std::fprintf(stderr, "a TotalA.exe is already running (one at a time): not started\n");
+        std::fprintf(g_out, "{\"ev\":\"refused\",\"why\":\"another TotalA.exe is running\"}\n");
+        std::fclose(g_out);
+        return 3;
+    }
+    // The game runs on its own hidden desktop: nothing appears on the user's screen, and
+    // error boxes are suppressed (the debugger records crashes instead).
+    char desk_name[64];
+    std::snprintf(desk_name, sizeof desk_name, "ta_capture_%lu", GetCurrentProcessId());
+    g_desktop = CreateDesktopA(desk_name, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    if (!g_desktop) {
+        std::fprintf(stderr, "CreateDesktop failed: %lu\n", GetLastError());
+        return 1;
+    }
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     STARTUPINFOA si{};
     si.cb = sizeof(si);
+    si.lpDesktop = desk_name;
     PROCESS_INFORMATION pi{};
-    std::string cmd = "\"" + opt.exe + "\"";
+    std::string cmd = "\"" + opt.exe + "\" -d";  // -d: GDI drawing into memory, no DirectDraw
     if (!CreateProcessA(opt.exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, DEBUG_ONLY_THIS_PROCESS, nullptr,
                         opt.cwd.empty() ? nullptr : opt.cwd.c_str(), &si, &pi)) {
         std::fprintf(stderr, "CreateProcess failed: %lu\n", GetLastError());
+        CloseDesktop(g_desktop);
         return 1;
     }
     g_process = pi.hProcess;
+    g_game_pid = pi.dwProcessId;
+    CreateThread(nullptr, 0, safety_monitor, nullptr, 0, nullptr);
+    // Watchdog: the game is ended after --timeout seconds whatever happens.
+    g_deadline = GetTickCount64() + static_cast<ULONGLONG>(opt.timeout_s) * 1000u;
+    CreateThread(nullptr, 0, watchdog, nullptr, 0, nullptr);
 
     bool stop = false;
     bool running = true;
@@ -1007,10 +1546,15 @@ int main(int argc, char** argv) {
                     // rand() calls are many); rand() per draw is armed at the first step.
                     for (DWORD a : {kBpArchiveOpen, kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpSimStep, kBpStepEnd, kBpFrameEnd,
                                     kBpShuffleRandA, kBpShuffleRandB, kBpMapPath, kBpEnqueueOrder, kBpIssueOrCancel, kBpBuildCount,
-                                    kBpBuildMenu, kBpIssueSelected, kBpAiConstructors, kBpReclaimSites}) {
+                                    kBpBuildMenu, kBpIssueSelected, kBpAiConstructors, kBpReclaimSites, kBpVtolRepairPatrol,
+                                    kBpHoverClock, kBpExplTablesBegin, kBpExplTablesEnd}) {
                         add_bp(a);
                     }
                     if (opt.rng_calls) add_bp(kBpBattleRngNext);
+                    // A page for the script's call stubs.
+                    if (!opt.script.empty())
+                        g_stub = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(
+                            VirtualAllocEx(g_process, nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)));
                 } else {
                     for (DWORD a : {kBpArchiveOpen, kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpRandTd, kBpBattleRngNext,
                                     kBpSimStep}) {
@@ -1020,6 +1564,7 @@ int main(int argc, char** argv) {
                 if (opt.auto_skirmish) {
                     g_pid = ev.dwProcessId;
                     add_bp(kBpDxCheck);
+                    add_bp(kBpSoundNotice);
                     CreateThread(nullptr, 0, menu_driver, nullptr, 0, nullptr);
                 }
             }
@@ -1045,23 +1590,57 @@ int main(int argc, char** argv) {
             HANDLE th = g_threads[ev.dwThreadId];
             if (rec.ExceptionCode == EXCEPTION_BREAKPOINT && g_bps.count(addr)) {
                 CONTEXT ctx{};
-                ctx.ContextFlags = CONTEXT_FULL;
+                ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
                 GetThreadContext(th, &ctx);
                 ctx.Eip = addr;  // re-execute the original instruction
                 if (on_breakpoint(opt, ev.dwThreadId, ctx)) stop = true;
+                if (g_watch_addr && !g_watch_armed && g_start_written) {
+                    // A data breakpoint on the watched field (writes), on the simulation thread.
+                    g_watch_armed = true;
+                    ctx.Dr0 = g_watch_addr;
+                    ctx.Dr7 = (ctx.Dr7 & ~0xF0003u) | 1u | (1u << 16) | (static_cast<DWORD>(g_watch_len - 1) << 18);
+                }
                 write_byte(addr, g_bps[addr].original);
                 ctx.EFlags |= 0x100;  // single-step, then re-arm
                 SetThreadContext(th, &ctx);
                 g_pending_reinsert[ev.dwThreadId] = addr;
-            } else if (rec.ExceptionCode == EXCEPTION_SINGLE_STEP && g_pending_reinsert.count(ev.dwThreadId)) {
-                write_byte(g_pending_reinsert[ev.dwThreadId], 0xCC);
-                g_pending_reinsert.erase(ev.dwThreadId);
+            } else if (rec.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+                CONTEXT ctx{};
+                ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+                GetThreadContext(th, &ctx);
+                if (ctx.Dr6 & 1u) {
+                    // The watched field was written: the writer (the instruction before EIP) and the value.
+                    std::uint32_t v = 0;
+                    read_block(g_watch_addr, &v, g_watch_len);
+                    std::uint32_t ret = 0;
+                    read_u32(ctx.Esp, ret);
+                    std::fprintf(g_out, "{\"ev\":\"watch\",\"tick\":%u,\"in_step\":%d,\"eip\":%lu,\"stack_top\":%u,\"value\":%u}\n", game_tick(),
+                                 g_in_step ? 1 : 0, ctx.Eip, ret, v);
+                    ctx.Dr6 = 0;
+                    SetThreadContext(th, &ctx);
+                }
+                if (g_pending_reinsert.count(ev.dwThreadId)) {
+                    write_byte(g_pending_reinsert[ev.dwThreadId], 0xCC);
+                    g_pending_reinsert.erase(ev.dwThreadId);
+                }
+            } else if (rec.ExceptionCode == EXCEPTION_BREAKPOINT && g_hijacking && addr == g_stub_end &&
+                       ev.dwThreadId == g_hijack_tid) {
+                // A script call returned: the thread goes back to the frame end breakpoint,
+                // which then only passes (it is logged already).
+                g_hijacking = false;
+                g_skip_frame_end = true;
+                SetThreadContext(th, &g_saved_ctx);
             } else if (rec.ExceptionCode == EXCEPTION_BREAKPOINT) {
-                // Loader breakpoint or a breakpoint we did not set: just continue.
+                // Loader breakpoint (imports bound, entry point not run yet: the moment to replace
+                // the imports that reach outside) or a breakpoint we did not set: continue.
+                if (!g_imports_patched) patch_imports();
             } else {
                 status = DBG_EXCEPTION_NOT_HANDLED;  // let the game's own handlers run
                 if (ev.u.Exception.dwFirstChance == 0) {
                     std::fprintf(g_out, "{\"ev\":\"crash\",\"code\":%lu,\"addr\":%lu}\n", rec.ExceptionCode, addr);
+                } else {
+                    std::fprintf(g_out, "{\"ev\":\"exception\",\"code\":%lu,\"addr\":%lu,\"tid\":%lu,\"tick\":%u}\n", rec.ExceptionCode, addr,
+                                 ev.dwThreadId, game_tick());
                 }
             }
             break;
@@ -1078,8 +1657,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (g_safety_stop) std::fprintf(g_out, "{\"ev\":\"safety_stop\"}\n");
     std::fclose(g_out);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
+    g_process = nullptr;
+    if (g_safety_stop) {
+        CloseDesktop(g_desktop);
+        return 4;
+    }
+    CloseDesktop(g_desktop);
     return 0;
 }

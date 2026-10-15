@@ -739,7 +739,6 @@ add_executable(netstate_harness
     ${ROOT}/engine/sim/src/commands_core.cpp
     ${ROOT}/engine/sim/src/effect_lists.cpp
     ${ROOT}/engine/sim/src/lockstep.cpp
-    ${ROOT}/engine/sim/src/journal.cpp
     ${ROOT}/engine/sim/src/sky.cpp
     ${ROOT}/engine/sim/src/step_budget.cpp
     ${ROOT}/engine/sim/src/victory.cpp

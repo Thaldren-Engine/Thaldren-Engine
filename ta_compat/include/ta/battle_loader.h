@@ -27,6 +27,10 @@ namespace ta {
 
 struct LoadedBattle;
 
+// The rand() draws of the explosion tables the original computes while a battle loads
+// (0x420620, presentation only; fixed parameters, so a fixed count: measured on 10 captures).
+constexpr std::uint32_t kExplosionTableDraws = 391606;
+
 struct BattleRequest {
     std::string map = "Moon Quartet";  // maps\<map>.tnt / .ota
     int schema = -1;                   // the OTA schema (-1: chosen as the original does)
@@ -35,6 +39,12 @@ struct BattleRequest {
     // start.players / start.*. A player's commander_type is filled from its side.
     std::array<std::string, 10> sides{};
     sim::BattleStart start;
+    // The loading thread's srand(time()) value. When set, the loading thread's rand() runs from
+    // it the way the original's battle loading does: the map's features are placed (geothermal
+    // vents draw for their steam), then the explosion tables draw kExplosionTableDraws times,
+    // and start.loading_rand_seed becomes the state at the start-position shuffle.
+    bool loading_srand_given = false;
+    std::uint32_t loading_srand = 0;
     // Optional: sees the loaded data and the start description just before the set-up runs
     // (missions resolve their unit names to type indices here).
     std::function<void(LoadedBattle&, sim::BattleStart&)> prepare_start;

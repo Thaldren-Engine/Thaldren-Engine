@@ -164,6 +164,22 @@ struct ReplayOutside : sim::QuietBattleOutside {
         q.pop_front();
         return v;
     }
+    // The hover bob's wall clock (0x4B6340), per call; the air repair patrol's site record
+    // address per step (a stack address: the same for every call of a step).
+    std::map<std::uint32_t, std::deque<std::uint32_t>> clock;
+    std::map<std::uint32_t, std::uint32_t> air_repair_site;
+    std::uint32_t last_clock = 0;
+    std::uint32_t clock_ticks() override {
+        auto& q = clock[battle ? battle->game_tick() : 0];
+        if (q.empty()) {
+            notes.push_back("step " + std::to_string(battle ? battle->game_tick() : 0) +
+                            ": the engine read the hover clock more often than the original");
+            return last_clock;
+        }
+        last_clock = q.front();
+        q.pop_front();
+        return last_clock;
+    }
     std::int32_t reclaim_site_y(std::int32_t fallback) override {
         auto& q = reclaim_y[battle ? battle->game_tick() : 0];
         if (q.empty()) {
@@ -185,6 +201,8 @@ struct UnitRow {
     // flags & 15, points.
     std::vector<long long> motion;
     bool has_motion_row = false;
+    std::vector<long long> vel_tilt;  // motion velocity xyz, tilt xyz (newer captures)
+    bool has_vel_tilt = false;
 };
 const char* const kUnitFields[] = {"id",     "type",  "owner",  "x",     "y",        "z",     "pitch",   "heading",
                                    "bank",   "hp",    "build_left_bits", "activate", "script_flags", "flags", "health_pct",
@@ -206,6 +224,7 @@ std::map<int, UnitRow> engine_units(sim::Battle& b) {
         for (const sim::MissionOrder* o = u.orders; o && r.primary.size() < 32; o = o->next) r.primary.push_back(o->kind);
         for (const sim::MissionOrder* o = u.secondary_orders; o && r.secondary.size() < 32; o = o->next) r.secondary.push_back(o->kind);
         if (t.has_motion) {
+            r.vel_tilt = {t.velocity[0], t.velocity[1], t.velocity[2], t.motion.tilt[0], t.motion.tilt[1], t.motion.tilt[2]};
             r.motion = {t.motion.speed, t.motion.turn, t.motion.flags & 7};
             if (const auto* rg = dynamic_cast<const sim::RouteGoal*>(t.motion.goal.get())) {
                 r.motion.push_back(-1);  // (the original's vtable is not compared)
@@ -288,6 +307,10 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
                 r.has_motion_row = true;
                 for (const Json& o : u.arr[kUnitScalars + 2].arr) r.motion.push_back(o.num);
             }
+            if (u.arr.size() > kUnitScalars + 3) {
+                r.has_vel_tilt = true;
+                for (const Json& o : u.arr[kUnitScalars + 3].arr) r.vel_tilt.push_back(o.num);
+            }
             theirs[static_cast<int>(r.v[0])] = std::move(r);
         }
     const std::map<int, UnitRow> ours = engine_units(b);
@@ -331,6 +354,9 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
                 diff.push_back("unit " + std::to_string(id) + " motion [speed, turn, flags, goal, route count, search tick, route flags, points]: original " +
                                list(a) + ", engine " + list(c));
         }
+        if (r.has_vel_tilt && r.vel_tilt != e.vel_tilt)
+            diff.push_back("unit " + std::to_string(id) + " motion [velocity xyz, tilt xyz]: original " + list(r.vel_tilt) + ", engine " +
+                           list(e.vel_tilt));
         if (r.secondary != e.secondary)
             diff.push_back("unit " + std::to_string(id) + " secondary orders: original " + list(r.secondary) + ", engine " + list(e.secondary));
     }
@@ -400,6 +426,7 @@ int main(int argc, char** argv) {
     std::uint32_t max_steps = 0xFFFFFFFFu;
     bool keep_going = false, draw_effects = true, verbose = false, ignore_cells = false;
     int trace_unit = 0;  // print this unit's row (original and engine) after every step
+    bool shuffle_from_capture = false;  // take the shuffle's rand() state from the capture
     for (int k = 3; k < argc; ++k) {
         const std::string a = argv[k];
         if (a == "--steps" && k + 1 < argc) max_steps = static_cast<std::uint32_t>(std::strtoul(argv[++k], nullptr, 0));
@@ -407,6 +434,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-draw-effects") draw_effects = false;
         else if (a == "--verbose") verbose = true;
         else if (a == "--ignore-cells") ignore_cells = true;
+        else if (a == "--shuffle-from-capture") shuffle_from_capture = true;
         else if (a == "--trace-unit" && k + 1 < argc) trace_unit = std::atoi(argv[++k]);
     }
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -440,12 +468,18 @@ int main(int argc, char** argv) {
     const Json* start = nullptr;
     std::string map;
     std::uint32_t seed = 0, shuffle = 0, sim_rand = 0;
-    bool have_seed = false, have_shuffle = false;
+    bool have_seed = false, have_shuffle = false, have_loading_srand = false;
+    long long loading_tid = -1;
+    std::uint32_t loading_srand = 0;
     for (const Json& e : events) {
         const std::string ev = e.s("ev");
         if (ev == "battle_seed" && !have_seed) {
             seed = static_cast<std::uint32_t>(e.get("override") ? e.i("override") : e.i("seed"));
             have_seed = true;
+            loading_tid = e.i("tid");
+        } else if (ev == "srand" && have_seed && !have_loading_srand && e.i("tid") == loading_tid) {
+            loading_srand = static_cast<std::uint32_t>(e.i("seed"));  // srand(time()) of the loading thread
+            have_loading_srand = true;
         } else if (ev == "shuffle_rand" && !have_shuffle) {
             shuffle = static_cast<std::uint32_t>(e.i("state"));
             have_shuffle = true;
@@ -456,7 +490,12 @@ int main(int argc, char** argv) {
             sim_rand = static_cast<std::uint32_t>(e.i("sim_rand"));
         } else if (ev == "stale") {
             const auto t = static_cast<std::uint32_t>(e.i("tick"));
-            (e.s("what") == "ai_site_y" ? out.site_y : out.reclaim_y)[t].push_back(static_cast<std::int32_t>(e.i("value")));
+            const std::string what = e.s("what");
+            if (what == "ai_site_y") out.site_y[t].push_back(static_cast<std::int32_t>(e.i("value")));
+            else if (what == "reclaim_site_y") out.reclaim_y[t].push_back(static_cast<std::int32_t>(e.i("value")));
+            else if (what == "clock") out.clock[t].push_back(static_cast<std::uint32_t>(e.i("value")));
+            else if (what == "air_repair_site" && !out.air_repair_site.count(t))
+                out.air_repair_site[t] = static_cast<std::uint32_t>(e.i("value"));
         }
     }
     if (!start || !have_seed || map.empty()) {
@@ -482,6 +521,12 @@ int main(int argc, char** argv) {
     bs.battle_rng_seed = seed;
     bs.fixed_locations = !have_shuffle;
     bs.loading_rand_seed = shuffle;
+    // From the loading thread's srand(time()) instead (the map's vents and the explosion tables
+    // drawn by the loader): the shuffle's state is then derived, not taken from the capture.
+    if (have_loading_srand && !shuffle_from_capture) {
+        req.loading_srand_given = true;
+        req.loading_srand = loading_srand;
+    }
     bs.crt_rand_state = sim_rand;
     if (const Json* ps = start->get("players"))
         for (const Json& p : ps->arr) {
@@ -508,6 +553,9 @@ int main(int argc, char** argv) {
     const auto gs = static_cast<std::uint32_t>(start->i("game_state")), table = static_cast<std::uint32_t>(start->i("unit_table"));
     std::printf("capture: %s, %zu events; map %s, battle seed %08x, shuffle rand %08x, simulation rand %08x, game state %08x, unit table %08x\n",
                 argv[2], events.size(), map.c_str(), seed, shuffle, sim_rand, gs, table);
+    if (have_loading_srand && have_shuffle)
+        std::printf("start: the loading thread drew rand() %lld times between srand(time()) and the shuffle (map load and explosion tables)\n",
+                    lcg_distance(loading_srand, shuffle, 4000000));
 
     std::string err;
     auto lb = ta::load_battle(vfs, req, out, err, [&](sim::Battle& b) {
@@ -638,6 +686,8 @@ int main(int argc, char** argv) {
                 std::printf("step %u: battle generator differs before the step: original %08x, engine %08x\n", t, want_rng, b.battle_rng().state());
             }
             frame_start = false;
+            if (auto it = out.air_repair_site.find(t); it != out.air_repair_site.end())
+                b.settings.air_repair_patrol_site_address = it->second;
             b.step();
             ++steps;
             ++in_frame;
@@ -653,12 +703,17 @@ int main(int argc, char** argv) {
                             std::vector<long long> v;
                             for (std::size_t k = 0; k < kUnitScalars; ++k) v.push_back(u.arr[k].num);
                             theirs = list(v);
+                            for (std::size_t k = kUnitScalars + 2; k < u.arr.size(); ++k) {
+                                std::vector<long long> w;
+                                for (const Json& x : u.arr[k].arr) w.push_back(x.num);
+                                theirs += " " + list(w);
+                            }
                         }
                 auto it = ours.find(trace_unit);
                 const sim::UnitTickState& t = b.ticks[static_cast<std::size_t>(trace_unit)];
-                std::printf("trace %u (%s): original %s\n          engine   %s  velocity %d,%d,%d tilt %d,%d,%d\n", b.game_tick(), tname(t.type_index),
-                            theirs.c_str(), it != ours.end() ? list(it->second.v).c_str() : "-", t.velocity[0], t.velocity[1], t.velocity[2],
-                            t.motion.tilt[0], t.motion.tilt[1], t.motion.tilt[2]);
+                std::printf("trace %u (%s): original %s\n          engine   %s  velocity %d,%d,%d\n", b.game_tick(), tname(t.type_index), theirs.c_str(),
+                            it != ours.end() ? (list(it->second.v) + " " + list(it->second.motion) + " " + list(it->second.vel_tilt)).c_str() : "-",
+                            t.velocity[0], t.velocity[1], t.velocity[2]);
             }
             std::vector<std::string> diff = compare(b, e);
             if (ignore_cells)

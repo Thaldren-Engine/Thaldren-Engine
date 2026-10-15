@@ -114,10 +114,12 @@ void lines_to_sprites(DrawList& list) {
         if (c.op != DrawOp::Line) continue;
         const int x0 = std::min(c.x, c.x1), y0 = std::min(c.y, c.y1);
         const int w = std::abs(c.x1 - c.x) + 1, h = std::abs(c.y1 - c.y) + 1;
-        // Draw the reference line into a scratch image the size of its box.
+        // Draw the reference line into a scratch image the size of its box. The segment is
+        // clipped before it is stepped (which changes the pixels it lights), so the command's
+        // clip goes along, moved into the box's coordinates.
         Image8 mask(w, h, 0);
-        draw_line(mask, mask.bounds(), c.x - x0, c.y - y0, c.x1 - x0, c.y1 - y0, 1);
-        // Clip as the reference would (clip applies in frame coordinates).
+        const ClipRect box_clip{c.clip.x0 - x0, c.clip.y0 - y0, c.clip.x1 - x0, c.clip.y1 - y0};
+        draw_line(mask, box_clip, c.x - x0, c.y - y0, c.x1 - x0, c.y1 - y0, 1);
         Sprite8 s;
         s.width = w;
         s.height = h;
