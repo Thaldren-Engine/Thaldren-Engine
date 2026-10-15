@@ -434,6 +434,11 @@ bool g_in_step = false;           // between the step start and the step end bre
 bool g_battle_loading = false;    // the battle seed was seen (the menus are done)
 bool g_start_written = false;
 std::uint32_t g_unit_table = 0;
+// --watch: a data breakpoint on one unit field (set on the simulation thread at the first step).
+unsigned g_watch_unit = 0, g_watch_len = 0;
+int g_watch_off = 0;
+DWORD g_watch_addr = 0;
+bool g_watch_armed = false;
 
 std::uint32_t game_state() {
     std::uint32_t gs = 0;
@@ -489,6 +494,7 @@ void write_start(DWORD tid) {
     const std::uint32_t gs = game_state();
     if (!gs) return;
     read_u32(gs + 0x14357, g_unit_table);
+    if (g_watch_len) g_watch_addr = g_unit_table + g_watch_unit * kUnitSize + static_cast<DWORD>(g_watch_off);
     std::uint8_t lp = 0, lv = 0;
     read_block(gs + kOffLocalPlayer, &lp, 1);
     read_block(gs + kOffLocalView, &lv, 1);
@@ -1446,6 +1452,15 @@ bool parse_args(int argc, char** argv, Options& opt) {
         else if (a == "--timeout" && (v = next())) opt.timeout_s = parse_u32(v);
         else if (a == "--script" && (v = next())) opt.script = v;
         else if (a == "--frames" && (v = next())) g_frames_dir = v;
+        else if (a == "--watch" && (v = next())) {
+            // unit id : field offset : length (1, 2 or 4): log every write to that unit field
+            unsigned id = 0, off = 0, len = 0;
+            if (std::sscanf(v, "%u:%i:%u", &id, &off, &len) == 3 && (len == 1 || len == 2 || len == 4)) {
+                g_watch_unit = id;
+                g_watch_off = off;
+                g_watch_len = len;
+            }
+        }
         else if (a == "--local-resources" && (v = next())) g_local_resources = static_cast<std::int32_t>(parse_u32(v));
         else {
             std::fprintf(stderr, "unknown or incomplete argument: %s\n", a.c_str());
@@ -1575,17 +1590,39 @@ int main(int argc, char** argv) {
             HANDLE th = g_threads[ev.dwThreadId];
             if (rec.ExceptionCode == EXCEPTION_BREAKPOINT && g_bps.count(addr)) {
                 CONTEXT ctx{};
-                ctx.ContextFlags = CONTEXT_FULL;
+                ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
                 GetThreadContext(th, &ctx);
                 ctx.Eip = addr;  // re-execute the original instruction
                 if (on_breakpoint(opt, ev.dwThreadId, ctx)) stop = true;
+                if (g_watch_addr && !g_watch_armed && g_start_written) {
+                    // A data breakpoint on the watched field (writes), on the simulation thread.
+                    g_watch_armed = true;
+                    ctx.Dr0 = g_watch_addr;
+                    ctx.Dr7 = (ctx.Dr7 & ~0xF0003u) | 1u | (1u << 16) | (static_cast<DWORD>(g_watch_len - 1) << 18);
+                }
                 write_byte(addr, g_bps[addr].original);
                 ctx.EFlags |= 0x100;  // single-step, then re-arm
                 SetThreadContext(th, &ctx);
                 g_pending_reinsert[ev.dwThreadId] = addr;
-            } else if (rec.ExceptionCode == EXCEPTION_SINGLE_STEP && g_pending_reinsert.count(ev.dwThreadId)) {
-                write_byte(g_pending_reinsert[ev.dwThreadId], 0xCC);
-                g_pending_reinsert.erase(ev.dwThreadId);
+            } else if (rec.ExceptionCode == EXCEPTION_SINGLE_STEP) {
+                CONTEXT ctx{};
+                ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+                GetThreadContext(th, &ctx);
+                if (ctx.Dr6 & 1u) {
+                    // The watched field was written: the writer (the instruction before EIP) and the value.
+                    std::uint32_t v = 0;
+                    read_block(g_watch_addr, &v, g_watch_len);
+                    std::uint32_t ret = 0;
+                    read_u32(ctx.Esp, ret);
+                    std::fprintf(g_out, "{\"ev\":\"watch\",\"tick\":%u,\"in_step\":%d,\"eip\":%lu,\"stack_top\":%u,\"value\":%u}\n", game_tick(),
+                                 g_in_step ? 1 : 0, ctx.Eip, ret, v);
+                    ctx.Dr6 = 0;
+                    SetThreadContext(th, &ctx);
+                }
+                if (g_pending_reinsert.count(ev.dwThreadId)) {
+                    write_byte(g_pending_reinsert[ev.dwThreadId], 0xCC);
+                    g_pending_reinsert.erase(ev.dwThreadId);
+                }
             } else if (rec.ExceptionCode == EXCEPTION_BREAKPOINT && g_hijacking && addr == g_stub_end &&
                        ev.dwThreadId == g_hijack_tid) {
                 // A script call returned: the thread goes back to the frame end breakpoint,
@@ -1601,6 +1638,9 @@ int main(int argc, char** argv) {
                 status = DBG_EXCEPTION_NOT_HANDLED;  // let the game's own handlers run
                 if (ev.u.Exception.dwFirstChance == 0) {
                     std::fprintf(g_out, "{\"ev\":\"crash\",\"code\":%lu,\"addr\":%lu}\n", rec.ExceptionCode, addr);
+                } else {
+                    std::fprintf(g_out, "{\"ev\":\"exception\",\"code\":%lu,\"addr\":%lu,\"tid\":%lu,\"tick\":%u}\n", rec.ExceptionCode, addr,
+                                 ev.dwThreadId, game_tick());
                 }
             }
             break;

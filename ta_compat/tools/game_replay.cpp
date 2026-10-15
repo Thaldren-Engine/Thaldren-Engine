@@ -703,11 +703,17 @@ int main(int argc, char** argv) {
                             std::vector<long long> v;
                             for (std::size_t k = 0; k < kUnitScalars; ++k) v.push_back(u.arr[k].num);
                             theirs = list(v);
+                            for (std::size_t k = kUnitScalars + 2; k < u.arr.size(); ++k) {
+                                std::vector<long long> w;
+                                for (const Json& x : u.arr[k].arr) w.push_back(x.num);
+                                theirs += " " + list(w);
+                            }
                         }
                 auto it = ours.find(trace_unit);
                 const sim::UnitTickState& t = b.ticks[static_cast<std::size_t>(trace_unit)];
                 std::printf("trace %u (%s): original %s\n          engine   %s  velocity %d,%d,%d\n", b.game_tick(), tname(t.type_index), theirs.c_str(),
-                            it != ours.end() ? list(it->second.v).c_str() : "-", t.velocity[0], t.velocity[1], t.velocity[2]);
+                            it != ours.end() ? (list(it->second.v) + " " + list(it->second.motion) + " " + list(it->second.vel_tilt)).c_str() : "-",
+                            t.velocity[0], t.velocity[1], t.velocity[2]);
             }
             std::vector<std::string> diff = compare(b, e);
             if (ignore_cells)

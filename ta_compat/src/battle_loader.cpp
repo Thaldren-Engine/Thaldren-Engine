@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "sim/x87.h"
 #include "ta/ai_profile.h"
 #include "ta/battle_economy.h"
 #include "ta/battle_features.h"
@@ -178,7 +179,19 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     b.fx_lists.smoke2_frames = frames("smoke 2");
     b.fx_lists.flame_frames = frames("flamestream");
     b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
-    b.settings.gravity = 112;
+    // Gravity in 16.16 world units per step squared (Map_LoadTnt 0x483610): the OTA's
+    // [GlobalHeader] gravity (units per second squared; read with default 0, so with an OTA it is
+    // always used) on a 0x2000 map: ftol(g x 65536.0 x (1/900)); otherwise 0x1FDB (112).
+    {
+        std::int32_t g = -1;
+        if (header) g = header->get_int("gravity", 0);
+        if (g >= 0 && info.version >= 0x2000) {
+            const double one_900 = 1.0 / 900.0;  // the original's double constant
+            b.settings.gravity = static_cast<std::int32_t>(sim::x87::ftol32(static_cast<double>(g) * 65536.0 * one_900));
+        } else {
+            b.settings.gravity = 0x1FDB;  // (an older map's header value when nonzero: not read here)
+        }
+    }
     b.settings.damage_options = 8;
 
     // Unit types: battle type index = definition index ([0] is the blank "None").
