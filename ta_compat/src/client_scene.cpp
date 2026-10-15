@@ -23,6 +23,8 @@ const std::vector<render::Sprite8>* ClientWorld::frames_of(std::uint32_t seq) {
 
 void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t frame_counter) {
     sim::Battle& b = battle();
+    feature_proxy_views_.clear();
+    feature_proxies_.clear();
     scene.terrain.width = tiles_.width;
     scene.terrain.height = tiles_.height;
     scene.terrain.map = &tiles_.map;
@@ -84,6 +86,27 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
                     f.pitch = sl.get<std::int16_t>(sim::FeatureSlot::kAngles);
                     f.heading = sl.get<std::uint16_t>(sim::FeatureSlot::kAngles + 2);
                     f.bank = sl.get<std::int16_t>(sim::FeatureSlot::kAngles + 4);
+                    // The original's stand-in unit (0x421F20): a structure (flag 0x20000000) seen as
+                    // the viewer's own (0x200) with a depth plane, the blank unit type, player 0's
+                    // colour, at the slot's place and attitude, with the slot's object state.
+                    sim::Unit& pu = feature_proxies_.emplace_back();
+                    pu.pos = f.pos;
+                    pu.pitch = f.pitch;
+                    pu.heading = f.heading;
+                    pu.bank = f.bank;
+                    pu.flags = 0x20000000u | 0x200u;
+                    pu.draw_flags = 1;
+                    pu.pose.build(fm->pose, {});
+                    render::UnitInstance& pv = feature_proxy_views_.emplace_back();
+                    pv.unit = &pu;
+                    pv.model = &fm->model;
+                    pv.params.team_colour = request_.start.players[0].colour;
+                    pv.params.animation_frame = frame_counter;
+                    pv.ground = false;
+                    pv.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(f.pos[0] >> 16), static_cast<std::int16_t>(f.pos[2] >> 16)));
+                    pv.type_flags = defs_.units.empty() ? 0u : defs_.units[0].type_flags;
+                    pv.own_view = true;
+                    f.proxy = &pv;
                 } else {
                     f.image = frame_at(sl.cursor(sim::FeatureSlot::kCursorA));
                     if (sl.get<std::uint8_t>(sim::FeatureSlot::kFlags) & sim::feature_slot_flags::kHasShadow)
@@ -102,14 +125,9 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
                 }
                 f.image_blended = (rec.flags & feature_flags::kAnimTrans) != 0;
                 f.shadow_blended = (rec.flags & feature_flags::kShadTrans) != 0;
-            } else {
-                // A 3D feature without a slot: drawn at its cell, resting.
-                const FeatureModel* fm = feature_model(t.model);
-                if (!fm) continue;
-                f.model = &fm->model;
-                f.pose_model = &fm->pose;
-                f.pos = {((x * 16) + t.footprint_x * 8) << 16, static_cast<std::int32_t>(cell.height) << 16, ((z * 16) + t.footprint_z * 8) << 16};
             }
+            // (A 3D feature without a slot draws nothing: the original reads its type's sequences,
+            // which 3D types do not have.)
             if (f.image || f.shadow || f.model) scene.features.push_back(f);
         }
 
@@ -154,27 +172,66 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
     }
     scene.light = light_table_.empty() ? nullptr : &light_table_;
     scene.game_tick = b.game_tick();
+    // The viewer's test for small effects drawn at a world point (nano particles, shots): the
+    // block under the point's screen position, (x >> 5, (z - y / 2) >> 5) as unsigned indices into
+    // the viewer's sight count map; with the fog option a nonzero count, else the viewer's
+    // explored bit.
+    auto block_seen = [&](const std::array<std::int32_t, 3>& p) {
+        const int x = static_cast<std::int16_t>(static_cast<std::uint32_t>(p[0]) >> 16);
+        const int y = static_cast<std::int16_t>(static_cast<std::uint32_t>(p[1]) >> 16);
+        const int z = static_cast<std::int16_t>(static_cast<std::uint32_t>(p[2]) >> 16);
+        const auto bx = static_cast<std::uint32_t>(x >> 5), bz = static_cast<std::uint32_t>((z - (y >> 1)) >> 5);
+        const sim::PlayerSight& ps = b.sight.players[static_cast<std::size_t>(view) % b.sight.players.size()];
+        if (bx >= static_cast<std::uint32_t>(ps.width) || bz >= static_cast<std::uint32_t>(ps.height)) return false;
+        const std::size_t at = static_cast<std::size_t>(bz) * static_cast<std::size_t>(ps.width) + bx;
+        if (b.sight.flags & sim::sight_flags::kFog) return at < ps.counts.size() && ps.counts[at] != 0;
+        return at < b.explored.size() && (b.explored[at] & (1u << (view & 31))) != 0;
+    };
     for (const sim::NanoStream& ns : b.nano.streams)
-        for (const sim::NanoParticle& np : ns.particles) scene.nano.push_back({np.pos, static_cast<std::uint8_t>(np.colour)});
+        for (const sim::NanoParticle& np : ns.particles)
+            if (block_seen(np.pos)) scene.nano.push_back({np.pos, static_cast<std::uint8_t>(np.colour)});
 
-    // Units the viewer sees (its own and those in its sight).
+    // Units on the viewer's list (the original's 0x48BAE0): every table entry with a type whose
+    // model box, projected with the view, meets the view rectangle (its bottom at the ground under
+    // it when that is higher, for units not on the ground layer), owned by the viewer or seen by it.
+    const render::Camera& cam = scene.camera;
+    const render::ClipRect vr = cam.view_clip();
+    auto hi = [](std::int32_t v) { return static_cast<int>(static_cast<std::int16_t>(static_cast<std::uint32_t>(v) >> 16)); };
     for (std::size_t i = 1; i < b.units.size(); ++i) {
         const sim::UnitTickState& t = b.ticks[i];
         if (t.type_index == 0 || t.type_index >= types_.size() || !types_[t.type_index] || !types_[t.type_index]->ok) continue;
         const sim::Unit& u = b.units[i];
-        if (sight && t.owner != view && !b.unit_seen_by(view, u)) continue;
         const UnitDefRecord& d = defs_.units[t.type_index];
+        const int ux = hi(u.pos[0]), uy = hi(u.pos[1]), uz = hi(u.pos[2]);
+        int bottom = hi(d.model_min_y) + uy;
+        if ((u.flags & 3u) != 1u) {
+            if (const sim::MapCell* c = b.map.cell(ux >> 4, uz >> 4))
+                if (c->height < bottom) bottom = c->height;
+        }
+        const bool inside = hi(d.model_min_x) + ux - cam.scroll_x + cam.origin_x <= vr.x1 &&
+                            vr.x0 <= hi(d.model_max_x) + ux - cam.scroll_x + cam.origin_x &&
+                            hi(d.model_min_z) + uz - cam.scroll_y - ((hi(d.model_max_y) + uy) >> 1) + cam.origin_y <= vr.y1 &&
+                            vr.y0 <= hi(d.model_max_z) + uz - cam.scroll_y - (bottom >> 1) + cam.origin_y;
+        if (!inside) continue;
+        if (t.owner != view && !b.unit_seen_by(view, u)) continue;
         render::UnitInstance ui;
         ui.unit = &u;
         ui.model = &types_[t.type_index]->model;
-        ui.params.team_colour = static_cast<std::uint8_t>(t.owner);
+        ui.params.team_colour = request_.start.players[static_cast<std::size_t>(t.owner) % 10].colour;
         ui.params.animation_frame = frame_counter;
-        ui.ground = (d.type_flags & (1u << 11)) == 0;
-        ui.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(u.pos[0] >> 16), static_cast<std::int16_t>(u.pos[2] >> 16)));
-        ui.shadow = (d.type_flags & (1u << 25)) == 0;
+        ui.ground = (u.flags & 3u) == 1u;
+        ui.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(ux), static_cast<std::int16_t>(uz)));
+        ui.shadow = true;
+        ui.type_flags = d.type_flags;
         ui.translucent = (u.activate_flags & sim::unit_flags::kCloaked) != 0;
+        ui.own_view = (u.flags & 0x200u) != 0 || t.owner == view;
+        ui.animate_direct = (u.flags & 0x20000000u) ? (u.activate_flags & 1) != 0 : (t.has_motion && t.motion.speed != 0);
         scene.units.push_back(ui);
     }
+    scene.tables.mix = &blend_;
+    scene.tables.shade = shade_table_.empty() ? nullptr : &shade_table_;
+    scene.tables.water = &water_table_;
+    scene.sea_level = b.settings.sea_level;
 
     // The viewed player's fog: unexplored blocks black, unseen ones grey.
     scene.fog = nullptr;

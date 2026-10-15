@@ -46,6 +46,9 @@ struct FeatureInstance {
     std::array<std::int32_t, 3> pos{};  // 16.16 world
     std::int16_t pitch = 0, bank = 0;
     std::uint16_t heading = 0;
+    // 3D features as the original draws them: through a stand-in unit (a structure with a depth
+    // plane, seen like the viewer's own units; drawn with the unit look and its shadow).
+    const struct UnitInstance* proxy = nullptr;
 };
 
 // A piece blown off a unit (sim/effects.h DebrisPiece): one model piece, turned and placed.

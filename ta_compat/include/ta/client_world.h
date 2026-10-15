@@ -139,6 +139,9 @@ public:
     std::map<std::uint32_t, FeatureModel> feature_model_cache_;
     std::array<std::vector<render::Sprite8>, 3> glows_;
     render::BlendTable light_table_;
+    std::vector<std::uint8_t> shade_table_, water_table_;  // unit looks (lit structures, under water)
+    std::deque<sim::Unit> feature_proxies_;                 // 3D features drawn as the original's stand-in unit
+    std::deque<render::UnitInstance> feature_proxy_views_;
     render::FogOfWar fog_;
     std::array<std::vector<render::Sprite8>, 4> fog_black_, fog_gray_;
     render::BlendTable gray_table_;

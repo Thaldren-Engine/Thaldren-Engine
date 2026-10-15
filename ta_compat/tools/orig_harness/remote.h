@@ -115,9 +115,80 @@ public:
         return true;
     }
 
+    // Crash reports: a vectored exception handler in the child records the exception (code,
+    // address, ESP, EBP and 96 stack words at `crash_info()`) and ends the thread with exit
+    // code 0xDEAD, so a failed call() can say where the original faulted.
+    bool install_crash_catcher() {
+        HMODULE k32 = GetModuleHandleA("kernel32.dll");
+        const u32 add_veh = static_cast<u32>(reinterpret_cast<std::uintptr_t>(GetProcAddress(k32, "AddVectoredExceptionHandler")));
+        const u32 exit_thread = static_cast<u32>(reinterpret_cast<std::uintptr_t>(GetProcAddress(k32, "ExitThread")));
+        if (!add_veh || !exit_thread) return false;
+        info_ = alloc(0x1000);
+        const u32 code = alloc(0x1000, PAGE_EXECUTE_READWRITE);
+        if (!info_ || !code) return false;
+        std::vector<std::uint8_t> s;
+        auto put = [&](std::initializer_list<int> b) {
+            for (int v : b) s.push_back(static_cast<std::uint8_t>(v));
+        };
+        auto put32 = [&](u32 v) {
+            for (int i = 0; i < 4; ++i) s.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        };
+        const u32 exit_stub_at = code + 0x80;
+        put({0x56, 0x57});                    // push esi; push edi
+        put({0x8B, 0x44, 0x24, 0x0C});        // mov eax,[esp+12] (EXCEPTION_POINTERS*)
+        put({0x8B, 0x08});                    // mov ecx,[eax] (record)
+        put({0x8B, 0x11});                    // mov edx,[ecx] (code)
+        put({0x89, 0x15}); put32(info_);      // mov [info],edx
+        put({0x8B, 0x51, 0x0C});              // mov edx,[ecx+0C] (address)
+        put({0x89, 0x15}); put32(info_ + 4);  // mov [info+4],edx
+        put({0x8B, 0x48, 0x04});              // mov ecx,[eax+4] (context)
+        put({0x8B, 0x91, 0xC4, 0, 0, 0});     // mov edx,[ecx+C4] (esp)
+        put({0x89, 0x15}); put32(info_ + 8);  // mov [info+8],edx
+        put({0x8B, 0xB1, 0xB4, 0, 0, 0});     // mov esi,[ecx+B4] (ebp)
+        put({0x89, 0x35}); put32(info_ + 12); // mov [info+12],esi
+        put({0x8B, 0xF2});                    // mov esi,edx
+        put({0xBF}); put32(info_ + 16);       // mov edi,info+16
+        put({0x51});                          // push ecx
+        put({0xB9, 96, 0, 0, 0});             // mov ecx,96
+        put({0xF3, 0xA5});                    // rep movsd
+        put({0x59});                          // pop ecx
+        put({0x8D, 0xB1, 0x9C, 0, 0, 0});     // lea esi,[ecx+9C] (edi, esi, ebx, edx, ecx, eax)
+        put({0xBF}); put32(info_ + 16 + 96 * 4);  // mov edi,info+regs
+        put({0x51});                          // push ecx
+        put({0xB9, 6, 0, 0, 0});              // mov ecx,6
+        put({0xF3, 0xA5});                    // rep movsd
+        put({0x59});                          // pop ecx
+        put({0xC7, 0x81, 0xB8, 0, 0, 0}); put32(exit_stub_at);  // mov [ecx+B8],exit_stub
+        put({0x5F, 0x5E});                    // pop edi; pop esi
+        put({0x83, 0xC8, 0xFF});              // or eax,-1 (EXCEPTION_CONTINUE_EXECUTION)
+        put({0xC2, 0x04, 0x00});              // ret 4
+        while (s.size() < 0x80) s.push_back(0xCC);
+        put({0x68}); put32(0xDEAD);           // push 0xDEAD
+        put({0xB8}); put32(exit_thread);      // mov eax,ExitThread
+        put({0xFF, 0xD0});                    // call eax
+        if (!write(code, s.data(), s.size())) return false;
+        return call(add_veh, 0, {1, code});
+    }
+    struct Crash {
+        u32 code = 0, address = 0, esp = 0, ebp = 0;
+        u32 stack[96] = {};
+        u32 edi = 0, esi = 0, ebx = 0, edx = 0, ecx = 0, eax = 0;
+    };
+    Crash crash_info() {
+        Crash c;
+        if (info_) read(info_, &c, sizeof c);
+        return c;
+    }
+    void clear_crash_info() {
+        if (info_) {
+            Crash c;
+            write(info_, &c, sizeof c);
+        }
+    }
+
 private:
     PROCESS_INFORMATION pi_{};
-    u32 code_ = 0, block_ = 0;
+    u32 code_ = 0, block_ = 0, info_ = 0;
 };
 
 } // namespace harness

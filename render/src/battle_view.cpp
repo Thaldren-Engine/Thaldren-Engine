@@ -95,8 +95,14 @@ void draw_model_at(const BattleScene& s, const Model& model, const sim::PoseMode
     out.blit(out.keep(rasterize_model_sprite(model, pose, mp)), screen_x(c, pos[0]), screen_y(c, pos[1], pos[2]), c.view_clip(), false);
 }
 
+void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out);
+
 void draw_feature(const BattleScene& s, const FeatureInstance& f, DrawList& out) {
     const Camera& c = s.camera;
+    if (f.proxy) {
+        draw_unit(s, *f.proxy, out);
+        return;
+    }
     if (f.model && f.pose_model) {
         // Drawn through a stand-in unit at the slot's place (the original's proxy unit).
         draw_model_at(s, *f.model, *f.pose_model, f.pos, f.pitch, f.heading, f.bank, out);
@@ -506,13 +512,14 @@ DrawList build_draw_list(const BattleScene& s) {
             if (const FeatureInstance* f = feature_at(col0 + k, row0 + r))
                 if (f->height >= 10) draw_feature(s, *f, out);
     }
-    // Nano lathe particles (the effect list 6): single pixels in their colour.
+    // Nano lathe particles (the effect list 6, the original's 0x473A00): 2 x 2 squares in their
+    // colour with the top-left at the particle's screen point.
     for (const NanoDotInstance& d : s.nano) {
         const int x = screen_x(c, d.pos[0]), y = screen_y(c, d.pos[1], d.pos[2]);
         Sprite8 dot;
-        dot.width = dot.height = 1;
+        dot.width = dot.height = 2;
         dot.key = static_cast<std::uint8_t>(d.colour ^ 1);
-        dot.pixels.assign(1, d.colour);
+        dot.pixels.assign(4, d.colour);
         out.blit(out.keep(std::move(dot)), x, y, c.view_clip(), false);
     }
     for (const ProjectileInstance& p : s.projectiles) draw_projectile(s, p, out);
