@@ -201,8 +201,23 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
     net::LoopbackHub hub;
     std::vector<std::unique_ptr<net::NetSession>> sessions;
     std::vector<std::unique_ptr<net::BattleRoom>> rooms;
+    // NET_PLAY_UDP=<loss>: the machines talk over UDP on this host instead of the loopback, with
+    // that share of datagrams lost (resends and frames out of order).
+    std::vector<std::unique_ptr<net::Transport>> udp;
+    const char* udp_env = std::getenv("NET_PLAY_UDP");
+    for (int s = 0; udp_env && s < machines; ++s) {
+        std::string err;
+        net::UdpOptions o;
+        o.loss = std::atof(udp_env);
+        o.seed = seed * 13u + static_cast<std::uint32_t>(s) + 1u;
+        udp.push_back(s == 0 ? net::udp_host(47700, err, o) : net::udp_join("127.0.0.1", 47700, err, o));
+        if (!udp.back()) {
+            std::printf("udp: %s\n", err.c_str());
+            return 1;
+        }
+    }
     for (int s = 0; s < machines; ++s) {
-        sessions.push_back(std::make_unique<net::NetSession>(hub.add_machine()));
+        sessions.push_back(std::make_unique<net::NetSession>(udp_env ? *udp[static_cast<std::size_t>(s)] : hub.add_machine()));
         rooms.push_back(std::make_unique<net::BattleRoom>(*sessions.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
         rooms.back()->set_side(static_cast<std::uint8_t>(s & 1));
         rooms.back()->map_checksum = [&vfs](const std::string& m) { return ta::map_sync_checksum(vfs, m); };
@@ -261,6 +276,7 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
     int pass = 0;
     for (; pass < 3000 && std::any_of(ms.begin(), ms.end(), [](const auto& m) { return !m; }); ++pass) {
         ++clock;
+        if (udp_env) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         for (std::size_t k = 0; k < rooms.size(); ++k) {
             if (ms[k]) {
                 Machine& m = *ms[k];
@@ -296,6 +312,7 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
     Comparison total;
     int failures = 0;
     for (int step = 0; step < steps; ++step) {
+        if (udp_env) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if (std::getenv("NET_PLAY_DUEL") && step == 30)
             // A skirmish line: each machine places a few of its own armed units near the first
             // unit of the next player (announced to the others by packet 9 as any new unit).
@@ -344,6 +361,20 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
             m->net->set_clock(++m->clock);
             m->net->flush_now();
         }
+    if (udp_env) {
+        for (int k = 0; k < 50; ++k) {
+            for (auto& t : udp) t->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        for (std::size_t k = 0; k < udp.size(); ++k) {
+            const net::UdpCounters c = net::udp_counters(*udp[k]);
+            std::printf("udp machine %zu: %llu datagrams delivered, %llu lost on the way out, %llu sent again, %llu duplicates dropped; "
+                        "frames out of order %llu\n",
+                        k, static_cast<unsigned long long>(c.delivered), static_cast<unsigned long long>(c.dropped_by_loss),
+                        static_cast<unsigned long long>(c.resent), static_cast<unsigned long long>(c.duplicates),
+                        static_cast<unsigned long long>(sessions[k]->receiver.order_mismatches()));
+        }
+    }
     for (Machine* m : all) {
         const net::NetCounters& n = m->net->counters();
         std::printf("machine %d: %llu packets sent (%llu unit state), %llu received, %llu refused; %llu frames, %llu bytes sent; chat lines %zu; "

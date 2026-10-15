@@ -75,6 +75,7 @@ add_library(net STATIC
     engine/net/src/net_battle.cpp
     engine/net/src/protocol.cpp
     engine/net/src/transport.cpp
+    engine/net/src/udp_transport.cpp
 )
 target_include_directories(net PUBLIC engine/net/include)
 target_link_libraries(net PUBLIC sim)
