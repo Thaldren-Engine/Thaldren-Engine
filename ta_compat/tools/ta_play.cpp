@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
                 game.selected_count());
     // A summary of the players' units at the end (smoke tests).
     sim::Battle& b = world->battle();
+    if (const std::string fault = b.first_fault(); !fault.empty()) std::printf("ENGINE FAULT: %s\n", fault.c_str());
     for (std::size_t i = 1; i < b.units.size(); ++i) {
         if (b.ticks[i].type_index == 0) continue;
         const sim::Unit& u = b.units[i];
