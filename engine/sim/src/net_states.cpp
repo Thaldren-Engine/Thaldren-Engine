@@ -79,13 +79,14 @@ void read_manoeuvre_goal_state(BitReader& r, NetManoeuvreGoal& g) {
 }
 
 void write_route_state(BitWriter& w, bool blocked, std::uint8_t flags, std::int32_t count, const std::uint32_t* points) {
-    u32 n = 0;
-    if (flags & route_flags::kHasRoute) n = count > 2 ? 3u : static_cast<u32>(count);
+    // A negative count is sent as its low two bits, with no waypoints.
+    i32 n = 0;
+    if (flags & route_flags::kHasRoute) n = count > 2 ? 3 : count;
     w.put_bit(blocked);
-    w.put(n, 2);
-    for (u32 k = 0; k < n; ++k) {
-        w.put(points[k] & 0xFFFFu, 16);
-        w.put(points[k] >> 16, 16);
+    w.put(static_cast<u32>(n), 2);
+    for (i32 k = 0; k < n; ++k) {
+        w.put(points[static_cast<std::size_t>(k)] & 0xFFFFu, 16);
+        w.put(points[static_cast<std::size_t>(k)] >> 16, 16);
     }
 }
 
