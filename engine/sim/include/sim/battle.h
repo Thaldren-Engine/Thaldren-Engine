@@ -611,7 +611,9 @@ private:
         void claim_footprint(Unit& u) override { sim::claim_footprint(b.footprint_, u); }
         void update_sight(Unit& u) override { b.update_sight(u); }
         bool off_map(const Unit& u) override { return u.bucket == kOffMapBucket; }
-        std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
+        std::uint8_t bucket_height(const Unit& u) override {
+            return b.buckets.max_height.empty() ? b.outside_.bucket_height(u) : b.buckets.height_of(u.bucket);  // 0x482C20's heights
+        }
         void route_search_forget(MotionGoal& g) override { sim::route_search_forget(b.route_search, g); }
         void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
         // Goal objects need a nonzero handle: an order with handle 0 counts as having no goal

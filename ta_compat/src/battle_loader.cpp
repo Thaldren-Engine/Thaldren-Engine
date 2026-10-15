@@ -234,6 +234,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
         }
     }
     sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
+    b.buckets.build_heights(b.map, b.settings.sea_level);  // flying units' cruise heights (0x482C20)
     const TdfSection* schema_sec = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
     MapEconomy me;
     if (!lb->ota.empty()) read_map_economy(lb->ota, schema < 0 ? 0 : schema, me);

@@ -657,6 +657,13 @@ void write_digest(DWORD tid) {
                         line += "," + std::to_string(get<std::uint32_t>(gb, 0xC + 4u * static_cast<std::uint32_t>(k)));
                 }
             }
+            // Motion velocity (+8) and tilt (+0x14), [] without motion.
+            line += "],[";
+            if (const std::uint32_t mo = get<std::uint32_t>(u, o + 0)) {
+                std::int32_t vt[6] = {};
+                read_block(mo + 8, vt, sizeof vt);
+                for (int k = 0; k < 6; ++k) line += (k ? "," : "") + std::to_string(vt[k]);
+            }
             line += "]]";
             first = false;
         }

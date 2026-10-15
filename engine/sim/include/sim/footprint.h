@@ -29,6 +29,17 @@ struct UnitBuckets {
     std::vector<Unit*> heads;            // row-major
     Unit* off_map = nullptr;
     void resize_for_map(std::int32_t cells_x, std::int32_t cells_z);
+    // Highest ground of each bucket and its eight neighbours (the record's second byte; flying
+    // units cruise above it). Empty until build_heights() runs at map load.
+    std::vector<std::uint8_t> max_height;
+    // Map load (0x482C20): per bucket the highest cell maximum (at least the sea level), then a
+    // running maximum over each bucket and its neighbours, first along the rows, then down the
+    // columns (in place). A row or column only one bucket long gets 0.
+    void build_heights(const struct MapGrid& map, std::uint8_t sea_level);
+    // The height for a unit's bucket (0 for units off the map; none: 0).
+    std::uint8_t height_of(std::int32_t bucket) const {
+        return bucket >= 0 && static_cast<std::size_t>(bucket) < max_height.size() ? max_height[static_cast<std::size_t>(bucket)] : 0;
+    }
 };
 
 namespace footprint_flags {

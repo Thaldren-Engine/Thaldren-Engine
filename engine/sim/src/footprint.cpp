@@ -109,6 +109,41 @@ void UnitBuckets::resize_for_map(std::int32_t cells_x, std::int32_t cells_z) {
     off_map = nullptr;
 }
 
+void UnitBuckets::build_heights(const MapGrid& map, std::uint8_t sea_level) {
+    const std::size_t n = static_cast<std::size_t>(width > 0 && height > 0 ? width * height : 0);
+    std::vector<std::uint8_t> top(n, sea_level);
+    for (i32 z = 0; z < map.height; ++z)
+        for (i32 x = 0; x < map.width; ++x) {
+            const std::size_t b = static_cast<std::size_t>((z >> 3) * width + (x >> 3));
+            const u8 h = map.cells[static_cast<std::size_t>(z) * static_cast<std::size_t>(map.width) + static_cast<std::size_t>(x)].height_max;
+            if (b < n && top[b] < h) top[b] = h;
+        }
+    max_height.assign(n, 0);
+    // Along each row: the highest of the bucket and its left and right neighbours (the pair
+    // maxima of the walk); the last one gets the pair before it, a one-bucket row 0.
+    for (i32 z = 0; z < height; ++z) {
+        const std::size_t row = static_cast<std::size_t>(z * width);
+        u8 prev = 0, pair = 0;
+        for (i32 x = 0; x + 1 < width; ++x) {
+            pair = std::max(top[row + static_cast<std::size_t>(x)], top[row + static_cast<std::size_t>(x) + 1]);
+            max_height[row + static_cast<std::size_t>(x)] = std::max(prev, pair);
+            prev = pair;
+        }
+        if (width > 0) max_height[row + static_cast<std::size_t>(width - 1)] = pair;
+    }
+    // Down each column, in place over the row result.
+    for (i32 x = 0; x < width; ++x) {
+        u8 prev = 0, pair = 0;
+        for (i32 z = 0; z + 1 < height; ++z) {
+            const std::size_t at = static_cast<std::size_t>(z * width + x);
+            pair = std::max(max_height[at], max_height[at + static_cast<std::size_t>(width)]);
+            max_height[at] = std::max(prev, pair);
+            prev = pair;
+        }
+        if (height > 0) max_height[static_cast<std::size_t>((height - 1) * width + x)] = pair;
+    }
+}
+
 void footprint_origin(std::int32_t x, std::int32_t z, std::int16_t fx, std::int16_t fz, std::int16_t& cell_x,
                       std::int16_t& cell_z) {
     // Centre minus half the footprint, rounded to the nearest cell (32-bit wrapping).

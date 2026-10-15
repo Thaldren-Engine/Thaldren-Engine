@@ -201,6 +201,8 @@ struct UnitRow {
     // flags & 15, points.
     std::vector<long long> motion;
     bool has_motion_row = false;
+    std::vector<long long> vel_tilt;  // motion velocity xyz, tilt xyz (newer captures)
+    bool has_vel_tilt = false;
 };
 const char* const kUnitFields[] = {"id",     "type",  "owner",  "x",     "y",        "z",     "pitch",   "heading",
                                    "bank",   "hp",    "build_left_bits", "activate", "script_flags", "flags", "health_pct",
@@ -222,6 +224,7 @@ std::map<int, UnitRow> engine_units(sim::Battle& b) {
         for (const sim::MissionOrder* o = u.orders; o && r.primary.size() < 32; o = o->next) r.primary.push_back(o->kind);
         for (const sim::MissionOrder* o = u.secondary_orders; o && r.secondary.size() < 32; o = o->next) r.secondary.push_back(o->kind);
         if (t.has_motion) {
+            r.vel_tilt = {t.velocity[0], t.velocity[1], t.velocity[2], t.motion.tilt[0], t.motion.tilt[1], t.motion.tilt[2]};
             r.motion = {t.motion.speed, t.motion.turn, t.motion.flags & 7};
             if (const auto* rg = dynamic_cast<const sim::RouteGoal*>(t.motion.goal.get())) {
                 r.motion.push_back(-1);  // (the original's vtable is not compared)
@@ -304,6 +307,10 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
                 r.has_motion_row = true;
                 for (const Json& o : u.arr[kUnitScalars + 2].arr) r.motion.push_back(o.num);
             }
+            if (u.arr.size() > kUnitScalars + 3) {
+                r.has_vel_tilt = true;
+                for (const Json& o : u.arr[kUnitScalars + 3].arr) r.vel_tilt.push_back(o.num);
+            }
             theirs[static_cast<int>(r.v[0])] = std::move(r);
         }
     const std::map<int, UnitRow> ours = engine_units(b);
@@ -347,6 +354,9 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
                 diff.push_back("unit " + std::to_string(id) + " motion [speed, turn, flags, goal, route count, search tick, route flags, points]: original " +
                                list(a) + ", engine " + list(c));
         }
+        if (r.has_vel_tilt && r.vel_tilt != e.vel_tilt)
+            diff.push_back("unit " + std::to_string(id) + " motion [velocity xyz, tilt xyz]: original " + list(r.vel_tilt) + ", engine " +
+                           list(e.vel_tilt));
         if (r.secondary != e.secondary)
             diff.push_back("unit " + std::to_string(id) + " secondary orders: original " + list(r.secondary) + ", engine " + list(e.secondary));
     }
