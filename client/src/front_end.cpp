@@ -235,6 +235,7 @@ public:
     // The loop sets this: draws and shows a frame at once (the loading screen's progress).
     std::function<void()> present_now;
     const render::BlendTable& blend() const { return s_.content->blend; }
+    float load_fraction() const { return load_fraction_; }
 
 private:
     bool in_battle() const { return session_ != nullptr; }
@@ -371,6 +372,16 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         }
 #endif
         run.begin(nullptr);
+        // The loading screen is shown once, half way, when screenshots are wanted.
+        bool loading_shot = false;
+        run.present_now = [&] {
+            if (o.screenshot_prefix.empty() || loading_shot || run.load_fraction() < 0.5f) return;
+            loading_shot = true;
+            const render::Palette* pal = nullptr;
+            render::DrawList list = run.draw(pal);
+            render::write_bmp(o.screenshot_prefix + "loading.bmp", render::execute(list, run.blend()), *pal);
+            std::printf("screenshot %sloading.bmp\n", o.screenshot_prefix.c_str());
+        };
         int f = 0;
         for (; f < o.frames && !run.done(); ++f) {
             const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);

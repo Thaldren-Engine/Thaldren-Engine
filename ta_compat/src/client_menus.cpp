@@ -375,7 +375,10 @@ std::shared_ptr<const client::Sample> MenuArt::music_track(int n) {
     auto s = std::make_shared<client::Sample>();
     const std::string path = (std::filesystem::path(game_dir_) / "music" / (std::to_string(n) + ".mp3")).string();
     std::shared_ptr<const client::Sample> out;
-    if (client::decode_audio_file(path, *s)) out = s;
+    if (client::decode_audio_file(path, *s)) {
+        out = s;
+        std::printf("music: track %d (%.0f s)\n", n, static_cast<double>(s->pcm.size()) / std::max(1, s->channels) / std::max(1, s->rate));
+    }
     else std::printf("music: cannot decode %s\n", path.c_str());
     // Keep the last few decoded tracks.
     if (music_cache_.size() > 3) music_cache_.erase(music_cache_.begin());
