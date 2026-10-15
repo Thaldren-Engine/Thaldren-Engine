@@ -125,6 +125,7 @@ add_executable(combat_harness
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/rng.cpp
@@ -204,6 +205,7 @@ add_executable(weapons_harness
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/rng.cpp
@@ -233,6 +235,7 @@ add_executable(projectile_harness
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
     ${ROOT}/engine/sim/src/heightmap.cpp
     ${ROOT}/engine/sim/src/pose.cpp
     ${ROOT}/engine/sim/src/fire.cpp

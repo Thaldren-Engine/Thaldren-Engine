@@ -809,7 +809,13 @@ private:
                                    std::int32_t c3) override;
         std::int32_t reclaim_site_y() override { return b.outside_.reclaim_site_y(b.settings.reclaim_site_y); }
         void place_unit(Unit& u, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) override { sim::place_unit(b.motion_, u, pos, layer); }
-        void teleport_trail(Unit& u, const std::array<std::int32_t, 3>& to) override { b.outside_.teleport_trail(u.pos, to); }
+        void teleport_trail(Unit& u, const std::array<std::int32_t, 3>& to) override {
+            // Flame dots from where the unit stands to where it goes (0x471FD0: 30 steps, effect
+            // list 5); their particles draw the C runtime rand() in the effect sweep.
+            FxContext c = b.fx_context();
+            fx_dots(c, u.pos, to, 30, 5);
+            b.outside_.teleport_trail(u.pos, to);
+        }
         void remove_feature(std::int32_t cell) override { sim::remove_feature(b.feature_world_, cell, false); }
         void wreck_attitude(const MapCell& origin, Unit& u) override;
     };
