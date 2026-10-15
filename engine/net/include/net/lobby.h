@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "net/frames.h"
+#include "net/session.h"
 #include "net/transport.h"
 #include "sim/battle_start.h"
 #include "sim/rng.h"
@@ -85,6 +86,9 @@ class BattleRoom {
 public:
     // `net_id`: this machine's player (the session's player id; any distinct nonzero value).
     BattleRoom(Transport& transport, bool host, std::int32_t net_id, const std::string& name);
+    // On a shared session (the battle continues on it: net::NetBattle(outside, session)).
+    BattleRoom(NetSession& session, bool host, std::int32_t net_id, const std::string& name);
+    NetSession& session() { return session_; }
 
     // Local player's choices (sent with the next record).
     void set_side(std::uint8_t side);
@@ -109,6 +113,9 @@ public:
         pending_map_ready_ = ready;
         dirty_ = true;
     }
+    // This machine's checksum of a map (0: it does not have it). A client compares it with the
+    // host's (+0xA9) when the host is of version 3.1 or later and sets its map-ready byte.
+    std::function<std::uint32_t(const std::string& map)> map_checksum;
     // This machine's unit definitions (the checksum exchange).
     void set_unit_checks(UnitChecks checks) { checks_ = std::move(checks); }
     // The host's verdict per unit key (true: buildable) once the exchange ran.
@@ -142,6 +149,7 @@ public:
     FrameSender& sender() { return sender_; }
 
 private:
+    void init(const std::string& name);
     RoomPlayer& me() { return players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)]; }
     int slot_of(std::int32_t net_id) const;
     bool mine(const RoomPlayer& p) const { return p.net_id == net_id_ || (host_ && p.kind == 2); }
@@ -156,18 +164,21 @@ private:
     void loading_tick(sim::Lcg15* crt_rand);
     SendFn send_fn();
 
+    std::unique_ptr<NetSession> own_;
+    NetSession& session_;
     Transport& transport_;
     bool host_;
     std::int32_t net_id_;
     std::array<RoomPlayer, 10> players_{};
     int local_slot_ = -1;
     std::int32_t host_id_ = 0;
-    FrameSender sender_;
-    FrameReceiver receiver_;
+    FrameSender& sender_;
+    FrameReceiver& receiver_;
     std::uint32_t clock_ = 0, next_periodic_ = 0;
     bool dirty_ = true, started_ = false, loaded_ = false, refused_ = false;
     std::string error_;
-    std::string pending_name_;
+    std::string pending_name_, checked_map_;
+    std::uint32_t checked_sum_ = 0;
     std::uint8_t pending_side_ = 0;
     bool pending_map_ready_ = false;
     // Loading handshake (GS+0x29A4 loaded, +0x29D0 position answered, +0x29FC positions).

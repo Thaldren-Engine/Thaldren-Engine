@@ -21,6 +21,7 @@
 
 #include "net/frames.h"
 #include "net/protocol.h"
+#include "net/session.h"
 #include "net/transport.h"
 #include "sim/battle.h"
 
@@ -34,6 +35,8 @@ struct NetCounters {
 class NetBattle final : public sim::BattleOutside {
 public:
     NetBattle(sim::BattleOutside& inner, Transport& transport, NetTiming timing = {});
+    // On a session the battle room used before (its frames and running numbers continue).
+    NetBattle(sim::BattleOutside& inner, NetSession& session);
     // The battle this machine runs (after it is built; before its first step).
     void attach(sim::Battle& battle);
     sim::Battle* battle() { return battle_; }
@@ -171,10 +174,12 @@ private:
     void dispatch(int from, int to, const std::vector<std::uint8_t>& p);
 
     sim::BattleOutside& inner_;
+    std::unique_ptr<NetSession> own_;
+    NetSession& session_;
     Transport& transport_;
+    FrameSender& sender_;
+    FrameReceiver& receiver_;
     sim::Battle* battle_ = nullptr;
-    FrameSender sender_;
-    FrameReceiver receiver_;
     std::uint32_t clock_ = 0;
     Phase phase_ = Phase::Battle;
     bool paused_ = false;

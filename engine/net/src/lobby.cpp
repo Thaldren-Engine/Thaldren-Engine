@@ -57,14 +57,24 @@ RoomPlayer decode_side_record(const std::uint8_t* r) {
 }
 
 BattleRoom::BattleRoom(Transport& transport, bool host, std::int32_t net_id, const std::string& name)
-    : transport_(transport), host_(host), net_id_(net_id) {
-    transport_.set_local_players({net_id});
+    : own_(std::make_unique<NetSession>(transport)), session_(*own_), transport_(session_.transport), host_(host), net_id_(net_id),
+      sender_(session_.sender), receiver_(session_.receiver) {
+    init(name);
+}
+
+BattleRoom::BattleRoom(NetSession& session, bool host, std::int32_t net_id, const std::string& name)
+    : session_(session), transport_(session.transport), host_(host), net_id_(net_id), sender_(session.sender), receiver_(session.receiver) {
+    init(name);
+}
+
+void BattleRoom::init(const std::string& name) {
+    transport_.set_local_players({net_id_});
     positions_.fill(-1);
-    if (host) {
+    if (host_) {
         local_slot_ = 0;
-        host_id_ = net_id;
+        host_id_ = net_id_;
         RoomPlayer& p = players_[0];
-        p.net_id = net_id;
+        p.net_id = net_id_;
         p.name = name;
         p.kind = 1;
         p.flags = room::kHost;
@@ -491,6 +501,7 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         }
         RoomPlayer& q = players_[static_cast<std::size_t>(fs)];
         if (mine(q)) break;
+        const RoomPlayer keep = q;
         if (!host_ && (r.flags & room::kHost) && local_slot_ >= 0) {
             // The host's settings for the game reach this machine's own record.
             me().map = r.map;
@@ -498,8 +509,19 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
             me().energy = r.energy;
             me().metal = r.metal;
             me().unit_limit = r.unit_limit;
+            if (map_checksum && (r.map != checked_map_ || r.map_checksum != checked_sum_)) {
+                checked_map_ = r.map;
+                checked_sum_ = r.map_checksum;
+                // 0x448C70: with a host of version 3.1 or later the checksums must agree.
+                const std::uint32_t own = map_checksum(r.map);
+                const bool compare = r.version_major > 1 || (r.version_major == 1 && r.version_minor > 1);
+                const bool ready = own != 0 && (!compare || own == r.map_checksum);
+                if (ready != me().map_ready) {
+                    me().map_ready = ready;
+                    dirty_ = true;
+                }
+            }
         }
-        const RoomPlayer keep = q;
         q = r;
         q.last_heard = keep.last_heard;
         q.latency_ms = keep.latency_ms;

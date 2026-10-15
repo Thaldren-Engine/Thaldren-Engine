@@ -15,7 +15,11 @@ namespace net {
 using u8 = std::uint8_t;
 
 NetBattle::NetBattle(sim::BattleOutside& inner, Transport& transport, NetTiming timing)
-    : inner_(inner), transport_(transport), sender_(timing) {}
+    : inner_(inner), own_(std::make_unique<NetSession>(transport, timing)), session_(*own_), transport_(session_.transport),
+      sender_(session_.sender), receiver_(session_.receiver) {}
+
+NetBattle::NetBattle(sim::BattleOutside& inner, NetSession& session)
+    : inner_(inner), session_(session), transport_(session.transport), sender_(session.sender), receiver_(session.receiver) {}
 
 void NetBattle::attach(sim::Battle& battle) {
     battle_ = &battle;

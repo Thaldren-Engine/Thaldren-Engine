@@ -199,13 +199,13 @@ void report(const char* what, std::uint32_t tick, const Comparison& c) {
 
 int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const std::string& map) {
     net::LoopbackHub hub;
-    std::vector<std::unique_ptr<Machine>> ms;
-    std::vector<net::Transport*> ends;
+    std::vector<std::unique_ptr<net::NetSession>> sessions;
     std::vector<std::unique_ptr<net::BattleRoom>> rooms;
     for (int s = 0; s < machines; ++s) {
-        ends.push_back(&hub.add_machine());
-        rooms.push_back(std::make_unique<net::BattleRoom>(*ends.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
+        sessions.push_back(std::make_unique<net::NetSession>(hub.add_machine()));
+        rooms.push_back(std::make_unique<net::BattleRoom>(*sessions.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
         rooms.back()->set_side(static_cast<std::uint8_t>(s & 1));
+        rooms.back()->map_checksum = [&vfs](const std::string& m) { return ta::map_sync_checksum(vfs, m); };
     }
     // Every machine's unit definition checksums (the room compares them).
     {
@@ -216,55 +216,23 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
         for (auto& r : rooms) r->set_unit_checks(checks);
         std::printf("unit definitions: %zu checksums\n", checks.size());
     }
-    // The battle room: everybody joins, readies, the host starts.
-    rooms[0]->set_map(map);
+    rooms[0]->set_map(map, ta::map_sync_checksum(vfs, map));
     rooms[0]->set_map_ready(true);
-    rooms[0]->set_options(0, 0, 250, 100, 100, true);  // 10000 energy and metal
-    std::uint32_t clock = 1000;
-    // Each machine's C runtime rand() (the host's start position shuffle draws it; an input).
     std::vector<sim::Lcg15> crt(rooms.size());
     for (std::size_t k = 0; k < crt.size(); ++k) crt[k].set_state(0xC0FFEEu + static_cast<std::uint32_t>(k));
     const bool fixed = std::getenv("NET_PLAY_SHUFFLE") == nullptr;
     rooms[0]->set_options(0, 0, 250, 100, 100, fixed);  // 10000 energy and metal
-    for (int pass = 0; pass < 400 && !std::all_of(rooms.begin(), rooms.end(), [](const auto& r) { return r->loaded(); }); ++pass) {
-        clock += 2;
-        for (std::size_t k = 0; k < rooms.size(); ++k) rooms[k]->frame(clock, &crt[k]);
-        if (pass == 4)
-            for (std::size_t k = 1; k < rooms.size(); ++k) {
-                rooms[k]->set_map_ready(true);
-                rooms[k]->set_ready(true);
-                rooms[k]->next_logo();
-            }
-        if (pass > 6 && !rooms[0]->started() && rooms[0]->can_start()) rooms[0]->start();
-    }
-    for (auto& r : rooms)
-        if (!r->loaded()) {
-            std::printf("battle room: the game did not start (started %d)\n", r->started());
-            return 1;
-        }
-    for (std::size_t k = 0; k < rooms.size(); ++k) {
-        const auto bs = rooms[k]->battle_start();
-        std::printf("machine %zu: slot %d, start positions", k, rooms[k]->local_slot());
-        for (int s = 0; s < machines; ++s) std::printf(" %d", bs.players[static_cast<std::size_t>(s)].start_position);
-        std::printf(", logos");
-        for (int s = 0; s < machines; ++s) std::printf(" %d", rooms[k]->players()[static_cast<std::size_t>(s)].logo);
-        std::printf(", groups");
-        for (int s = 0; s < machines; ++s) std::printf(" %d", rooms[k]->players()[static_cast<std::size_t>(s)].group);
-        std::printf(", disabled units %zu\n", rooms[k]->disabled_units().size());
-    }
-    std::printf("battle room: %d players seated, game started by the host\n", machines);
-    for (int s = 0; s < machines; ++s) {
+    std::uint32_t clock = 1000;
+    // The battle room, then loading: a machine begins its battle when its loading handshake is
+    // over (the clients only when the host's battle traffic released its last frames).
+    std::vector<std::unique_ptr<Machine>> ms(static_cast<std::size_t>(machines));
+    auto begin_battle = [&](std::size_t k) -> bool {
         auto m = std::make_unique<Machine>();
-        m->slot = rooms[static_cast<std::size_t>(s)]->local_slot();
-        m->rng.seed(seed * 31u + static_cast<std::uint32_t>(s));
-        m->net = std::make_unique<net::NetBattle>(m->quiet, *ends[static_cast<std::size_t>(s)]);
-        m->clock = clock;
-        ms.push_back(std::move(m));
-    }
-    // Everybody is in the session before the battles load (their start announces units).
-    for (std::size_t k = 0; k < ms.size(); ++k) {
-        Machine& m = *ms[k];
         const net::BattleRoom& room = *rooms[k];
+        m->slot = room.local_slot();
+        m->rng.seed(seed * 31u + static_cast<std::uint32_t>(k));
+        m->net = std::make_unique<net::NetBattle>(m->quiet, *sessions[k]);
+        m->clock = clock;
         ta::BattleRequest req;
         req.map = room.map();
         req.sides = room.sides();
@@ -273,13 +241,56 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
         req.start.loading_rand_seed = seed + static_cast<std::uint32_t>(k);
         req.start.crt_rand_state = crt[k].state();
         std::string err;
-        m.lb = ta::load_battle(vfs, req, *m.net, err, [&](sim::Battle& b) { m.net->attach(b); });
-        if (!m.lb) {
+        Machine* raw = m.get();
+        m->lb = ta::load_battle(vfs, req, *m->net, err, [raw](sim::Battle& b) { raw->net->attach(b); });
+        if (!m->lb) {
             std::printf("load: %s\n", err.c_str());
-            return 1;
+            return false;
         }
-        hook_up(m);
+        hook_up(*m);
+        const auto bs = room.battle_start();
+        std::printf("machine %zu: battle begins at pass clock %u; slot %d, start position %d, logos", k, clock, m->slot,
+                    bs.players[static_cast<std::size_t>(m->slot)].start_position);
+        for (int s = 0; s < machines; ++s) std::printf(" %d", room.players()[static_cast<std::size_t>(s)].logo);
+        std::printf(", groups");
+        for (int s = 0; s < machines; ++s) std::printf(" %d", room.players()[static_cast<std::size_t>(s)].group);
+        std::printf(", disabled units %zu\n", room.disabled_units().size());
+        ms[k] = std::move(m);
+        return true;
+    };
+    int pass = 0;
+    for (; pass < 3000 && std::any_of(ms.begin(), ms.end(), [](const auto& m) { return !m; }); ++pass) {
+        ++clock;
+        for (std::size_t k = 0; k < rooms.size(); ++k) {
+            if (ms[k]) {
+                Machine& m = *ms[k];
+                m.net->set_clock(++m.clock);
+                m.lb->battle->step();
+                m.lb->battle->end_frame();
+                continue;
+            }
+            rooms[k]->frame(clock, &crt[k]);
+            if (rooms[k]->loaded() && !begin_battle(k)) return 1;
+        }
+        if (pass == 8)
+            for (std::size_t k = 1; k < rooms.size(); ++k) {
+                rooms[k]->set_ready(true);  // (map ready: from the map checksum)
+                rooms[k]->next_logo();
+            }
+        if (pass > 10 && !rooms[0]->started() && rooms[0]->can_start()) rooms[0]->start();
     }
+    if (std::any_of(ms.begin(), ms.end(), [](const auto& m) { return !m; })) {
+        std::printf("battle room: not every machine got to its battle\n");
+        for (std::size_t k = 0; k < rooms.size(); ++k) {
+            std::printf("  machine %zu: slot %d started %d loaded %d battle %d |", k, rooms[k]->local_slot(), rooms[k]->started(), rooms[k]->loaded(),
+                        ms[k] ? 1 : 0);
+            for (const auto& p : rooms[0]->players())
+                if (p.net_id) std::printf(" [%x ready %d map %d logo %d]", p.net_id, p.ready(), p.map_ready, p.logo);
+            std::printf("\n");
+        }
+        return 1;
+    }
+    std::printf("battle room: %d players seated, game started by the host, all loaded after %d passes\n", machines, pass);
     std::vector<Machine*> all;
     for (auto& m : ms) all.push_back(m.get());
     Comparison total;

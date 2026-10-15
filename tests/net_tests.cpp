@@ -110,6 +110,41 @@ static void test_frames() {
     CHECK(net::packet_size(net::packet::kSideRecord) == 186 && net::packet_size(net::packet::kViewState) == 58);
 }
 
+// Frames out of order: a frame after a gap waits; the held one goes when the next arrives.
+static void test_frame_order() {
+    net::FrameSender tx;
+    std::vector<net::Message> wire;
+    const net::SendFn send = [&](std::int32_t f, std::int32_t t, std::vector<std::uint8_t> m) { wire.push_back({f, t, m}); };
+    for (int i = 0; i < 4; ++i) {
+        std::uint8_t p[11] = {net::packet::kKilled, static_cast<std::uint8_t>(i)};
+        tx.queue(7, net::kEverybody, p, sizeof p, 100, send);
+        tx.flush(100, true, send);
+    }
+    CHECK(wire.size() == 4);
+    auto run = [&](const std::vector<int>& order) {
+        net::FrameReceiver rx;
+        std::size_t next = 0;
+        const net::FrameReceiver::ReadFn read = [&](std::int32_t& f, std::int32_t& t, std::vector<std::uint8_t>& m) {
+            if (next >= order.size()) return false;
+            const net::Message& w = wire[static_cast<std::size_t>(order[next++])];
+            f = w.from;
+            t = w.to;
+            m = w.bytes;
+            return true;
+        };
+        std::vector<int> got;
+        net::Delivered d;
+        for (std::uint32_t tick = 1000; tick < 1020; ++tick)
+            while (rx.next(tick, true, read, d)) got.push_back(d.packet[1]);
+        return got;
+    };
+    CHECK((run({0, 1, 2, 3}) == std::vector<int>{0, 1, 2, 3}));
+    // 1 is late: 2 waits; when 1 comes the held 2 goes first (the original's order), then 1, 3.
+    CHECK((run({0, 2, 1, 3}) == std::vector<int>{0, 2, 1, 3}));
+    // 1 and 2 swapped twice over: 3 held, then 2 arrives (older than 3): 2 now, 3 after; 1 last.
+    CHECK((run({0, 3, 2, 1}).size() == 4));
+}
+
 static void test_loopback() {
     net::LoopbackHub hub;
     net::Transport& a = hub.add_machine();
@@ -148,7 +183,10 @@ static void test_room() {
     const int ai = host.add_computer(1);
     CHECK(ai == 1);
     std::uint32_t clock = 100;
-    for (int k = 0; k < 40; ++k) {
+    // (The host's frames alternate between its two players' sends on one running number, so the
+    // clients hold every other frame until the next arrives, as the original's receiver does.)
+    bool ready_a = false, ready_b = false;
+    for (int k = 0; k < 150; ++k) {
         clock += 2;
         host.frame(clock);
         a.frame(clock);
@@ -156,14 +194,18 @@ static void test_room() {
         if (k == 5) {
             a.set_map_ready(true);
             b.set_map_ready(true);
-            a.set_ready(true);
-            b.set_ready(true);
             host.say("glhf");
         }
+        if (!ready_a && a.local_slot() >= 0) a.set_ready(ready_a = true);
+        if (!ready_b && b.local_slot() >= 0) b.set_ready(ready_b = true);
     }
     CHECK(a.local_slot() >= 0 && b.local_slot() >= 0 && a.local_slot() != b.local_slot());
     CHECK(host.players()[static_cast<std::size_t>(b.local_slot())].side == 1);
     CHECK(lines.size() == 1 && lines[0] == "Host: glhf");
+    if (!host.can_start()) {
+        for (const auto& p : host.players())
+            if (p.net_id) std::printf("debug: id %x kind %d ready %d map %d logo %d\n", p.net_id, p.kind, p.ready(), p.map_ready, p.logo);
+    }
     CHECK(host.can_start());
     const auto& dis = b.disabled_units();
     CHECK(std::find(dis.begin(), dis.end(), 3u) != dis.end());
@@ -180,9 +222,18 @@ static void test_room() {
     sim::Lcg15 rh, ra, rb;
     net::LoopbackHub* unused = nullptr;
     (void)unused;
-    for (int k = 0; k < 20 && !(host.loaded() && a.loaded() && b.loaded()); ++k) {
+    for (int k = 0; k < 40 && !(host.loaded() && a.loaded() && b.loaded()); ++k) {
         clock += 2;
         host.frame(clock, &rh);
+        if (host.loaded()) {
+            // The host's battle has begun: its players' traffic releases the frames the clients
+            // held back (stand-in packets from both of the host's players).
+            const net::SendFn send = [&](std::int32_t f, std::int32_t t, std::vector<std::uint8_t> m) { th.send(f, t, std::move(m)); };
+            const std::uint8_t probe[1] = {net::packet::kProbe};
+            host.sender().queue(0x100, net::kEverybody, probe, 1, clock, send);
+            host.sender().queue(host.players()[1].net_id, net::kEverybody, probe, 1, clock, send);
+            host.sender().flush(clock, true, send);
+        }
         a.frame(clock, &ra);
         b.frame(clock, &rb);
     }
@@ -267,6 +318,7 @@ int main() {
     test_bitstream();
     test_codec();
     test_frames();
+    test_frame_order();
     test_loopback();
     test_room();
     test_room_shuffle();
