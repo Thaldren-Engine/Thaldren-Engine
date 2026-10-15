@@ -170,7 +170,9 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
     b.end_game.countdown = -1;
     // Start positions and commanders.
     StartRule legacy;
-    if (start.provider == 3) {
+    if (start.restore) {
+        // A saved game: no start positions, commanders or starting resources.
+    } else if (start.provider == 3) {
         const VictorySide& local = b.victory.sides[start.local_player < 10 ? start.local_player : 0];
         for (int s = 0; s < 10; ++s) {
             PlayerSlot& p = b.players[static_cast<std::size_t>(s)];
@@ -222,6 +224,14 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
         init_resources(b, start);
     }
     if (sight) b.rebuild_sight(true);
+    if (start.restore) {
+        // The saved state (it sets the game step); the stored amounts are not set again.
+        if (!start.restore(b, error)) return false;
+        b.players_stage();
+        b.battle_ready();
+        b.crt_rand.set_state(start.crt_rand_state);
+        return true;
+    }
     // Missions: the placed units and their first orders (0x488310).
     if (start.provider == 1 && !place_mission_units(b, start.mission.units, start.mission.parse_orders, error)) return false;
     // One players' stage at step 0, then the stored amounts are set again.

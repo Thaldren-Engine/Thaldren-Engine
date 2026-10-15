@@ -283,7 +283,6 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/commands_core.cpp
     ${ROOT}/engine/sim/src/effect_lists.cpp
     ${ROOT}/engine/sim/src/lockstep.cpp
-    ${ROOT}/engine/sim/src/journal.cpp
     ${ROOT}/engine/sim/src/sky.cpp
     ${ROOT}/engine/sim/src/step_budget.cpp
     ${ROOT}/engine/sim/src/victory.cpp
@@ -566,7 +565,6 @@ add_executable(goal_harness
     ${ROOT}/engine/sim/src/commands_core.cpp
     ${ROOT}/engine/sim/src/effect_lists.cpp
     ${ROOT}/engine/sim/src/lockstep.cpp
-    ${ROOT}/engine/sim/src/journal.cpp
     ${ROOT}/engine/sim/src/sky.cpp
     ${ROOT}/engine/sim/src/step_budget.cpp
     ${ROOT}/engine/sim/src/victory.cpp
@@ -623,7 +621,6 @@ add_executable(order_harness
     ${ROOT}/engine/sim/src/commands_core.cpp
     ${ROOT}/engine/sim/src/effect_lists.cpp
     ${ROOT}/engine/sim/src/lockstep.cpp
-    ${ROOT}/engine/sim/src/journal.cpp
     ${ROOT}/engine/sim/src/sky.cpp
     ${ROOT}/engine/sim/src/step_budget.cpp
     ${ROOT}/engine/sim/src/victory.cpp
@@ -682,14 +679,16 @@ add_executable(bank_harness bank_harness.cpp
     ${ROOT}/ta_compat/src/inflate.cpp
     ${ROOT}/ta_compat/src/model3do.cpp
     ${ROOT}/ta_compat/src/saved_game.cpp
+    ${ROOT}/ta_compat/src/save_sections.cpp
     ${ROOT}/ta_compat/src/sight_tables.cpp
+    ${ROOT}/engine/net/src/codec.cpp
     ${ROOT}/ta_compat/src/tdf.cpp
     ${ROOT}/ta_compat/src/tnt.cpp
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
     ${BANK_HARNESS_SIM}
 )
-target_include_directories(bank_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_include_directories(bank_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include ${ROOT}/engine/net/include)
 target_compile_options(bank_harness PRIVATE /W4 /permissive- /fp:precise)
 
 # Battle rendering: the original's unit draw into its 8-bit back buffer vs render::build_draw_list.

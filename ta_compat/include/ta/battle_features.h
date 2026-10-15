@@ -63,7 +63,8 @@ void load_effect_art(AnimImporter& anims, sim::EffectsEnvironment& env);
 // The map grid's features from a TNT file, after Battle::reset_features_and_effects: every
 // cell's owner nibble set to "nobody", void cells marked, then each listed feature placed in
 // row-major order (feature index below the TNT's feature count).
-void place_tnt_features(sim::Battle& battle, const std::vector<std::uint8_t>& tnt);
+// `place` false: only the owner nibbles and void cells (a saved game places its own features).
+void place_tnt_features(sim::Battle& battle, const std::vector<std::uint8_t>& tnt, bool place = true);
 
 // The route search's per-type blocking flags (Battle::feature_blocks) from the battle's
 // feature types (flag 0x40, the one the original's passability reads). Call after

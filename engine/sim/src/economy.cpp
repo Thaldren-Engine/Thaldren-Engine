@@ -142,6 +142,7 @@ void init_player_economy(Economy& e, int player) {
     PlayerSlot& p = player_at(e, player);
     PlayerEconomy& a = e.accounts[static_cast<std::size_t>(player)];
     a.next_update_tick = e.env.game_tick;
+    a.win_lose_tick = a.display_tick = e.env.game_tick;
     a.energy_produced = a.metal_produced = a.energy_consumed = a.metal_consumed = a.energy_wasted = a.metal_wasted = 0.0;
     p.energy_stored = p.metal_stored = 0.0f;
     a.energy_income = a.energy_usage = a.metal_income = a.metal_usage = 0.0f;

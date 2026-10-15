@@ -92,6 +92,11 @@ struct BattleStart {
     // stage (the importer reads the computer players' profile here).
     std::function<void(Battle&)> after_player_setup;
     MissionStart mission;  // provider 1 only
+    // A saved game being continued: the original's start with a saved state skips the start
+    // positions, commanders, starting resources and a mission's placed units, and loads the
+    // saved state right after the line-of-sight rebuild (then the step-0 players' stage runs
+    // at the saved step). Returns false (with a reason) when the state cannot be loaded.
+    std::function<bool(Battle&, std::string&)> restore;
 };
 
 // Runs the original's battle set-up on a battle whose static data is loaded. Returns false
