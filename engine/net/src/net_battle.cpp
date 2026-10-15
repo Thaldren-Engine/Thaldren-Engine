@@ -296,7 +296,7 @@ void NetBattle::send_chat(const std::string& text, int recipients, const std::ar
     for (int s = 0; s < 10; ++s) {
         const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(s)];
         if (!q.active || q.controller != 3) continue;
-        const bool allied = battle_->alliances[static_cast<std::size_t>(local)][q.state] != 0;
+        const bool allied = battle_->alliances[static_cast<std::size_t>(local)][static_cast<std::size_t>(s)] != 0;  // by record index (0x453360)
         const bool to = recipients == 3 ? chosen[static_cast<std::size_t>(s)] : recipients == 1 ? allied : !allied;
         if (to) send_to(me, q.net_id, pk, 65);
     }

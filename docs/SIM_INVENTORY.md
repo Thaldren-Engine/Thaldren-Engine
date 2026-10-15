@@ -88,7 +88,7 @@ Plan:
 
 ### Multiplayer model (verified by reading, see RE_MEMORY "Network and sync")
 The unit tick runs missions and motion only for units whose owner is controller type 1 or 2 (local human or local AI). It then calls `Net_BroadcastPlayerUnitStates`. Remote players' units (type 3) appear to be updated from received state, not simulated locally. `SpeedCtrl` throttles on remote players' `dwUnitStateSyncTick`.
-**TA is owner-authoritative state broadcast, not lockstep.** Built (2026-10-14, multiplayer): `engine/net` (wire format, frames, transports, `NetBattle`, battle room) and the Battle's network members (`engine/sim/src/net_units.cpp`); the engine's `sim/lockstep.h` stays a test tool. See RE_MEMORY "Network and sync".
+**TA is owner-authoritative state broadcast, not lockstep.** Built (2026-10-14, multiplayer): `engine/net` (wire format, frames, transports, `NetBattle`, battle room) and the Battle's network members (`engine/sim/src/net_units.cpp`); the engine's `sim/lockstep.h` stays a test tool. See RE_MEMORY "Network and sync". Completed 2026-10-15: loading handshake and start positions, logos, ally teams, machine groups, side record and map checksum, definition agreement among all humans, frames out of order, UDP transport with resend, time-out, watch notice, chat recipients; the unit state packets are harness-verified against the original (`netstate_harness`).
 
 ## 4. State structures (reference-program layouts, packed / alignment 1)
 
