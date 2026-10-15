@@ -276,6 +276,7 @@ private:
     }
 
     void add_pointer(render::DrawList& list) {
+        if (!draw_pointer_) return;
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
             const render::Sprite8& s = (*c)[(now_ / 66) % c->size()];
@@ -350,6 +351,7 @@ private:
 
 public:
     std::size_t sound_count_ = 0;
+    bool draw_pointer_ = true;
 };
 
 void save_shot(const render::Image8& frame, const render::Palette& pal, const std::string& prefix, int n) {
@@ -388,6 +390,7 @@ int sdl_key(SDL_Keycode k) {
 
 int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     Runner run(setup);
+    run.draw_pointer_ = o.draw_pointer;
     const int w = setup.width, h = setup.height;
     std::size_t next = 0;
     auto feed_script = [&](int f, std::uint32_t now) {

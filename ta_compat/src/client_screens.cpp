@@ -822,7 +822,13 @@ private:
 class MainMenu : public LayoutScreen {
 public:
     explicit MainMenu(MenuArt& art) : LayoutScreen(art.layout("MAINMENU")), art_(art) {
-        if (Widget* d = widget("DebugString")) d->active = false;
+        // The version label: shown with the text "v3.1", moved left by half the text's width in
+        // the caption font.
+        if (Widget* d = widget("DebugString")) {
+            d->active = true;
+            d->text = "v3.1";
+            if (art.content().font) d->x -= art.content().font->text_width(d->text) / 2;
+        }
     }
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("MULTI")) w->grayed = !fe.hooks().multiplayer_menu;
@@ -1009,7 +1015,7 @@ private:
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
 public:
-    explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) { oy_ = 0; }
+    explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) {}
     bool see_through() const override { return true; }
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu;

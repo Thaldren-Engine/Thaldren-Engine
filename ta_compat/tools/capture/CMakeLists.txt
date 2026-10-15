@@ -13,3 +13,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(ta_capture capture.cpp)
 target_compile_options(ta_capture PRIVATE /W4 /permissive-)
 target_compile_definitions(ta_capture PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+add_executable(ta_screens screens.cpp)
+target_compile_options(ta_screens PRIVATE /W4 /permissive-)
+target_compile_definitions(ta_screens PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(ta_screens PRIVATE user32 advapi32)

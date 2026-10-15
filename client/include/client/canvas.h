@@ -26,6 +26,10 @@ struct Glyph {
     // Coloured glyphs (fonts drawn from picture art): the pixel values where ink is 1; the
     // foreground colour is not used for them.
     std::vector<std::uint8_t> colours;
+    // Glyphs taller or shorter than the cell (picture fonts): ink has width * rows entries,
+    // drawn from row `top` of the cell (may lie outside it). rows 0: the font's height, top 0.
+    int top = 0, rows = 0;
+    int left = 0;  // ink drawn from this column of the cell (picture fonts: minus the frame's x offset)
 };
 
 struct Font {

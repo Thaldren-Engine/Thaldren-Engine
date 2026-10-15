@@ -43,6 +43,7 @@ struct Widget {
     bool active = true; // shown and usable
     bool grayed = false;
     int quickkey = 0;   // lower-case character that presses it (0: none)
+    int quickkey_char = 0;  // the quick key as the description gives it (marked in the caption)
     int stages = 0;     // multi-stage button: number of stages (0: plain)
     int stage = 0;      // current stage
     int status = 0;     // the description's status value
@@ -92,6 +93,9 @@ struct MenuContent {
     std::function<const render::Sprite8*(const std::string& name)> picture;
     // Button art sized w x h when the description gives none (the game's stock buttons).
     std::function<const std::vector<render::Sprite8>*(int w, int h)> stock_button;
+    // The game's light table (32 levels x 256 entries, palettes\PALETTE.LHT; empty when absent):
+    // shaded outlines (the focus ring) replace a pixel p by light[level * 256 + p].
+    std::vector<std::uint8_t> light;
     // Interface colours (palette indices).
     std::uint8_t text_colour = 255, text_dim = 8, text_highlight = 0xF4, box_colour = 0, frame_colour = 8;
 };
@@ -133,10 +137,19 @@ protected:
 
     std::vector<Widget> widgets_;  // the screen's own copy (state)
     int ox_ = 0, oy_ = 0;          // origin on the frame
+    // Places the screen on a frame of the given size (done once, at the first draw): a header
+    // at -1 is centred on the frame, at -2 centred in the area right of the 128-pixel side
+    // panel; one that would cross the right or bottom edge is centred that way; a negative y
+    // counts from the bottom edge.
+    void place(int frame_w, int frame_h);
+    // The focus ring around the focused gadget (shaded outlines through the light table).
+    void draw_focus_ring(FrontEnd& fe, render::Image8& out);
+    bool placed_ = false;
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     int held_ = -1;                // index of the pressed button (pointer down)
     int drag_ = -1;                // index of the scroll bar being dragged
     int press_button_ = 1;         // mouse button of the last press (1 left, 3 right)
+    int focus_gadget_ = -1;        // the gadget with the focus ring (-1: none)
     std::uint32_t last_click_ms_ = 0;
     int last_click_row_ = -1;
 
