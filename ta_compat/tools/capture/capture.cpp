@@ -80,6 +80,7 @@ constexpr DWORD kBpBuildMenu = 0x00419B00;      // build menu command (name, uni
 constexpr DWORD kBpIssueSelected = 0x0048CF30;  // Unit_IssueOrdersToSelected (interface)
 constexpr DWORD kBpAiConstructors = 0x00408100; // Ai_RoleConstructorsTick: site height = [esp-0x2C]
 constexpr DWORD kBpReclaimSites = 0x0047EA40;   // Map_PickReclaimSites: site y = [esp-8]
+constexpr DWORD kBpDxCheck = 0x004266A5;        // after the DirectX version check (0x4B5070): eax 0 shows a notice
 constexpr DWORD kOffPlayers = 0x1B63, kPlayerSize = 0x14B, kUnitSize = 0x118;
 constexpr DWORD kOffLocalPlayer = 0x2A42, kOffLocalView = 0x2A43;
 constexpr DWORD kOffProjCount = 0x141F3, kOffProjTable = 0x141F7, kProjSize = 0x6B, kMaxProjectiles = 300;
@@ -520,6 +521,37 @@ void write_start(DWORD tid) {
         first = false;
     }
     std::fprintf(g_out, "]}\n");
+    // The route search's scheduling state (search object GS+0x14207 and program-wide statics).
+    {
+        std::uint32_t so = 0, refresh = 0;
+        std::uint16_t player_count = 0, per_player = 0;
+        read_u32(gs + 0x14207, so);
+        read_block(gs + 0x2A3C, &player_count, 2);
+        read_block(gs + 0x1434F, &per_player, 2);
+        read_u32(0x00511A38, refresh);
+        std::uint8_t sb[0xC9] = {};
+        if (so) read_block(so, sb, sizeof sb);
+        std::int32_t scale[10] = {}, turns[10] = {};
+        read_block(0x005119E8, scale, sizeof scale);
+        read_block(0x00511A10, turns, sizeof turns);
+        std::string cur, cred, sc, tu;
+        for (int p = 0; p < 10; ++p) {
+            std::uint32_t c = 0;
+            std::int32_t k = 0;
+            std::memcpy(&c, sb + 0x79 + 4 * p, 4);
+            std::memcpy(&k, sb + 0xA1 + 4 * p, 4);
+            const char* sep = p ? "," : "";
+            cur += sep + std::to_string(unit_id_of(c));
+            cred += sep + std::to_string(k);
+            sc += sep + std::to_string(scale[p]);
+            tu += sep + std::to_string(turns[p]);
+        }
+        std::fprintf(g_out,
+                     "{\"ev\":\"route_state\",\"player_count\":%u,\"units_per_player\":%u,\"refresh\":%u,\"player\":%u,\"active\":%d,"
+                     "\"cursor\":[%s],\"credit\":[%s],\"scale\":[%s],\"turns\":[%s]}\n",
+                     player_count, per_player, refresh, sb[0x78], unit_id_of(*reinterpret_cast<std::uint32_t*>(sb + 0x58)), cur.c_str(),
+                     cred.c_str(), sc.c_str(), tu.c_str());
+    }
     // The map cells at the start (sparse): [index, unit, unit2, feature, aux, flags, metal] for
     // every cell with a unit, a feature, flags or metal.
     std::uint32_t cells = 0, mw = 0, mh = 0;
@@ -682,11 +714,11 @@ struct WindowSearch {
 BOOL CALLBACK find_windows(HWND w, LPARAM lp) {
     DWORD pid = 0;
     GetWindowThreadProcessId(w, &pid);
-    if (pid != g_pid) return TRUE;
+    if (pid != g_pid || !IsWindowVisible(w)) return TRUE;
     auto* s = reinterpret_cast<WindowSearch*>(lp);
     char cls[64] = {};
     GetClassNameA(w, cls, sizeof cls);
-    if (std::strcmp(cls, "#32770") == 0 && IsWindowVisible(w)) s->dialog = w;
+    if (std::strcmp(cls, "#32770") == 0) s->dialog = w;
     else s->game.push_back(w);
     return TRUE;
 }
@@ -698,8 +730,9 @@ void post_key(HWND w, WPARAM vk, WPARAM ch) {
 }
 DWORD WINAPI menu_driver(LPVOID) {
     Sleep(8000);
-    // The game's own "DirectX version" notice is a dialog of its interface: Enter answers it
-    // (its default button); then S, S, S. Keys go to every top-level window of the process.
+    // The game's "DirectX version" notice is skipped at its check (kBpDxCheck). Then S until
+    // the battle loads (main menu S, single player S = skirmish, skirmish S = start). Keys go
+    // to the process's visible top-level windows.
     for (int round = 0; round < 90 && !g_battle_loading; ++round) {
         WindowSearch s;
         EnumWindows(find_windows, reinterpret_cast<LPARAM>(&s));
@@ -708,7 +741,7 @@ DWORD WINAPI menu_driver(LPVOID) {
         } else {
             for (HWND w : s.game) {
                 PostMessageA(w, WM_ACTIVATE, WA_ACTIVE, 0);
-                post_key(w, round % 2 == 0 ? VK_RETURN : 'S', round % 2 == 0 ? '\r' : 's');
+                post_key(w, 'S', 's');
             }
         }
         Sleep(3000);
@@ -761,6 +794,9 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
         std::fprintf(g_out, "{\"ev\":\"shuffle_rand\",\"tid\":%lu,\"at\":%lu,\"state\":%u,\"known\":%d}\n", tid, addr, rs, known ? 1 : 0);
         break;
     }
+    case kBpDxCheck:
+        ctx.Eax = 1;  // version accepted: no notice to answer (start-up interface only)
+        break;
     case kBpMapPath:
         std::fprintf(g_out, "{\"ev\":\"map\",\"path\":\"%s\"}\n", json_escape(read_cstr(ctx.Eax)).c_str());
         break;
@@ -978,6 +1014,7 @@ int main(int argc, char** argv) {
                 }
                 if (opt.auto_skirmish) {
                     g_pid = ev.dwProcessId;
+                    add_bp(kBpDxCheck);
                     CreateThread(nullptr, 0, menu_driver, nullptr, 0, nullptr);
                 }
             }

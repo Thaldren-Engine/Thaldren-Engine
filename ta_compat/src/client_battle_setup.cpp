@@ -157,6 +157,7 @@ bool ClientWorld::setup_battle(std::string& error) {
     b.init_buckets();
     b.reset_features_and_effects();
     place_tnt_features(b, tnt_);
+    sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
     {
         MapEconomy me;
         if (!ota.empty()) read_map_economy(ota, 0, me);

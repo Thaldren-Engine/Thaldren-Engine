@@ -314,7 +314,14 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
             const bool head_differs = a.size() >= 3 && c.size() >= 3 ? !std::equal(a.begin(), a.begin() + 3, c.begin()) : (a.size() >= 3) != (c.size() >= 3);
             // Route goals: count, search tick, flags, points (the original's goal vtable is element 3).
             bool route_differs = false;
-            if (c.size() > 3 && c[3] == -1 && a.size() > 3) route_differs = !std::equal(a.begin() + 4, a.end(), c.begin() + 4, c.end());
+            // (Route flag bit 2 comes from uninitialised heap memory in the original, the goal's
+            // constructor keeps it, and nothing reads it: not compared.)
+            if (c.size() > 6 && c[3] == -1 && a.size() > 6) {
+                std::vector<long long> a2(a.begin() + 4, a.end()), c2(c.begin() + 4, c.end());
+                a2[2] &= 0xB;
+                c2[2] &= 0xB;
+                route_differs = a2 != c2;
+            }
             if (head_differs || route_differs)
                 diff.push_back("unit " + std::to_string(id) + " motion [speed, turn, flags, goal, route count, search tick, route flags, points]: original " +
                                list(a) + ", engine " + list(c));
@@ -551,6 +558,39 @@ int main(int argc, char** argv) {
             }
         }
         std::printf("start: %d map cells differ (%zu listed by the original)\n", differing, want.size());
+        break;
+    }
+
+    // The route search's scheduling state at the start.
+    for (const Json& e : events) {
+        if (e.s("ev") != "route_state") continue;
+        const sim::RouteSearch& rs = b.route_search;
+        auto arr = [&](const char* k) {
+            std::vector<long long> v;
+            if (const Json* a = e.get(k))
+                for (const Json& x : a->arr) v.push_back(x.num);
+            return v;
+        };
+        std::vector<long long> cur, cred, sc, tu;
+        for (int p = 0; p < 10; ++p) {
+            cur.push_back(rs.unit_cursor[static_cast<std::size_t>(p)]);
+            cred.push_back(rs.credit[static_cast<std::size_t>(p)]);
+            sc.push_back(rs.estimate_scale[static_cast<std::size_t>(p)]);
+            tu.push_back(rs.load[static_cast<std::size_t>(p)]);
+        }
+        const bool same = e.i("player_count") == b.settings.player_count && e.i("units_per_player") == b.settings.units_per_player &&
+                          e.i("refresh") == rs.refresh_counter && e.i("player") == rs.player &&
+                          e.i("active") == (rs.active ? rs.active->id : 0) && arr("cursor") == cur && arr("credit") == cred &&
+                          arr("scale") == sc && arr("turns") == tu;
+        std::printf("start: route search state %s\n", same ? "identical" : "DIFFERENT");
+        if (!same) {
+            std::printf("  original: players %lld, units per player %lld, refresh %lld, player %lld, serving %lld, cursors %s, credits %s, scales %s, turns %s\n",
+                        e.i("player_count"), e.i("units_per_player"), e.i("refresh"), e.i("player"), e.i("active"), list(arr("cursor")).c_str(),
+                        list(arr("credit")).c_str(), list(arr("scale")).c_str(), list(arr("turns")).c_str());
+            std::printf("  engine:   players %u, units per player %u, refresh %d, player %u, serving %d, cursors %s, credits %s, scales %s, turns %s\n",
+                        b.settings.player_count, b.settings.units_per_player, rs.refresh_counter, rs.player, rs.active ? rs.active->id : 0,
+                        list(cur).c_str(), list(cred).c_str(), list(sc).c_str(), list(tu).c_str());
+        }
         break;
     }
 
