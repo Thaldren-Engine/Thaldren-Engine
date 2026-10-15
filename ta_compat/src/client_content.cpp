@@ -586,6 +586,9 @@ bool ClientWorld::build_content(std::string& error) {
     {
         std::vector<std::uint8_t> lht;
         if (vfs_.read("palettes\\PALETTE.LHT", lht)) light_table_ = render::light_blend_table(lht);
+        // Unit looks: the shade table (lit structures) and the water tint (units seen under water).
+        if (!vfs_.read("palettes\\PALETTE.SHD", shade_table_) || shade_table_.size() < 32 * 256) shade_table_.clear();
+        water_table_ = render::water_tint_table(palette_);
     }
     {
         std::vector<std::uint8_t> g;

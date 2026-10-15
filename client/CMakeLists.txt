@@ -56,3 +56,12 @@ target_compile_options(ta_play PRIVATE ${WARN_FLAGS})
 if(MSVC)
     target_link_options(ta_play PRIVATE /MAP)  # function addresses for crash reports
 endif()
+
+# Whole-frame comparison with the original's frame draw (32-bit builds only: it calls the
+# original executable's routines in a suspended process, ta_compat/tools/orig_harness).
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+    add_executable(frame_harness ${CMAKE_SOURCE_DIR}/ta_compat/tools/orig_harness/frame_harness.cpp)
+    target_include_directories(frame_harness PRIVATE ${CMAKE_SOURCE_DIR}/ta_compat/tools/orig_harness)
+    target_link_libraries(frame_harness PRIVATE ta_compat_client)
+    target_compile_options(frame_harness PRIVATE /W4 /permissive-)
+endif()

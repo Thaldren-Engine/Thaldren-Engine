@@ -23,6 +23,8 @@ const std::vector<render::Sprite8>* ClientWorld::frames_of(std::uint32_t seq) {
 
 void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t frame_counter) {
     sim::Battle& b = battle();
+    feature_proxy_views_.clear();
+    feature_proxies_.clear();
     scene.terrain.width = tiles_.width;
     scene.terrain.height = tiles_.height;
     scene.terrain.map = &tiles_.map;
@@ -84,6 +86,27 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
                     f.pitch = sl.get<std::int16_t>(sim::FeatureSlot::kAngles);
                     f.heading = sl.get<std::uint16_t>(sim::FeatureSlot::kAngles + 2);
                     f.bank = sl.get<std::int16_t>(sim::FeatureSlot::kAngles + 4);
+                    // The original's stand-in unit (0x421F20): a structure (flag 0x20000000) seen as
+                    // the viewer's own (0x200) with a depth plane, the blank unit type, player 0's
+                    // colour, at the slot's place and attitude, with the slot's object state.
+                    sim::Unit& pu = feature_proxies_.emplace_back();
+                    pu.pos = f.pos;
+                    pu.pitch = f.pitch;
+                    pu.heading = f.heading;
+                    pu.bank = f.bank;
+                    pu.flags = 0x20000000u | 0x200u;
+                    pu.draw_flags = 1;
+                    pu.pose.build(fm->pose, {});
+                    render::UnitInstance& pv = feature_proxy_views_.emplace_back();
+                    pv.unit = &pu;
+                    pv.model = &fm->model;
+                    pv.params.team_colour = request_.start.players[0].colour;
+                    pv.params.animation_frame = frame_counter;
+                    pv.ground = false;
+                    pv.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(f.pos[0] >> 16), static_cast<std::int16_t>(f.pos[2] >> 16)));
+                    pv.type_flags = defs_.units.empty() ? 0u : defs_.units[0].type_flags;
+                    pv.own_view = true;
+                    f.proxy = &pv;
                 } else {
                     f.image = frame_at(sl.cursor(sim::FeatureSlot::kCursorA));
                     if (sl.get<std::uint8_t>(sim::FeatureSlot::kFlags) & sim::feature_slot_flags::kHasShadow)
@@ -102,14 +125,9 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
                 }
                 f.image_blended = (rec.flags & feature_flags::kAnimTrans) != 0;
                 f.shadow_blended = (rec.flags & feature_flags::kShadTrans) != 0;
-            } else {
-                // A 3D feature without a slot: drawn at its cell, resting.
-                const FeatureModel* fm = feature_model(t.model);
-                if (!fm) continue;
-                f.model = &fm->model;
-                f.pose_model = &fm->pose;
-                f.pos = {((x * 16) + t.footprint_x * 8) << 16, static_cast<std::int32_t>(cell.height) << 16, ((z * 16) + t.footprint_z * 8) << 16};
             }
+            // (A 3D feature without a slot draws nothing: the original reads its type's sequences,
+            // which 3D types do not have.)
             if (f.image || f.shadow || f.model) scene.features.push_back(f);
         }
 
@@ -154,27 +172,66 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
     }
     scene.light = light_table_.empty() ? nullptr : &light_table_;
     scene.game_tick = b.game_tick();
+    // The viewer's test for small effects drawn at a world point (nano particles, shots): the
+    // block under the point's screen position, (x >> 5, (z - y / 2) >> 5) as unsigned indices into
+    // the viewer's sight count map; with the fog option a nonzero count, else the viewer's
+    // explored bit.
+    auto block_seen = [&](const std::array<std::int32_t, 3>& p) {
+        const int x = static_cast<std::int16_t>(static_cast<std::uint32_t>(p[0]) >> 16);
+        const int y = static_cast<std::int16_t>(static_cast<std::uint32_t>(p[1]) >> 16);
+        const int z = static_cast<std::int16_t>(static_cast<std::uint32_t>(p[2]) >> 16);
+        const auto bx = static_cast<std::uint32_t>(x >> 5), bz = static_cast<std::uint32_t>((z - (y >> 1)) >> 5);
+        const sim::PlayerSight& ps = b.sight.players[static_cast<std::size_t>(view) % b.sight.players.size()];
+        if (bx >= static_cast<std::uint32_t>(ps.width) || bz >= static_cast<std::uint32_t>(ps.height)) return false;
+        const std::size_t at = static_cast<std::size_t>(bz) * static_cast<std::size_t>(ps.width) + bx;
+        if (b.sight.flags & sim::sight_flags::kFog) return at < ps.counts.size() && ps.counts[at] != 0;
+        return at < b.explored.size() && (b.explored[at] & (1u << (view & 31))) != 0;
+    };
     for (const sim::NanoStream& ns : b.nano.streams)
-        for (const sim::NanoParticle& np : ns.particles) scene.nano.push_back({np.pos, static_cast<std::uint8_t>(np.colour)});
+        for (const sim::NanoParticle& np : ns.particles)
+            if (block_seen(np.pos)) scene.nano.push_back({np.pos, static_cast<std::uint8_t>(np.colour)});
 
-    // Units the viewer sees (its own and those in its sight).
+    // Units on the viewer's list (the original's 0x48BAE0): every table entry with a type whose
+    // model box, projected with the view, meets the view rectangle (its bottom at the ground under
+    // it when that is higher, for units not on the ground layer), owned by the viewer or seen by it.
+    const render::Camera& cam = scene.camera;
+    const render::ClipRect vr = cam.view_clip();
+    auto hi = [](std::int32_t v) { return static_cast<int>(static_cast<std::int16_t>(static_cast<std::uint32_t>(v) >> 16)); };
     for (std::size_t i = 1; i < b.units.size(); ++i) {
         const sim::UnitTickState& t = b.ticks[i];
         if (t.type_index == 0 || t.type_index >= types_.size() || !types_[t.type_index] || !types_[t.type_index]->ok) continue;
         const sim::Unit& u = b.units[i];
-        if (sight && t.owner != view && !b.unit_seen_by(view, u)) continue;
         const UnitDefRecord& d = defs_.units[t.type_index];
+        const int ux = hi(u.pos[0]), uy = hi(u.pos[1]), uz = hi(u.pos[2]);
+        int bottom = hi(d.model_min_y) + uy;
+        if ((u.flags & 3u) != 1u) {
+            if (const sim::MapCell* c = b.map.cell(ux >> 4, uz >> 4))
+                if (c->height < bottom) bottom = c->height;
+        }
+        const bool inside = hi(d.model_min_x) + ux - cam.scroll_x + cam.origin_x <= vr.x1 &&
+                            vr.x0 <= hi(d.model_max_x) + ux - cam.scroll_x + cam.origin_x &&
+                            hi(d.model_min_z) + uz - cam.scroll_y - ((hi(d.model_max_y) + uy) >> 1) + cam.origin_y <= vr.y1 &&
+                            vr.y0 <= hi(d.model_max_z) + uz - cam.scroll_y - (bottom >> 1) + cam.origin_y;
+        if (!inside) continue;
+        if (t.owner != view && !b.unit_seen_by(view, u)) continue;
         render::UnitInstance ui;
         ui.unit = &u;
         ui.model = &types_[t.type_index]->model;
-        ui.params.team_colour = static_cast<std::uint8_t>(t.owner);
+        ui.params.team_colour = request_.start.players[static_cast<std::size_t>(t.owner) % 10].colour;
         ui.params.animation_frame = frame_counter;
-        ui.ground = (d.type_flags & (1u << 11)) == 0;
-        ui.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(u.pos[0] >> 16), static_cast<std::int16_t>(u.pos[2] >> 16)));
-        ui.shadow = (d.type_flags & (1u << 25)) == 0;
+        ui.ground = (u.flags & 3u) == 1u;
+        ui.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(ux), static_cast<std::int16_t>(uz)));
+        ui.shadow = true;
+        ui.type_flags = d.type_flags;
         ui.translucent = (u.activate_flags & sim::unit_flags::kCloaked) != 0;
+        ui.own_view = (u.flags & 0x200u) != 0 || t.owner == view;
+        ui.animate_direct = (u.flags & 0x20000000u) ? (u.activate_flags & 1) != 0 : (t.has_motion && t.motion.speed != 0);
         scene.units.push_back(ui);
     }
+    scene.tables.mix = &blend_;
+    scene.tables.shade = shade_table_.empty() ? nullptr : &shade_table_;
+    scene.tables.water = &water_table_;
+    scene.sea_level = b.settings.sea_level;
 
     // The viewed player's fog: unexplored blocks black, unseen ones grey.
     scene.fog = nullptr;
@@ -193,31 +250,86 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
         scene.fog = &fog_;
     }
 
-    // Shots in the viewer's sight, by their weapon's look.
+    // Shots (the original's 0x49BE60): every table entry that is not a burst launcher, at a
+    // point the viewer sees, by its weapon's render type.
+    scene.crt_rand_state = b.crt_rand.state();
+    auto fx_seq = [&](const char* name) {
+        auto it = scene_sequences_.find(name);
+        if (it == scene_sequences_.end()) it = scene_sequences_.emplace(name, sequence("anims\\FX.GAF", name)).first;
+        return it->second;
+    };
+    const std::vector<render::Sprite8>* fx_shadow = fx_seq("shadow");
+    const std::vector<render::Sprite8>* fx_flame = fx_seq("flamestream");
+    static const char* const kShells[5] = {"cannonshell", "plasmasm", "plasmamd", "ultrashell", "plasmasm"};
+    // Render type 3 turns its model by three stack words the shot drawing never sets: what the
+    // last call at that depth left there. When the nano list drew any particle, that is the last
+    // particle's square: its top row as a 32-bit value (two words), then the low word of its
+    // right column. (After other drawing the words depend on the sprite cache and are not
+    // modelled: zero.)
+    std::array<std::int16_t, 3> stale_angles{};
+    for (const sim::NanoStream& ns : b.nano.streams)
+        if (!ns.particles.empty()) {
+            const sim::NanoParticle& q = ns.particles.back();
+            auto w = [](std::int32_t v) { return static_cast<std::int16_t>(static_cast<std::uint32_t>(v) >> 16); };
+            const std::int32_t top = static_cast<std::int16_t>(w(q.pos[2]) - static_cast<std::int16_t>(cam.scroll_y)) - (w(q.pos[1]) >> 1) + 0x20;
+            const std::int32_t right = static_cast<std::int16_t>(w(q.pos[0]) - static_cast<std::int16_t>(cam.scroll_x)) + 0x81;
+            stale_angles = {static_cast<std::int16_t>(top), static_cast<std::int16_t>(static_cast<std::uint32_t>(top) >> 16),
+                            static_cast<std::int16_t>(right)};
+        }
     for (std::int32_t k = 0; k < b.projectiles.count; ++k) {
         const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(k)];
-        if (p.flags & sim::projectile_flags::kDeleted) continue;
-        if (b.settings.fog_of_war && !b.point_seen_by(view, p.pos)) continue;
-        const std::size_t wi = p.weapon ? p.weapon->index : 0;
-        const client::ShotLook* look = wi < content_.shots.size() ? &content_.shots[wi] : nullptr;
-        if (look && look->hidden) continue;
+        if (p.burst_left != 0 || !p.weapon) continue;
+        if (!block_seen(p.pos)) continue;
+        const WeaponDefRecord& wd = weapons_.slots[p.weapon->index];
+        const client::ShotLook* wl = p.weapon->index < content_.shots.size() ? &content_.shots[p.weapon->index] : nullptr;
         render::ProjectileInstance pi;
         pi.pos = p.pos;
-        for (int a = 0; a < 3; ++a) pi.tail[static_cast<std::size_t>(a)] = p.pos[static_cast<std::size_t>(a)] - p.vel[static_cast<std::size_t>(a)] * 2;
-        if (p.weapon && (p.weapon->flags & sim::weapon_flags::kBeam)) pi.tail = p.trail;
-        pi.colour = look ? look->colour : 0xE0;
-        if (look && look->look == render::ProjectileLook::Sprite && look->frames && !look->frames->empty()) {
-            pi.look = render::ProjectileLook::Sprite;
-            pi.sprite = &(*look->frames)[(b.game_tick() - p.spawn_tick) % look->frames->size()];
-        } else if (look && look->look == render::ProjectileLook::Model && look->model) {
-            pi.look = render::ProjectileLook::Model;
-            pi.model = look->model;
-            pi.pose_model = look->pose_model;
-            pi.heading = p.yaw;
-            pi.pitch = static_cast<std::int16_t>(p.elevation);
-            pi.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(p.pos[0] >> 16), static_cast<std::int16_t>(p.pos[2] >> 16)));
-        } else {
-            pi.look = render::ProjectileLook::Line;
+        pi.tail = p.trail;
+        pi.render_type = wd.render_type;
+        pi.colour = content_.hud[wd.color];
+        pi.colour2 = content_.hud[wd.color2];
+        pi.second_line = wd.color2 != 0;
+        pi.ground = static_cast<std::uint16_t>(p.ground_height);
+        pi.blob = fx_shadow && !fx_shadow->empty() ? &fx_shadow->front() : nullptr;
+        const std::uint32_t tick = b.game_tick();
+        if (wd.render_type == 4) {
+            if (wd.color == 0xFF) {
+                pi.blob = nullptr;
+            } else if (wd.color < 5) {
+                const std::vector<render::Sprite8>* seq = fx_seq(kShells[wd.color]);
+                if (seq && !seq->empty())
+                    pi.frame = &(*seq)[static_cast<std::size_t>(static_cast<std::int32_t>(tick - p.spawn_tick) % static_cast<std::int32_t>(seq->size()))];
+            }
+        } else if (wd.render_type == 5) {
+            if (fx_flame && !fx_flame->empty() && wd.weapon_timer) {
+                const std::int32_t n = static_cast<std::int32_t>(fx_flame->size());
+                const std::int32_t f = n - (static_cast<std::int32_t>(p.expire_tick - tick) * n) / static_cast<std::int32_t>(static_cast<std::uint16_t>(wd.weapon_timer));
+                if (f >= 0 && f < n) pi.frame = &(*fx_flame)[static_cast<std::size_t>(f)];
+            }
+        } else if (wd.render_type == 1 || wd.render_type == 3 || wd.render_type == 6) {
+            if (wl && wl->model && wl->pose_model && wl->pose_model->root >= 0) {
+                const sim::PoseModel& pm = *wl->pose_model;
+                auto node = [&](int i) {
+                    render::ProjectileInstance::Node n;
+                    if (i >= 0 && static_cast<std::size_t>(i) < pm.nodes.size() && static_cast<std::size_t>(i) < wl->model->pieces.size()) {
+                        n.piece = &wl->model->pieces[static_cast<std::size_t>(i)];
+                        n.vertices = &pm.nodes[static_cast<std::size_t>(i)].vertices;
+                    }
+                    return n;
+                };
+                pi.node = node(pm.root);
+                const auto yaw = static_cast<std::int16_t>(p.yaw - 0x8000), elev = static_cast<std::int16_t>(p.elevation - 0x8000);
+                if (wd.render_type == 1) {
+                    pi.angles = {p.tumble, yaw, elev};
+                    if (static_cast<std::int32_t>(tick) < static_cast<std::int32_t>(p.expire_tick)) {
+                        pi.child = node(pm.nodes[static_cast<std::size_t>(pm.root)].child);
+                        pi.child_angles = (wd.flags & 0x200000u) ? std::array<std::int16_t, 3>{p.propeller, yaw, elev} : pi.angles;
+                    }
+                } else if (wd.render_type == 6) {
+                    pi.angles = {p.tumble, static_cast<std::int16_t>(p.yaw), static_cast<std::int16_t>(p.elevation)};
+                }
+                else if (wd.render_type == 3) pi.angles = stale_angles;
+            }
         }
         scene.projectiles.push_back(pi);
     }

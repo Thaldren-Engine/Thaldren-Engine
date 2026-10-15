@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
+#include "sim/x87.h"
 #include "sim/x87_trig.h"
 #include <unordered_map>
 
@@ -95,8 +97,14 @@ void draw_model_at(const BattleScene& s, const Model& model, const sim::PoseMode
     out.blit(out.keep(rasterize_model_sprite(model, pose, mp)), screen_x(c, pos[0]), screen_y(c, pos[1], pos[2]), c.view_clip(), false);
 }
 
+void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out);
+
 void draw_feature(const BattleScene& s, const FeatureInstance& f, DrawList& out) {
     const Camera& c = s.camera;
+    if (f.proxy) {
+        draw_unit(s, *f.proxy, out);
+        return;
+    }
     if (f.model && f.pose_model) {
         // Drawn through a stand-in unit at the slot's place (the original's proxy unit).
         draw_model_at(s, *f.model, *f.pose_model, f.pos, f.pitch, f.heading, f.bank, out);
@@ -274,6 +282,144 @@ void draw_shard(const BattleScene& s, const EffectInstance& e, DrawList& out) {
         pm.nodes[0].vertices.push_back({r[0], r[1], r[2]});
     }
     draw_model_at(s, m, pm, e.pos, 0, 0, 0, out);
+}
+
+// One model node drawn straight onto the frame (the original's 0x46BAE0): each vertex turned
+// by `angles`, offset by the point (view-relative x and z, world y) and projected
+// (x + 128, z - y / 2 + 32 on the integer parts); its primitives as the direct paths draw them.
+void draw_node_projected(const BattleScene& s, const ProjectileInstance::Node& n, const std::array<std::int32_t, 3>& rel,
+                         const std::array<std::int16_t, 3>& angles, std::uint8_t team_colour, DrawList& out) {
+    if (!n.piece || !n.vertices) return;
+    const Camera& c = s.camera;
+    std::vector<RasterVertex> pts;
+    pts.reserve(n.vertices->size());
+    for (const auto& v : *n.vertices) {
+        std::int32_t r[3];
+        sim::x87::rotate_point_3d(v.data(), r, angles.data());
+        const int x = hi16(static_cast<std::int32_t>(static_cast<std::uint32_t>(r[0]) + static_cast<std::uint32_t>(rel[0]))) + c.origin_x;
+        const int z = hi16(static_cast<std::int32_t>(static_cast<std::uint32_t>(rel[2]) - static_cast<std::uint32_t>(r[2])));
+        const int y = hi16(static_cast<std::int32_t>(static_cast<std::uint32_t>(r[1]) + static_cast<std::uint32_t>(rel[1])));
+        pts.push_back({x, z - (y >> 1) + c.origin_y, 0});
+    }
+    const ModelPiece solid = solid_piece(*n.piece);
+    ModelDrawParams mp;
+    mp.team_colour = team_colour;
+    emit_direct(c, c.view_clip(), out, [&](RasterTarget& t, bool mask) { draw_model_piece(t, mask ? solid : *n.piece, pts, mp, true); });
+}
+
+// A shot by its weapon's render type (the original's 0x49BE60). Returns false when the
+// original stops drawing the remaining shots (a lens shot outside the view).
+bool draw_projectile_typed(const BattleScene& s, const ProjectileInstance& p, DrawList& out, std::uint32_t& rand_state) {
+    const Camera& c = s.camera;
+    const ClipRect clip = c.view_clip();
+    const int x = screen_x(c, p.pos[0]);
+    const int y = screen_y(c, p.pos[1], p.pos[2]);
+    const std::array<std::int32_t, 3> rel = {
+        static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[0]) - (static_cast<std::uint32_t>(c.scroll_x) << 16)), p.pos[1],
+        static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[2]) - (static_cast<std::uint32_t>(c.scroll_y) << 16))};
+    // The blob: at the shot's x and its z row less half its ground height word.
+    auto blob = [&]() {
+        if (p.blob) out.blend(p.blob, x, hi16(rel[2]) - (p.ground >> 1) + c.origin_y, clip, true);
+    };
+    switch (p.render_type) {
+    case 0: {
+        const int tx = screen_x(c, p.tail[0]), ty = screen_y(c, p.tail[1], p.tail[2]);
+        if (!p.second_line) {
+            out.line(x, y, tx, ty, p.colour, clip);
+            break;
+        }
+        // Two lines: the main one between the ends ordered along the longer axis, and one in the
+        // second colour beside it (a row above for flat lines; for steep ones from one column left
+        // of the first end to one column right of the second).
+        int ax, ay, bx, by;
+        const int dx = x - tx, dy = y - ty;
+        if (std::abs(dy) < std::abs(dx)) {
+            if (tx < x) ax = tx, ay = ty, bx = x, by = y;
+            else ax = x, ay = y, bx = tx, by = ty;
+            out.line(ax, ay - 1, bx, by - 1, p.colour2, clip);
+        } else {
+            if (ty < y) ax = tx, ay = ty, bx = x, by = y;
+            else ax = x, ay = y, bx = tx, by = ty;
+            out.line(ax - 1, ay, bx + 1, by, p.colour2, clip);
+        }
+        out.line(ax, ay, bx, by, p.colour, clip);
+        break;
+    }
+    case 1:
+        blob();
+        draw_node_projected(s, p.node, rel, p.angles, p.team_colour, out);
+        if (p.child.piece) draw_node_projected(s, p.child, rel, p.child_angles, p.team_colour, out);
+        break;
+    case 3:
+    case 6:
+        blob();
+        draw_node_projected(s, p.node, rel, p.angles, p.team_colour, out);
+        break;
+    case 2:
+        if (x < clip.x0 || x > clip.x1 || y < clip.y0 || y > clip.y1) return false;
+        break;  // (the lens itself is not modelled yet)
+    case 4:
+        if (p.frame) {
+            blob();
+            out.blit(p.frame, x, y, clip, true);
+        } else if (p.blob) {
+            blob();
+        }
+        break;
+    case 5:
+        if (p.frame) out.blend(p.frame, x, y, clip, true);
+        break;
+    case 7: {
+        // Lightning: segments every 5 world units from the tail to the head, each end jittered by
+        // up to 5 whole units on every axis with the C runtime rand(); two passes.
+        const std::int32_t d[3] = {
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[0]) - static_cast<std::uint32_t>(p.tail[0])),
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[1]) - static_cast<std::uint32_t>(p.tail[1])),
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[2]) - static_cast<std::uint32_t>(p.tail[2]))};
+        // x87 at 53-bit precision: ((dx * dx + dy * dy) + dz * dz), square root, truncated.
+        const double len2 = (static_cast<double>(d[0]) * d[0] + static_cast<double>(d[1]) * d[1]) + static_cast<double>(d[2]) * d[2];
+        const std::int64_t len = static_cast<std::int64_t>(sim::x87::ftol32(std::sqrt(len2)));
+        const std::int64_t n = (len * 65536) / 0x50000;
+        if (static_cast<std::int32_t>(n) == 0) break;
+        const std::int64_t nn = static_cast<std::int32_t>(n);
+        std::int32_t step[3];
+        for (int k = 0; k < 3; ++k) step[k] = static_cast<std::int32_t>((static_cast<std::int64_t>(d[k]) * 65536) / nn);
+        const int segments = static_cast<std::int16_t>(static_cast<std::uint32_t>(n) >> 16);
+        auto rnd = [&]() {
+            rand_state = rand_state * 214013u + 2531011u;
+            const std::int64_t r = static_cast<std::int64_t>((rand_state >> 16) & 0x7FFF);
+            return static_cast<std::int32_t>((r * 11) / 0x8000);
+        };
+        const std::uint8_t col = p.colour;
+        for (int pass = 0; pass < 2; ++pass) {
+            std::int32_t acc[3] = {p.tail[0], p.tail[1], p.tail[2]};
+            std::int32_t prev[3] = {p.tail[0], p.tail[1], p.tail[2]};
+            for (int k = 0; k < segments; ++k) {
+                std::int32_t cur[3];
+                for (int a = 0; a < 3; ++a) {
+                    acc[a] = static_cast<std::int32_t>(static_cast<std::uint32_t>(acc[a]) + static_cast<std::uint32_t>(step[a]));
+                    cur[a] = acc[a];
+                }
+                for (int a = 0; a < 3; ++a) {
+                    const std::int16_t whole = static_cast<std::int16_t>(static_cast<std::uint32_t>(cur[a]) >> 16);
+                    const std::int16_t moved = static_cast<std::int16_t>(whole + static_cast<std::int16_t>(rnd() - 5));
+                    cur[a] = static_cast<std::int32_t>((static_cast<std::uint32_t>(static_cast<std::uint16_t>(moved)) << 16) |
+                                                       (static_cast<std::uint32_t>(cur[a]) & 0xFFFFu));
+                }
+                const int sx0 = hi16(prev[0]) - static_cast<std::int16_t>(c.scroll_x) + c.origin_x;
+                const int sy0 = hi16(prev[2]) - (hi16(prev[1]) >> 1) - static_cast<std::int16_t>(c.scroll_y) + c.origin_y;
+                const int sx1 = hi16(cur[0]) - static_cast<std::int16_t>(c.scroll_x) + c.origin_x;
+                const int sy1 = hi16(cur[2]) - (hi16(cur[1]) >> 1) - static_cast<std::int16_t>(c.scroll_y) + c.origin_y;
+                out.line(sx0, sy0, sx1, sy1, col, clip);
+                for (int a = 0; a < 3; ++a) prev[a] = cur[a];
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return true;
 }
 
 void draw_projectile(const BattleScene& s, const ProjectileInstance& p, DrawList& out) {
@@ -506,16 +652,23 @@ DrawList build_draw_list(const BattleScene& s) {
             if (const FeatureInstance* f = feature_at(col0 + k, row0 + r))
                 if (f->height >= 10) draw_feature(s, *f, out);
     }
-    // Nano lathe particles (the effect list 6): single pixels in their colour.
+    // Nano lathe particles (the effect list 6, the original's 0x473A00): 2 x 2 squares in their
+    // colour with the top-left at the particle's screen point.
     for (const NanoDotInstance& d : s.nano) {
         const int x = screen_x(c, d.pos[0]), y = screen_y(c, d.pos[1], d.pos[2]);
         Sprite8 dot;
-        dot.width = dot.height = 1;
+        dot.width = dot.height = 2;
         dot.key = static_cast<std::uint8_t>(d.colour ^ 1);
-        dot.pixels.assign(1, d.colour);
+        dot.pixels.assign(4, d.colour);
         out.blit(out.keep(std::move(dot)), x, y, c.view_clip(), false);
     }
-    for (const ProjectileInstance& p : s.projectiles) draw_projectile(s, p, out);
+    {
+        std::uint32_t rand_state = s.crt_rand_state;
+        for (const ProjectileInstance& p : s.projectiles) {
+            if (p.render_type < 0) draw_projectile(s, p, out);
+            else if (!draw_projectile_typed(s, p, out, rand_state)) break;
+        }
+    }
     // World effects (the original's 0x420B00): debris pieces, then every effect's glow, then
     // every effect's shard and art; effects whose point is outside the view are skipped.
     for (const DebrisInstance& d : s.debris) draw_debris(s, d, out);
