@@ -156,7 +156,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
             if (req.start.players[static_cast<std::size_t>(s)].kind != sim::PlayerKind::Empty) players = s + 1;
         schema = select_schema(*header, players);
     }
-    if (ota_root && schema >= 0) lb->feature_defs.load_schema_features(*ota_root, "Schema " + std::to_string(schema));
+    if (ota_root && schema >= 0 && !req.saved_game) lb->feature_defs.load_schema_features(*ota_root, "Schema " + std::to_string(schema));
     load_unit_context(vfs, lb->unit_context);
     lb->unit_defs = load_unit_defs(vfs, lb->unit_context, &lb->feature_defs);
     lb->feature_defs.resolve_chains();
@@ -212,8 +212,8 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     sim::refresh_height_range(b.map, 0, 0, static_cast<std::int16_t>(b.map.width), static_cast<std::int16_t>(b.map.height));
     b.init_buckets();
     b.reset_features_and_effects();
-    place_tnt_features(b, lb->tnt);
-    const TdfSection* schema_sec_f = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
+    place_tnt_features(b, lb->tnt, !req.saved_game);
+    const TdfSection* schema_sec_f = header && schema >= 0 && !req.saved_game ? header->child("Schema " + std::to_string(schema)) : nullptr;
     if (const TdfSection* list = schema_sec_f ? schema_sec_f->child("features") : nullptr) {
         // Each listed feature at its cell (a 3D feature's position is its footprint's centre).
         sim::FeatureWorld& fw = b.feature_world();

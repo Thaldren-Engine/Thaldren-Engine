@@ -1,11 +1,11 @@
-// Saved games: the bank container, the engine's sections, load by replay
-// (docs/RE_MEMORY.md, "Saved games").
+// Saved games: the bank container, the Summary, reading saves and starting their battle
+// (docs/RE_MEMORY.md, "Saved games"). The battle sections are in save_sections.cpp.
 
 #include "ta/saved_game.h"
 
 #include <cstring>
 
-#include "sim/lockstep.h"
+#include "net/codec.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -42,6 +42,23 @@ template <class V> typename V::value_type* find_key(V& v, const std::string& k) 
 
 constexpr const char* kBankName = "Total Annihilation 3.0";
 
+// One SQSH chunk with the dictionary coder (0x4D1820, method 1, not encrypted): "SQSH",
+// version 2, method, encryption flag, compressed size, original size, the byte sum of the
+// compressed data. `bound` is the output buffer the original allows (larger: it fails).
+bool squash(const std::vector<std::uint8_t>& in, std::uint32_t bound, std::uint8_t stale, std::vector<std::uint8_t>& out) {
+    const net::CompressResult c = net::compress(in.data(), in.size(), stale);
+    if (bound < c.data.size() + 0x13) return false;
+    out.clear();
+    out.insert(out.end(), {'S', 'Q', 'S', 'H', 2, 1, 0});
+    wr32(out, static_cast<std::uint32_t>(c.data.size()));
+    wr32(out, static_cast<std::uint32_t>(in.size()));
+    std::uint32_t sum = 0;
+    for (std::uint8_t b : c.data) sum += b;
+    wr32(out, sum);
+    out.insert(out.end(), c.data.begin(), c.data.end());
+    return true;
+}
+
 }  // namespace
 
 // --- Bank sections.
@@ -67,10 +84,19 @@ std::int32_t BankSection::get_int(const std::string& k, std::int32_t def) const 
         if (stricmp_c(e.first, k) == 0) return e.second;
     return def;
 }
-std::string BankSection::get_string(const std::string& k, const std::string& def) const {
-    for (const auto& e : strings)
+double BankSection::get_double(const std::string& k, double def) const {
+    for (const auto& e : doubles)
         if (stricmp_c(e.first, k) == 0) return e.second;
     return def;
+}
+std::string BankSection::get_string(const std::string& k, const std::string& def) const {
+    const std::string* s = find_string(k);
+    return s ? *s : def;
+}
+const std::string* BankSection::find_string(const std::string& k) const {
+    for (const auto& e : strings)
+        if (stricmp_c(e.first, k) == 0) return &e.second;
+    return nullptr;
 }
 BankSection::Blob& BankSection::blob(const std::string& n) {
     for (Blob& b : blobs)
@@ -78,9 +104,20 @@ BankSection::Blob& BankSection::blob(const std::string& n) {
     blobs.push_back(Blob{true, n, 0, {}});
     return blobs.back();
 }
+BankSection::Blob& BankSection::numbered(std::int32_t index) {
+    for (Blob& b : blobs)
+        if (!b.named && b.index == index) return b;
+    blobs.push_back(Blob{false, {}, index, {}});
+    return blobs.back();
+}
 const BankSection::Blob* BankSection::find_blob(const std::string& n) const {
     for (const Blob& b : blobs)
         if (b.named && stricmp_c(b.name, n) == 0) return &b;
+    return nullptr;
+}
+const BankSection::Blob* BankSection::find_numbered(std::int32_t index) const {
+    for (const Blob& b : blobs)
+        if (!b.named && b.index == index) return &b;
     return nullptr;
 }
 BankSection& Bank::section(const std::string& n) {
@@ -157,18 +194,8 @@ bool read_bank(const std::vector<std::uint8_t>& bytes, Bank& out, std::string& e
         for (std::int32_t k = 0; k < nb; ++k, at += 16) {
             const std::int32_t noff = static_cast<std::int32_t>(rd32(payload, at));
             const std::uint32_t data_at = rd32(payload, at + 8), n = rd32(payload, at + 12);
-            BankSection::Blob* b = nullptr;
-            if (noff < 0) {
-                const std::int32_t idx = static_cast<std::int32_t>(rd32(payload, at + 4));
-                for (BankSection::Blob& x : s.blobs)
-                    if (!x.named && x.index == idx) b = &x;
-                if (!b) {
-                    s.blobs.push_back(BankSection::Blob{false, {}, idx, {}});
-                    b = &s.blobs.back();
-                }
-            } else {
-                b = &s.blob(cstr(dir, static_cast<std::uint32_t>(noff)));
-            }
+            BankSection::Blob* b =
+                noff < 0 ? &s.numbered(static_cast<std::int32_t>(rd32(payload, at + 4))) : &s.blob(cstr(dir, static_cast<std::uint32_t>(noff)));
             // Blob bytes: at their file offset relative to the account's payload; repeated
             // entries of one blob are appended.
             const std::size_t rel = static_cast<std::size_t>(data_at) - pos - 0x20;
@@ -180,7 +207,7 @@ bool read_bank(const std::vector<std::uint8_t>& bytes, Bank& out, std::string& e
     return true;
 }
 
-void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<std::size_t>* stale) {
+void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<std::size_t>* stale, const BankWriteOptions& opt) {
     out.assign(0x22, 0);
     std::memcpy(out.data(), "HAPIBANK", 8);
     std::vector<std::uint8_t> dir;
@@ -191,7 +218,11 @@ void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<st
         return at;
     };
     const std::uint32_t name_off = add(bank.name);
+    // The descriptor word of named blobs persists over the accounts of one write.
+    std::uint32_t index_word = opt.named_blob_word;
+    bool index_known = false;
     for (const BankSection& s : bank.sections) {
+        // An account is written when it has entries or blobs (empty blobs count).
         if (s.ints.empty() && s.doubles.empty() && s.strings.empty() && s.blobs.empty()) continue;
         const std::size_t start = out.size();
         out.resize(start + 0x20, 0);
@@ -213,291 +244,144 @@ void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<st
         std::uint32_t nb = 0;
         for (const auto& b : s.blobs) nb += !b.data.empty();
         std::size_t data_at = out.size() + nb * 16u;
-        std::int32_t last_index = 0;
-        bool index_known = false;
+        std::vector<std::size_t> stale_here;
         for (const auto& b : s.blobs) {
             if (b.data.empty()) continue;
             if (b.named) {
                 wr32(out, add(b.name));
-                if (!index_known && stale) stale->push_back(out.size());
-                wr32(out, static_cast<std::uint32_t>(last_index));  // the original leaves a stale word here
+                if (!index_known) stale_here.push_back(out.size());
+                wr32(out, index_word);
             } else {
                 wr32(out, 0xFFFFFFFFu);
-                wr32(out, static_cast<std::uint32_t>(b.index));
-                last_index = b.index;
+                index_word = static_cast<std::uint32_t>(b.index);
                 index_known = true;
+                wr32(out, index_word);
             }
             wr32(out, static_cast<std::uint32_t>(data_at));
             wr32(out, static_cast<std::uint32_t>(b.data.size()));
             data_at += b.data.size();
         }
         for (const auto& b : s.blobs) out.insert(out.end(), b.data.begin(), b.data.end());
-        set32(out, start, static_cast<std::uint32_t>(out.size() - start));
+        std::uint32_t size = static_cast<std::uint32_t>(out.size() - start), packed = 0;
+        if (opt.squash) {
+            // HapiBank_WriteAccount: the entries and bytes squashed when that is smaller.
+            const std::vector<std::uint8_t> body(out.begin() + static_cast<std::ptrdiff_t>(start + 0x20), out.end());
+            const std::uint32_t n = static_cast<std::uint32_t>(body.size());
+            std::vector<std::uint8_t> chunk;
+            if (squash(body, n * 120u / 100u + 0x77u, opt.squash_stale_byte, chunk) && chunk.size() < n) {
+                out.resize(start + 0x20);
+                out.insert(out.end(), chunk.begin(), chunk.end());
+                size = static_cast<std::uint32_t>(chunk.size() + 0x20);
+                packed = 1;
+                stale_here.clear();
+            }
+        }
+        if (stale) stale->insert(stale->end(), stale_here.begin(), stale_here.end());
+        set32(out, start, size);
         set32(out, start + 4, sec_name);
         set32(out, start + 8, static_cast<std::uint32_t>(s.ints.size()));
         set32(out, start + 12, static_cast<std::uint32_t>(s.doubles.size()));
         set32(out, start + 16, static_cast<std::uint32_t>(s.strings.size()));
         set32(out, start + 20, nb);
+        set32(out, start + 24, packed);
     }
     const std::uint32_t dir_off = static_cast<std::uint32_t>(out.size());
-    out.insert(out.end(), dir.begin(), dir.end());
+    std::vector<std::uint8_t> chunk;
+    if (opt.squash && squash(dir, static_cast<std::uint32_t>(dir.size()) * 110u / 100u + 0x77u, opt.squash_stale_byte, chunk) &&
+        chunk.size() < dir.size()) {
+        out.insert(out.end(), chunk.begin(), chunk.end());
+        out[0x18] = 1;
+    } else {
+        out.insert(out.end(), dir.begin(), dir.end());
+    }
     set32(out, 0x08, name_off);
     set32(out, 0x0C, dir_off);
     set32(out, 0x10, 0x22);
     set32(out, 0x14, 1);
 }
 
-// --- Game starts.
+// --- The Summary (GameSave_SaveAll 0x4326B0; read by the load menu 0x492360).
 
-std::unique_ptr<LoadedBattle> start_game(Vfs& vfs, const GameStart& g, sim::BattleOutside& outside, std::string& error) {
-    if (g.kind == GameStart::Kind::Mission) {
-        MissionInfo info;
-        if (!load_mission(vfs, g.mission_file, g.mission.difficulty, info, error)) return nullptr;
-        return load_mission_battle(vfs, info, g.mission, outside, error);
-    }
-    return load_battle(vfs, g.battle, outside, error);
-}
-
-namespace {
-
-std::int32_t bits(float f) {
-    std::int32_t v;
-    std::memcpy(&v, &f, 4);
-    return v;
-}
-float from_bits(std::int32_t v) {
-    float f;
-    std::memcpy(&f, &v, 4);
-    return f;
-}
-
-void put_start(BankSection& s, const GameStart& g) {
-    s.set_int("Kind", static_cast<std::int32_t>(g.kind));
-    if (g.kind == GameStart::Kind::Mission) {
-        s.set_string("Campaign", g.campaign);
-        s.set_int("MissionIndex", g.mission_index);
-        s.set_string("MissionFile", g.mission_file);
-        s.set_string("CampaignSide", g.mission.campaign_side);
-        s.set_string("OtherSide", g.mission.other_side);
-        s.set_int("Difficulty", g.mission.difficulty);
-        s.set_int("BattleRngSeed", static_cast<std::int32_t>(g.mission.battle_rng_seed));
-        s.set_int("LoadingRandSeed", static_cast<std::int32_t>(g.mission.loading_rand_seed));
-        s.set_int("CrtRandState", static_cast<std::int32_t>(g.mission.crt_rand_state));
-        return;
-    }
-    const BattleRequest& r = g.battle;
-    const sim::BattleStart& b = r.start;
-    s.set_string("Map", r.map);
-    s.set_int("Schema", r.schema);
-    s.set_int("Provider", b.provider);
-    s.set_int("StartEnergy", bits(b.start_energy));
-    s.set_int("StartMetal", bits(b.start_metal));
-    s.set_int("CommanderMode", b.commander_mode);
-    s.set_int("UnitLimit", b.unit_limit);
-    s.set_int("FogOfWar", b.fog_of_war);
-    s.set_int("Explore", b.explore);
-    s.set_int("TrueSight", b.true_sight);
-    s.set_int("TargetEverything", b.target_everything);
-    s.set_int("CommandMode", b.command_mode);
-    s.set_int("AiDifficulty", b.ai_difficulty);
-    s.set_int("LocalPlayer", b.local_player);
-    s.set_int("NetGame", b.net_game);
-    s.set_int("FixedLocations", b.fixed_locations);
-    s.set_int("BattleRngSeed", static_cast<std::int32_t>(b.battle_rng_seed));
-    s.set_int("LoadingRandSeed", static_cast<std::int32_t>(b.loading_rand_seed));
-    s.set_int("CrtRandState", static_cast<std::int32_t>(b.crt_rand_state));
-    s.set_int("StartPositionCount", b.start_position_count);
-    for (int k = 0; k < 10; ++k) {
-        const std::string p = "StartPos" + std::to_string(k) + " ";
-        s.set_int(p + "X", b.start_positions[static_cast<std::size_t>(k)][0]);
-        s.set_int(p + "Z", b.start_positions[static_cast<std::size_t>(k)][1]);
-    }
-    s.set_int("RuleCount", static_cast<std::int32_t>(b.start_rules.size()));
-    for (std::size_t k = 0; k < b.start_rules.size(); ++k) {
-        const std::string p = "Rule" + std::to_string(k) + " ";
-        s.set_int(p + "Id", b.start_rules[k].id);
-        s.set_int(p + "X", b.start_rules[k].x);
-        s.set_int(p + "Z", b.start_rules[k].z);
-    }
-    for (int k = 0; k < 10; ++k) {
-        const sim::StartPlayer& sp = b.players[static_cast<std::size_t>(k)];
-        const std::string p = "Player" + std::to_string(k) + " ";
-        s.set_int(p + "Kind", static_cast<std::int32_t>(sp.kind));
-        s.set_int(p + "NetId", sp.net_id);
-        s.set_int(p + "CommanderType", sp.commander_type);
-        s.set_int(p + "StartPosition", sp.start_position);
-        s.set_int(p + "Colour", sp.colour);
-        s.set_int(p + "AllyGroup", sp.ally_group);
-        s.set_int(p + "Energy", sp.energy);
-        s.set_int(p + "Metal", sp.metal);
-        s.set_int(p + "Watcher", sp.watcher);
-        s.set_int(p + "AlliedVictory", sp.allied_victory);
-        s.set_string(p + "Name", sp.name);
-        s.set_string(p + "Commander", sp.commander_name);
-        s.set_string(p + "Side", r.sides[static_cast<std::size_t>(k)]);
-    }
-}
-
-bool get_start(const BankSection& s, GameStart& g) {
-    g = GameStart{};
-    g.kind = static_cast<GameStart::Kind>(s.get_int("Kind", 0));
-    if (g.kind == GameStart::Kind::Mission) {
-        g.campaign = s.get_string("Campaign", "");
-        g.mission_index = s.get_int("MissionIndex", -1);
-        g.mission_file = s.get_string("MissionFile", "");
-        g.mission.campaign_side = s.get_string("CampaignSide", "ARM");
-        g.mission.other_side = s.get_string("OtherSide", "");
-        g.mission.difficulty = s.get_int("Difficulty", 1);
-        g.mission.battle_rng_seed = static_cast<std::uint32_t>(s.get_int("BattleRngSeed", 0));
-        g.mission.loading_rand_seed = static_cast<std::uint32_t>(s.get_int("LoadingRandSeed", 0));
-        g.mission.crt_rand_state = static_cast<std::uint32_t>(s.get_int("CrtRandState", 0));
-        return !g.mission_file.empty();
-    }
-    if (g.kind != GameStart::Kind::Battle) return false;
-    BattleRequest& r = g.battle;
-    sim::BattleStart& b = r.start;
-    r.map = s.get_string("Map", r.map);
-    r.schema = s.get_int("Schema", -1);
-    b.provider = s.get_int("Provider", 2);
-    b.start_energy = from_bits(s.get_int("StartEnergy", bits(1000.0f)));
-    b.start_metal = from_bits(s.get_int("StartMetal", bits(1000.0f)));
-    b.commander_mode = s.get_int("CommanderMode", 0);
-    b.unit_limit = static_cast<std::uint16_t>(s.get_int("UnitLimit", 250));
-    b.fog_of_war = s.get_int("FogOfWar", 0) != 0;
-    b.explore = s.get_int("Explore", 0) != 0;
-    b.true_sight = s.get_int("TrueSight", 0) != 0;
-    b.target_everything = s.get_int("TargetEverything", 0) != 0;
-    b.command_mode = s.get_int("CommandMode", 0);
-    b.ai_difficulty = s.get_int("AiDifficulty", 2);
-    b.local_player = static_cast<std::uint8_t>(s.get_int("LocalPlayer", 0));
-    b.net_game = s.get_int("NetGame", 0) != 0;
-    b.fixed_locations = s.get_int("FixedLocations", 0) != 0;
-    b.battle_rng_seed = static_cast<std::uint32_t>(s.get_int("BattleRngSeed", 0));
-    b.loading_rand_seed = static_cast<std::uint32_t>(s.get_int("LoadingRandSeed", 0));
-    b.crt_rand_state = static_cast<std::uint32_t>(s.get_int("CrtRandState", 0));
-    b.start_position_count = s.get_int("StartPositionCount", 0);
-    for (int k = 0; k < 10; ++k) {
-        const std::string p = "StartPos" + std::to_string(k) + " ";
-        b.start_positions[static_cast<std::size_t>(k)] = {s.get_int(p + "X", 0), s.get_int(p + "Z", 0)};
-    }
-    const std::int32_t rules = s.get_int("RuleCount", 0);
-    for (std::int32_t k = 0; k < rules; ++k) {
-        const std::string p = "Rule" + std::to_string(k) + " ";
-        sim::StartRule rule;
-        rule.id = s.get_int(p + "Id", 0);
-        rule.x = static_cast<std::int16_t>(s.get_int(p + "X", 0));
-        rule.z = static_cast<std::int16_t>(s.get_int(p + "Z", 0));
-        b.start_rules.push_back(rule);
-    }
-    for (int k = 0; k < 10; ++k) {
-        sim::StartPlayer& sp = b.players[static_cast<std::size_t>(k)];
-        const std::string p = "Player" + std::to_string(k) + " ";
-        sp.kind = static_cast<sim::PlayerKind>(s.get_int(p + "Kind", 0));
-        sp.net_id = s.get_int(p + "NetId", 0);
-        sp.commander_type = static_cast<std::uint16_t>(s.get_int(p + "CommanderType", 0));
-        sp.start_position = s.get_int(p + "StartPosition", -1);
-        sp.colour = static_cast<std::uint8_t>(s.get_int(p + "Colour", 0));
-        sp.ally_group = static_cast<std::uint8_t>(s.get_int(p + "AllyGroup", 0xFF));
-        sp.energy = s.get_int(p + "Energy", -1);
-        sp.metal = s.get_int(p + "Metal", -1);
-        sp.watcher = s.get_int(p + "Watcher", 0) != 0;
-        sp.allied_victory = s.get_int(p + "AlliedVictory", 0) != 0;
-        sp.name = s.get_string(p + "Name", "");
-        sp.commander_name = s.get_string(p + "Commander", "");
-        r.sides[static_cast<std::size_t>(k)] = s.get_string(p + "Side", "");
-    }
-    return true;
-}
-
-void put_summary(BankSection& s, const SaveSummary& m) {
-    // The original's keys (GameSave_SaveAll 0x4326B0); its build stamp (assumed: the stamp
-    // strings of the executable) as two zero-valued integer keys.
-    s.set_int("BUILD DATE: Jul 30 1998", 0);
-    s.set_int("BUILD TIME: 11:16:36", 0);
-    s.set_int("maxunits", m.max_units);
-    s.set_int("Difficulty", m.difficulty);
-    s.set_int("Side", m.side);
-    s.set_int("Players", m.players);
-    s.set_int("Gametype", m.game_type);
-    if (m.game_type == 2) {
-        s.set_int("CommanderDeath", m.commander_death);
-        s.set_int("Location", m.location);
-        s.set_int("Mapping", m.mapping);
-        s.set_int("LineOfSight", m.line_of_sight);
-        s.set_int("LineOfSightType", m.line_of_sight_type);
-    }
-    if (m.between_missions) s.set_int("BetweenMissions", 1);
-    s.set_int("Game ID", m.game_id);
-    s.set_int("Game Time", static_cast<std::int32_t>(m.game_time));
-    s.set_string("Campaign", m.campaign);
-    s.set_string("Mission", m.mission);
-    s.set_string("Map", m.map);
-    s.set_string("Thumbs", "");
-    if (!m.description.empty()) s.set_string("Description", m.description);
-}
-
-void get_summary(const BankSection& s, SaveSummary& m) {
+void read_summary(const BankSection& s, SaveSummary& m) {
     m.max_units = s.get_int("maxunits", 0);
+    m.has_campaign = s.find_string("Campaign") != nullptr;
     m.campaign = s.get_string("Campaign", "");
     m.mission = s.get_string("Mission", "");
     m.map = s.get_string("Map", "");
+    m.thumbs = s.get_string("Thumbs", "");
+    m.has_description = s.find_string("Description") != nullptr;
     m.description = s.get_string("Description", "");
     m.difficulty = s.get_int("Difficulty", 0);
     m.side = s.get_int("Side", 0);
     m.players = s.get_int("Players", 0);
     m.game_type = s.get_int("Gametype", 0);
-    m.commander_death = s.get_int("CommanderDeath", 0);
-    m.location = s.get_int("Location", 0);
-    m.mapping = s.get_int("Mapping", 0);
-    m.line_of_sight = s.get_int("LineOfSight", 0);
-    m.line_of_sight_type = s.get_int("LineOfSightType", 0);
+    m.skirmish_keys = s.has("CommanderDeath");
+    // The load menu's defaults for a skirmish summary without the keys are 1.
+    m.commander_death = s.get_int("CommanderDeath", 1);
+    m.location = s.get_int("Location", 1);
+    m.mapping = s.get_int("Mapping", 1);
+    m.line_of_sight = s.get_int("LineOfSight", 1);
+    m.line_of_sight_type = s.get_int("LineOfSightType", 1);
     m.between_missions = s.has("BetweenMissions");
     m.game_id = s.get_int("Game ID", 0);
     m.game_time = static_cast<std::uint32_t>(s.get_int("Game Time", 0));
 }
 
-}  // namespace
+namespace {
 
-SaveSummary make_summary(const sim::Battle& b, const GameStart& g, const std::string& description) {
-    SaveSummary m;
-    m.max_units = b.settings.unit_limit;
-    m.description = description;
-    m.game_type = b.settings.provider;
-    m.players = b.settings.player_count;
-    m.game_time = b.game_tick();
-    if (g.kind == GameStart::Kind::Mission) {
-        m.campaign = g.campaign;
-        m.mission = g.mission_file;
-        m.map = g.mission_file;
-        m.difficulty = g.mission.difficulty;
-        m.side = stricmp_c(g.mission.campaign_side, "CORE") == 0 ? 1 : 0;
-    } else {
-        m.map = g.battle.map;
-        m.difficulty = g.battle.start.ai_difficulty;
-        m.side = stricmp_c(g.battle.sides[g.battle.start.local_player % 10], "CORE") == 0 ? 1 : 0;
-        m.commander_death = g.battle.start.commander_mode;
-        m.location = g.battle.start.fixed_locations;
-        m.mapping = g.battle.start.explore;
-        m.line_of_sight = g.battle.start.fog_of_war;
-        m.line_of_sight_type = g.battle.start.true_sight;
+// The Summary keys in the original's order. `in_battle`: the front end's state is the battle
+// (GS+0x391F1 = 6); otherwise the save is between missions.
+void put_summary(Bank& bank, const SaveContext& c, std::uint32_t game_time) {
+    BankSection& s = bank.section("Summary");
+    s.set_int("BUILD DATE: Jul 30 1998", 0);  // "BUILD DATE: %s" with the executable's stamps
+    s.set_int("BUILD TIME: 11:16:36", 0);
+    s.set_int("maxunits", static_cast<std::int32_t>(c.max_units));
+    if (!c.campaign.empty()) s.set_string("Campaign", c.campaign);  // a null name writes no key
+    s.set_string("Mission", c.mission);
+    s.set_string("Map", c.mission);
+    s.set_int("Difficulty", c.difficulty);
+    s.set_int("Side", c.side);
+    s.set_int("Players", c.players);
+    s.set_int("Gametype", c.game_type);
+    s.set_string("Thumbs", c.thumbs);
+    if (c.game_type == 2) {
+        s.set_int("CommanderDeath", c.commander_death);
+        s.set_int("Location", c.location);
+        s.set_int("Mapping", c.mapping);
+        s.set_int("LineOfSight", c.line_of_sight);
+        s.set_int("LineOfSightType", c.line_of_sight_type);
     }
-    m.engine = true;
-    return m;
+    if (c.between_missions) s.set_int("BetweenMissions", 1);
+    s.set_string("Description", c.description);
+    s.set_int("Game ID", c.game_id);
+    s.set_int("Game Time", static_cast<std::int32_t>(game_time));
 }
 
-bool write_saved_game(const SavedGame& save, std::vector<std::uint8_t>& out) {
+}  // namespace
+
+Bank make_between_missions_bank(const SaveContext& ctx) {
     Bank bank;
     bank.name = kBankName;
-    put_summary(bank.section("Summary"), save.summary);
-    put_start(bank.section("Engine Start"), save.start);
-    BankSection& check = bank.section("Engine Check");
-    check.set_int("Version", 1);
-    check.set_int("Tick", static_cast<std::int32_t>(save.tick));
-    check.set_int("Checksum", static_cast<std::int32_t>(save.checksum));
-    check.set_int("BattleRng", static_cast<std::int32_t>(save.battle_rng));
-    check.set_int("CrtRand", static_cast<std::int32_t>(save.crt_rand));
-    save.journal.encode(bank.section("Engine Journal").blob("Journal").data);
-    write_bank(bank, out);
+    SaveContext c = ctx;
+    c.between_missions = true;
+    put_summary(bank, c, 0);
+    return bank;
+}
+
+// Defined in save_sections.cpp.
+void write_battle_sections(const LoadedBattle& lb, Bank& bank, const SaveContext& ctx, std::vector<std::string>* notes);
+
+Bank make_save_bank(const LoadedBattle& lb, const SaveContext& ctx, std::vector<std::string>* notes) {
+    Bank bank;
+    bank.name = kBankName;
+    put_summary(bank, ctx, lb.battle->game_tick());
+    if (!ctx.between_missions) write_battle_sections(lb, bank, ctx, notes);
+    return bank;
+}
+
+bool write_save_file(const LoadedBattle& lb, const SaveContext& ctx, std::vector<std::uint8_t>& out) {
+    const Bank bank = make_save_bank(lb, ctx);
+    write_bank(bank, out, nullptr, ctx.bank);
     return true;
 }
 
@@ -514,56 +398,126 @@ bool read_save_summary(const std::vector<std::uint8_t>& bytes, SaveSummary& out,
         return false;
     }
     out = SaveSummary{};
-    get_summary(*s, out);
-    out.engine = bank.find("Engine Journal") != nullptr;
+    read_summary(*s, out);
+    out.has_battle = bank.find("Units") || bank.find("Players");
     return true;
 }
 
 bool read_saved_game(const std::vector<std::uint8_t>& bytes, SavedGame& out, std::string& error) {
-    Bank bank;
-    if (!read_bank(bytes, bank, error)) return false;
     out = SavedGame{};
-    const BankSection* sum = bank.find("Summary");
-    const BankSection* start = bank.find("Engine Start");
-    const BankSection* check = bank.find("Engine Check");
-    const BankSection* journal = bank.find("Engine Journal");
-    if (sum) get_summary(*sum, out.summary);
-    if (!start || !check || !journal) {
-        error = "a saved game of the original (its own sections are not restored by the engine)";
+    if (!read_bank(bytes, out.bank, error)) return false;
+    const BankSection* s = out.bank.find("Summary");
+    if (!s) {
+        error = "Invalid savegame file";
         return false;
     }
-    out.summary.engine = true;
-    if (!get_start(*start, out.start)) {
-        error = "bad start description";
-        return false;
-    }
-    out.tick = static_cast<std::uint32_t>(check->get_int("Tick", 0));
-    out.checksum = static_cast<std::uint32_t>(check->get_int("Checksum", 0));
-    out.battle_rng = static_cast<std::uint32_t>(check->get_int("BattleRng", 0));
-    out.crt_rand = static_cast<std::uint32_t>(check->get_int("CrtRand", 0));
-    const BankSection::Blob* jb = journal->find_blob("Journal");
-    if (!jb || !out.journal.decode(jb->data)) {
-        error = "bad journal";
-        return false;
-    }
+    read_summary(*s, out.summary);
+    out.summary.has_battle = out.bank.find("Units") || out.bank.find("Players");
     return true;
 }
 
-std::unique_ptr<LoadedBattle> load_saved_game(Vfs& vfs, const SavedGame& save, sim::BattleOutside& outside, std::string& error) {
-    auto lb = start_game(vfs, save.start, outside, error);
-    if (!lb) return nullptr;
-    sim::Battle& b = *lb->battle;
-    sim::JournalPlayer player(save.journal);
-    if (!player.run_to(b, save.tick)) {
-        error = "the replay differs from the recording at step " + std::to_string(player.mismatch_tick);
-        return nullptr;
+// --- Starting a saved game (the load menu 0x492360, then the battle start 0x497180 with the
+// bank).
+
+namespace {
+
+std::unique_ptr<TdfSection> parse_vfs(Vfs& vfs, const std::string& path) {
+    std::vector<std::uint8_t> bytes;
+    if (!vfs.read(path, bytes)) return nullptr;
+    return std::move(tdf_parse(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size())).root);
+}
+
+// The side names by side index (gamedata\sidedata.tdf [SIDEn] name).
+std::string side_name(Vfs& vfs, int index) {
+    if (const std::unique_ptr<TdfSection> sides = parse_vfs(vfs, "gamedata\\sidedata.tdf"))
+        if (const TdfSection* s = sides->child("SIDE" + std::to_string(index))) return s->get_string("name", 32, "");
+    return index == 1 ? "CORE" : "ARM";
+}
+
+}  // namespace
+
+bool make_saved_game_request(Vfs& vfs, const SavedGame& save, const LoadInputs& in, BattleRequest& req, LoadedView& view, std::string& error) {
+    const SaveSummary& m = save.summary;
+    if (m.between_missions) {
+        error = "a save between missions (it opens the mission's briefing)";
+        return false;
     }
-    player.apply_rest(b);  // commands given after the last step, before the save
-    if (sim::state_checksum(b) != save.checksum || b.battle_rng().state() != save.battle_rng || b.crt_rand.state() != save.crt_rand) {
-        error = "the replayed state differs from the saved one";
-        return nullptr;
+    if (m.game_type == 1) {
+        // A campaign: the mission by its name in the campaign's list, the difficulty and side.
+        Campaign c;
+        if (!m.has_campaign || !load_campaign(vfs, m.campaign, c, error)) {
+            if (error.empty()) error = "Invalid savegame file";
+            return false;
+        }
+        const CampaignMission* found = nullptr;
+        for (const CampaignMission& cm : c.missions)
+            if (stricmp_c(cm.name, m.mission) == 0) {
+                found = &cm;
+                break;
+            }
+        if (!found) {
+            error = "Invalid savegame file";
+            return false;
+        }
+        MissionInfo info;
+        if (!load_mission(vfs, found->file, m.difficulty, info, error)) return false;
+        MissionRequest rq;
+        rq.campaign_side = side_name(vfs, m.side == 0 ? 0 : 1);
+        rq.other_side = side_name(vfs, m.side == 0 ? 1 : 0);
+        rq.difficulty = m.difficulty;
+        rq.battle_rng_seed = in.battle_rng_seed;
+        rq.loading_rand_seed = in.loading_rand_seed;
+        rq.crt_rand_state = in.crt_rand_state;
+        req = make_mission_request(vfs, info, rq);
+    } else if (m.game_type == 2) {
+        // A skirmish: the map, the players by the saved controllers and sides, the options.
+        req = BattleRequest{};
+        req.map = m.mission;
+        sim::BattleStart& s = req.start;
+        s.provider = 2;
+        s.unit_limit = in.unit_limit;
+        s.commander_mode = m.commander_death;
+        s.fixed_locations = m.location != 0;
+        s.explore = m.mapping != 0;
+        s.fog_of_war = m.line_of_sight != 0;
+        s.true_sight = m.line_of_sight_type != 0;
+        s.ai_difficulty = m.difficulty;
+        s.battle_rng_seed = in.battle_rng_seed;
+        s.loading_rand_seed = in.loading_rand_seed;
+        s.crt_rand_state = in.crt_rand_state;
+        for (int k = 0; k < 10; ++k) {
+            const BankSection* ps = save.bank.find("Player " + std::to_string(k));
+            if (!ps) continue;
+            const std::int32_t ctl = ps->get_int("Controller", 0);
+            if (ctl != 1 && ctl != 2) continue;
+            sim::StartPlayer& sp = s.players[static_cast<std::size_t>(k)];
+            sp.kind = ctl == 1 ? sim::PlayerKind::Local : sim::PlayerKind::Computer;
+            sp.net_id = k + 1;
+            sp.colour = static_cast<std::uint8_t>(ps->get_int("Logo", k));
+            req.sides[static_cast<std::size_t>(k)] = side_name(vfs, ps->get_int("Side", 0));
+            if (ctl == 1) s.local_player = static_cast<std::uint8_t>(k);  // the last human slot (0x47A760)
+        }
+    } else {
+        error = "Invalid savegame file";
+        return false;
     }
-    return lb;
+    req.saved_game = true;
+    const Bank* bank = &save.bank;
+    LoadedView* v = &view;
+    auto previous = req.prepare_start;
+    req.prepare_start = [previous, bank, v](LoadedBattle& lb, sim::BattleStart& start) {
+        if (previous) previous(lb, start);
+        LoadedBattle* plb = &lb;
+        start.restore = [plb, bank, v](sim::Battle&, std::string& err) { return load_save_sections(*plb, *bank, *v, err); };
+    };
+    return true;
+}
+
+std::unique_ptr<LoadedBattle> load_saved_game(Vfs& vfs, const SavedGame& save, const LoadInputs& in, sim::BattleOutside& outside,
+                                              LoadedView& view, std::string& error) {
+    BattleRequest req;
+    if (!make_saved_game_request(vfs, save, in, req, view, error)) return nullptr;
+    return load_battle(vfs, req, outside, error);
 }
 
 }  // namespace ta

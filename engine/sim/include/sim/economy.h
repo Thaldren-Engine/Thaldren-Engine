@@ -68,6 +68,9 @@ struct PlayerEconomy {
     std::uint8_t share_flags = 0;      // bit 1 metal, bit 2 energy, bit 5 the explored map
     std::uint8_t side_controller = 0;  // the player's side record byte the sharing checks (1 = may receive)
     std::uint32_t next_update_tick = 0;  // step of the player's next 30-step turn (players stage)
+    // Two more steps the record's set-up stamps (player record +0xF4 / +0xF8; the statistics'
+    // timers of the front end); saved games keep them.
+    std::uint32_t win_lose_tick = 0, display_tick = 0;
     ResourceSlot own;                    // the player's own slot (transfers)
 };
 

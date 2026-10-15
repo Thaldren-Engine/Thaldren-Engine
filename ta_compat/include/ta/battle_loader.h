@@ -41,6 +41,10 @@ struct BattleRequest {
     // Archives to mount before loading when the file system has not mounted them yet (a
     // mission on the game CD's archives).
     std::vector<std::filesystem::path> extra_archives;
+    // A saved game (the original's battle start with a bank): the map's own features are not
+    // placed and the schema's features are neither loaded nor placed (Map_LoadTnt); the saved
+    // game's Features section places them (start.restore).
+    bool saved_game = false;
 };
 
 struct LoadedBattle {

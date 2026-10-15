@@ -386,6 +386,16 @@ public:
     // Call once the feature types and animations are set (before placing map features).
     void reset_features_and_effects();
     void advance_tick() { ++unit_env_.game_tick; }
+    // A saved game sets the step it was saved at (its time block is loaded before any unit).
+    void set_game_tick(std::uint32_t tick) {
+        unit_env_.game_tick = tick;
+        sync_settings();
+    }
+    // Motion (order goals, motion goals) for loading a saved game's orders.
+    MotionContext& motion_context() {
+        sync_settings();
+        return motion_;
+    }
     // One whole step in the original's order (Game_RunSimulationStep 0x495490, see
     // docs/RE_MEMORY.md "Battle step"): tick, network input, units and projectiles, effects,
     // players, features, wind, meteors, the effect sweep, network flush. Commands

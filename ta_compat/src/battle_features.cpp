@@ -150,7 +150,7 @@ void bind_feature_blocks(sim::Battle& b) {
     for (std::size_t k = 0; k < b.features.size(); ++k) b.feature_blocks[k] = (b.features[k].flags & 0x40u) ? 1 : 0;
 }
 
-void place_tnt_features(sim::Battle& b, const std::vector<std::uint8_t>& tnt) {
+void place_tnt_features(sim::Battle& b, const std::vector<std::uint8_t>& tnt, bool place) {
     std::uint32_t h[8] = {};
     for (int i = 0; i < 8; ++i)
         if (!rd(tnt, static_cast<std::size_t>(i) * 4, h[i])) return;
@@ -165,7 +165,7 @@ void place_tnt_features(sim::Battle& b, const std::vector<std::uint8_t>& tnt) {
         rd(tnt, h[4] + i * 4 + 1, f);
         if (f == sim::kFeatureVoid) sim::place_feature(w, static_cast<std::int32_t>(i), sim::kFeatureVoid, nullptr, nullptr, 10);
     }
-    for (std::size_t i = 0; i < cells; ++i) {
+    for (std::size_t i = 0; i < cells && place; ++i) {
         std::uint16_t f = 0;
         rd(tnt, h[4] + i * 4 + 1, f);
         if (f < h[7]) sim::place_feature(w, static_cast<std::int32_t>(i), f, nullptr, nullptr, 10);

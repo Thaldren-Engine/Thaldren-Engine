@@ -38,6 +38,7 @@ struct ScriptProgram {
     std::vector<std::string> function_names;
     std::vector<std::string> piece_names;
     std::int32_t static_count = 0;
+    std::uint32_t checksum = 0;  // of the file (saved games check it against the script they load into)
 
     // Exact (case-sensitive) name lookup; -1 if absent.
     int find_function(const std::string& name) const;
@@ -119,6 +120,14 @@ public:
     std::vector<std::int32_t>& statics() { return statics_; }
     std::vector<std::int32_t>& piece_anims() { return anims_; }  // kPieceWords per piece
     bool anim_dirty() const { return dirty_; }
+    // Restoring a saved state: the live-thread count word, the animation dirty flag, and a
+    // thread's return sink dropped (its sink word is then 0, as a saved game's threads have).
+    std::uint32_t& count_word() { return mem_[kThreads * kThreadWords]; }
+    void set_anim_dirty(bool on) { dirty_ = on; }
+    void drop_sink(int thread) {
+        thread_word(thread, kSink) = 0;
+        sinks_[static_cast<std::size_t>(thread)] = nullptr;
+    }
     // Set when the original would have read or written outside its data (undefined behaviour there),
     // or when the optional step limit was hit.
     const std::string& fault() const { return fault_; }

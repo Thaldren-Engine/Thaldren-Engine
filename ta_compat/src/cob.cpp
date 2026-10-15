@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "ta/tdf.h"
+
 namespace ta {
 namespace {
 
@@ -116,6 +118,7 @@ bool load_cob(const std::vector<std::uint8_t>& f, CobFile& out, std::string& err
     const std::uint32_t functions = h[1], pieces = h[2], code_words = h[3];
     auto& p = out.program;
     p.static_count = static_cast<std::int32_t>(h[4]);
+    p.checksum = simple_checksum(f.data(), static_cast<std::int32_t>(f.size()));  // cached by the original per loaded file
     for (std::uint32_t i = 0; i < functions; ++i) {
         std::uint32_t entry = 0, name_at = 0;
         std::string name;
