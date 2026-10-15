@@ -232,6 +232,7 @@ void add_pieces(const Model3doPiece* p, TextureLibrary& lib, render::Model& m) {
         for (const Model3doPrimitive& src : p->primitives) {
             render::ModelPrimitive prim;
             prim.indices = src.indices;
+            prim.normal_indices = src.first3;
             std::uint32_t flags = 0, name_off = 0;
             std::memcpy(&flags, &src.raw[0x1C], 4);
             std::memcpy(&name_off, &src.raw[0x10], 4);

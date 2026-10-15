@@ -1,4 +1,5 @@
 #include "render/draw_list.h"
+#include "render/unit_look.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -42,43 +43,69 @@ BlendTable light_blend_table(const std::vector<std::uint8_t>& light32) {
     return t;
 }
 
-BlendTable gray_remap_table(const Palette& palette) {
-    // Colours ordered by r + g + b: the original's selection sort (swapping whenever a later
-    // entry is smaller), indices swapped along.
+namespace {
+
+// The original's nearest-colour search (0x4BA920 / 0x4BA9D0): colours sorted by r + g + b
+// (a selection sort that swaps whenever a later entry is smaller), then among those whose
+// sum lies within 40 of the target's, the first with the smallest squared RGB distance;
+// with none in the window, the sorted entry where the scan stopped.
+struct SortedPalette {
     int lum[256];
     std::uint8_t idx[256];
-    for (int i = 0; i < 256; ++i) {
-        lum[i] = palette[static_cast<std::size_t>(i)].r + palette[static_cast<std::size_t>(i)].g + palette[static_cast<std::size_t>(i)].b;
-        idx[i] = static_cast<std::uint8_t>(i);
+    explicit SortedPalette(const Palette& palette) {
+        for (int i = 0; i < 256; ++i) {
+            lum[i] = palette[static_cast<std::size_t>(i)].r + palette[static_cast<std::size_t>(i)].g + palette[static_cast<std::size_t>(i)].b;
+            idx[i] = static_cast<std::uint8_t>(i);
+        }
+        for (int i = 0; i < 256; ++i)
+            for (int j = i + 1; j < 256; ++j)
+                if (lum[j] < lum[i]) {
+                    std::swap(lum[i], lum[j]);
+                    std::swap(idx[i], idx[j]);
+                }
     }
-    for (int i = 0; i < 256; ++i)
-        for (int j = i + 1; j < 256; ++j)
-            if (lum[j] < lum[i]) {
-                std::swap(lum[i], lum[j]);
-                std::swap(idx[i], idx[j]);
-            }
-    std::uint8_t gray[256];
-    for (int c = 0; c < 256; ++c) {
-        const Rgb& p = palette[static_cast<std::size_t>(c)];
-        const int g = (p.r + p.g + p.b) / 3;
-        const int sum = 3 * g;
+    std::uint8_t nearest(const Palette& palette, int r, int g, int b) const {
+        const int sum = r + g + b;
         int best = 1000000000, at = 0, k = 0;
         for (; k < 256; ++k) {
             if (lum[k] < sum - 0x28) continue;
             if (lum[k] > sum + 0x28) break;
             const Rgb& q = palette[idx[k]];
-            const int d = (q.r - g) * (q.r - g) + (q.g - g) * (q.g - g) + (q.b - g) * (q.b - g);
+            const int d = (q.r - r) * (q.r - r) + (q.g - g) * (q.g - g) + (q.b - b) * (q.b - b);
             if (d < best) {
                 best = d;
                 at = k;
             }
         }
         if (best == 1000000000) at = k & 0xFF;
-        gray[c] = idx[at];
+        return idx[at];
+    }
+};
+
+} // namespace
+
+BlendTable gray_remap_table(const Palette& palette) {
+    const SortedPalette sp(palette);
+    std::uint8_t gray[256];
+    for (int c = 0; c < 256; ++c) {
+        const Rgb& p = palette[static_cast<std::size_t>(c)];
+        const int g = (p.r + p.g + p.b) / 3;
+        gray[c] = sp.nearest(palette, g, g, g);
     }
     BlendTable t(65536);
     for (int s = 0; s < 256; ++s)
         for (int d = 0; d < 256; ++d) t[static_cast<std::size_t>(s * 256 + d)] = gray[d];
+    return t;
+}
+
+std::vector<std::uint8_t> water_tint_table(const Palette& palette) {
+    const SortedPalette sp(palette);
+    std::vector<std::uint8_t> t(256);
+    for (int c = 0; c < 256; ++c) {
+        const Rgb& p = palette[static_cast<std::size_t>(c)];
+        const int b = (p.b >> 1) + 0x3C < 0x100 ? (p.b >> 1) + 0x32 : 0xFF;
+        t[static_cast<std::size_t>(c)] = sp.nearest(palette, p.r >> 1, p.g >> 1, b);
+    }
     return t;
 }
 

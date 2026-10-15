@@ -10,6 +10,7 @@
 #include "render/draw_list.h"
 #include "render/image.h"
 #include "render/model.h"
+#include "render/unit_look.h"
 #include "sim/heightmap.h"
 #include "sim/unit.h"
 
@@ -78,6 +79,9 @@ struct UnitInstance {
     bool shadow = true;           // offset shadow (ground units)
     std::int32_t ground_height = 0;  // terrain height under the unit (shadow placement), integer
     bool translucent = false;     // cloaked: the sprite is mixed with the frame (blend table)
+    std::uint32_t type_flags = 0;    // the type's flag word (digger, hover, floater, noshadow; see look_type_flags)
+    bool animate_direct = false;     // pieces drawn straight onto the frame use the texture cursor (moving or active)
+    bool own_view = false;           // seen under water (tinted) rather than cut: the viewer's own units
 };
 
 // One nano lathe particle (sim/nano_spray.h): a dot in its palette colour.
@@ -130,7 +134,10 @@ struct BattleScene {
     std::vector<DebrisInstance> debris;           // drawn after the projectiles, before the effects
     std::vector<EffectInstance> effects;          // in the effect table's order
     const BlendTable* light = nullptr;            // light table for glows (light_blend_table); none: no glows
-    bool unit_shadows = true, feature_shadows = true;
+    bool unit_shadows = true, feature_shadows = true;  // (kept for older callers; `options` decides)
+    ViewOptions options;                          // the player's visual options
+    LookTables tables;                            // mixing, shade and water tables for unit looks
+    int sea_level = 0;
     const FogOfWar* fog = nullptr;                // drawn over everything (none: no fog)
     std::uint8_t clear_index = 0;
 };

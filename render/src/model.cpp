@@ -200,7 +200,7 @@ void draw_uncached_pieces(RasterTarget& target, const Model& model, const sim::P
     std::vector<RasterVertex> pts;
     for (std::size_t i = pose.pieces.size(); i-- > 0;) {
         const sim::PosePiece& pc = pose.pieces[i];
-        if (!piece_visible(pc) || piece_cached(pc)) continue;
+        if (!piece_visible(pc) || (!params.all_pieces && piece_cached(pc))) continue;
         if (pc.node < 0 || static_cast<std::size_t>(pc.node) >= model.pieces.size()) continue;
         pts.clear();
         for (std::size_t v = 0; v + 2 < pc.points.size(); v += 3) {
@@ -213,7 +213,7 @@ void draw_uncached_pieces(RasterTarget& target, const Model& model, const sim::P
             const int y = hi16(add(pc.points[v + 1], unit_y));
             pts.push_back({x, z - (y >> 1) + origin_y, 0});
         }
-        draw_piece(target, model.pieces[static_cast<std::size_t>(pc.node)], pts, params, true);
+        draw_piece(target, model.pieces[static_cast<std::size_t>(pc.node)], pts, params, params.direct_cursor);
     }
 }
 

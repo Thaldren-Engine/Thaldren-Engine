@@ -685,3 +685,34 @@ add_executable(bank_harness bank_harness.cpp
 )
 target_include_directories(bank_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(bank_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Battle rendering: the original's unit draw into its 8-bit back buffer vs render::build_draw_list.
+add_executable(render_harness
+    render_harness.cpp
+    ${ROOT}/render/src/battle_view.cpp
+    ${ROOT}/render/src/bmp.cpp
+    ${ROOT}/render/src/draw_list.cpp
+    ${ROOT}/render/src/image.cpp
+    ${ROOT}/render/src/model.cpp
+    ${ROOT}/render/src/raster.cpp
+    ${ROOT}/render/src/unit_look.cpp
+    ${ROOT}/ta_compat/src/render_assets.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+)
+target_include_directories(render_harness PRIVATE ${ROOT}/render/include ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(render_harness PRIVATE /W4 /permissive- /fp:precise)
