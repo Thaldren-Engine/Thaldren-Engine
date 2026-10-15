@@ -156,80 +156,85 @@ bool mission_lost(Battle& b) {
     return false;
 }
 
-void mission_unit_destroyed(Battle& b, Unit& u) {
+static bool is_win_goal(GoalKind k) { return static_cast<int>(k) <= static_cast<int>(GoalKind::VictoryTimer); }
+
+bool mission_goal_check(Battle& b, MissionGoal& g) { return is_win_goal(g.kind) ? check_win(b, g) : check_loss(b, g); }
+
+void mission_goal_unit_destroyed(Battle& b, MissionGoal& g, Unit& u) {
     const int owner = owner_of(b, u);
     const std::string& name = type_name(b, u);
-    for (MissionGoal& g : b.mission_goals.win) {
-        switch (g.kind) {
-        case GoalKind::KillEnemyCommander:
-            if (owner == kOpponent && same_name(name, b.players[static_cast<std::size_t>(owner)].commander_name)) met(b, g);
-            break;
-        case GoalKind::KillAllMobileUnits:
-            if (owner == kOpponent && b.ticks[u.id].has_motion) {
-                g.count = 0;
-                walk(b, kOpponent, [&](Unit& o) {
-                    if (b.ticks[o.id].has_motion) ++g.count;
-                    return g.count < 2;
-                });
-                if (g.count < 2) met(b, g);
-            }
-            break;
-        case GoalKind::KillAllOfType:
-            if (!g.satisfied && owner == kOpponent && same_name(g.type_name, name)) {
-                g.type = type_by_name(b, g.type_name);
-                g.count = 0;
-                walk(b, kOpponent, [&](Unit& o) {
-                    if (b.ticks[o.id].type_index == g.type) ++g.count;
-                    return g.count < 2;
-                });
-                if (g.count < 2) met(b, g);
-            }
-            break;
-        case GoalKind::KillUnitType:
-            if (g.count > 0 && owner == kOpponent && same_name(g.type_name, name)) {
-                --g.count;
-                if (g.count < 1) met(b, g);
-            }
-            break;
-        default:
-            break;
+    switch (g.kind) {
+    case GoalKind::KillEnemyCommander:
+        if (owner == kOpponent && same_name(name, b.players[static_cast<std::size_t>(owner)].commander_name)) met(b, g);
+        break;
+    case GoalKind::KillAllMobileUnits:
+        if (owner == kOpponent && b.ticks[u.id].has_motion) {
+            g.count = 0;
+            walk(b, kOpponent, [&](Unit& o) {
+                if (b.ticks[o.id].has_motion) ++g.count;
+                return g.count < 2;
+            });
+            if (g.count < 2) met(b, g);
         }
-    }
-    for (MissionGoal& g : b.mission_goals.loss) {
-        switch (g.kind) {
-        case GoalKind::CommanderKilled:
-            if (owner == kPlayer && same_name(name, b.players[static_cast<std::size_t>(owner)].commander_name)) g.satisfied = true;
-            break;
-        case GoalKind::UnitTypeKilled:
-            if (same_name(g.type_name, name)) {
-                --g.count;
-                if (g.count < 1) g.satisfied = true;
-            }
-            break;
-        case GoalKind::AllUnitsKilledOfType:
-            if (same_name(g.type_name, name)) {
-                g.type = type_by_name(b, g.type_name);
-                g.count = 0;
-                // Both walks run; each stops after the call that reaches two.
-                auto count = [&](Unit& o) {
-                    if (b.ticks[o.id].type_index == g.type) ++g.count;
-                    return g.count < 2;
-                };
-                walk(b, kPlayer, count);
-                walk(b, kOpponent, count);
-                if (g.count < 2) g.satisfied = true;
-            }
-            break;
-        default:
-            break;
+        break;
+    case GoalKind::KillAllOfType:
+        if (!g.satisfied && owner == kOpponent && same_name(g.type_name, name)) {
+            g.type = type_by_name(b, g.type_name);
+            g.count = 0;
+            walk(b, kOpponent, [&](Unit& o) {
+                if (b.ticks[o.id].type_index == g.type) ++g.count;
+                return g.count < 2;
+            });
+            if (g.count < 2) met(b, g);
         }
+        break;
+    case GoalKind::KillUnitType:
+        if (g.count > 0 && owner == kOpponent && same_name(g.type_name, name)) {
+            --g.count;
+            if (g.count < 1) met(b, g);
+        }
+        break;
+    case GoalKind::CommanderKilled:
+        if (owner == kPlayer && same_name(name, b.players[static_cast<std::size_t>(owner)].commander_name)) g.satisfied = true;
+        break;
+    case GoalKind::UnitTypeKilled:
+        if (same_name(g.type_name, name)) {
+            --g.count;
+            if (g.count < 1) g.satisfied = true;
+        }
+        break;
+    case GoalKind::AllUnitsKilledOfType:
+        if (same_name(g.type_name, name)) {
+            g.type = type_by_name(b, g.type_name);
+            g.count = 0;
+            // Both walks run; each stops after the call that reaches two.
+            auto count = [&](Unit& o) {
+                if (b.ticks[o.id].type_index == g.type) ++g.count;
+                return g.count < 2;
+            };
+            walk(b, kPlayer, count);
+            walk(b, kOpponent, count);
+            if (g.count < 2) g.satisfied = true;
+        }
+        break;
+    default:
+        break;
     }
 }
 
+void mission_goal_unit_transferred(Battle& b, MissionGoal& g, Unit& u) {
+    if (g.kind == GoalKind::CaptureUnitType && owner_of(b, u) == kOpponent && same_name(g.type_name, type_name(b, u))) met(b, g);
+}
+
+void mission_unit_destroyed(Battle& b, Unit& u) {
+    // 0x4904C0: every win goal, then every loss goal.
+    for (MissionGoal& g : b.mission_goals.win) mission_goal_unit_destroyed(b, g, u);
+    for (MissionGoal& g : b.mission_goals.loss) mission_goal_unit_destroyed(b, g, u);
+}
+
 void mission_unit_transferred(Battle& b, Unit& u) {
-    const int owner = owner_of(b, u);
-    for (MissionGoal& g : b.mission_goals.win)
-        if (g.kind == GoalKind::CaptureUnitType && owner == kOpponent && same_name(g.type_name, type_name(b, u))) met(b, g);
+    for (MissionGoal& g : b.mission_goals.win) mission_goal_unit_transferred(b, g, u);
+    for (MissionGoal& g : b.mission_goals.loss) mission_goal_unit_transferred(b, g, u);
 }
 
 std::array<i32, 3> screen_to_terrain(const Battle& b, i32 x, i32 y) {

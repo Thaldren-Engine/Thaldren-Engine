@@ -125,6 +125,10 @@ bool mission_won(Battle& battle);
 bool mission_lost(Battle& battle);
 void mission_unit_destroyed(Battle& battle, Unit& unit);
 void mission_unit_transferred(Battle& battle, Unit& unit);
+// One goal: its check (win goals: met; loss goals: lost) and its event handlers.
+bool mission_goal_check(Battle& battle, MissionGoal& goal);
+void mission_goal_unit_destroyed(Battle& battle, MissionGoal& goal, Unit& unit);
+void mission_goal_unit_transferred(Battle& battle, MissionGoal& goal, Unit& unit);
 
 // The editor's map position (x, screen row y) to a terrain position (0x484B50).
 std::array<std::int32_t, 3> screen_to_terrain(const Battle& battle, std::int32_t x, std::int32_t y);
