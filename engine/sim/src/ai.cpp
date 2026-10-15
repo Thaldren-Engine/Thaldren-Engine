@@ -231,7 +231,7 @@ void run_constructors(Ai& ai, AiController& c, AiBehaviour& b) {
     // The base centre and the site, as the original's locals: the centre's height is
     // overwritten along the way, the site's height is never written (an input).
     Pos anchor = tb->anchor;
-    Pos site{0, ai.env.stale_site_height, 0};
+    Pos site{0, ai.systems.stale_site_height(c.player, ai.env.stale_site_height), 0};
     const u32 hold = ai.targeting.controllers[static_cast<std::size_t>(c.player)].ai_hold_tick;
     for (std::size_t i = 0; i < list->size(); ++i) {
         Unit& u = *(*list)[i];

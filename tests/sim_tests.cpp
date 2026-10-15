@@ -1760,6 +1760,27 @@ void test_game_flow() {
     }
 }
 
+// The links pointing at a dying unit (0x489740): owners (orders) hear event 8, goal links
+// (no owner) just let go, and the unit's list ends empty.
+void test_release_referrers() {
+    sim::Unit target;
+    sim::MissionOrder a, b;
+    sim::UnitLink goal_link;
+    a.target.owner = &a;
+    b.target.owner = &b;
+    for (sim::UnitLink* l : {&a.target, &goal_link, &b.target}) {
+        l->unit = &target;
+        l->next = target.referrers;
+        target.referrers = l;
+    }
+    b.events = 0x20;
+    sim::release_referrers(target);
+    CHECK_EQ(target.referrers == nullptr, true);
+    CHECK_EQ(a.events, 8u);
+    CHECK_EQ(b.events, 0x28u);
+    CHECK_EQ(a.target.unit == nullptr && b.target.unit == nullptr && goal_link.unit == nullptr, true);
+}
+
 int main() {
     test_sin_table_matches_fixture();
     test_sin_table_formula();
@@ -1789,6 +1810,7 @@ int main() {
     test_sight();
     test_ai();
     test_game_flow();
+    test_release_referrers();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

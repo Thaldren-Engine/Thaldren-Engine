@@ -159,6 +159,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     lb->anims = std::make_unique<AnimImporter>(vfs, b.anims);
     bind_weapon_explosions(lb->weapon_defs, lb->weapons, *lb->anims);
     b.features = to_feature_types(lb->feature_defs, lb->weapons, *lb->anims, &lb->feature_models);
+    bind_feature_blocks(b);
     load_effect_art(*lb->anims, b.effect_art);
     // Particle art the effect lists count frames of (fx.gaf "smoke 1", "smoke 2", "flamestream").
     auto frames = [&](const char* seq) -> std::int32_t {
@@ -223,6 +224,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
             sim::place_feature(fw, z * b.map.width + x, static_cast<std::uint16_t>(idx), nullptr, nullptr, 10);
         }
     }
+    sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
     const TdfSection* schema_sec = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
     MapEconomy me;
     if (!lb->ota.empty()) read_map_economy(lb->ota, schema < 0 ? 0 : schema, me);

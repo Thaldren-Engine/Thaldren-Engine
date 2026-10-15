@@ -93,7 +93,7 @@ target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow campaign_check save_check)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow game_replay campaign_check save_check)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})

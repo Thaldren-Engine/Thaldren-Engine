@@ -598,4 +598,34 @@ Vec3i feature_slot_pos(const FeatureState& s, std::uint16_t slot) {
     return s.slots[slot].pos();
 }
 
+void mark_map_edges(MapGrid& map, std::uint8_t sea_level, bool lava_world) {
+    constexpr u16 kEdge = 0xFFFD;
+    auto mark = [](MapCell& c) {
+        if (c.feature == 0xFFFF || c.feature == 0xFFFE) c.feature = kEdge;
+    };
+    const i32 w = map.width, h = map.height;
+    // The last two columns.
+    for (i32 z = 0; z < h && w >= 2; ++z) {
+        mark(*map.cell(w - 2, z));
+        mark(*map.cell(w - 1, z));
+    }
+    // Top: while the ground stands above the top edge.
+    for (i32 x = 0; x < w; ++x)
+        for (i32 z = 0; z < h; ++z) {
+            MapCell& c = *map.cell(x, z);
+            if (z * 16 - (c.height >> 1) >= 0) break;
+            mark(c);
+        }
+    // Bottom: the cell above each one whose ground is below the visible height.
+    const i32 visible = h * 16 - 128;
+    for (i32 x = 0; x < w; ++x)
+        for (i32 z = h - 1; z >= 1; --z) {
+            if (z * 16 - (map.cell(x, z)->height >> 1) <= visible) break;
+            mark(*map.cell(x, z - 1));
+        }
+    if (lava_world)
+        for (MapCell& c : map.cells)
+            if (c.height_min <= sea_level) mark(c);
+}
+
 } // namespace sim
