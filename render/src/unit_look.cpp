@@ -110,7 +110,8 @@ std::vector<int> vertex_lights(const ModelPiece& piece, const sim::PosePiece& pc
 
 } // namespace
 
-void rasterize_unit_pieces(LookFrame& f, const LookUnit& u, int which, bool lit, bool double_size, const LookTables& tables) {
+void rasterize_unit_pieces(LookFrame& f, const LookUnit& u, int which, bool lit, bool double_size, const LookTables& tables,
+                           LookFrame* scratch) {
     if (!u.model) return;
     LookFrame big;
     LookFrame* t = &f;
@@ -202,9 +203,11 @@ void rasterize_unit_pieces(LookFrame& f, const LookUnit& u, int which, bool lit,
         for (int y = 0; y < f.image.height; ++y)
             for (int x = 0; x < f.image.width; ++x)
                 f.depth[static_cast<std::size_t>(y) * f.image.width + x] = big.depth[static_cast<std::size_t>(2 * y) * bw + 2 * x];
+    if (scratch) *scratch = std::move(big);
 }
 
-LookFrame build_unit_sprite(const LookUnit& u, bool force_depth, int which, const ViewOptions& opt, const LookTables& tables) {
+LookFrame build_unit_sprite(const LookUnit& u, bool force_depth, int which, const ViewOptions& opt, const LookTables& tables,
+                            LookFrame* scratch) {
     LookFrame f;
     const Box b = piece_box(u.pose);
     f.image.width = b.x1 - b.x0 + 4;
@@ -216,7 +219,7 @@ LookFrame build_unit_sprite(const LookUnit& u, bool force_depth, int which, cons
     if (force_depth || u.zbuffer || u.build_left != 0.0f) f.depth.assign(f.image.pixels.size(), 0);
     const bool lit = u.structure && opt.shading;
     const bool twice = u.structure && opt.antialias && which != 0;
-    rasterize_unit_pieces(f, u, which, lit, twice, tables);
+    rasterize_unit_pieces(f, u, which, lit, twice, tables, scratch);
     return f;
 }
 
@@ -265,7 +268,7 @@ LookFrame compose_depth_look(const DepthLookInput& in, const LookFrame& sprite) 
     o.x_offset = static_cast<std::int16_t>(-l);
     o.y_offset = static_cast<std::int16_t>(-t);
     o.key = s.key;
-    const std::size_t n = static_cast<std::size_t>(o.width) * static_cast<std::size_t>(o.height);
+    std::size_t n = static_cast<std::size_t>(o.width) * static_cast<std::size_t>(o.height);
     if (o.width == s.width && o.height == s.height) {
         o.pixels = s.pixels;
         out.depth = sprite.depth;
@@ -293,7 +296,10 @@ LookFrame compose_depth_look(const DepthLookInput& in, const LookFrame& sprite) 
     // Units on board: their own all-pieces sprite (with the construction look), merged by depth.
     for (const Placed& p : placed) {
         const LookUnit& c = *p.unit;
-        LookFrame cs = build_unit_sprite(c, true, -1, in.options, in.tables);
+        // A structure on board drawn at double size uses the very scratch being composed:
+        // the composite so far is replaced by that drawing (as in the original).
+        LookFrame cs = build_unit_sprite(c, true, -1, in.options, in.tables, &out);
+        n = static_cast<std::size_t>(o.width) * static_cast<std::size_t>(o.height);
         ModelDrawParams cp;
         cp.depth_bias = c.depth_bias();
         cp.team_colour = c.team_colour;

@@ -62,11 +62,15 @@ struct LookFrame {
 // construction. `which`: 1 the cached pieces, -1 all visible pieces (pieces of a unit
 // under construction are always all drawn). Structures are drawn lit when shading is on
 // and at twice the size when anti-aliasing is on.
-LookFrame build_unit_sprite(const LookUnit& u, bool force_depth, int which, const ViewOptions& opt, const LookTables& tables);
+// The double-size drawing happens in the shared scratch surface; `scratch`, when given,
+// receives that surface's state afterwards (it replaces a composite in progress).
+LookFrame build_unit_sprite(const LookUnit& u, bool force_depth, int which, const ViewOptions& opt, const LookTables& tables,
+                            LookFrame* scratch = nullptr);
 
 // Draws a model's pieces into `f` (hotspot = the unit origin): `which` as above, 0 = the
 // pieces that are not cached. `lit` selects the lit path, `double_size` the anti-aliased one.
-void rasterize_unit_pieces(LookFrame& f, const LookUnit& u, int which, bool lit, bool double_size, const LookTables& tables);
+void rasterize_unit_pieces(LookFrame& f, const LookUnit& u, int which, bool lit, bool double_size, const LookTables& tables,
+                           LookFrame* scratch = nullptr);
 
 // Everything the depth-plane path draws for a unit, as one sprite: its sprite, the
 // construction look, the pieces that are not cached, the units on board (depth tested)
