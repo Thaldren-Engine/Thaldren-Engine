@@ -518,9 +518,9 @@ bool ClientWorld::build_content(std::string& error) {
 
     // Shots: their sounds (by name, into the sample table) and looks.
     c.shots.resize(256);
-    for (std::size_t i = 0; i < 256 && i < weapon_types_.size(); ++i) {
+    for (std::size_t i = 0; i < 256 && i < lb_->weapons.size(); ++i) {
         const WeaponDefRecord& d = weapons_.slots[i];
-        sim::WeaponType& t = weapon_types_[i];
+        sim::WeaponType& t = lb_->weapons[i];
         auto id = [&](const std::string& n) { const int s = sample(n); return s < 0 ? std::uint16_t{0xFFFF} : static_cast<std::uint16_t>(s); };
         t.sound_start = id(d.sound_start);
         t.sound_hit = id(d.sound_hit);
