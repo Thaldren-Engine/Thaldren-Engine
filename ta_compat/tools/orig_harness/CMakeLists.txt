@@ -274,6 +274,7 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
     ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
     ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/commands.cpp
     ${ROOT}/engine/sim/src/commands_core.cpp
@@ -555,6 +556,7 @@ add_executable(goal_harness
     ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
     ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
     ${ROOT}/engine/sim/src/commands.cpp
@@ -611,6 +613,7 @@ add_executable(order_harness
     ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_states.cpp
     ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
     ${ROOT}/engine/sim/src/commands.cpp

@@ -36,6 +36,7 @@ add_library(sim STATIC
     engine/sim/src/lockstep.cpp
     engine/sim/src/journal.cpp
     engine/sim/src/motion.cpp
+    engine/sim/src/net_states.cpp
     engine/sim/src/net_units.cpp
     engine/sim/src/missions.cpp
     engine/sim/src/mission_goals.cpp
