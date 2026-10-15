@@ -469,13 +469,23 @@ bool ClientWorld::build_content(std::string& error) {
                                                  "cloak",   "uncloak",  "capture",     "count5",   "count4",     "count3",   "count2",
                                                  "count1",  "count0",   nullptr};
             for (int id = 1; id < 24; ++id) {
-                if (!keys[id]) continue;
+                const char* key = id == 23 ? "canceldestruct" : keys[id];
+                if (!key) continue;
+                // The notice's sounds: <key>, then <key>1, <key>2, ... (one is picked when it speaks).
+                auto& list = look.sound_lists[static_cast<std::size_t>(id)];
                 bool found = false;
-                std::string v = cat->get_string(keys[id], 64, "", &found);
-                if (!found) v = cat->get_string(std::string(keys[id]) + "1", 64, "", &found);
-                if (found) look.sounds[static_cast<std::size_t>(id)] = sample(v);
+                std::string v = cat->get_string(key, 64, "", &found);
+                if (found) list.push_back(sample(v));
+                for (int n = 1; n <= 9; ++n) {
+                    v = cat->get_string(std::string(key) + std::to_string(n), 64, "", &found);
+                    if (!found) break;
+                    list.push_back(sample(v));
+                }
+                if (!list.empty()) look.sounds[static_cast<std::size_t>(id)] = list.front();
             }
         }
+        for (const auto& [key, cat] : defs_.categories.all())
+            if (k < 512 && (cat.second[k >> 5] & (1u << (k & 31)))) look.categories.push_back(upper(cat.first));
         if (types_[k] && types_[k]->ok) {
             bool first = true;
             model_box(types_[k]->root.get(), {0, 0, 0}, look.box_min, look.box_max, first);
@@ -587,6 +597,10 @@ bool ClientWorld::build_content(std::string& error) {
         gray_table_ = render::gray_remap_table(palette_);
         fog_.gray_table = &gray_table_;
     }
+    // Features' names and reclaim values (hover info), the victory and defeat signs.
+    for (const FeatureDefRecord& r : lb_->feature_defs.records()) c.features.push_back({r.description.empty() ? r.name : r.description, 0, 0});
+    if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
+    if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };
     c.start_messages.push_back("Skirmish on " + setup_.map);
     return true;
