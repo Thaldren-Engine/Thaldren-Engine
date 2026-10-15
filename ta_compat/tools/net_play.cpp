@@ -263,6 +263,7 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
             return false;
         }
         hook_up(*m);
+        m->net->set_room(room.players());
         const auto bs = room.battle_start();
         std::printf("machine %zu: battle begins at pass clock %u; slot %d, start position %d, logos", k, clock, m->slot,
                     bs.players[static_cast<std::size_t>(m->slot)].start_position);

@@ -55,7 +55,8 @@ std::int32_t make_net_id() {
 class RoomScreen final : public Screen {
 public:
     RoomScreen(const NetMenuConfig& cfg, std::unique_ptr<net::Transport> t, bool host)
-        : cfg_(cfg), transport_(std::move(t)), room_(std::make_unique<net::BattleRoom>(*transport_, host, make_net_id(), cfg.player_name)) {
+        : cfg_(cfg), transport_(std::move(t)), session_(std::make_shared<net::NetSession>(*transport_)),
+          room_(std::make_unique<net::BattleRoom>(*session_, host, make_net_id(), cfg.player_name)) {
         // This machine's C runtime rand(): the host's start position shuffle draws it (an input
         // from the clock, as the menus leave it).
         crt_rand_.set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -154,27 +155,33 @@ private:
         req->start.crt_rand_state = crt_rand_.state();
         req->settings = &fe.settings();
         auto transport = std::make_shared<std::unique_ptr<net::Transport>>(std::move(transport_));
+        auto session = session_;
         auto net = std::make_shared<std::unique_ptr<net::NetBattle>>();
-        req->wrap_outside = [transport, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
-            *net = std::make_unique<net::NetBattle>(client_outside, **transport);
+        const auto players = room_->players();
+        req->wrap_outside = [session, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
+            *net = std::make_unique<net::NetBattle>(client_outside, *session);
             return **net;
         };
-        req->attach = [net](sim::Battle& b) { (*net)->attach(b); };
+        req->attach = [net, players](sim::Battle& b) {
+            (*net)->attach(b);
+            (*net)->set_room(players);
+        };
         const NetMenuConfig cfg = cfg_;
         room_.reset();  // the room's transport now belongs to the game
-        fe.start_battle([cfg, req, transport, net](const LoadProgress& progress, std::string& error) -> std::unique_ptr<BattleSession> {
+        fe.start_battle([cfg, req, transport, session, net](const LoadProgress& progress, std::string& error) -> std::unique_ptr<BattleSession> {
             if (!cfg.load_network_game) {
                 error = "network games need the importer's loader";
                 return nullptr;
             }
             std::unique_ptr<BattleSession> inner = cfg.load_network_game(*req, progress, error);
             if (!inner || !*net) return nullptr;
-            return std::make_unique<NetBattleSession>(std::move(*transport), std::move(*net), std::move(inner));
+            return std::make_unique<NetBattleSession>(std::move(*transport), session, std::move(*net), std::move(inner));
         });
     }
 
     NetMenuConfig cfg_;
     std::unique_ptr<net::Transport> transport_;
+    std::shared_ptr<net::NetSession> session_;
     std::unique_ptr<net::BattleRoom> room_;
     Box side_, colour_, team_, ready_, computer_, start_, back_;
     sim::Lcg15 crt_rand_;
@@ -247,9 +254,9 @@ void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config) {
     hooks.multiplayer_menu = [config](FrontEnd& fe) { return make_multiplayer_menu(fe, config); };
 }
 
-NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, std::unique_ptr<net::NetBattle> net,
-                                   std::unique_ptr<BattleSession> inner)
-    : transport_(std::move(transport)), net_(std::move(net)), inner_(std::move(inner)) {
+NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, std::shared_ptr<net::NetSession> session,
+                                   std::unique_ptr<net::NetBattle> net, std::unique_ptr<BattleSession> inner)
+    : transport_(std::move(transport)), session_(std::move(session)), net_(std::move(net)), inner_(std::move(inner)) {
     // The client's step budget waits for the slowest remote player; its pause and speed keys
     // send packet 0x19 and received ones apply here.
     GameClient& c = inner_->client();

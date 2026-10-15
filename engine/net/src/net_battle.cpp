@@ -59,8 +59,88 @@ bool NetBattle::broadcast(std::int32_t from, const std::uint8_t* p, std::size_t 
     if (s == 10 || !plays(s) || leaving_[static_cast<std::size_t>(s)]) return false;
     ++counters_.packets_sent;
     if (p[0] < counters_.by_type.size()) ++counters_.by_type[p[0]];
-    sender_.queue(from, kEverybody, p, n, clock_, send_fn());
+    if (!per_group_) {
+        sender_.queue(from, kEverybody, p, n, clock_, send_fn());
+        return true;
+    }
+    // Two players share a group (0x450980): one addressed copy per group of remote players.
+    std::array<bool, 11> sent{};
+    for (int k = 0; k < 10; ++k) {
+        const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(k)];
+        if (!q.active || q.controller != 3) continue;
+        const std::int32_t g = room_[static_cast<std::size_t>(k)].group;
+        if (g >= 0 && g < 10 && sent[static_cast<std::size_t>(g)]) continue;
+        sender_.queue(from, q.net_id, p, n, clock_, send_fn());
+        if (g >= 0 && g < 10) sent[static_cast<std::size_t>(g)] = true;
+    }
     return true;
+}
+
+void NetBattle::set_room(const std::array<RoomPlayer, 10>& players) {
+    room_ = players;
+    have_room_ = true;
+    if (!battle_) return;
+    for (int s = 0; s < 10; ++s)
+        if (room_[static_cast<std::size_t>(s)].net_id && !plays(s)) apply_side_record(s, room_[static_cast<std::size_t>(s)]);
+}
+
+void NetBattle::apply_side_record(int s, const RoomPlayer& r) {
+    // A remote player's side record (0x20): its watch flag and kind reach the victory checks.
+    sim::VictorySide& side = battle_->victory.sides[static_cast<std::size_t>(s)];
+    side.watching = r.watching();
+    side.human = r.kind == 1;
+}
+
+void NetBattle::announce_records() {
+    // 0x450F90: the local players' side records (0x20) and ally teams (0x24).
+    for (int s = 0; s < 10; ++s) {
+        const RoomPlayer& r = room_[static_cast<std::size_t>(s)];
+        if (!r.net_id || !plays(s)) continue;
+        u8 pk[186] = {packet::kSideRecord};
+        const auto bytes = encode_side_record(r);
+        std::memcpy(pk + 1, bytes.data(), bytes.size());
+        broadcast(r.net_id, pk, 186);
+        u8 at[6] = {packet::kAllyTeam};
+        put32(at + 1, static_cast<std::uint32_t>(r.net_id));
+        at[5] = r.ally_team;
+        broadcast(r.net_id, at, 6);
+    }
+    sender_.flush(clock_, true, send_fn());
+}
+
+void NetBattle::check_watch() {
+    // The players' stage put the local player in watch mode (0x464F80): its record gets the
+    // watch bit, mapping and line of sight off, and everybody hears it.
+    if (!battle_ || !have_room_ || watch_sent_) return;
+    const int l = battle_->settings.local_player;
+    if (l < 0 || l >= 10 || !battle_->victory.sides[static_cast<std::size_t>(l)].watching) return;
+    RoomPlayer& r = room_[static_cast<std::size_t>(l)];
+    r.options = static_cast<std::uint16_t>(r.options | room::kWatch);
+    r.map_flags = static_cast<std::uint8_t>(r.map_flags & ~(room::kMapping | room::kLineOfSight));
+    watch_sent_ = true;
+    announce_records();
+}
+
+void NetBattle::check_timeouts() {
+    // 0x453C20.
+    if (!battle_ || timeout_seconds_ == 0 || timeout_disabled_) return;
+    if (paused_) {
+        pause_clock_ = clock_;
+        return;
+    }
+    int group = -1, first = -1;
+    bool several = false;
+    for (int s = 0; s < 10; ++s) {
+        const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(s)];
+        if (!q.active || q.controller != 3) continue;
+        const std::uint32_t since = std::max(last_heard_[static_cast<std::size_t>(s)], pause_clock_);
+        if (clock_ - since <= timeout_seconds_ * 30u) continue;
+        const int g = room_[static_cast<std::size_t>(s)].group;
+        if (first < 0) first = s;
+        if (group < 0) group = g;
+        else if (group != g) several = true;
+    }
+    if (on_timeout) on_timeout(first >= 0 && !several ? first : -1);
 }
 
 bool NetBattle::send_to(std::int32_t from, std::int32_t to, const std::uint8_t* p, std::size_t n) {
@@ -201,11 +281,25 @@ void NetBattle::player_sensor_turn(int player) {
 
 void NetBattle::network_flush() { sender_.flush(clock_, false, send_fn()); }
 
-void NetBattle::send_chat(const std::string& text) {
+void NetBattle::send_chat(const std::string& text) { send_chat(text, 0); }
+
+void NetBattle::send_chat(const std::string& text, int recipients, const std::array<bool, 10>& chosen) {
     u8 pk[65] = {packet::kChat};
-    std::memcpy(pk + 1, text.data(), std::min<std::size_t>(text.size(), 63));
+    std::memcpy(pk + 1, text.data(), std::min<std::size_t>(text.size(), 64));
     ++counters_.chat;
-    broadcast(first_local_net_id(), pk, 65);
+    const std::int32_t me = first_local_net_id();
+    if (!battle_ || (!text.empty() && text[0] == '+') || recipients == 0) {
+        broadcast(me, pk, 65);
+        return;
+    }
+    const int local = battle_->settings.local_player;
+    for (int s = 0; s < 10; ++s) {
+        const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(s)];
+        if (!q.active || q.controller != 3) continue;
+        const bool allied = battle_->alliances[static_cast<std::size_t>(local)][q.state] != 0;
+        const bool to = recipients == 3 ? chosen[static_cast<std::size_t>(s)] : recipients == 1 ? allied : !allied;
+        if (to) send_to(me, q.net_id, pk, 65);
+    }
 }
 
 void NetBattle::send_pause(bool paused) {
@@ -281,6 +375,19 @@ void NetBattle::network_input() {
         dispatch(from, to, d.packet);
         if (type == packet::kGameStart) break;
     }
+    // 0x450980: two playing players in one group switch broadcasts to one copy per group.
+    if (have_room_) {
+        std::array<int, 11> count{};
+        per_group_ = false;
+        for (int s = 0; s < 10; ++s) {
+            const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(s)];
+            const std::int32_t g = room_[static_cast<std::size_t>(s)].group;
+            if (!q.active || q.controller < 1 || q.controller > 3 || q.state == 10 || g < 1 || g > 10) continue;
+            if (++count[static_cast<std::size_t>(g)] >= 2) per_group_ = true;
+        }
+    }
+    check_timeouts();
+    check_watch();
     if (receiver_.stuck()) fault_ = "a frame held a packet type without a size (the original hangs)";
     if (!battle_->net_state().fault.empty() && fault_.empty()) fault_ = battle_->net_state().fault;
 }
@@ -411,6 +518,38 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
     case packet::kUnitStates:
         last_state_tick_[static_cast<std::size_t>(from)] = b.apply_unit_state_packet(from, p, need);
         break;
+    case packet::kSideRecord: {
+        // A remote record during the battle (its watch mode, for one): kept and applied.
+        if (plays(from)) break;
+        RoomPlayer r = decode_side_record(p + 1);
+        RoomPlayer& q = room_[static_cast<std::size_t>(from)];
+        r.net_id = b.players[static_cast<std::size_t>(from)].net_id;
+        r.ally_team = q.ally_team;
+        r.group = q.group;
+        r.start_position = q.start_position;
+        q = r;
+        apply_side_record(from, r);
+        break;
+    }
+    case packet::kAllyTeam: {
+        const int s = slot_of(static_cast<std::int32_t>(get32(p + 1)));
+        if (s != 10 && !plays(s)) room_[static_cast<std::size_t>(s)].ally_team = p[5];
+        break;
+    }
+    case packet::kModifiedExe: {
+        const int s = slot_of(static_cast<std::int32_t>(get32(p + 1)));
+        if (s != 10 && on_modified_executable) on_modified_executable(s);
+        break;
+    }
+    case packet::kDisconnect: {
+        // "Player %s has disconnected" (0x1C): that player is out.
+        const int s = slot_of(static_cast<std::int32_t>(get32(p + 1)));
+        if (s != 10 && !plays(s)) {
+            leaving_[static_cast<std::size_t>(s)] = 1;
+            if (on_player_left) on_player_left(s, 0x1C);
+        }
+        break;
+    }
     default:
         break;  // battle room and loading packets (net/lobby.h) and the ignored ones
     }
