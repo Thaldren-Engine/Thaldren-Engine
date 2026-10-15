@@ -145,6 +145,11 @@ void load_effect_art(AnimImporter& anims, sim::EffectsEnvironment& env) {
     env.lava_splash = anims.sequence("shared", "fx", "lavasplash", true);
 }
 
+void bind_feature_blocks(sim::Battle& b) {
+    b.feature_blocks.resize(b.features.size());
+    for (std::size_t k = 0; k < b.features.size(); ++k) b.feature_blocks[k] = (b.features[k].flags & 0x40u) ? 1 : 0;
+}
+
 void place_tnt_features(sim::Battle& b, const std::vector<std::uint8_t>& tnt) {
     std::uint32_t h[8] = {};
     for (int i = 0; i < 8; ++i)

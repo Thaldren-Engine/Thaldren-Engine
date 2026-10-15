@@ -126,6 +126,7 @@ bool ClientWorld::setup_battle(std::string& error) {
     anim_import_ = std::make_unique<AnimImporter>(vfs_, b.anims);
     bind_weapon_explosions(weapons_, weapon_types_, *anim_import_);
     b.features = to_feature_types(fdefs_, weapon_types_, *anim_import_, &feature_models_);
+    bind_feature_blocks(b);
     load_effect_art(*anim_import_, b.effect_art);
     b.settings.sea_level = static_cast<std::uint8_t>(tnt_info_.sea_level);
     b.settings.gravity = 112;

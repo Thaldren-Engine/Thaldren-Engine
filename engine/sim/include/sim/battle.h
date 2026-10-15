@@ -404,6 +404,9 @@ public:
     OrderContext& order_context() { return orders_; }
     FootprintWorld& footprint_world() { return footprint_; }
     RouteContext& route_context() { return route_; }
+    // The first fault any system recorded (where the original would crash, hang or read
+    // garbage), prefixed with the system's name; empty when there is none.
+    std::string first_fault();
     UnitWorld& unit_world() { return *this; }  // for unit_get_value / unit_set_value / unit_set_activate
     FeatureWorld& feature_world() {
         sync_settings();
