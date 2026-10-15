@@ -520,6 +520,28 @@ void write_start(DWORD tid) {
         first = false;
     }
     std::fprintf(g_out, "]}\n");
+    // The map cells at the start (sparse): [index, unit, unit2, feature, aux, flags, metal] for
+    // every cell with a unit, a feature, flags or metal.
+    std::uint32_t cells = 0, mw = 0, mh = 0;
+    read_u32(gs + kOffCells, cells);
+    read_u32(gs + kOffMapW, mw);
+    read_u32(gs + kOffMapH, mh);
+    if (cells && mw && mh && mw < 4096 && mh < 4096) {
+        std::vector<std::uint8_t> c(static_cast<std::size_t>(mw) * mh * kCellSize);
+        read_block(cells, c.data(), c.size());
+        std::string line = "{\"ev\":\"cells\",\"width\":" + std::to_string(mw) + ",\"height\":" + std::to_string(mh) + ",\"cells\":[";
+        bool f = true;
+        for (std::size_t i = 0; i < static_cast<std::size_t>(mw) * mh; ++i) {
+            const std::uint8_t* p = &c[i * kCellSize];
+            const auto unit = get<std::uint16_t>(c, i * kCellSize), unit2 = get<std::uint16_t>(c, i * kCellSize + 2);
+            const auto feat = get<std::uint16_t>(c, i * kCellSize + 8), aux = get<std::uint16_t>(c, i * kCellSize + 10);
+            if (!unit && !unit2 && feat == 0xFFFF && !aux && !p[12] && !p[7]) continue;
+            line += std::string(f ? "" : ",") + "[" + std::to_string(i) + "," + std::to_string(unit) + "," + std::to_string(unit2) + "," +
+                    std::to_string(feat) + "," + std::to_string(aux) + "," + std::to_string(p[12]) + "," + std::to_string(p[7]) + "]";
+            f = false;
+        }
+        std::fputs((line + "]}\n").c_str(), g_out);
+    }
 }
 
 // The simulation state after a step: generators, wind, players' resources, every unit,
