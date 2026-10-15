@@ -191,6 +191,9 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     b.reset_features_and_effects();
     place_tnt_features(b, lb->tnt);
     sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
+    // Movement: a feature type blocks when its flags have bit 0x40 (the route search's test).
+    b.feature_blocks.assign(b.features.size(), 0);
+    for (std::size_t k = 0; k < b.features.size(); ++k) b.feature_blocks[k] = (b.features[k].flags & 0x40u) ? 1 : 0;
     // The map info's schema: chosen as the original does for skirmish and network games
     // (request.schema < 0), else the requested one.
     std::unique_ptr<TdfSection> ota_root;

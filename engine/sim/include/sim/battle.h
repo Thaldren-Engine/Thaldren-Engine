@@ -623,7 +623,10 @@ private:
         explicit TargetingHooks(Battle& battle) : b(battle) {}
         bool unit_visible(int p, Unit& u) override;
         bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override;
-        std::uint8_t feature_flags(std::uint16_t f) override { return b.outside_.feature_flags(f); }
+        // A feature type's flag byte (its low byte: 0x40 blocking, 0x80 reclaimable).
+        std::uint8_t feature_flags(std::uint16_t f) override {
+            return f < b.features.size() ? static_cast<std::uint8_t>(b.features[f].flags) : b.outside_.feature_flags(f);
+        }
         std::int32_t intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) override;
         // (the refresh's start brings the AI context up to date for the rest of it)
         void ai_table_begin(int table) override { sim::ai_table_begin(b.ai(), table); }

@@ -582,7 +582,8 @@ int main(int argc, char** argv) {
                           e.i("refresh") == rs.refresh_counter && e.i("player") == rs.player &&
                           e.i("active") == (rs.active ? rs.active->id : 0) && arr("cursor") == cur && arr("credit") == cred &&
                           arr("scale") == sc && arr("turns") == tu;
-        std::printf("start: route search state %s\n", same ? "identical" : "DIFFERENT");
+        std::printf("start: route search state %s%s%s\n", same ? "identical" : "DIFFERENT",
+                    b.route_context().fault.empty() ? "" : "; route search fault: ", b.route_context().fault.c_str());
         if (!same) {
             std::printf("  original: players %lld, units per player %lld, refresh %lld, player %lld, serving %lld, cursors %s, credits %s, scales %s, turns %s\n",
                         e.i("player_count"), e.i("units_per_player"), e.i("refresh"), e.i("player"), e.i("active"), list(arr("cursor")).c_str(),

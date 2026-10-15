@@ -158,6 +158,9 @@ bool ClientWorld::setup_battle(std::string& error) {
     b.reset_features_and_effects();
     place_tnt_features(b, tnt_);
     sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
+    // Movement: a feature type blocks when its flags have bit 0x40 (the route search's test).
+    b.feature_blocks.assign(b.features.size(), 0);
+    for (std::size_t k = 0; k < b.features.size(); ++k) b.feature_blocks[k] = (b.features[k].flags & 0x40u) ? 1 : 0;
     {
         MapEconomy me;
         if (!ota.empty()) read_map_economy(ota, 0, me);
