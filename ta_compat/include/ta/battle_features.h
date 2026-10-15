@@ -65,4 +65,9 @@ void load_effect_art(AnimImporter& anims, sim::EffectsEnvironment& env);
 // row-major order (feature index below the TNT's feature count).
 void place_tnt_features(sim::Battle& battle, const std::vector<std::uint8_t>& tnt);
 
+// The route search's per-type blocking flags (Battle::feature_blocks) from the battle's
+// feature types (flag 0x40, the one the original's passability reads). Call after
+// `battle.features` is set and before the passability grids are built.
+void bind_feature_blocks(sim::Battle& battle);
+
 } // namespace ta

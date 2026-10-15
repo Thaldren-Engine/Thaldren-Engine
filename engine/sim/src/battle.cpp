@@ -392,6 +392,25 @@ std::int32_t Battle::TargetingHooks::intercept_target(Unit& u, int slot, std::ar
     return i;
 }
 
+std::string Battle::first_fault() {
+    std::string out;
+    auto check = [&out](const char* name, const std::string& f) {
+        if (out.empty() && !f.empty()) out = std::string(name) + ": " + f;
+    };
+    check("route search", route_.fault);
+    check("missions", missions_.fault);
+    check("motion", motion_.fault);
+    check("computer player", ai().fault);
+    check("footprints", footprint_.fault);
+    check("features", feature_state.fault);
+    check("effects", effects.fault);
+    check("projectiles", projectiles.fault);
+    check("targeting", targeting_.fault);
+    check("nano", nano.fault);
+    check("effect lists", fx_lists.fault);
+    return out;
+}
+
 void Battle::init_routes() {
     sync_settings();
     const std::size_t blocks = static_cast<std::size_t>(map.width >> 1) * static_cast<std::size_t>(map.height >> 1);

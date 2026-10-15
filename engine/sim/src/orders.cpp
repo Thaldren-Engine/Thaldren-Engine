@@ -65,6 +65,20 @@ void unlink_unit(UnitLink& link) {
     }
 }
 
+void release_referrers(Unit& unit) {
+    // Newest link first: its owner (an order) hears event 8, then the link lets go of the
+    // unit, unless the owner pointed it somewhere else meanwhile.
+    while (UnitLink* l = unit.referrers) {
+        Unit* was = l->unit;
+        if (l->owner) l->owner->events |= 8u;
+        if (l->unit == was && was) {
+            unlink_unit(*l);
+        } else if (unit.referrers == l) {
+            break;  // a link that no longer points here but heads the list: the original would loop forever
+        }
+    }
+}
+
 void relink_unit(OrderContext& c, UnitLink& link, Unit* unit) {
     unlink_unit(link);
     if (unit && c.ticks[unit->id].type_index != 0) {

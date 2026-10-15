@@ -801,6 +801,13 @@ int main(int argc, char** argv) {
                 std::printf("\n");
             }
             if (ai_players && !battle->ai().fault.empty()) std::printf("  AI FAULT: %s\n", battle->ai().fault.c_str());
+            if (ai_players && std::getenv("AI_DEBUG")) {
+                const sim::RouteSearch& rs = battle->route_search;
+                std::printf("  route search: serving %d, player %d, cursors %d %d, credits %d %d, open %d, scales %d %d\n",
+                            rs.active ? static_cast<int>(rs.active->id) : 0, rs.player, rs.unit_cursor[0], rs.unit_cursor[1], rs.credit[0],
+                            rs.credit[1], rs.open_count, rs.estimate_scale[0], rs.estimate_scale[1]);
+            }
+            if (const std::string fault = battle->first_fault(); !fault.empty()) std::printf("  ENGINE FAULT: %s\n", fault.c_str());
             if (ai_players && std::getenv("AI_DEBUG"))
                 for (int p = 0; p < 2; ++p)
                     for (sim::Unit* u : battle->ai_state.groups[static_cast<std::size_t>(p)][4]) {
@@ -812,6 +819,15 @@ int main(int argc, char** argv) {
                                                                                                                  : std::vector<std::uint16_t>{})
                             std::printf(" %s=%d", btypes[t]->def->unit_name.c_str(), sim::ai_build_score(battle->ai(), p, t));
                         std::printf("\n");
+                        const sim::MotionState& ms = battle->ticks[u->id].motion;
+                        if (const auto* rg = dynamic_cast<const sim::RouteGoal*>(ms.goal.get())) {
+                            std::printf("    motion: speed %d flags %x cell %d,%d; route flags %x count %d search tick %u goal %s;", ms.speed, ms.flags,
+                                        u->cell_x, u->cell_z, rg->flags, rg->count, rg->search_tick, rg->attached ? "attached" : "none");
+                            for (int k = 0; k < rg->count; ++k)
+                                std::printf(" %d,%d", static_cast<std::int16_t>(rg->points[static_cast<std::size_t>(k)] & 0xFFFF),
+                                            static_cast<std::int16_t>(rg->points[static_cast<std::size_t>(k)] >> 16));
+                            std::printf("\n");
+                        }
                     }
             std::printf("  wind speed %d (%.3f of full), heading %u\n", battle->wind.speed, static_cast<double>(battle->wind.fraction),
                         static_cast<unsigned>(battle->wind.heading));
@@ -829,6 +845,14 @@ int main(int argc, char** argv) {
                 std::printf("  aircraft unit %zu (%s) at %d,%d,%d order kind %d step %d%s\n", i, btypes[t.type_index]->def->unit_name.c_str(),
                             u.pos[0] >> 16, u.pos[1] >> 16, u.pos[2] >> 16, u.orders ? u.orders->kind : -1, u.orders ? u.orders->step : -1,
                             u.cargo_head ? " carrying a unit" : "");
+                if (std::getenv("AIR_DEBUG")) {
+                    const auto* fg = dynamic_cast<const sim::FlightGoal*>(t.motion.goal.get());
+                    std::printf("    order at %d,%d,%d wait %x target %d; speed %d layer %d; flight goal %s at %d,%d,%d heading %u\n",
+                                u.orders ? u.orders->pos[0] >> 16 : 0, u.orders ? u.orders->pos[1] >> 16 : 0, u.orders ? u.orders->pos[2] >> 16 : 0,
+                                u.orders ? u.orders->wait : 0u, u.orders && u.orders->target.unit ? u.orders->target.unit->id : 0, t.motion.speed,
+                                t.motion.flags & 3, fg && fg->attached ? "attached" : "none", fg ? fg->pos[0] >> 16 : 0, fg ? fg->pos[1] >> 16 : 0,
+                                fg ? fg->pos[2] >> 16 : 0, fg ? fg->target_heading : 0u);
+                }
             }
             std::printf("  nano streams %zu, particles %d, rand() state %08x%s%s\n", battle->nano.streams.size(), nano, battle->crt_rand.state(),
                         battle->missions().fault.empty() ? "" : " MISSION FAULT: ", battle->missions().fault.c_str());
