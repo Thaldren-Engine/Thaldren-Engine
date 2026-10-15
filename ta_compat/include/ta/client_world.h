@@ -172,6 +172,10 @@ struct GuiGadget {
     int quickkey = 0;
     int status = 0;
     std::string text, panel, filename;
+    int stages = 0;          // buttons: switch stages
+    bool grayed = false;     // buttons: grayedout
+    std::string link;        // labels: the button they name
+    std::string crdefault, escdefault, defaultfocus;  // header: Enter / Escape defaults, focus
 };
 bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& out);
 

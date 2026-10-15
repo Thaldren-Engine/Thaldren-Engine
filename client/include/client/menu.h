@@ -109,6 +109,8 @@ public:
 
     Widget* widget(const std::string& name);
     const ScreenLayout* layout() const { return layout_; }
+    // True when an active widget lies under the point.
+    bool over(int x, int y) { return hit(x, y) >= 0; }
 
 protected:
     // A button was clicked (released over it) or its quick key pressed.

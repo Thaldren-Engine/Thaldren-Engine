@@ -73,8 +73,9 @@ void draw_text(render::Image8& dst, const render::ClipRect& clip, const Font& fo
         if (!g.present) continue;
         for (int r = 0; r < font.height; ++r)
             for (int k = 0; k < g.width; ++k) {
-                const bool ink = g.ink[static_cast<std::size_t>(r * g.width + k)] != 0;
-                const int v = ink ? fg : bg;
+                const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                const bool ink = g.ink[at] != 0;
+                const int v = ink ? (g.colours.empty() ? fg : g.colours[at]) : bg;
                 if (v >= 0) put_pixel(dst, clip, x + k, top + r, static_cast<std::uint8_t>(v));
             }
         x += g.width;

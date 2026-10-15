@@ -115,6 +115,12 @@ bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& ou
         g.text = sec->get_string("text", 256, "");
         g.panel = sec->get_string("panel", 32, "");
         g.filename = sec->get_string("filename", 32, "");
+        g.stages = sec->get_int("stages", 0);
+        g.grayed = sec->get_int("grayedout", 0) != 0;
+        g.link = sec->get_string("link", 32, "");
+        g.crdefault = sec->get_string("crdefault", 32, "");
+        g.escdefault = sec->get_string("escdefault", 32, "");
+        g.defaultfocus = sec->get_string("defaultfocus", 32, "");
         out.push_back(std::move(g));
     }
     return true;
