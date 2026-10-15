@@ -3,3 +3,4 @@
 /.vs/
 CMakeUserPresets.json
 .claude/worktrees/
+/dist/
