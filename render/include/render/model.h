@@ -22,6 +22,7 @@ struct ModelTexture {
 
 struct ModelPrimitive {
     std::vector<std::uint16_t> indices;
+    std::array<std::uint16_t, 3> normal_indices{};  // the three vertices the lit path takes the face normal from
     std::uint8_t colour = 0;            // palette index for flat polygons
     bool flat = false;                  // flat colour; otherwise textured (quads only)
     const ModelTexture* texture = nullptr;
@@ -42,6 +43,7 @@ struct ModelDrawParams {
     std::uint8_t team_colour = 0;      // frame index for team-coloured textures
     std::uint32_t animation_frame = 0; // global animation counter for animated textures
     bool all_pieces = false;           // draw cached and uncached pieces (units under construction)
+    bool direct_cursor = true;         // pieces drawn straight onto the frame take the animation cursor (else frame 0)
 };
 
 // Projects one transformed point (unit space, 16.16) the way the sprite

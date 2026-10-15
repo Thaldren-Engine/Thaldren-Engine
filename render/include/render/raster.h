@@ -32,6 +32,19 @@ void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_
 // memory there) is clamped and reported through `out_of_range`.
 void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& texture, bool* out_of_range = nullptr);
 
+// The lit (shaded) path's vertex: a light level 0..31 per vertex, interpolated like depth.
+struct LitVertex {
+    int x = 0, y = 0, z = 0, light = 0;
+};
+
+// Lit flat polygon: each pixel takes shade[level * 256 + colour] (shade: 32 x 256 table).
+// Same scan rules as fill_polygon; the caller clips to the whole target.
+void fill_polygon_lit(RasterTarget& t, const LitVertex* v, int count, std::uint8_t colour, const std::uint8_t* shade);
+
+// Lit textured quad: texel through the shade table when the target has a depth plane;
+// without one the texels are copied unlit (as the original does).
+void textured_quad_lit(RasterTarget& t, const LitVertex* v, const Sprite8& texture, const std::uint8_t* shade);
+
 // Outline of a polygon as the construction look draws it (0x4C0820 / 0x4C0A90): the
 // polygon is scan converted like fill_polygon but without clipping, and each row with
 // right > left gets only its two end pixels (x = left and x = right), each depth tested

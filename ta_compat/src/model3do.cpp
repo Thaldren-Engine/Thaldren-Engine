@@ -108,6 +108,10 @@ std::unique_ptr<Model3doPiece> read_piece(Reader& r, std::uint32_t off, int dept
         }
         pr.indices.resize(nidx);
         for (std::uint32_t i = 0; i < nidx; ++i) std::memcpy(&pr.indices[i], &r.f[idx_off + i * 2u], 2);
+        // The first three index slots as stored, read even past a shorter list (the shaded
+        // drawing path takes a face normal from them whatever the count).
+        for (std::uint32_t i = 0; i < 3; ++i)
+            if (static_cast<std::size_t>(idx_off) + i * 2u + 2 <= r.f.size()) std::memcpy(&pr.first3[i], &r.f[idx_off + i * 2u], 2);
         pr.texture = tex_off ? r.cstr(tex_off) : std::string();
     }
     // The game relocates the sibling, then the child, then sorts this piece's primitives.

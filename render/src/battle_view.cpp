@@ -110,7 +110,7 @@ void draw_feature(const BattleScene& s, const FeatureInstance& f, DrawList& out)
     const int x = (f.footprint_x * 16) / 2 + f.cell_x * 16 + c.origin_x - c.scroll_x;
     const int y = (f.footprint_z * 16) / 2 - (sum >> 3) + f.cell_z * 16 + c.origin_y - c.scroll_y;
     const ClipRect clip = c.view_clip();
-    if (f.shadow && s.feature_shadows) {
+    if (f.shadow && s.feature_shadows && s.options.feature_shadows) {
         if (f.shadow_blended) out.blend(f.shadow, x, y, clip, true);
         else out.blit(f.shadow, x, y, clip, true);
     }
@@ -120,65 +120,106 @@ void draw_feature(const BattleScene& s, const FeatureInstance& f, DrawList& out)
     }
 }
 
-void draw_unit_as(const BattleScene& s, const UnitInstance& ui, DrawList& out, bool carried);
-
-void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
-    if (ui.unit->carrier) return;  // carried units are drawn with their carrier
-    draw_unit_as(s, ui, out, false);
-    // Units on board (a factory's pad): after the carrier, each in its own place (the original
-    // composites them into the carrier's two-plane sprite with a depth test; approximated).
-    for (const sim::Unit* cu = ui.unit->cargo_head; cu; cu = cu->cargo_next) {
-        if (cu->flags & 0x20000u) continue;  // hidden on board
-        for (const UnitInstance& other : s.units)
-            if (other.unit == cu) draw_unit_as(s, other, out, true);
-    }
+LookUnit look_unit(const BattleScene& s, const UnitInstance& ui) {
+    const sim::Unit& u = *ui.unit;
+    LookUnit lu;
+    lu.model = ui.model;
+    lu.pose = pose_for_drawing(u.pose, u.pitch, u.heading, u.bank);
+    lu.pos = u.pos;
+    lu.team_colour = ui.params.team_colour;
+    lu.texture_frame = ui.params.animation_frame;
+    lu.type_flags = ui.type_flags | (ui.shadow ? 0u : look_type_flags::kNoShadow);
+    lu.structure = (u.flags & 0x20000000u) != 0;
+    lu.zbuffer = (u.draw_flags & 1u) != 0;
+    lu.build_left = u.build_fraction_left;
+    lu.id = u.id;
+    (void)s;
+    return lu;
 }
 
-void draw_unit_as(const BattleScene& s, const UnitInstance& ui, DrawList& out, bool carried) {
+// One unit (the original's 0x45AC20 / 0x458810 / 0x459200): shadow, then either the
+// depth-plane composite as one sprite, or the plain sprite followed by the pieces that are
+// not cached and the units on board drawn straight onto the frame.
+void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
     const sim::Unit& u = *ui.unit;
-    if (!ui.model) return;
+    if (u.carrier || !ui.model) return;  // carried units are drawn with their carrier
     const Camera& c = s.camera;
     const ClipRect clip = c.view_clip();
-    const sim::PoseState pose = pose_for_drawing(u.pose, u.pitch, u.heading, u.bank);
-    // Units under construction: structures (and units on a pad) get the construction look on
-    // their two-plane sprite; mobile units elsewhere are drawn over again with their textures.
-    Sprite8 sprite;
-    if (u.build_fraction_left != 0.0f && (carried || (u.flags & 0x20000000u))) {
-        std::vector<std::uint8_t> depth;
-        ModelDrawParams all = ui.params;
-        all.all_pieces = true;
-        sprite = rasterize_model_sprite_depth(*ui.model, pose, all, depth);
-        apply_nanoframe(sprite, depth, *ui.model, pose, all, u.build_fraction_left, u.id, s.game_tick);
-    } else {
-        sprite = rasterize_model_sprite(*ui.model, pose, ui.params);
+    const LookUnit lu = look_unit(s, ui);
+    std::vector<LookUnit> cargo;
+    std::vector<const UnitInstance*> cargo_ui;
+    for (const sim::Unit* cu = u.cargo_head; cu; cu = cu->cargo_next) {
+        if (cu->flags & 0x20000u) continue;  // hidden on board
+        for (const UnitInstance& other : s.units)
+            if (other.unit == cu && other.model) {
+                cargo.push_back(look_unit(s, other));
+                cargo_ui.push_back(&other);
+            }
     }
+    const LookFrame sprite = build_unit_sprite(lu, false, 1, s.options, s.tables);
+    const bool depth_path = !sprite.depth.empty();
     const int ux = screen_x(c, u.pos[0]);
     const int uy = screen_y(c, u.pos[1], u.pos[2]);
-    if (ui.shadow && s.unit_shadows) {
-        // Shadow: the sprite's shape in colour 0, mixed with the frame, 5 pixels
-        // right and placed by the ground height instead of the unit's height.
-        Sprite8 sh = sprite;
-        for (auto& p : sh.pixels)
-            if (p != sh.key) p = 0;
-        const int sy = hi16(u.pos[2] - (c.scroll_y << 16)) - (ui.ground_height >> 1) + c.origin_y;
-        out.blend(out.keep(std::move(sh)), ux + 5, sy, clip, false);
-    }
-    if (ui.translucent)
-        out.blend(out.keep(std::move(sprite)), ux, uy, clip, false);
-    else
-        out.blit(out.keep(std::move(sprite)), ux, uy, clip, false);
+    const int below = s.sea_level - hi16(u.pos[1]);
 
-    // Pieces that are not cached are drawn straight onto the frame each time.
-    bool any = false;
-    for (const auto& pc : pose.pieces)
-        if ((pc.flags & sim::pose_flags::kVisible) && !(pc.flags & sim::pose_flags::kCached)) any = true;
-    if (!any) return;
-    const std::int32_t vx = u.pos[0] - (c.scroll_x << 16), vz = u.pos[2] - (c.scroll_y << 16);
-    Model solid = *ui.model;
-    for (auto& p : solid.pieces) p = solid_piece(p);
-    emit_direct(c, clip, out, [&](RasterTarget& t, bool mask) {
-        draw_uncached_pieces(t, mask ? solid : *ui.model, pose, vx, u.pos[1], vz, c.origin_x, c.origin_y, ui.params);
-    });
+    // Shadow: 5 pixels right, placed by the terrain height under the unit.
+    if (s.options.shadows && s.unit_shadows && !(lu.type_flags & look_type_flags::kNoShadow)) {
+        const int sy = hi16(u.pos[2] - (c.scroll_y << 16)) - (ui.ground_height >> 1) + c.origin_y;
+        const bool digger = (lu.type_flags & look_type_flags::kDigger) != 0;
+        const bool floats = (lu.type_flags & (look_type_flags::kHover | look_type_flags::kFloater)) != 0;
+        Sprite8 sh;
+        bool have = false;
+        if (depth_path && digger) {
+            sh = mobile_shadow(sprite, 125);
+            have = true;
+        } else if (!lu.structure || digger) {
+            if (s.options.unit_shadows && !floats) {
+                sh = mobile_shadow(sprite, depth_path && below > 0 ? static_cast<std::uint8_t>(below + 50) : -1);
+                have = true;
+            }
+        } else {
+            sh = structure_shadow(lu, sprite.image);
+            have = true;
+        }
+        if (have) out.blend(out.keep(std::move(sh)), ux + 5, sy, clip, false);
+    }
+
+    if (depth_path) {
+        DepthLookInput in;
+        in.unit = &lu;
+        for (const LookUnit& cu : cargo) in.cargo.push_back(&cu);
+        in.own_view = ui.own_view;
+        in.sea_level = s.sea_level;
+        in.tick = s.game_tick;
+        in.options = s.options;
+        in.tables = s.tables;
+        LookFrame look = compose_depth_look(in, sprite);
+        if (ui.translucent) out.blend(out.keep(std::move(look.image)), ux, uy, clip, false);
+        else out.blit(out.keep(std::move(look.image)), ux, uy, clip, false);
+        return;
+    }
+    if (ui.translucent) out.blend(out.keep(Sprite8(sprite.image)), ux, uy, clip, false);
+    else out.blit(out.keep(Sprite8(sprite.image)), ux, uy, clip, false);
+
+    // Pieces that are not cached, then every visible piece of the units on board, straight
+    // onto the frame (texture cursor only while the carrier moves / is active).
+    auto direct = [&](const UnitInstance& who, const LookUnit& l, bool all) {
+        bool any = false;
+        for (const auto& pc : l.pose.pieces)
+            if ((pc.flags & sim::pose_flags::kVisible) && (all || !(pc.flags & sim::pose_flags::kCached))) any = true;
+        if (!any) return;
+        ModelDrawParams mp = who.params;
+        mp.all_pieces = all;
+        mp.direct_cursor = ui.animate_direct;
+        const std::int32_t vx = who.unit->pos[0] - (c.scroll_x << 16), vz = who.unit->pos[2] - (c.scroll_y << 16);
+        Model solid = *who.model;
+        for (auto& p : solid.pieces) p = solid_piece(p);
+        emit_direct(c, clip, out, [&](RasterTarget& t, bool mask) {
+            draw_uncached_pieces(t, mask ? solid : *who.model, l.pose, vx, who.unit->pos[1], vz, c.origin_x, c.origin_y, mp);
+        });
+    };
+    direct(ui, lu, false);
+    for (std::size_t k = 0; k < cargo.size(); ++k) direct(*cargo_ui[k], cargo[k], true);
 }
 
 // A debris piece: its model piece's vertices turned by the piece's angles, drawn straight

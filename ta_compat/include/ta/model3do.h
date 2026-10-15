@@ -16,6 +16,7 @@ namespace ta {
 struct Model3doPrimitive {
     std::int32_t color_index = 0;
     std::vector<std::uint16_t> indices;
+    std::array<std::uint16_t, 3> first3{};  // the file's first three index slots (read past short lists)
     std::string texture;  // texture name from the file ("" = none)
     std::array<std::uint8_t, 32> raw{};  // original 32-byte record (offsets as in the file)
 };

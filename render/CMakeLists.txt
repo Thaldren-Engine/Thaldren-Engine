@@ -6,6 +6,7 @@ add_library(render STATIC
     src/image.cpp
     src/model.cpp
     src/raster.cpp
+    src/unit_look.cpp
 )
 target_include_directories(render PUBLIC include)
 target_link_libraries(render PUBLIC sim)

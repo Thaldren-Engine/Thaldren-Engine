@@ -24,14 +24,14 @@ inline std::int32_t cdiv(std::int32_t a, std::int32_t b) {
 
 // Per-row span ends: x (integer), then interpolated attributes in 16.16.
 struct RowEnd {
-    std::int32_t x = 0, u = 0, v = 0, z = 0;
+    std::int32_t x = 0, u = 0, v = 0, z = 0, l = 0;
 };
 struct Row {
     RowEnd l, r;
 };
 
 struct EdgeVertex {
-    std::int32_t x, y, z, u, v;
+    std::int32_t x, y, z, u, v, l = 0;
 };
 
 // Walks one edge from a (top) to b (bottom) and appends its rows to `out`,
@@ -44,8 +44,9 @@ void walk_edge(const EdgeVertex& a, const EdgeVertex& b, int clip_y0, int max_y,
     const std::int32_t su = cdiv(wsub(wmul(b.u, 0x10000), wmul(a.u, 0x10000)), dy);
     const std::int32_t sv = cdiv(wsub(wmul(b.v, 0x10000), wmul(a.v, 0x10000)), dy);
     const std::int32_t sz = cdiv(wsub(wmul(b.z, 0x10000), wmul(a.z, 0x10000)), dy);
+    const std::int32_t sl = cdiv(wsub(wmul(b.l, 0x10000), wmul(a.l, 0x10000)), dy);
     std::int32_t x = wadd(wmul(a.x, 0x10000), 0xFFFF);
-    std::int32_t u = wmul(a.u, 0x10000), v = wmul(a.v, 0x10000), z = wmul(a.z, 0x10000);
+    std::int32_t u = wmul(a.u, 0x10000), v = wmul(a.v, 0x10000), z = wmul(a.z, 0x10000), l = wmul(a.l, 0x10000);
     std::int32_t y = a.y;
     if (y < clip_y0) {
         const std::int32_t skip = clip_y0 - y;
@@ -53,6 +54,7 @@ void walk_edge(const EdgeVertex& a, const EdgeVertex& b, int clip_y0, int max_y,
         u = wadd(u, wmul(su, skip));
         v = wadd(v, wmul(sv, skip));
         z = wadd(z, wmul(sz, skip));
+        l = wadd(l, wmul(sl, skip));
         y = clip_y0;
     }
     const std::int32_t end = std::min(b.y, max_y);
@@ -63,11 +65,13 @@ void walk_edge(const EdgeVertex& a, const EdgeVertex& b, int clip_y0, int max_y,
         e.u = u;
         e.v = v;
         e.z = z;
+        e.l = l;
         ++cursor;
         x = wadd(x, sx);
         u = wadd(u, su);
         v = wadd(v, sv);
         z = wadd(z, sz);
+        l = wadd(l, sl);
     }
 }
 
@@ -118,12 +122,14 @@ void scan(RasterTarget& t, const EdgeVertex* vs, int n, Plot&& plot) {
         const std::int32_t su = cdiv(wsub(r.r.u, r.l.u), w);
         const std::int32_t sv = cdiv(wsub(r.r.v, r.l.v), w);
         const std::int32_t sz = cdiv(wsub(r.r.z, r.l.z), w);
-        std::int32_t u = r.l.u, v = r.l.v, z = r.l.z;
+        const std::int32_t sl = cdiv(wsub(r.r.l, r.l.l), w);
+        std::int32_t u = r.l.u, v = r.l.v, z = r.l.z, l = r.l.l;
         if (x0 < c.x0) {
             const std::int32_t skip = c.x0 - x0;
             u = wadd(u, wmul(su, skip));
             v = wadd(v, wmul(sv, skip));
             z = wadd(z, wmul(sz, skip));
+            l = wadd(l, wmul(sl, skip));
             x0 = c.x0;
         }
         if (x1 > c.x1) x1 = c.x1;
@@ -132,11 +138,12 @@ void scan(RasterTarget& t, const EdgeVertex* vs, int n, Plot&& plot) {
         for (std::int32_t x = x0; x < x1; ++x) {
             const auto zb = static_cast<std::uint8_t>(static_cast<std::uint32_t>(z) >> 16);
             if (!dz || dz[x] <= zb) {
-                if (plot(px[x], u, v) && dz) dz[x] = zb;
+                if (plot(px[x], u, v, l) && dz) dz[x] = zb;
             }
             u = wadd(u, su);
             v = wadd(v, sv);
             z = wadd(z, sz);
+            l = wadd(l, sl);
         }
     }
 }
@@ -146,7 +153,7 @@ void scan(RasterTarget& t, const EdgeVertex* vs, int n, Plot&& plot) {
 void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_t colour) {
     std::vector<EdgeVertex> vs(static_cast<std::size_t>(std::max(count, 0)));
     for (int i = 0; i < count; ++i) vs[static_cast<std::size_t>(i)] = {v[i].x, v[i].y, v[i].z, 0, 0};
-    scan(t, vs.data(), count, [&](std::uint8_t& p, std::int32_t, std::int32_t) {
+    scan(t, vs.data(), count, [&](std::uint8_t& p, std::int32_t, std::int32_t, std::int32_t) {
         p = colour;
         return true;
     });
@@ -159,7 +166,7 @@ void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex, b
                               {v[1].x, v[1].y, v[1].z, uw, 0},
                               {v[2].x, v[2].y, v[2].z, uw, vh},
                               {v[3].x, v[3].y, v[3].z, 0, vh}};
-    scan(t, vs, 4, [&](std::uint8_t& p, std::int32_t u, std::int32_t vv) {
+    scan(t, vs, 4, [&](std::uint8_t& p, std::int32_t u, std::int32_t vv, std::int32_t) {
         const std::int32_t tx = u >> 16, ty = vv >> 16;
         // The original addresses texels linearly (x + y * width), so an x
         // outside the row reads a neighbouring row. Outside the whole texture
@@ -171,6 +178,33 @@ void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex, b
             if (out_of_range) *out_of_range = true;
             p = tex.at(std::clamp(tx, 0, tex.width - 1), std::clamp(ty, 0, tex.height - 1));
         }
+        return true;
+    });
+}
+
+void fill_polygon_lit(RasterTarget& t, const LitVertex* v, int count, std::uint8_t colour, const std::uint8_t* shade) {
+    std::vector<EdgeVertex> vs(static_cast<std::size_t>(std::max(count, 0)));
+    for (int i = 0; i < count; ++i) vs[static_cast<std::size_t>(i)] = {v[i].x, v[i].y, v[i].z, 0, 0, v[i].light};
+    scan(t, vs.data(), count, [&](std::uint8_t& p, std::int32_t, std::int32_t, std::int32_t l) {
+        p = shade[static_cast<std::size_t>(static_cast<std::uint32_t>((l >> 16) * 256 + colour))];
+        return true;
+    });
+}
+
+void textured_quad_lit(RasterTarget& t, const LitVertex* v, const Sprite8& tex, const std::uint8_t* shade) {
+    if (tex.width <= 0 || tex.height <= 0) return;
+    const std::int32_t uw = tex.width - 1, vh = tex.height - 1;
+    const EdgeVertex vs[4] = {{v[0].x, v[0].y, v[0].z, 0, 0, v[0].light},
+                              {v[1].x, v[1].y, v[1].z, uw, 0, v[1].light},
+                              {v[2].x, v[2].y, v[2].z, uw, vh, v[2].light},
+                              {v[3].x, v[3].y, v[3].z, 0, vh, v[3].light}};
+    const bool lit = t.depth != nullptr;  // without a depth plane the texels are copied unlit
+    scan(t, vs, 4, [&](std::uint8_t& p, std::int32_t u, std::int32_t vv, std::int32_t l) {
+        const long long lin = static_cast<long long>(u >> 16) + static_cast<long long>(vv >> 16) * tex.width;
+        const std::uint8_t texel = lin >= 0 && lin < static_cast<long long>(tex.pixels.size())
+                                       ? tex.pixels[static_cast<std::size_t>(lin)]
+                                       : tex.at(std::clamp(u >> 16, 0, tex.width - 1), std::clamp(vv >> 16, 0, tex.height - 1));
+        p = lit ? shade[static_cast<std::size_t>(static_cast<std::uint32_t>((l >> 16) * 256 + texel))] : texel;
         return true;
     });
 }
