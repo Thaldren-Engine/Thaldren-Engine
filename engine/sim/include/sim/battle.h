@@ -475,7 +475,10 @@ private:
     void kill_counted(std::uint8_t slot, Unit& v) override { outside_.kill_counted(slot, v); }
     void detonate(Unit& unit, bool self_destruct) override;
     void spawn_wreck(Unit& u, std::int32_t level, bool burn) override;
-    void release_unit(Unit& u) override { outside_.release_unit(u); }
+    void release_unit(Unit& u) override {
+        release_referrers(u);  // 0x489740
+        outside_.release_unit(u);
+    }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
     void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
     void commander_died(int p) override {

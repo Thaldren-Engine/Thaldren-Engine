@@ -845,6 +845,14 @@ int main(int argc, char** argv) {
                 std::printf("  aircraft unit %zu (%s) at %d,%d,%d order kind %d step %d%s\n", i, btypes[t.type_index]->def->unit_name.c_str(),
                             u.pos[0] >> 16, u.pos[1] >> 16, u.pos[2] >> 16, u.orders ? u.orders->kind : -1, u.orders ? u.orders->step : -1,
                             u.cargo_head ? " carrying a unit" : "");
+                if (std::getenv("AIR_DEBUG")) {
+                    const auto* fg = dynamic_cast<const sim::FlightGoal*>(t.motion.goal.get());
+                    std::printf("    order at %d,%d,%d wait %x target %d; speed %d layer %d; flight goal %s at %d,%d,%d heading %u\n",
+                                u.orders ? u.orders->pos[0] >> 16 : 0, u.orders ? u.orders->pos[1] >> 16 : 0, u.orders ? u.orders->pos[2] >> 16 : 0,
+                                u.orders ? u.orders->wait : 0u, u.orders && u.orders->target.unit ? u.orders->target.unit->id : 0, t.motion.speed,
+                                t.motion.flags & 3, fg && fg->attached ? "attached" : "none", fg ? fg->pos[0] >> 16 : 0, fg ? fg->pos[1] >> 16 : 0,
+                                fg ? fg->pos[2] >> 16 : 0, fg ? fg->target_heading : 0u);
+                }
             }
             std::printf("  nano streams %zu, particles %d, rand() state %08x%s%s\n", battle->nano.streams.size(), nano, battle->crt_rand.state(),
                         battle->missions().fault.empty() ? "" : " MISSION FAULT: ", battle->missions().fault.c_str());

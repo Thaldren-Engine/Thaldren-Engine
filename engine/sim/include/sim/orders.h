@@ -141,6 +141,10 @@ struct OrderContext {
 // Points `link` at `unit` (nothing if null or an empty table slot), first unlinking it.
 void relink_unit(OrderContext& c, UnitLink& link, Unit* unit);
 void unlink_unit(UnitLink& link);
+// The release of a dying unit's links (0x489740, teardown of the kill packet): every link
+// pointing at it, newest first, tells its owning order event 8, then lets go of it. Links
+// held by order goals (follow, dock, face) have no owner and just let go.
+void release_referrers(Unit& unit);
 
 // Builds a new order of `kind` in `order` (fresh memory from allocate_order).
 // `pos` (3 values) may be null; without a target the order loses kHasTarget,
