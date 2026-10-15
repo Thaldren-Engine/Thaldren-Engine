@@ -165,6 +165,15 @@ void damage_feature(FeatureWorld& w, MapCell& cell, std::int32_t x, std::int32_t
 void apply_feature_packet(FeatureWorld& w, const std::uint8_t* packet, const std::vector<const WeaponType*>& weapons);
 // The per-step feature stage: type animations, the reproduction sweep, then every active slot.
 void step_features(FeatureWorld& w);
+
+// Map loading, after the map's features are placed: the cells outside the visible area get
+// the edge marker 0xFFFD (where no feature is, or a feature part), which blocks movement:
+// the last two columns; at the top, per column, the cells whose ground (half the height up)
+// lies above the map's top edge; at the bottom, per column from the last row upwards, while
+// a cell's ground lies below the visible height (cells x 16 - 128), the cell above it (so the
+// last row itself is never marked); on lava maps every cell whose lowest corner is at or below
+// the sea level.
+void mark_map_edges(MapGrid& map, std::uint8_t sea_level, bool lava_world);
 // The wreck of a dead unit: the type's corpse, `level - 1` stages further down its dead chain, at
 // the unit's cells, place and attitude. In deep water it sinks (unless the unit type is itself a
 // feature). `burn` (on land) only adds a fire effect.

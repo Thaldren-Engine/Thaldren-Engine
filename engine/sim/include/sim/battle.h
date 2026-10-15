@@ -218,6 +218,10 @@ public:
     // commanders, the computer players' metal-site survey (0x4649D0).
     virtual void ai_player_setup(int /*player*/) {}
     virtual void ai_battle_ready() {}
+    // Stale stack words the original reads (inputs; the defaults are the settings' values):
+    // the computer player's constructor site height (per role call) and the reclaim sites' y.
+    virtual std::int32_t ai_site_height_word(int /*player*/, std::int32_t fallback) { return fallback; }
+    virtual std::int32_t reclaim_site_y(std::int32_t fallback) { return fallback; }
 };
 
 class Battle final : UnitWorld,
@@ -625,7 +629,10 @@ private:
         explicit TargetingHooks(Battle& battle) : b(battle) {}
         bool unit_visible(int p, Unit& u) override;
         bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override;
-        std::uint8_t feature_flags(std::uint16_t f) override { return b.outside_.feature_flags(f); }
+        // A feature type's flag byte (its low byte: 0x40 blocking, 0x80 reclaimable).
+        std::uint8_t feature_flags(std::uint16_t f) override {
+            return f < b.features.size() ? static_cast<std::uint8_t>(b.features[f].flags) : b.outside_.feature_flags(f);
+        }
         std::int32_t intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) override;
         // (the refresh's start brings the AI context up to date for the rest of it)
         void ai_table_begin(int table) override { sim::ai_table_begin(b.ai(), table); }
@@ -749,6 +756,7 @@ private:
         bool weapon_in_range(Unit& u, const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& to, int slot) override {
             return sim::weapon_in_range(b.weapons_, u, slot, from, to);
         }
+        std::int32_t stale_site_height(int player, std::int32_t fallback) override { return b.outside_.ai_site_height_word(player, fallback); }
     };
     void sync_ai();
     AiHooks ai_hooks_{*this};
@@ -770,7 +778,7 @@ private:
         void air_bases_in_radius(int state, const std::array<std::int32_t, 3>& pos, std::int32_t r, std::vector<Unit*>& out) override;
         void broadcast_script_call(Unit& u, const char* name, std::int32_t argc, std::int32_t a, std::int32_t c1, std::int32_t c2,
                                    std::int32_t c3) override;
-        std::int32_t reclaim_site_y() override { return b.settings.reclaim_site_y; }
+        std::int32_t reclaim_site_y() override { return b.outside_.reclaim_site_y(b.settings.reclaim_site_y); }
         void place_unit(Unit& u, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) override { sim::place_unit(b.motion_, u, pos, layer); }
         void teleport_trail(Unit& u, const std::array<std::int32_t, 3>& to) override { b.outside_.teleport_trail(u.pos, to); }
         void remove_feature(std::int32_t cell) override { sim::remove_feature(b.feature_world_, cell, false); }
