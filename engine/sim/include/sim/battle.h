@@ -288,7 +288,11 @@ public:
     // inclusive range of them (the entries' owner is fixed by it).
     void init_unit_table(std::size_t count);
     void assign_unit_range(int player, int first, int last);
-    void init_buckets() { buckets.resize_for_map(map.width, map.height); }
+    // After the map's heights and height ranges (and the sea level) are set.
+    void init_buckets() {
+        buckets.resize_for_map(map.width, map.height);
+        build_bucket_heights(buckets, map, settings.sea_level);
+    }
     // Once the map (heights, features) and the unit ranges are set, before units are made:
     // builds the movement classes' grids and sets up the route search (the original does
     // this while loading the battle). An `explored` map of the wrong size becomes all seen.
@@ -611,7 +615,14 @@ private:
         void claim_footprint(Unit& u) override { sim::claim_footprint(b.footprint_, u); }
         void update_sight(Unit& u) override { b.update_sight(u); }
         bool off_map(const Unit& u) override { return u.bucket == kOffMapBucket; }
-        std::uint8_t bucket_height(const Unit& u) override { return b.outside_.bucket_height(u); }
+        std::uint8_t bucket_height(const Unit& u) override {  // the unit's bucket record, second byte
+            if (u.bucket == kOffMapBucket) return 0;
+            if (u.bucket < 0 || static_cast<std::size_t>(u.bucket) >= b.buckets.top.size()) {
+                if (b.motion_.fault.empty()) b.motion_.fault = "cruise height of a unit without a spatial bucket (the original reads a null record)";
+                return 0;
+            }
+            return b.buckets.top[static_cast<std::size_t>(u.bucket)];
+        }
         void route_search_forget(MotionGoal& g) override { sim::route_search_forget(b.route_search, g); }
         void set_activated(Unit& u, bool on) override { unit_set_activate(u, b, unit_flags::kActivated, on); }
         // Goal objects need a nonzero handle: an order with handle 0 counts as having no goal
