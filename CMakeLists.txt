@@ -69,6 +69,7 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 add_library(net STATIC
     engine/net/src/codec.cpp
     engine/net/src/frames.cpp
+    engine/net/src/lobby.cpp
     engine/net/src/net_battle.cpp
     engine/net/src/protocol.cpp
     engine/net/src/transport.cpp

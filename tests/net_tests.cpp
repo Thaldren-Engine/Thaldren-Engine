@@ -4,7 +4,10 @@
 #include <random>
 
 #include "net/codec.h"
+#include <algorithm>
+
 #include "net/frames.h"
+#include "net/lobby.h"
 #include "net/protocol.h"
 #include "net/transport.h"
 #include "sim/bitstream.h"
@@ -122,11 +125,71 @@ static void test_loopback() {
     CHECK(c.receive(m) && c.receive(m) && m.bytes.size() == 1 && m.to == 3);
 }
 
+static void test_room() {
+    net::LoopbackHub hub;
+    net::Transport& th = hub.add_machine();
+    net::Transport& t1 = hub.add_machine();
+    net::Transport& t2 = hub.add_machine();
+    net::BattleRoom host(th, true, 0x100, "Host");
+    net::BattleRoom a(t1, false, 0x200, "Alice");
+    net::BattleRoom b(t2, false, 0x300, "Bob");
+    const net::UnitChecks defs = {{1, 11}, {2, 22}, {3, 33}, {4, 44}, {5, 55}};
+    host.set_unit_checks(defs);
+    a.set_unit_checks(defs);
+    net::UnitChecks other = defs;
+    other[2].second = 99;  // Bob's third unit differs
+    b.set_unit_checks(other);
+    host.set_map("Moon Quartet");
+    host.set_map_ready(true);
+    host.set_options(1, net::room::kLineOfSight, 200, 10, 10, true);
+    b.set_side(1);
+    std::vector<std::string> lines;
+    a.on_chat = [&](const std::string& l) { lines.push_back(l); };
+    const int ai = host.add_computer(1);
+    CHECK(ai == 1);
+    std::uint32_t clock = 100;
+    for (int k = 0; k < 40; ++k) {
+        clock += 2;
+        host.frame(clock);
+        a.frame(clock);
+        b.frame(clock);
+        if (k == 5) {
+            a.set_map_ready(true);
+            b.set_map_ready(true);
+            a.set_ready(true);
+            b.set_ready(true);
+            host.say("glhf");
+        }
+    }
+    CHECK(a.local_slot() >= 0 && b.local_slot() >= 0 && a.local_slot() != b.local_slot());
+    CHECK(host.players()[static_cast<std::size_t>(b.local_slot())].side == 1);
+    CHECK(lines.size() == 1 && lines[0] == "Host: glhf");
+    CHECK(host.can_start());
+    const auto& dis = b.disabled_units();
+    CHECK(std::find(dis.begin(), dis.end(), 3u) != dis.end());
+    CHECK(host.start());
+    for (int k = 0; k < 5; ++k) {
+        clock += 2;
+        a.frame(clock);
+        b.frame(clock);
+    }
+    CHECK(a.started() && b.started());
+    const sim::BattleStart sa = a.battle_start(), sh = host.battle_start();
+    CHECK(sa.provider == 3 && sa.unit_limit == 200 && sa.commander_mode == 1 && sa.fog_of_war && sa.fixed_locations);
+    CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].kind == sim::PlayerKind::Local);
+    CHECK(sa.players[0].kind == sim::PlayerKind::Remote && sa.players[1].kind == sim::PlayerKind::Remote);
+    CHECK(sh.players[0].kind == sim::PlayerKind::Local && sh.players[1].kind == sim::PlayerKind::Computer);
+    CHECK(sh.players[static_cast<std::size_t>(a.local_slot())].kind == sim::PlayerKind::Remote);
+    CHECK(a.map() == "Moon Quartet");
+    for (int s = 0; s < 10; ++s) CHECK(sa.players[static_cast<std::size_t>(s)].start_position == sh.players[static_cast<std::size_t>(s)].start_position);
+}
+
 int main() {
     test_bitstream();
     test_codec();
     test_frames();
     test_loopback();
+    test_room();
     std::printf("net_tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
