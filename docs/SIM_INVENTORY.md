@@ -18,7 +18,7 @@ Addresses are identical in both Ghidra programs.
 | Periodic work | — | Several systems run every 30 ticks (`tick % 30`) or every 8 ticks (`tick & 7`). |
 
 **Fixed order inside one simulation step** (this order *is* the spec):
-1. `Net_ProcessIncomingPackets` `0x00453D40` (networked only): apply remote commands
+1. `Net_ProcessIncomingPackets` `0x00453D40` (networked only): apply the packets of other machines' units (built: `net::NetBattle::network_input`, RE_MEMORY "Network and sync")
 2. `Unit_TickAllPlayersScriptsAndWeapons` `0x0048AD30`
 3. `Projectile_UpdateAllActive` `0x0049B720`
 4. `Fx_TickWorldEffectsAndDebris` `0x00420F30`
@@ -31,7 +31,7 @@ Addresses are identical in both Ghidra programs.
 11. `Fx_SweepAndPruneListenerSlots` `0x00471EB0` (built: `sim/effect_lists.h` lists 0-5 and 7-9, nano list 6)
 12. `Minimap_TickBlinkDirtyFlag` `0x00466580` (not sim)
 The whole step is `Battle::step()`; battle start `sim::start_battle` / `ta::load_battle` (RE_MEMORY "Battle start").
-13. Networked: `Share_AutoAllyResourcesAndMap` (built: `Share_AutoShareResources`, `Battle::auto_share_resources`) + `Net_FlushPendingFrames`
+13. Networked: `Share_AutoAllyResourcesAndMap` (built: `Share_AutoShareResources`, `Battle::auto_share_resources`) + `Net_FlushPendingFrames` (built: `net::NetBattle::network_flush`, frames `net/frames.h`)
 
 After all steps in a frame: `Los_ExpireLingeringSight` (`0x00482130`, built: `Battle::expire_lingering_sight`), chat HUD index.
 
@@ -88,7 +88,7 @@ Plan:
 
 ### Multiplayer model (verified by reading, see RE_MEMORY "Network and sync")
 The unit tick runs missions and motion only for units whose owner is controller type 1 or 2 (local human or local AI). It then calls `Net_BroadcastPlayerUnitStates`. Remote players' units (type 3) appear to be updated from received state, not simulated locally. `SpeedCtrl` throttles on remote players' `dwUnitStateSyncTick`.
-**So TA looks like owner-authoritative state broadcast, not pure lockstep.** Reproducing TA's behaviour means reproducing this model; the earlier "lockstep" assumption is suspended until this is verified.
+**TA is owner-authoritative state broadcast, not lockstep.** Built (2026-10-14, multiplayer): `engine/net` (wire format, frames, transports, `NetBattle`, battle room) and the Battle's network members (`engine/sim/src/net_units.cpp`); the engine's `sim/lockstep.h` stays a test tool. See RE_MEMORY "Network and sync".
 
 ## 4. State structures (reference-program layouts, packed / alignment 1)
 
@@ -141,7 +141,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Environment** | Wind 1, Meteor 7 | Wind every 150–420 ticks; meteor showers |
 | **Victory / defeat** | VictoryCond 44, DefeatCond 25, VictoryConditions 13 | Built for skirmish/network (`engine/sim/src/victory.cpp`, RE_MEMORY "Victory"); campaign condition classes open |
 | **Commands (input)** | Cmd 93, Orders 4 | How player orders enter the sim |
-| **Net lockstep / sync** | Net 66, Sync 59 | The original replicates unit states (not lockstep); Sync = unit-definition checksums. Engine lockstep, checksums, command log/replay built (`sim/lockstep.h`, RE_MEMORY "Network and sync") |
+| **Net lockstep / sync** | Net 66, Sync 59 | The original replicates unit states (not lockstep); Sync = unit-definition checksums. Built: the original's model (`engine/net`, `net_units.cpp`; wire format differential-tested in `net_harness`), the battle room with the checksum exchange (`net/lobby.h`), TCP and loopback transports; the engine lockstep tool (`sim/lockstep.h`) remains for tests. Open: DirectPlay interoperability, the side record's unread bytes, resend/out-of-order frame paths |
 | **Debris / FX** | Fx 55, Debris 3 | **Open:** which parts change sim state (debris can deal damage?) and which are visual |
 | **Construction / reclaim / capture** | MissionTick 9, Unit 12 | Built (smoke-verified): see RE_MEMORY "Construction and reclaim" — build slices `0x41BA60`, factory `0x402640`, mobile build `0x403A20`, help `0x403F70`, repair `0x405300`, reclaim `0x404AD0`/`0x404730`, capture `0x404270`, yard placement `0x47D2E0`, transport packet `0x48AB70`. **Nano streams draw the C runtime rand() in the unit pass and stage 9 (not at draw time).** Open: RepairPatrol, Resurrect, aircraft builders |
 
