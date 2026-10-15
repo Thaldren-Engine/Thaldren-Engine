@@ -197,13 +197,19 @@ int check_start(ta::Vfs& vfs, const std::string& path) {
             const auto caller = static_cast<std::uint32_t>(json_u(l, "caller"));
             if (caller >= 0x407000 && caller < 0x40B000) hooked.ai_draws.push_back({caller, static_cast<std::uint32_t>(json_u(l, "n"))});
         }
-    auto lb = ta::load_battle(vfs, req, hooked, err, [&](sim::Battle& b) { hooked.battle = &b; });
+    // The computer players are built into the battle now: they make their own draws, so the
+    // captured ones are only replayed through the hooks when START_REPLAY_AI is set.
+    sim::QuietBattleOutside quiet;
+    const bool replay_ai = std::getenv("START_REPLAY_AI") != nullptr;
+    if (!replay_ai) hooked.ai_draws.clear();
+    auto lb = replay_ai ? ta::load_battle(vfs, req, hooked, err, [&](sim::Battle& b) { hooked.battle = &b; })
+                        : ta::load_battle(vfs, req, quiet, err);
     if (!lb) {
         std::printf("start: %s\n", err.c_str());
         return 1;
     }
-    std::printf("start: computer-player draws replayed %zu of %zu; battle generator at step 1: engine %08x, original %08x (%s)\n",
-                ai_total - hooked.ai_draws.size(), ai_total, lb->battle->battle_rng().state(), tick1_rng,
+    std::printf("start: computer-player draws %s %zu of %zu; battle generator at step 1: engine %08x, original %08x (%s)\n",
+                replay_ai ? "replayed" : "captured (engine makes its own)", replay_ai ? ai_total - hooked.ai_draws.size() : ai_total, ai_total, lb->battle->battle_rng().state(), tick1_rng,
                 lb->battle->battle_rng().state() == tick1_rng ? "identical" : "DIFFERENT");
     std::printf("start: the original's own draws at step 0 (unit creation): %zu\n", engine_draws.size());
     return lb->battle->battle_rng().state() == tick1_rng && hooked.ai_draws.empty() ? 0 : 1;
