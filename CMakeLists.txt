@@ -34,9 +34,11 @@ add_library(sim STATIC
     engine/sim/src/ground_settle.cpp
     engine/sim/src/heightmap.cpp
     engine/sim/src/lockstep.cpp
+    engine/sim/src/journal.cpp
     engine/sim/src/motion.cpp
     engine/sim/src/net_units.cpp
     engine/sim/src/missions.cpp
+    engine/sim/src/mission_goals.cpp
     engine/sim/src/construction.cpp
     engine/sim/src/unit_missions_common.cpp
     engine/sim/src/air_missions.cpp
@@ -89,6 +91,8 @@ add_library(ta_compat STATIC
     ta_compat/src/battle_features.cpp
     ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
+    ta_compat/src/campaign.cpp
+    ta_compat/src/mission_text.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp
@@ -97,6 +101,7 @@ add_library(ta_compat STATIC
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp
     ta_compat/src/model3do.cpp
+    ta_compat/src/saved_game.cpp
     ta_compat/src/sight_tables.cpp
     ta_compat/src/tdf.cpp
     ta_compat/src/tnt.cpp
@@ -107,7 +112,7 @@ target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow game_replay)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow game_replay campaign_check save_check)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})

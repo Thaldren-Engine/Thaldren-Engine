@@ -279,9 +279,11 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/commands_core.cpp
     ${ROOT}/engine/sim/src/effect_lists.cpp
     ${ROOT}/engine/sim/src/lockstep.cpp
+    ${ROOT}/engine/sim/src/journal.cpp
     ${ROOT}/engine/sim/src/sky.cpp
     ${ROOT}/engine/sim/src/step_budget.cpp
     ${ROOT}/engine/sim/src/victory.cpp
+    ${ROOT}/engine/sim/src/mission_goals.cpp
     ${ROOT}/engine/sim/src/world.cpp
     ${ROOT}/engine/sim/src/sight.cpp
     ${ROOT}/engine/sim/src/anim.cpp
@@ -546,3 +548,140 @@ add_executable(net_harness net_harness.cpp
 )
 target_include_directories(net_harness PRIVATE ${ROOT}/engine/net/include ${ROOT}/engine/sim/include)
 target_compile_options(net_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Mission goals (checks, unit events) and the editor-position conversion vs sim/mission_goals.h.
+add_executable(goal_harness
+    goal_harness.cpp
+    ${ROOT}/engine/sim/src/ai.cpp
+    ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_units.cpp
+    ${ROOT}/engine/sim/src/battle_start.cpp
+    ${ROOT}/engine/sim/src/commands.cpp
+    ${ROOT}/engine/sim/src/commands_core.cpp
+    ${ROOT}/engine/sim/src/effect_lists.cpp
+    ${ROOT}/engine/sim/src/lockstep.cpp
+    ${ROOT}/engine/sim/src/journal.cpp
+    ${ROOT}/engine/sim/src/sky.cpp
+    ${ROOT}/engine/sim/src/step_budget.cpp
+    ${ROOT}/engine/sim/src/victory.cpp
+    ${ROOT}/engine/sim/src/mission_goals.cpp
+    ${ROOT}/engine/sim/src/world.cpp
+    ${ROOT}/engine/sim/src/sight.cpp
+    ${ROOT}/engine/sim/src/anim.cpp
+    ${ROOT}/engine/sim/src/effects.cpp
+    ${ROOT}/engine/sim/src/features.cpp
+    ${ROOT}/engine/sim/src/route_search.cpp
+    ${ROOT}/engine/sim/src/targeting.cpp
+    ${ROOT}/engine/sim/src/missions.cpp
+    ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/unit_missions_common.cpp
+    ${ROOT}/engine/sim/src/air_missions.cpp
+    ${ROOT}/engine/sim/src/ground_missions.cpp
+    ${ROOT}/engine/sim/src/nano_spray.cpp
+    ${ROOT}/engine/sim/src/motion.cpp
+    ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/economy.cpp
+    ${ROOT}/engine/sim/src/fire.cpp
+    ${ROOT}/engine/sim/src/footprint.cpp
+    ${ROOT}/engine/sim/src/ground_settle.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/projectile.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/unit_create.cpp
+    ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(goal_harness PRIVATE ${ROOT}/engine/sim/include)
+target_compile_options(goal_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Placed units' first-order strings vs the original's parser (sim/mission_goals.h give_mission_orders).
+add_executable(order_harness
+    order_harness.cpp
+    ${ROOT}/ta_compat/src/mission_text.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/engine/sim/src/ai.cpp
+    ${ROOT}/engine/sim/src/battle.cpp
+    ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_units.cpp
+    ${ROOT}/engine/sim/src/battle_start.cpp
+    ${ROOT}/engine/sim/src/commands.cpp
+    ${ROOT}/engine/sim/src/commands_core.cpp
+    ${ROOT}/engine/sim/src/effect_lists.cpp
+    ${ROOT}/engine/sim/src/lockstep.cpp
+    ${ROOT}/engine/sim/src/journal.cpp
+    ${ROOT}/engine/sim/src/sky.cpp
+    ${ROOT}/engine/sim/src/step_budget.cpp
+    ${ROOT}/engine/sim/src/victory.cpp
+    ${ROOT}/engine/sim/src/mission_goals.cpp
+    ${ROOT}/engine/sim/src/world.cpp
+    ${ROOT}/engine/sim/src/sight.cpp
+    ${ROOT}/engine/sim/src/anim.cpp
+    ${ROOT}/engine/sim/src/effects.cpp
+    ${ROOT}/engine/sim/src/features.cpp
+    ${ROOT}/engine/sim/src/route_search.cpp
+    ${ROOT}/engine/sim/src/targeting.cpp
+    ${ROOT}/engine/sim/src/missions.cpp
+    ${ROOT}/engine/sim/src/construction.cpp
+    ${ROOT}/engine/sim/src/unit_missions_common.cpp
+    ${ROOT}/engine/sim/src/air_missions.cpp
+    ${ROOT}/engine/sim/src/ground_missions.cpp
+    ${ROOT}/engine/sim/src/nano_spray.cpp
+    ${ROOT}/engine/sim/src/motion.cpp
+    ${ROOT}/engine/sim/src/combat.cpp
+    ${ROOT}/engine/sim/src/economy.cpp
+    ${ROOT}/engine/sim/src/fire.cpp
+    ${ROOT}/engine/sim/src/footprint.cpp
+    ${ROOT}/engine/sim/src/ground_settle.cpp
+    ${ROOT}/engine/sim/src/heightmap.cpp
+    ${ROOT}/engine/sim/src/orders.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/projectile.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/engine/sim/src/script_vm.cpp
+    ${ROOT}/engine/sim/src/trig.cpp
+    ${ROOT}/engine/sim/src/unit.cpp
+    ${ROOT}/engine/sim/src/unit_create.cpp
+    ${ROOT}/engine/sim/src/unit_tick.cpp
+    ${ROOT}/engine/sim/src/weapons.cpp
+    ${ROOT}/engine/sim/src/x87_math.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(order_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(order_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# The saved-game bank container vs the original's store and writer (ta/saved_game.h).
+file(GLOB BANK_HARNESS_SIM ${ROOT}/engine/sim/src/*.cpp)
+add_executable(bank_harness bank_harness.cpp
+    ${ROOT}/ta_compat/src/ai_profile.cpp
+    ${ROOT}/ta_compat/src/battle_economy.cpp
+    ${ROOT}/ta_compat/src/battle_features.cpp
+    ${ROOT}/ta_compat/src/battle_loader.cpp
+    ${ROOT}/ta_compat/src/battle_types.cpp
+    ${ROOT}/ta_compat/src/campaign.cpp
+    ${ROOT}/ta_compat/src/mission_text.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/saved_game.cpp
+    ${ROOT}/ta_compat/src/sight_tables.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/tnt.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${BANK_HARNESS_SIM}
+)
+target_include_directories(bank_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(bank_harness PRIVATE /W4 /permissive- /fp:precise)

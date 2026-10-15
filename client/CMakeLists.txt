@@ -30,6 +30,7 @@ endif()
 # Importer: skirmish set-up (adapter), interface content, battle view scene.
 add_library(ta_compat_client STATIC
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_battle_setup.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/client_campaign.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_content.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_scene.cpp
 )
