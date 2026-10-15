@@ -249,8 +249,7 @@ void ai_order_group(Ai& ai, int player, std::int32_t group, std::uint8_t intent,
                     const std::array<std::int32_t, 3>* pos, std::int32_t param0, std::int32_t param1);
 // Enemy threat seen by the side within `radius` world units of `pos` (0x40B1C0).
 std::int32_t ai_threat_near(Ai& ai, int side, const std::array<std::int32_t, 3>& pos, std::int32_t radius);
-// The table's builder air bases within `radius` of `pos` (0x40B530; the aircraft behaviours).
-void ai_air_bases_in_radius(Ai& ai, int table, const std::array<std::int32_t, 3>& pos, std::int32_t radius,
-                            std::vector<Unit*>& out);
+// The table's builder air bases within a radius (0x40B530) is sim::air_bases_in_radius
+// (sim/unit_missions.h; the aircraft behaviours use it).
 
 }  // namespace sim
