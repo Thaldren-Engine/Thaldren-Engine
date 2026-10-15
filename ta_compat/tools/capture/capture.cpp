@@ -596,7 +596,26 @@ void write_digest(DWORD tid) {
                           get<std::uint16_t>(u, o + 4 + 0x14), get<std::uint16_t>(u, o + 4 + 0x1C + 0x14),
                           get<std::uint16_t>(u, o + 4 + 0x38 + 0x14));
             line += buf;
-            line += order_kinds(get<std::uint32_t>(u, o + 0x5C)) + "," + order_kinds(get<std::uint32_t>(u, o + 0x60)) + "]";
+            line += order_kinds(get<std::uint32_t>(u, o + 0x5C)) + "," + order_kinds(get<std::uint32_t>(u, o + 0x60));
+            // Motion object: [speed, turn, flags & 7, goal vtable, route count, route search
+            // tick, route flags & 15, route points...] ([] without motion).
+            line += ",[";
+            if (const std::uint32_t mo = get<std::uint32_t>(u, o + 0)) {
+                std::vector<std::uint8_t> m(0x30);
+                read_block(mo, m.data(), m.size());
+                line += std::to_string(get<std::int32_t>(m, 0x20)) + "," + std::to_string(get<std::int16_t>(m, 0x24)) + "," +
+                        std::to_string(m[0x2E] & 7);
+                if (const std::uint32_t g = get<std::uint32_t>(m, 0)) {
+                    std::vector<std::uint8_t> gb(0x68);
+                    read_block(g, gb.data(), gb.size());
+                    const std::int32_t count = get<std::int32_t>(gb, 0x5C);
+                    line += "," + std::to_string(get<std::uint32_t>(gb, 0)) + "," + std::to_string(count) + "," +
+                            std::to_string(get<std::uint32_t>(gb, 0x60)) + "," + std::to_string(gb[0x64] & 0xF);
+                    for (std::int32_t k = 0; k < count && k < 20; ++k)
+                        line += "," + std::to_string(get<std::uint32_t>(gb, 0xC + 4u * static_cast<std::uint32_t>(k)));
+                }
+            }
+            line += "]]";
             first = false;
         }
     }
@@ -657,34 +676,42 @@ void write_order(const char* fn, const CONTEXT& ctx, bool build_count) {
 // and dismisses message boxes, until the battle starts loading.
 DWORD g_pid = 0;
 struct WindowSearch {
-    HWND game = nullptr;
+    std::vector<HWND> game;
     HWND dialog = nullptr;
 };
 BOOL CALLBACK find_windows(HWND w, LPARAM lp) {
     DWORD pid = 0;
     GetWindowThreadProcessId(w, &pid);
-    if (pid != g_pid || !IsWindowVisible(w)) return TRUE;
+    if (pid != g_pid) return TRUE;
     auto* s = reinterpret_cast<WindowSearch*>(lp);
     char cls[64] = {};
     GetClassNameA(w, cls, sizeof cls);
-    if (std::strcmp(cls, "#32770") == 0) s->dialog = w;
-    else if (!s->game) s->game = w;
+    if (std::strcmp(cls, "#32770") == 0 && IsWindowVisible(w)) s->dialog = w;
+    else s->game.push_back(w);
     return TRUE;
+}
+void post_key(HWND w, WPARAM vk, WPARAM ch) {
+    const LPARAM scan = static_cast<LPARAM>(MapVirtualKeyA(static_cast<UINT>(vk), MAPVK_VK_TO_VSC)) << 16;
+    PostMessageA(w, WM_KEYDOWN, vk, scan | 1);
+    if (ch) PostMessageA(w, WM_CHAR, ch, scan | 1);
+    PostMessageA(w, WM_KEYUP, vk, scan | 1 | 0xC0000000);
 }
 DWORD WINAPI menu_driver(LPVOID) {
     Sleep(8000);
-    for (int round = 0; round < 60 && !g_battle_loading; ++round) {
+    // The game's own "DirectX version" notice is a dialog of its interface: Enter answers it
+    // (its default button); then S, S, S. Keys go to every top-level window of the process.
+    for (int round = 0; round < 90 && !g_battle_loading; ++round) {
         WindowSearch s;
         EnumWindows(find_windows, reinterpret_cast<LPARAM>(&s));
         if (s.dialog) {
             PostMessageA(s.dialog, WM_COMMAND, IDOK, 0);
-        } else if (s.game) {
-            PostMessageA(s.game, WM_ACTIVATE, WA_ACTIVE, 0);
-            PostMessageA(s.game, WM_KEYDOWN, 'S', 0x001F0001);
-            PostMessageA(s.game, WM_CHAR, 's', 0x001F0001);
-            PostMessageA(s.game, WM_KEYUP, 'S', 0xC01F0001);
+        } else {
+            for (HWND w : s.game) {
+                PostMessageA(w, WM_ACTIVATE, WA_ACTIVE, 0);
+                post_key(w, round % 2 == 0 ? VK_RETURN : 'S', round % 2 == 0 ? '\r' : 's');
+            }
         }
-        Sleep(4000);
+        Sleep(3000);
     }
     return 0;
 }

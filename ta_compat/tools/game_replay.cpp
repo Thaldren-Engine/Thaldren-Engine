@@ -176,6 +176,10 @@ struct ReplayOutside : sim::QuietBattleOutside {
 struct UnitRow {
     std::vector<long long> v;  // the scalar fields
     std::vector<long long> primary, secondary;
+    // Motion: speed, turn, flags & 7, then for a route goal: (vtable), count, search tick,
+    // flags & 15, points.
+    std::vector<long long> motion;
+    bool has_motion_row = false;
 };
 const char* const kUnitFields[] = {"id",     "type",  "owner",  "x",     "y",        "z",     "pitch",   "heading",
                                    "bank",   "hp",    "build_left_bits", "activate", "script_flags", "flags", "health_pct",
@@ -196,6 +200,18 @@ std::map<int, UnitRow> engine_units(sim::Battle& b) {
                t.kill_count, u.weapons[0].reload, u.weapons[1].reload, u.weapons[2].reload};
         for (const sim::MissionOrder* o = u.orders; o && r.primary.size() < 32; o = o->next) r.primary.push_back(o->kind);
         for (const sim::MissionOrder* o = u.secondary_orders; o && r.secondary.size() < 32; o = o->next) r.secondary.push_back(o->kind);
+        if (t.has_motion) {
+            r.motion = {t.motion.speed, t.motion.turn, t.motion.flags & 7};
+            if (const auto* rg = dynamic_cast<const sim::RouteGoal*>(t.motion.goal.get())) {
+                r.motion.push_back(-1);  // (the original's vtable is not compared)
+                r.motion.push_back(rg->count);
+                r.motion.push_back(rg->search_tick);
+                r.motion.push_back(rg->flags & 0xF);
+                for (std::int32_t k = 0; k < rg->count && k < 20; ++k) r.motion.push_back(rg->points[static_cast<std::size_t>(k)]);
+            } else if (t.motion.goal) {
+                r.motion.push_back(-2);  // another goal kind
+            }
+        }
         out[static_cast<int>(i)] = std::move(r);
     }
     return out;
@@ -263,6 +279,10 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
             for (int k = 0; k < kUnitScalars; ++k) r.v.push_back(u.arr[static_cast<std::size_t>(k)].num);
             for (const Json& o : u.arr[kUnitScalars].arr) r.primary.push_back(o.num);
             for (const Json& o : u.arr[kUnitScalars + 1].arr) r.secondary.push_back(o.num);
+            if (u.arr.size() > kUnitScalars + 2) {
+                r.has_motion_row = true;
+                for (const Json& o : u.arr[kUnitScalars + 2].arr) r.motion.push_back(o.num);
+            }
             theirs[static_cast<int>(r.v[0])] = std::move(r);
         }
     const std::map<int, UnitRow> ours = engine_units(b);
@@ -288,6 +308,17 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
             }
         }
         if (r.primary != e.primary) diff.push_back("unit " + std::to_string(id) + " primary orders: original " + list(r.primary) + ", engine " + list(e.primary));
+        if (r.has_motion_row) {
+            const std::vector<long long>& a = r.motion;
+            const std::vector<long long>& c = e.motion;
+            const bool head_differs = a.size() >= 3 && c.size() >= 3 ? !std::equal(a.begin(), a.begin() + 3, c.begin()) : (a.size() >= 3) != (c.size() >= 3);
+            // Route goals: count, search tick, flags, points (the original's goal vtable is element 3).
+            bool route_differs = false;
+            if (c.size() > 3 && c[3] == -1 && a.size() > 3) route_differs = !std::equal(a.begin() + 4, a.end(), c.begin() + 4, c.end());
+            if (head_differs || route_differs)
+                diff.push_back("unit " + std::to_string(id) + " motion [speed, turn, flags, goal, route count, search tick, route flags, points]: original " +
+                               list(a) + ", engine " + list(c));
+        }
         if (r.secondary != e.secondary)
             diff.push_back("unit " + std::to_string(id) + " secondary orders: original " + list(r.secondary) + ", engine " + list(e.secondary));
     }
@@ -356,6 +387,7 @@ int main(int argc, char** argv) {
     }
     std::uint32_t max_steps = 0xFFFFFFFFu;
     bool keep_going = false, draw_effects = true, verbose = false, ignore_cells = false;
+    int trace_unit = 0;  // print this unit's row (original and engine) after every step
     for (int k = 3; k < argc; ++k) {
         const std::string a = argv[k];
         if (a == "--steps" && k + 1 < argc) max_steps = static_cast<std::uint32_t>(std::strtoul(argv[++k], nullptr, 0));
@@ -363,6 +395,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-draw-effects") draw_effects = false;
         else if (a == "--verbose") verbose = true;
         else if (a == "--ignore-cells") ignore_cells = true;
+        else if (a == "--trace-unit" && k + 1 < argc) trace_unit = std::atoi(argv[++k]);
     }
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -562,6 +595,21 @@ int main(int argc, char** argv) {
         } else if (ev == "digest") {
             if (static_cast<std::uint32_t>(e.i("tick")) != b.game_tick()) continue;
             ++compared;
+            if (trace_unit > 0 && static_cast<std::size_t>(trace_unit) < b.units.size()) {
+                const std::map<int, UnitRow> ours = engine_units(b);
+                std::string theirs = "-";
+                if (const Json* us = e.get("units"))
+                    for (const Json& u : us->arr)
+                        if (u.arr.size() > kUnitScalars && u.arr[0].num == trace_unit) {
+                            std::vector<long long> v;
+                            for (std::size_t k = 0; k < kUnitScalars; ++k) v.push_back(u.arr[k].num);
+                            theirs = list(v);
+                        }
+                auto it = ours.find(trace_unit);
+                const sim::UnitTickState& t = b.ticks[static_cast<std::size_t>(trace_unit)];
+                std::printf("trace %u: original %s\n          engine   %s  velocity %d,%d,%d\n", b.game_tick(), theirs.c_str(),
+                            it != ours.end() ? list(it->second.v).c_str() : "-", t.velocity[0], t.velocity[1], t.velocity[2]);
+            }
             std::vector<std::string> diff = compare(b, e);
             if (ignore_cells)
                 diff.erase(std::remove_if(diff.begin(), diff.end(), [](const std::string& d) { return d.rfind("map cells", 0) == 0; }), diff.end());
