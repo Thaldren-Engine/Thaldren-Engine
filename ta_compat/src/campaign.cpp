@@ -186,9 +186,10 @@ bool load_mission(Vfs& vfs, const std::string& file, int difficulty, MissionInfo
     return true;
 }
 
-std::unique_ptr<LoadedBattle> load_mission_battle(Vfs& vfs, const MissionInfo& mission, const MissionRequest& rq, sim::BattleOutside& outside,
-                                                  std::string& error) {
+BattleRequest make_mission_request(Vfs& vfs, const MissionInfo& mission, const MissionRequest& rq) {
     BattleRequest req;
+    // The CD layer (archives mounted on `vfs` beyond the game directory's own).
+    for (std::size_t k = 0; k < vfs.archives().size(); ++k) req.extra_archives.push_back(vfs.archives()[k]->path());
     req.map = mission.map;
     req.schema = mission.schema;
     req.sides[0] = rq.campaign_side;
@@ -216,8 +217,13 @@ std::unique_ptr<LoadedBattle> load_mission_battle(Vfs& vfs, const MissionInfo& m
     s.mission.energy[0] = mission.human_energy;
     s.mission.metal[1] = mission.computer_metal;
     s.mission.energy[1] = mission.computer_energy;
-    const std::string use_only = mission.use_only;
-    req.prepare_start = [&vfs, mission, use_only](LoadedBattle& lb, sim::BattleStart& start) {
+    // The mission's unit list (camps\useonly), read now.
+    std::vector<std::string> use_only;
+    if (!mission.use_only.empty())
+        if (const std::unique_ptr<TdfSection> list = parse_file(vfs, "camps\\useonly\\" + strip_ext(mission.use_only) + ".tdf"))
+            for (const auto& sec : list->children()) use_only.push_back(sec->name());
+    const bool limit_types = !mission.use_only.empty() && (!use_only.empty() || vfs.size_or_zero("camps\\useonly\\" + strip_ext(mission.use_only) + ".tdf"));
+    req.prepare_start = [mission, use_only, limit_types](LoadedBattle& lb, sim::BattleStart& start) {
         start.mission.units = mission.units;
         for (sim::MissionUnit& u : start.mission.units) u.type = lb.type_index(u.unit_name);
         // The order parser keeps its scratch between units, as the original's stack does.
@@ -226,16 +232,16 @@ std::unique_ptr<LoadedBattle> load_mission_battle(Vfs& vfs, const MissionInfo& m
         start.mission.parse_orders = [plb, state](const std::string& text) {
             return parse_initial_orders(text, [plb](const std::string& n) { return plb->type_index(n); }, *state);
         };
-        if (!use_only.empty()) {
-            const std::unique_ptr<TdfSection> list = parse_file(vfs, "camps\\useonly\\" + strip_ext(use_only) + ".tdf");
-            if (list) {
-                start.mission.restrict_types = true;
-                for (const auto& sec : list->children())
-                    if (const std::uint16_t t = lb.type_index(sec->name())) start.mission.allowed_types.push_back(t);
-            }
-        }
+        start.mission.restrict_types = limit_types;
+        for (const std::string& n : use_only)
+            if (const std::uint16_t t = lb.type_index(n)) start.mission.allowed_types.push_back(t);
     };
-    return load_battle(vfs, req, outside, error);
+    return req;
+}
+
+std::unique_ptr<LoadedBattle> load_mission_battle(Vfs& vfs, const MissionInfo& mission, const MissionRequest& rq, sim::BattleOutside& outside,
+                                                  std::string& error) {
+    return load_battle(vfs, make_mission_request(vfs, mission, rq), outside, error);
 }
 
 }  // namespace ta

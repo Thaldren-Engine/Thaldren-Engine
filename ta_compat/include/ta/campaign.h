@@ -112,6 +112,11 @@ struct MissionRequest {
     std::uint32_t battle_rng_seed = 0, loading_rand_seed = 0, crt_rand_state = 0;
 };
 
+// The battle request alone (for front ends that load battles themselves): the mission's
+// start, its unit list read from `vfs`, and `vfs`'s archives as extra archives (so a front end
+// with its own file system finds the CD's maps too).
+BattleRequest make_mission_request(Vfs& vfs, const MissionInfo& mission, const MissionRequest& request);
+
 std::unique_ptr<LoadedBattle> load_mission_battle(Vfs& vfs, const MissionInfo& mission, const MissionRequest& request,
                                                   sim::BattleOutside& outside, std::string& error);
 

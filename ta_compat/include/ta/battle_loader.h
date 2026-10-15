@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -37,6 +38,9 @@ struct BattleRequest {
     // Optional: sees the loaded data and the start description just before the set-up runs
     // (missions resolve their unit names to type indices here).
     std::function<void(LoadedBattle&, sim::BattleStart&)> prepare_start;
+    // Archives to mount before loading when the file system has not mounted them yet (a
+    // mission on the game CD's archives).
+    std::vector<std::filesystem::path> extra_archives;
 };
 
 struct LoadedBattle {
