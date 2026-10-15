@@ -419,7 +419,7 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
         for (std::size_t i = 0; i < ws.size() && i < gs.size(); ++i) {
             Widget& w = ws[i];
             const bool button = w.kind == WidgetKind::Button && (gs[i].attribs & 0x1800) == 0 && (gs[i].attribs & 0x10000) == 0;
-            const bool label = gs[i].id == 5 && !w.text.empty();
+            const bool label = false;  // labels show no quick key in the original's frames (see RE_MEMORY "Front end")
             if (!button && !label) continue;
             if (button && w.stages > 0) continue;
             w.quickkey = w.quickkey_char = 0;

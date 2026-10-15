@@ -197,7 +197,23 @@ private:
                 } else {
                     char b[96];
                     std::snprintf(b, sizeof b, "fault %08lX at %08X", rec.ExceptionCode, addr);
-                    fault(b, ev.dwThreadId);
+                    // Return addresses into the game's code on the stack (the callers).
+                    std::string trail;
+                    CONTEXT ctx{};
+                    ctx.ContextFlags = CONTEXT_FULL;
+                    if (GetThreadContext(th, &ctx)) {
+                        u32 stack[96] = {};
+                        read(ctx.Esp, stack, sizeof stack);
+                        int n = 0;
+                        for (u32 v : stack)
+                            if (v > 0x00401000 && v < 0x00500000 && n < 8) {
+                                char t[16];
+                                std::snprintf(t, sizeof t, " %08X", v);
+                                trail += t;
+                                ++n;
+                            }
+                    }
+                    fault(std::string(b) + " callers?" + trail, ev.dwThreadId);
                     TerminateThread(th, 0xDEAD);
                 }
                 break;

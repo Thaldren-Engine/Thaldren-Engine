@@ -72,11 +72,12 @@ int slider_value(const Widget& s, int knob) {
     if (s.span < 2) return 0;
     return static_cast<int>(static_cast<double>(knob) / (s.span - 1) * s.range);
 }
-// The knob offset for a value (clamped to the maximum): value / maximum x (travel - 1), rounded
-// up when not whole.
+// The knob offset for a value (clamped to the maximum) as the option pages set it: value x
+// (travel - 1) x the single-precision reciprocal of the maximum, rounded up when not whole (so
+// a reciprocal a little above the exact one moves a knob that would sit on a whole pixel one on).
 int slider_knob(const Widget& s, int value) {
     if (s.range <= 0) return 0;
-    const double t = static_cast<double>(std::min(value, s.range)) / s.range * (s.span - 1);
+    const double t = static_cast<double>(std::min(value, s.range)) * (s.span - 1) * static_cast<double>(1.0f / static_cast<float>(s.range));
     const int k = static_cast<int>(t);
     return t - k != 0.0 ? static_cast<int>(t + 1.0) : k;
 }
@@ -264,7 +265,8 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
     };
     switch (w.kind) {
     case WidgetKind::Button: {
-        const bool pressed = held && !w.grayed;
+        // Pressed while held, and while its status is set (a selected page's button).
+        const bool pressed = (held || w.status != 0) && !w.grayed;
         if (w.frames && !w.frames->empty()) {
             const int n = static_cast<int>(w.frames->size());
             int f = 0;
@@ -453,11 +455,30 @@ void LayoutScreen::place(int fw, int fh) {
     }
 }
 
+void LayoutScreen::reassign_quick_keys(const std::vector<Widget>& before) {
+    std::vector<int> used;
+    for (const Widget& w : before)
+        if (w.quickkey) used.push_back(w.quickkey);
+    for (Widget& w : widgets_) {
+        if (w.kind != WidgetKind::Button || w.stages > 0 || (w.attribs & 0x1800) || w.text.empty()) continue;
+        w.quickkey = w.quickkey_char = 0;
+        for (const char ch : w.text) {
+            if (ch == ' ') continue;
+            const int lc = std::tolower(static_cast<unsigned char>(ch));
+            if (std::find(used.begin(), used.end(), lc) != used.end()) continue;
+            w.quickkey = lc;
+            w.quickkey_char = static_cast<unsigned char>(ch);
+            used.push_back(lc);
+            break;
+        }
+    }
+}
+
 void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
     // Six shaded outlines around the focused gadget, one to six pixels out, light levels 31,
     // 28, 24, 19, 13, 6 (the four sides drawn as separate lines, so corners are lit twice).
     const std::vector<std::uint8_t>& light = fe.menu_content().light;
-    if (focus_gadget_ < 0 || light.size() < 0x2000) return;
+    if (!focus_ring_ || focus_gadget_ < 0 || light.size() < 0x2000) return;
     const Widget& w = widgets_[static_cast<std::size_t>(focus_gadget_)];
     if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox) return;
     const int gx0 = ox_, gy0 = oy_, gx1 = ox_ + widgets_.front().w - 1, gy1 = oy_ + widgets_.front().h - 1;  // the screen's own surface

@@ -119,7 +119,9 @@ std::vector<std::array<int, 2>> display_modes(FrontEnd& fe) {
 // widgets map to settings by name, the same on both kinds of pages.
 class OptionsPage : public LayoutScreen {
 public:
-    OptionsPage(MenuArt& art, const std::string& gui, bool in_battle) : LayoutScreen(art.layout(gui)), art_(art), in_battle_(in_battle) {}
+    OptionsPage(MenuArt& art, const std::string& gui, bool in_battle) : LayoutScreen(art.layout(gui)), art_(art), in_battle_(in_battle) {
+        focus_ring_ = false;  // the page joins its menu's screen: the menu's button keeps the focus
+    }
     void enter(FrontEnd& fe) override { load(fe); }
     bool see_through() const override { return in_battle_; }
 
@@ -132,7 +134,7 @@ protected:
                 // Sliders: range and value.
                 if (is(w, "FXVOL")) set(w, 64, s.get_int("fxvol", 27));
                 else if (is(w, "MUSICVOL")) set(w, 64, s.get_int("musicvol", 32));
-                else if (is(w, "GAME")) set(w, 20, s.get_int("gamespeed", 10));
+                else if (is(w, "GAME")) set(w, 21, s.get_int("gamespeed", 10));  // the original's maximum is 21
                 else if (is(w, "SCREEN")) set(w, 65, s.get_int("scrollspeed", 0x20));
                 else if (is(w, "TXTSCROL")) set(w, 20, s.get_int("textscroll", 10));
                 else if (is(w, "MAXLINES")) set(w, 30, s.get_int("textlines", 10));
@@ -165,9 +167,10 @@ protected:
     }
     void labels(FrontEnd& fe) {
         if (Widget* t = widget("TRACKNUM")) t->text = track_ ? "#" + std::to_string(track_) : "NO DISC";
-        if (Widget* g = widget("GAMETEXT")) {
-            const int sp = fe.settings().get_int("gamespeed", 10);
-            g->text = sp == 10 ? "Normal" : (sp > 10 ? "+" : "-") + std::to_string(std::abs(sp - 10));
+        // GAMETEXT stays empty (the original never fills it); MAXLINESTEXT shows the text lines.
+        if (Widget* m = widget("MAXLINESTEXT")) {
+            const int n = fe.settings().get_int("textlines", 10);
+            m->text = n == 0 ? "None" : std::to_string(n);
         }
         if (Widget* v = widget("VIDVAL"))
             v->text = std::to_string(fe.settings().get_int("DisplaymodeWidth", 640)) + " X " + std::to_string(fe.settings().get_int("DisplaymodeHeight", 480));
@@ -318,11 +321,13 @@ public:
         LayoutScreen::handle(fe, e);
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
+        if (!placed_) place(out.width, out.height);
         if (page_ && !in_battle_) {
             // The page's picture fills the screen; the menu's buttons stay over it.
             page_->draw(fe, out);
             for (std::size_t i = 1; i < widgets_.size(); ++i)
                 if (widgets_[i].active) draw_widget(fe, out, widgets_[i], static_cast<int>(i) == held_);
+            draw_focus_ring(fe, out);
             return;
         }
         LayoutScreen::draw(fe, out);
@@ -343,7 +348,13 @@ protected:
                         if (g == a) g = b;
                 if (art_.layout(g)) {
                     page_ = std::make_unique<OptionsPage>(art_, g, in_battle_);
+                    page_->reassign_quick_keys(widgets_);  // the page joins this screen
                     page_->enter(fe);
+                    placed_ = false;  // the menu is set up anew: its default focus returns
+                    // The open page's button shows pressed (status 1), the others not.
+                    for (Widget& b : widgets_)
+                        if (b.kind == WidgetKind::Button && b.stages == 0)
+                            for (const auto& [bn, bg] : pages) b.status = is(b, bn) ? (is(b, button) ? 1 : 0) : b.status;
                 }
                 return;
             }

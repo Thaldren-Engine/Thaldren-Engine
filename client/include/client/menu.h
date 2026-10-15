@@ -121,6 +121,11 @@ public:
     const ScreenLayout* layout() const { return layout_; }
     // True when an active widget lies under the point.
     bool over(int x, int y) { return hit(x, y) >= 0; }
+    // Gives the plain buttons new quick keys as if this screen's gadgets followed `before`'s in one
+    // screen (an options page joins its menu's screen): the first caption character, not a space,
+    // that no earlier gadget has.
+    void reassign_quick_keys(const std::vector<Widget>& before);
+
 
 protected:
     // A button was clicked (released over it) or its quick key pressed.
@@ -151,6 +156,7 @@ protected:
     // The focus ring around the focused gadget (shaded outlines through the light table).
     void draw_focus_ring(FrontEnd& fe, render::Image8& out);
     bool placed_ = false;
+    bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     int held_ = -1;                // index of the pressed button (pointer down)
     int drag_ = -1;                // index of the scroll bar being dragged

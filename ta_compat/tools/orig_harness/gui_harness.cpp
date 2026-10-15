@@ -115,6 +115,9 @@ public:
             {0x00429000, 0, 0},   // data version notice
             {0x004CE1D0, 0, 0},   // CD player window present?
             {0x004CFF20, 0, 0},   // no sound driver?
+            {0x0047F680, 0, 0},   // unit speech
+            {0x00494E70, 0, 0},   // music mood by activity
+            {0x00457710, 0, 0},   // lobby-launched multiplayer (none)
         };
         for (const S& s : stubs)
             if (!r_.stub(s.at, s.value, s.pop)) return false;
@@ -129,15 +132,22 @@ public:
         r_.w32(kDisplay + kDcLight, r_.alloc(0x2000));
         r_.w32(kDisplay + 0xCC, r_.alloc(0x1000));  // grey remap
         r_.w32(kDisplay + 0xD0, r_.alloc(0x1000));  // dim remap
-        r_.w32(kDisplay + kDcFlags, r_.r32(kDisplay + kDcFlags) | 0x20 | 0x40 | 0x80 | 0x200);
+        r_.w16(kDisplay + kDcFlags, static_cast<std::uint16_t>(r_.r32(kDisplay + kDcFlags) | 0x20 | 0x40 | 0x80 | 0x200));
+        r_.w32(kDisplay + 0xF2, 30);  // the key queue's capacity
+        r_.w32(kDisplay + 0xE8, 30);  // ticks per second
         set_screen(640, 480);
+        if (!r_.call(0x004B62D0, 0, {30})) return false;  // the periodic timer table (30 ticks a second)
         if (!r_.call(kMountArchives, 0, {})) return false;
         r_.w32(gs_ + kGsDisplay, kDisplay);
         r_.w8(gs_ + 1, 3);
         r_.w8(gs_ + 2, 1);
         r_.w8(gs_ + 3, 1);
         r_.call(kLoadTranslations, 0, {r_.str("gamedata\\translate.tdf"), r_.str("english")});
-        r_.w32(gs_ + kGsAudio, r_.alloc(0x400));  // an audio engine that never opened a device
+        // An audio engine that never opened a device, except that the CD (music) counts as open so
+        // the music options are offered as in a game with its music.
+        const u32 audio = r_.alloc(0x400);
+        r_.w32(audio, 1);
+        r_.w32(gs_ + kGsAudio, audio);
         if (!r_.call(kInitFrontEnd, 0, {})) return false;
         return true;
     }
@@ -233,7 +243,33 @@ int main(int argc, char** argv) {
             ok = r.call(0x0045E5E0, 0, {0});
             r.w32(0x0051F320 + 0x44, dib);
         }
-        else if (s == "battle") {
+        else if (s.rfind("tick:", 0) == 0) {
+            // Whole frames of the game's own main loop (interface, front-end state machine).
+            const int n = std::atoi(s.c_str() + 5);
+            for (int k = 0; k < n && ok; ++k) ok = r.call(0x00499890, 0, {});
+            if (!ok) std::printf("%s: frame failed\n", s.c_str());
+            continue;
+        } else if (s.rfind("key:", 0) == 0) {
+            // A key into the game's input queue (characters as typed; esc, enter, tab, f1..f12).
+            const std::string k = s.substr(4);
+            u32 code = static_cast<unsigned char>(k[0]);
+            if (k == "esc") code = 27;
+            else if (k == "enter") code = 13;
+            else if (k == "tab") code = 9;
+            else if (k.size() > 1 && k[0] == 'f') code = 0xE2 + static_cast<u32>(std::atoi(k.c_str() + 1)) - 1;
+            r.call(0x004C1B20, 0, {code});
+            continue;
+        } else if (s.rfind("shot:", 0) == 0) {
+            Frame f;
+            if (!g.grab(f)) {
+                std::printf("%s: not drawn\n", s.c_str());
+                continue;
+            }
+            const std::string name = s.substr(5);
+            write_bmp(out + name + ".bmp", f);
+            std::printf("%s -> %s%s.bmp\n", s.c_str(), out.c_str(), name.c_str());
+            continue;
+        } else if (s == "battle") {
             // A battle's screen: its display mode, no layouts open, a test pattern where the battle
             // would be (so any shading of it shows), the in-battle flags.
             for (int k = 0; k < 16 && r.r32(g.gui() + 0x18); ++k) r.call(0x004A9660, 0, {g.gui()});
