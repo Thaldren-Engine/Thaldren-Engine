@@ -255,6 +255,7 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
     const render::Palette& pal = L->palette ? *L->palette : content_.palette;
     for (int k = 0; k < 256; ++k) L->colours[static_cast<std::size_t>(k)] = gui_colour(pal, k);
     const std::string own_gaf = "anims\\" + gui + ".GAF";
+    std::vector<Widget> slider_arrows;  // appended after the gadgets (the original adds them at the end)
     for (const GuiGadget& g : gs) {
         Widget w;
         switch (g.id) {
@@ -331,12 +332,68 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
                 w.w = w.frames->front().width;
                 w.h = w.frames->front().height;
             }
+        } else if (w.kind == WidgetKind::ScrollBar) {
+            // Slider art: the SLIDERS sequence (the screen's GAF, else commongui), offsets
+            // dropped; frames from 0 for a vertical slider (w <= h), from 10 for a horizontal one:
+            // +0 / +1 / +2 track start, middle (repeated), end; +3 knob (+4 its middle and +5 its
+            // end when vertical); +6 / +8 the two arrow buttons, placed at the ends, the bar
+            // shrinking between them. The cross size takes the first frame's; a horizontal knob is
+            // frame +5's width wide and travels w - knob - 4 pixels.
+            const auto* seq = sequence(own_gaf, "SLIDERS");
+            if (!seq) seq = sequence("anims\\commongui.GAF", "SLIDERS");
+            if (seq && seq->size() >= 20) {
+                sequences_.emplace_back(*seq);
+                for (render::Sprite8& s : sequences_.back()) s.x_offset = s.y_offset = 0;
+                const auto& fr = sequences_.back();
+                w.frames = &fr;
+                w.slider_base = w.w <= w.h ? 0 : 10;
+                const auto base = static_cast<std::size_t>(w.slider_base);
+                if (w.w < w.h) w.w = fr[base].width;
+                else w.h = fr[base].height;
+                Widget a, b;
+                a.kind = b.kind = WidgetKind::Button;
+                a.link = b.link = w.name;
+                a.active = b.active = w.active;
+                a.slider_step = -1;
+                b.slider_step = 1;
+                a.attribs = 0x3400;
+                b.attribs = 0x2C00;
+                sequences_.emplace_back(fr.begin() + static_cast<std::ptrdiff_t>(base) + 6, fr.begin() + static_cast<std::ptrdiff_t>(base) + 8);
+                a.frames = &sequences_.back();
+                sequences_.emplace_back(fr.begin() + static_cast<std::ptrdiff_t>(base) + 8, fr.begin() + static_cast<std::ptrdiff_t>(base) + 10);
+                b.frames = &sequences_.back();
+                const render::Sprite8& arrow = fr[base + 6];
+                a.x = w.x;
+                a.y = w.y;
+                a.w = arrow.width;
+                a.h = arrow.height;
+                b.w = fr[base + 8].width;
+                b.h = fr[base + 8].height;
+                if (w.h < w.w) {
+                    b.x = w.x - arrow.width + w.w;
+                    b.y = w.y;
+                    w.w -= 2 * arrow.width;
+                    w.x += arrow.width;
+                    w.knob = fr[base + 5].width;
+                    w.span = w.w - w.knob - 4;
+                } else {
+                    b.x = w.x;
+                    b.y = w.y - arrow.height + w.h;
+                    w.h -= 2 * arrow.height;
+                    w.y += arrow.height;
+                }
+                slider_arrows.push_back(a);
+                slider_arrows.push_back(b);
+            } else {
+                w.span = std::max(w.w, w.h) - 6;
+            }
         } else if (w.kind == WidgetKind::Picture) {
             if (const auto* s = sequence(own_gaf, g.name)) w.picture = &s->front();
             else if (const auto* c = sequence("anims\\commongui.GAF", g.name)) w.picture = &c->front();
         }
         L->widgets.push_back(std::move(w));
     }
+    for (Widget& a : slider_arrows) L->widgets.push_back(std::move(a));
     // Without a named Enter / Escape default the first button whose name begins with "OK" or
     // "NEXT" takes Enter and the first beginning with "PREV" or "Cancel" takes Escape (names
     // compared without case).

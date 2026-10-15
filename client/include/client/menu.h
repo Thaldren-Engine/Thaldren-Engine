@@ -60,6 +60,12 @@ struct Widget {
     int max_chars = 0;
     // Scroll bars: range and position; the list box it moves (by name).
     int range = 0, position = 0, knob = 0;
+    // Slider art (the SLIDERS sequence in frames): first frame of its set (0 vertical, 10
+    // horizontal), -1 without art; the knob's travel in pixels (span) and its size.
+    int slider_base = -1, span = 0;
+    int knob_pos = 0, knob_value = -1;  // the knob's pixel offset and the value it was set from
+    // Arrow buttons of a slider: -1 steps the linked slider (link) down, +1 up.
+    int slider_step = 0;
     bool vertical = true;
     std::string link;   // label -> button it belongs to, scroll bar -> list box
     int sound = -1;     // sample played when pressed (-1: the menu's click)

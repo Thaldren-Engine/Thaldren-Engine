@@ -66,8 +66,35 @@ int LayoutScreen::hit(int x, int y) {
     return -1;
 }
 
+namespace {
+// A slider's value from its knob offset: offset / (travel - 1) x maximum, truncated.
+int slider_value(const Widget& s, int knob) {
+    if (s.span < 2) return 0;
+    return static_cast<int>(static_cast<double>(knob) / (s.span - 1) * s.range);
+}
+// The knob offset for a value (clamped to the maximum): value / maximum x (travel - 1), rounded
+// up when not whole.
+int slider_knob(const Widget& s, int value) {
+    if (s.range <= 0) return 0;
+    const double t = static_cast<double>(std::min(value, s.range)) / s.range * (s.span - 1);
+    const int k = static_cast<int>(t);
+    return t - k != 0.0 ? static_cast<int>(t + 1.0) : k;
+}
+}  // namespace
+
 void LayoutScreen::press(FrontEnd& fe, Widget& w) {
     if (w.grayed) return;
+    if (w.slider_step != 0) {
+        // A slider's arrow moves its knob one pixel; the value follows the knob.
+        if (Widget* s = widget(w.link)) {
+            if (s->knob_value != s->position) s->knob_pos = slider_knob(*s, s->position);
+            s->knob_pos = std::clamp(s->knob_pos + w.slider_step, 0, std::max(0, s->span - 1));
+            s->position = slider_value(*s, s->knob_pos);
+            s->knob_value = s->position;
+            on_press(fe, *s);
+        }
+        return;
+    }
     if (w.stages > 0) {
         // A switch steps forward (left click) or back (right click) through its stages.
         w.stage = press_button_ == 3 ? (w.stage + w.stages - 1) % w.stages : (w.stage + 1) % w.stages;
@@ -79,6 +106,13 @@ void LayoutScreen::press(FrontEnd& fe, Widget& w) {
 }
 
 void LayoutScreen::scroll_to(Widget& bar, int x, int y) {
+    if (bar.slider_base >= 0 && !bar.vertical) {
+        // The knob follows the pointer; the value follows the knob.
+        bar.knob_pos = std::clamp(x - (ox_ + bar.x) - 3 - bar.knob / 2, 0, std::max(0, bar.span - 1));
+        bar.position = slider_value(bar, bar.knob_pos);
+        bar.knob_value = bar.position;
+        return;
+    }
     // The knob follows the pointer; a scroll bar linked to a list moves the list's first row.
     const int span = bar.vertical ? bar.h : bar.w;
     const int at = bar.vertical ? y - (oy_ + bar.y) : x - (ox_ + bar.x);
@@ -305,6 +339,52 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         break;
     }
     case WidgetKind::ScrollBar: {
+        if (w.slider_base >= 0 && w.frames && w.frames->size() >= 20) {
+            const auto& fr = *w.frames;
+            const auto f = [&](int k) -> const render::Sprite8& { return fr[static_cast<std::size_t>(w.slider_base + k)]; };
+            auto put = [&](const render::Sprite8& s, int px, int py) { render::blit(out, clip, s, px, py); };
+            const int x2 = x + w.w - 1, y2 = y + w.h - 1;
+            if (w.w < w.h) {
+                // Vertical: track down the bar; the knob centred across it.
+                int cy = y;
+                put(f(0), x, cy);
+                cy += f(0).height;
+                while (cy + f(1).height <= y2) {
+                    put(f(1), x, cy);
+                    cy += f(1).height;
+                }
+                put(f(2), x, y2 - f(2).height + 1);
+                const int kx = x + f(2).width / 2 - f(3).width / 2;
+                const int kp = w.knob_value == w.position ? w.knob_pos : slider_knob(w, w.position);
+                int top = kp + 3 + y;
+                const int len = std::min(w.knob > 0 ? w.knob : 10, w.h - 6);
+                const int bottom = std::min(top + len - 1, y + w.h - 4);
+                top = std::min(top, bottom - len + 1);
+                put(f(3), kx, top);
+                int ky = top + f(3).height;
+                while (ky <= bottom - f(4).height) {
+                    put(f(4), kx, ky);
+                    ky += f(4).height;
+                }
+                put(f(4), kx, bottom - f(4).height);
+                put(f(5), kx, bottom - f(5).height + 1);
+            } else {
+                // Horizontal: track along the bar; the knob centred on the end piece's height.
+                int cx = x;
+                put(f(0), cx, y);
+                cx += f(0).width;
+                while (cx + f(1).width <= x2) {
+                    put(f(1), cx, y);
+                    cx += f(1).width;
+                }
+                put(f(2), x2 - f(2).width + 1, y);
+                const int kp = w.knob_value == w.position ? w.knob_pos : slider_knob(w, w.position);
+                const int ky = y + f(2).height / 2 - f(3).height / 2;
+                const int kx = std::min(kp + 3 + x, x2 - f(3).width - 2);
+                put(f(3), kx, ky);
+            }
+            break;
+        }
         outline_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, mc.frame_colour);
         const int span = w.vertical ? w.h : w.w;
         const int knob = std::max(6, std::min(span, w.knob > 0 ? w.knob : 8));

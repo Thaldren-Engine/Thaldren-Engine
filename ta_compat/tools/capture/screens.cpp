@@ -8,7 +8,7 @@
 // Usage:
 //   ta_screens convert --scenario <file> --script <out.txt>
 //       Writes the ta_play script and prints "--frames N --shots a,b,c" and the shot names.
-//   ta_screens compare <a.bmp> <b.bmp> [--diff <out.bmp>] [--mask x0,y0,x1,y1 ...]
+//   ta_screens compare <a.bmp> <b.bmp> [--diff <out.bmp>] [--mask x0,y0,x1,y1 ...] [--only x0,y0,x1,y1]
 //       Counts pixels whose palette index differ and pixels whose colour differ; --diff writes
 //       a picture of the differences (white) over a darkened copy of the first.
 //
@@ -229,10 +229,15 @@ int compare(int argc, char** argv) {
     }
     std::string diff_path;
     std::vector<RECT> masks;
+    RECT only{};
+    bool use_only = false;
     for (int i = 4; i < argc; ++i) {
         const std::string s = argv[i];
         if (s == "--diff" && i + 1 < argc) diff_path = argv[++i];
-        else if (s == "--mask" && i + 1 < argc) {
+        else if (s == "--only" && i + 1 < argc) {
+            std::sscanf(argv[++i], "%ld,%ld,%ld,%ld", &only.left, &only.top, &only.right, &only.bottom);
+            use_only = true;
+        } else if (s == "--mask" && i + 1 < argc) {
             RECT r{};
             std::sscanf(argv[++i], "%ld,%ld,%ld,%ld", &r.left, &r.top, &r.right, &r.bottom);
             masks.push_back(r);
@@ -258,6 +263,7 @@ int compare(int argc, char** argv) {
             d.px[i] = static_cast<std::uint8_t>((ca[0] + ca[1] + ca[2]) / 9);  // a third of the brightness
             bool in_mask = false;
             for (const RECT& r : masks) in_mask |= x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+            if (use_only) in_mask |= !(x >= only.left && x <= only.right && y >= only.top && y <= only.bottom);
             const bool di = pa != pb, dc = ca[0] != cb[0] || ca[1] != cb[1] || ca[2] != cb[2];
             if (in_mask) {
                 masked += dc;
