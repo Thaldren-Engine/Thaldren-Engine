@@ -273,6 +273,8 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/ai.cpp
     ${ROOT}/engine/sim/src/battle.cpp
     ${ROOT}/engine/sim/src/battle_start.cpp
+    ${ROOT}/engine/sim/src/bitstream.cpp
+    ${ROOT}/engine/sim/src/net_units.cpp
     ${ROOT}/engine/sim/src/commands.cpp
     ${ROOT}/engine/sim/src/commands_core.cpp
     ${ROOT}/engine/sim/src/effect_lists.cpp
@@ -536,3 +538,11 @@ add_executable(cmd_harness cmd_harness.cpp
 )
 target_include_directories(cmd_harness PRIVATE ${ROOT}/engine/sim/include)
 target_compile_options(cmd_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Network wire format (bit streams, dictionary coder, message envelope) vs net/codec.h and sim/bitstream.h.
+add_executable(net_harness net_harness.cpp
+    ${ROOT}/engine/net/src/codec.cpp
+    ${ROOT}/engine/sim/src/bitstream.cpp
+)
+target_include_directories(net_harness PRIVATE ${ROOT}/engine/net/include ${ROOT}/engine/sim/include)
+target_compile_options(net_harness PRIVATE /W4 /permissive- /fp:precise)

@@ -145,6 +145,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     lb->anims = std::make_unique<AnimImporter>(vfs, b.anims);
     bind_weapon_explosions(lb->weapon_defs, lb->weapons, *lb->anims);
     b.features = to_feature_types(lb->feature_defs, lb->weapons, *lb->anims, &lb->feature_models);
+    bind_feature_blocks(b);
     load_effect_art(*lb->anims, b.effect_art);
     // Particle art the effect lists count frames of (fx.gaf "smoke 1", "smoke 2", "flamestream").
     auto frames = [&](const char* seq) -> std::int32_t {
@@ -190,6 +191,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     b.init_buckets();
     b.reset_features_and_effects();
     place_tnt_features(b, lb->tnt);
+    sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
     // The map info's schema: chosen as the original does for skirmish and network games
     // (request.schema < 0), else the requested one.
     std::unique_ptr<TdfSection> ota_root;

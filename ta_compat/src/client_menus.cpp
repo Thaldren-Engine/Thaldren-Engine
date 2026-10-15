@@ -17,6 +17,8 @@
 #include "sim/economy.h"
 #include "sim/victory.h"
 #include "ta/gaf.h"
+#include "ta/net_setup.h"
+#include "ta/unitdefs.h"
 #include "ta/render_assets.h"
 #include "ta/tdf.h"
 #include "ta/tnt.h"
@@ -410,9 +412,13 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
 
 std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_dir, const BattleRequest& request, int human,
                                                         const client::ClientOptions& options, const client::LoadProgress& progress,
-                                                        std::string& error) {
+                                                        std::string& error,
+                                                        const std::function<sim::BattleOutside&(sim::BattleOutside&)>& wrap,
+                                                        const std::function<void(sim::Battle&)>& attach) {
     auto s = std::unique_ptr<SkirmishSession>(new SkirmishSession);
     s->world_ = std::make_unique<ClientWorld>();
+    s->world_->net_wrap = wrap;
+    s->world_->net_attach = attach;
     if (!s->world_->load(game_dir, request, human, error, progress)) return nullptr;
     client::ClientOptions o = options;
     o.player = human;
@@ -439,6 +445,32 @@ std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_
     s->client_->center_on({at[0] << 16, 0, at[1] << 16});
     return s;
 }
+
+#ifdef TA_CLIENT_HAVE_NET
+client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* fe) {
+    client::NetMenuConfig cfg;
+    if (fe) cfg.player_name = fe->settings().get_text("Nickname", "Player");
+    const std::string dir = art.game_dir();
+    cfg.load_network_game = [dir, fe](const client::NetGameRequest& r, const client::LoadProgress& progress,
+                                      std::string& error) -> std::unique_ptr<client::BattleSession> {
+        BattleRequest req;
+        req.map = r.map;
+        req.sides = r.sides;
+        req.start = r.start;
+        const int human = r.start.local_player;
+        client::Settings none;
+        const client::ClientOptions opt = client_options(fe ? fe->settings() : none, 640, 480);
+        return SkirmishSession::start(dir, req, human, opt, progress, error, r.wrap_outside, r.attach);
+    };
+    cfg.unit_checks = [&art]() -> net::UnitChecks {
+        UnitDefContext ctx;
+        load_unit_context(art.vfs(), ctx);
+        const UnitDefTable defs = load_unit_defs(art.vfs(), ctx);
+        return unit_sync_checks(art.vfs(), defs);
+    };
+    return cfg;
+}
+#endif
 
 client::BattleOutcome SkirmishSession::outcome() {
     const sim::Battle& b = world_->battle();

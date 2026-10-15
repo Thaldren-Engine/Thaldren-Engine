@@ -323,6 +323,13 @@ int main(int argc, char** argv) {
             std::printf("  first difference after step %u\n", first_diff);
             ++failures;
         }
+        // A fault is where the original would crash, hang or read garbage: a battle built from
+        // the game's own files must not reach one in a short random game.
+        const std::string fault = a->battle->first_fault();
+        if (!fault.empty()) {
+            std::printf("  engine fault: %s\n", fault.c_str());
+            ++failures;
+        }
     }
 
     // 2. Lockstep between two machines over a lossy-order loopback, 3. replay of the recording.

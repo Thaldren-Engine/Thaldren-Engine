@@ -74,6 +74,10 @@ public:
               const std::function<void(float, const std::string&)>& progress = {});
     // Connects the battle's presentation events to the client (after both exist).
     void attach(client::GameClient* client) { client_ = client; }
+    // Network games: the outside the battle gets (the network side over the client's own) and
+    // the hook that attaches the network side to the battle (before its start and after it).
+    std::function<sim::BattleOutside&(sim::BattleOutside&)> net_wrap;
+    std::function<void(sim::Battle&)> net_attach;
     // Extra listeners for the battle's events (the front end's music and statistics).
     std::function<void(std::int32_t)> on_activity;  // combat activity (music battle/peace switching)
 

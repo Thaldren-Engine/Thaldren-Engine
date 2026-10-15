@@ -13,6 +13,7 @@
 
 #include "sim/ai.h"
 #include "sim/anim.h"
+#include "sim/bitstream.h"
 #include "sim/combat.h"
 #include "sim/economy.h"
 #include "sim/construction.h"
@@ -25,6 +26,7 @@
 #include "sim/heightmap.h"
 #include "sim/missions.h"
 #include "sim/motion.h"
+#include "sim/net_units.h"
 #include "sim/nano_spray.h"
 #include "sim/orders.h"
 #include "sim/projectile.h"
@@ -218,6 +220,10 @@ public:
     // commanders, the computer players' metal-site survey (0x4649D0).
     virtual void ai_player_setup(int /*player*/) {}
     virtual void ai_battle_ready() {}
+    // Stale stack words the original reads (inputs; the defaults are the settings' values):
+    // the computer player's constructor site height (per role call) and the reclaim sites' y.
+    virtual std::int32_t ai_site_height_word(int /*player*/, std::int32_t fallback) { return fallback; }
+    virtual std::int32_t reclaim_site_y(std::int32_t fallback) { return fallback; }
 };
 
 class Battle final : UnitWorld,
@@ -404,6 +410,9 @@ public:
     OrderContext& order_context() { return orders_; }
     FootprintWorld& footprint_world() { return footprint_; }
     RouteContext& route_context() { return route_; }
+    // The first fault any system recorded (where the original would crash, hang or read
+    // garbage), prefixed with the system's name; empty when there is none.
+    std::string first_fault();
     UnitWorld& unit_world() { return *this; }  // for unit_get_value / unit_set_value / unit_set_activate
     FeatureWorld& feature_world() {
         sync_settings();
@@ -413,6 +422,21 @@ public:
         sync_settings();
         return effects_world_;
     }
+
+    // Network play (sim/net_units.h, engine/sim/src/net_units.cpp): received packets that
+    // change units, and the unit state packets. `slot` is the sending player's slot.
+    Unit* apply_unit_packet(int slot, const std::uint8_t* packet);                       // 0x09 (0x4861D0)
+    std::vector<std::uint8_t> unit_state_packet(int slot);                              // 0x2C (0x48B710)
+    std::uint32_t apply_unit_state_packet(int slot, const std::uint8_t* packet, std::size_t size);  // 0x2C (0x48B920): its step
+    void apply_transport_packet(const std::uint8_t* packet);                            // 0x0A (0x48AB70)
+    void apply_fire_packet(const std::uint8_t* packet);                                 // 0x0D (0x49D270)
+    void apply_script_packet(const std::uint8_t* packet);                               // 0x10
+    void apply_activate_packet(const std::uint8_t* packet);                             // 0x11
+    void apply_finished_packet(const std::uint8_t* packet);                             // 0x12 (0x41B8D0)
+    void apply_ownership_packet(int new_owner, const std::uint8_t* packet);             // 0x14 (0x488570)
+    void share_explored_map(int from, int to);                                          // 0x16 kind 3
+    NetUnitInputs net_inputs;
+    NetUnitState& net_state() { return *net_; }
 
 private:
     void sync_settings();
@@ -472,7 +496,10 @@ private:
     void kill_counted(std::uint8_t slot, Unit& v) override { outside_.kill_counted(slot, v); }
     void detonate(Unit& unit, bool self_destruct) override;
     void spawn_wreck(Unit& u, std::int32_t level, bool burn) override;
-    void release_unit(Unit& u) override { outside_.release_unit(u); }
+    void release_unit(Unit& u) override {
+        release_referrers(u);  // 0x489740
+        outside_.release_unit(u);
+    }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
     void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
     void commander_died(int p) override {
@@ -619,7 +646,10 @@ private:
         explicit TargetingHooks(Battle& battle) : b(battle) {}
         bool unit_visible(int p, Unit& u) override;
         bool position_explored(int p, const std::array<std::int32_t, 3>& pos) override;
-        std::uint8_t feature_flags(std::uint16_t f) override { return b.outside_.feature_flags(f); }
+        // A feature type's flag byte (its low byte: 0x40 blocking, 0x80 reclaimable).
+        std::uint8_t feature_flags(std::uint16_t f) override {
+            return f < b.features.size() ? static_cast<std::uint8_t>(b.features[f].flags) : b.outside_.feature_flags(f);
+        }
         std::int32_t intercept_target(Unit& u, int slot, std::array<std::int32_t, 3>& pos) override;
         // (the refresh's start brings the AI context up to date for the rest of it)
         void ai_table_begin(int table) override { sim::ai_table_begin(b.ai(), table); }
@@ -743,6 +773,7 @@ private:
         bool weapon_in_range(Unit& u, const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& to, int slot) override {
             return sim::weapon_in_range(b.weapons_, u, slot, from, to);
         }
+        std::int32_t stale_site_height(int player, std::int32_t fallback) override { return b.outside_.ai_site_height_word(player, fallback); }
     };
     void sync_ai();
     AiHooks ai_hooks_{*this};
@@ -764,12 +795,15 @@ private:
         void air_bases_in_radius(int state, const std::array<std::int32_t, 3>& pos, std::int32_t r, std::vector<Unit*>& out) override;
         void broadcast_script_call(Unit& u, const char* name, std::int32_t argc, std::int32_t a, std::int32_t c1, std::int32_t c2,
                                    std::int32_t c3) override;
-        std::int32_t reclaim_site_y() override { return b.settings.reclaim_site_y; }
+        std::int32_t reclaim_site_y() override { return b.outside_.reclaim_site_y(b.settings.reclaim_site_y); }
         void place_unit(Unit& u, const std::array<std::int32_t, 3>& pos, std::uint32_t layer) override { sim::place_unit(b.motion_, u, pos, layer); }
         void teleport_trail(Unit& u, const std::array<std::int32_t, 3>& to) override { b.outside_.teleport_trail(u.pos, to); }
         void remove_feature(std::int32_t cell) override { sim::remove_feature(b.feature_world_, cell, false); }
         void wreck_attitude(const MapCell& origin, Unit& u) override;
     };
+    std::shared_ptr<NetUnitState> net_ = std::make_shared<NetUnitState>();
+    void apply_full_state(BitReader& r, Unit& u);
+    void write_full_state(BitWriter& w, const Unit& u) const;
     UnitMissionHooks unit_mission_hooks_{*this};
     std::vector<UnitMissionTypeInfo> unit_mission_types_;  // by type index
     std::vector<UnitTickTypeInfo> tick_types_;             // by type index (copies, for lookups by index)

@@ -86,6 +86,9 @@ public:
     // Whether the unit's weapon `slot` reaches `target` from `from` (sim/weapons.h weapon_in_range).
     virtual bool weapon_in_range(Unit& unit, const std::array<std::int32_t, 3>& from, const std::array<std::int32_t, 3>& target,
                                  int slot) = 0;
+    // The constructors' site height for `player`'s role (a stale stack word, an input; see
+    // AiEnvironment::stale_site_height, which is the default).
+    virtual std::int32_t stale_site_height(int /*player*/, std::int32_t fallback) { return fallback; }
 };
 
 struct AiEnvironment {

@@ -7,7 +7,15 @@
 // Usage:
 //   ta_capture --exe <TotalA.exe> [--cwd <dir>] --out <trace.jsonl>
 //              [--battle-seed <u32>] [--rand-seed <u32>]
-//              [--max-ticks <n>] [--rng-calls]
+//              [--max-ticks <n>] [--rng-calls] [--dump-defs <file>]
+//              [--game] [--auto-skirmish]
+//
+// --game: whole-game capture for the replay test (ta_compat/tools/game_replay): the battle's
+// configuration at the first step, the start-position shuffle's rand() state, the map, every
+// frame (end of its steps), every order entering the simulation (interface and computer
+// player, with the caller), the stale stack words the engine takes as inputs, and a digest of
+// the state after every step. --auto-skirmish presses the menus' quick keys (S, S, S) until a
+// skirmish with the last used settings starts.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -58,6 +66,28 @@ constexpr DWORD kTranslateLanguage = 0x0051FDC0;  // char[64]
 constexpr DWORD kOffUnitModels = 0x14377;        // Model3do** (one per unit def)
 constexpr DWORD kOffSoundBank = 0x33A0B;          // {int count; ptr slots[256]; char names[256][32]; char paths[256][32]}
 
+// Whole-game capture (--game): battle start inputs, frames, orders, stale stack words and a
+// digest of the simulation state after every step (docs/RE_MEMORY.md "Whole-game replay").
+constexpr DWORD kBpStepEnd = 0x0049566C;        // end of one step in Game_RunSimulationStep (DEC EBX)
+constexpr DWORD kBpFrameEnd = 0x00495674;       // after the frame's steps (also with none), before its tail
+constexpr DWORD kBpShuffleRandA = 0x004979E7;   // battle init: the start-position shuffle's rand() calls
+constexpr DWORD kBpShuffleRandB = 0x00497A32;
+constexpr DWORD kBpMapPath = 0x00483632;        // Map_LoadTnt: eax = the map file path
+constexpr DWORD kBpEnqueueOrder = 0x0043ADC0;   // Unit_EnqueueOrder(kind, queued, unit, target, pos*, p0, p1)
+constexpr DWORD kBpIssueOrCancel = 0x0043AFC0;  // the interface's per-unit order (same arguments)
+constexpr DWORD kBpBuildCount = 0x0043B0B0;     // Unit_AdjustBuildCount(kind, unit, type, delta)
+constexpr DWORD kBpBuildMenu = 0x00419B00;      // build menu command (name, unit, delta)
+constexpr DWORD kBpIssueSelected = 0x0048CF30;  // Unit_IssueOrdersToSelected (interface)
+constexpr DWORD kBpAiConstructors = 0x00408100; // Ai_RoleConstructorsTick: site height = [esp-0x2C]
+constexpr DWORD kBpReclaimSites = 0x0047EA40;   // Map_PickReclaimSites: site y = [esp-8]
+constexpr DWORD kBpDxCheck = 0x004266A5;        // after the DirectX version check (0x4B5070): eax 0 shows a notice
+constexpr DWORD kOffPlayers = 0x1B63, kPlayerSize = 0x14B, kUnitSize = 0x118;
+constexpr DWORD kOffLocalPlayer = 0x2A42, kOffLocalView = 0x2A43;
+constexpr DWORD kOffProjCount = 0x141F3, kOffProjTable = 0x141F7, kProjSize = 0x6B, kMaxProjectiles = 300;
+constexpr DWORD kOffMapW = 0x14233, kOffMapH = 0x14237, kOffCells = 0x14287, kCellSize = 13;
+constexpr DWORD kOffMapFlags = 0x14281, kOffUnitLimit = 0x37EE6, kOffAiDifficulty = 0x37EEE, kOffGameMode = 0x37EF6;
+constexpr DWORD kOffWindHeading = 0x37ED8, kOffWindSpeed = 0x37EDA;
+
 struct Options {
     std::string exe;
     std::string cwd;
@@ -67,6 +97,8 @@ struct Options {
     std::uint32_t max_ticks = 0;  // 0 = unlimited
     bool rng_calls = false;
     std::string dump_defs;        // write definition tables at the first sim step
+    bool game = false;            // whole-game capture (digests, orders, frames, stale words)
+    bool auto_skirmish = false;   // press the menus' quick keys until a skirmish starts
 };
 
 struct Breakpoint {
@@ -386,6 +418,337 @@ std::uint32_t rand_state_for(DWORD tid, bool& known) {
     return v;
 }
 
+// --- Whole-game capture ------------------------------------------------------------------
+
+bool g_in_step = false;           // between the step start and the step end breakpoints
+bool g_battle_loading = false;    // the battle seed was seen (the menus are done)
+bool g_start_written = false;
+std::uint32_t g_unit_table = 0;
+
+std::uint32_t game_state() {
+    std::uint32_t gs = 0;
+    read_u32(kGameStatePtr, gs);
+    return gs;
+}
+
+int unit_id_of(std::uint32_t ptr) {
+    if (!ptr || !g_unit_table || ptr < g_unit_table) return ptr ? -1 : 0;
+    const std::uint32_t d = ptr - g_unit_table;
+    return d % kUnitSize == 0 ? static_cast<int>(d / kUnitSize) : -1;
+}
+
+std::string json_escape(const std::string& s) {
+    std::string e;
+    for (char c : s) {
+        if (c == '\\' || c == '"') e += '\\';
+        if (static_cast<unsigned char>(c) >= 0x20) e += c;
+    }
+    return e;
+}
+
+template <class T>
+T get(const std::vector<std::uint8_t>& b, std::size_t off) {
+    T v{};
+    if (off + sizeof(T) <= b.size()) std::memcpy(&v, &b[off], sizeof(T));
+    return v;
+}
+
+std::uint32_t fnv(std::uint32_t h, const std::uint8_t* p, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
+// Kinds of an order list (up to 32 orders).
+std::string order_kinds(std::uint32_t head) {
+    std::string s = "[";
+    int n = 0;
+    for (std::uint32_t o = head; o && n < 32; ++n) {
+        std::uint8_t kind = 0;
+        read_block(o + 4, &kind, 1);
+        if (n) s += ',';
+        s += std::to_string(kind);
+        std::uint32_t next = 0;
+        if (!read_u32(o + 0x4A, next)) break;
+        o = next;
+    }
+    return s + "]";
+}
+
+// The battle's configuration as the original holds it at the first step.
+void write_start(DWORD tid) {
+    const std::uint32_t gs = game_state();
+    if (!gs) return;
+    read_u32(gs + 0x14357, g_unit_table);
+    std::uint8_t lp = 0, lv = 0;
+    read_block(gs + kOffLocalPlayer, &lp, 1);
+    read_block(gs + kOffLocalView, &lv, 1);
+    std::uint16_t map_flags = 0, limit = 0;
+    read_block(gs + kOffMapFlags, &map_flags, 2);
+    read_block(gs + kOffUnitLimit, &limit, 2);
+    std::uint32_t diff = 0, mode = 0;
+    read_u32(gs + kOffAiDifficulty, diff);
+    read_u32(gs + kOffGameMode, mode);
+    bool known = false;
+    const std::uint32_t rs = rand_state_for(tid, known);
+    std::fprintf(g_out,
+                 "{\"ev\":\"start\",\"game_state\":%u,\"unit_table\":%u,\"local_player\":%u,\"local_view\":%u,\"map_flags\":%u,"
+                 "\"unit_limit\":%u,\"ai_difficulty\":%u,\"game_mode\":%u,\"sim_rand\":%u,\"sim_rand_known\":%d,\"players\":[",
+                 gs, g_unit_table, lp, lv, map_flags, limit, diff, mode, rs, known ? 1 : 0);
+    bool first = true;
+    for (int p = 0; p < 10; ++p) {
+        const std::uint32_t rec = gs + kOffPlayers + static_cast<std::uint32_t>(p) * kPlayerSize;
+        std::vector<std::uint8_t> r(kPlayerSize);
+        if (!read_block(rec, r.data(), r.size())) continue;
+        const std::uint32_t active = get<std::uint32_t>(r, 0);
+        const std::uint8_t controller = r[0x73];
+        if (!active && !controller) continue;
+        const int first_id = unit_id_of(get<std::uint32_t>(r, 0x67)), last_id = unit_id_of(get<std::uint32_t>(r, 0x6B));
+        // The commander: the first unit of the player's range with a type.
+        std::string commander;
+        if (first_id > 0) {
+            std::uint32_t def = 0;
+            read_u32(g_unit_table + static_cast<std::uint32_t>(first_id) * kUnitSize + 0x92, def);
+            if (def) commander = read_cstr(def + 0x20);
+        }
+        std::string allied;
+        for (int k = 0; k < 10; ++k) allied += std::to_string(r[0x108 + static_cast<std::size_t>(k)]) + (k < 9 ? "," : "");
+        std::fprintf(g_out,
+                     "%s{\"slot\":%d,\"active\":%u,\"controller\":%u,\"net_id\":%u,\"state\":%u,\"first\":%d,\"last\":%d,"
+                     "\"energy\":%u,\"metal\":%u,\"energy_storage\":%u,\"metal_storage\":%u,\"commander\":\"%s\",\"allied\":[%s]}",
+                     first ? "" : ",", p, active, controller, get<std::uint32_t>(r, 4), r[0x146], first_id, last_id,
+                     get<std::uint32_t>(r, 0x8C), get<std::uint32_t>(r, 0x98), get<std::uint32_t>(r, 0xA4),
+                     get<std::uint32_t>(r, 0xA8), json_escape(commander).c_str(), allied.c_str());
+        first = false;
+    }
+    std::fprintf(g_out, "]}\n");
+    // The route search's scheduling state (search object GS+0x14207 and program-wide statics).
+    {
+        std::uint32_t so = 0, refresh = 0;
+        std::uint16_t player_count = 0, per_player = 0;
+        read_u32(gs + 0x14207, so);
+        read_block(gs + 0x2A3C, &player_count, 2);
+        read_block(gs + 0x1434F, &per_player, 2);
+        read_u32(0x00511A38, refresh);
+        std::uint8_t sb[0xC9] = {};
+        if (so) read_block(so, sb, sizeof sb);
+        std::int32_t scale[10] = {}, turns[10] = {};
+        read_block(0x005119E8, scale, sizeof scale);
+        read_block(0x00511A10, turns, sizeof turns);
+        std::string cur, cred, sc, tu;
+        for (int p = 0; p < 10; ++p) {
+            std::uint32_t c = 0;
+            std::int32_t k = 0;
+            std::memcpy(&c, sb + 0x79 + 4 * p, 4);
+            std::memcpy(&k, sb + 0xA1 + 4 * p, 4);
+            const char* sep = p ? "," : "";
+            cur += sep + std::to_string(unit_id_of(c));
+            cred += sep + std::to_string(k);
+            sc += sep + std::to_string(scale[p]);
+            tu += sep + std::to_string(turns[p]);
+        }
+        std::fprintf(g_out,
+                     "{\"ev\":\"route_state\",\"player_count\":%u,\"units_per_player\":%u,\"refresh\":%u,\"player\":%u,\"active\":%d,"
+                     "\"cursor\":[%s],\"credit\":[%s],\"scale\":[%s],\"turns\":[%s]}\n",
+                     player_count, per_player, refresh, sb[0x78], unit_id_of(*reinterpret_cast<std::uint32_t*>(sb + 0x58)), cur.c_str(),
+                     cred.c_str(), sc.c_str(), tu.c_str());
+    }
+    // The map cells at the start (sparse): [index, unit, unit2, feature, aux, flags, metal] for
+    // every cell with a unit, a feature, flags or metal.
+    std::uint32_t cells = 0, mw = 0, mh = 0;
+    read_u32(gs + kOffCells, cells);
+    read_u32(gs + kOffMapW, mw);
+    read_u32(gs + kOffMapH, mh);
+    if (cells && mw && mh && mw < 4096 && mh < 4096) {
+        std::vector<std::uint8_t> c(static_cast<std::size_t>(mw) * mh * kCellSize);
+        read_block(cells, c.data(), c.size());
+        std::string line = "{\"ev\":\"cells\",\"width\":" + std::to_string(mw) + ",\"height\":" + std::to_string(mh) + ",\"cells\":[";
+        bool f = true;
+        for (std::size_t i = 0; i < static_cast<std::size_t>(mw) * mh; ++i) {
+            const std::uint8_t* p = &c[i * kCellSize];
+            const auto unit = get<std::uint16_t>(c, i * kCellSize), unit2 = get<std::uint16_t>(c, i * kCellSize + 2);
+            const auto feat = get<std::uint16_t>(c, i * kCellSize + 8), aux = get<std::uint16_t>(c, i * kCellSize + 10);
+            if (!unit && !unit2 && feat == 0xFFFF && !aux && !p[12] && !p[7]) continue;
+            line += std::string(f ? "" : ",") + "[" + std::to_string(i) + "," + std::to_string(unit) + "," + std::to_string(unit2) + "," +
+                    std::to_string(feat) + "," + std::to_string(aux) + "," + std::to_string(p[12]) + "," + std::to_string(p[7]) + "]";
+            f = false;
+        }
+        std::fputs((line + "]}\n").c_str(), g_out);
+    }
+}
+
+// The simulation state after a step: generators, wind, players' resources, every unit,
+// every projectile, and hashes of the map cells' features and occupancy.
+void write_digest(DWORD tid) {
+    const std::uint32_t gs = game_state();
+    if (!gs) return;
+    std::uint32_t tick = 0, brng = 0, proj_table = 0, cells = 0, mw = 0, mh = 0, wind_speed = 0;
+    std::uint16_t wind_heading = 0;
+    read_u32(gs + kOffGameTick, tick);
+    read_u32(kBattleRngState, brng);
+    read_u32(gs + kOffProjTable, proj_table);
+    read_u32(gs + kOffCells, cells);
+    read_u32(gs + kOffMapW, mw);
+    read_u32(gs + kOffMapH, mh);
+    read_block(gs + kOffWindHeading, &wind_heading, 2);
+    read_u32(gs + kOffWindSpeed, wind_speed);
+    bool known = false;
+    const std::uint32_t rs = rand_state_for(tid, known);
+    std::string line = "{\"ev\":\"digest\",\"tick\":" + std::to_string(tick) + ",\"rand\":" + std::to_string(rs) +
+                       ",\"brng\":" + std::to_string(brng) + ",\"wind\":[" + std::to_string(wind_heading) + "," +
+                       std::to_string(static_cast<std::int32_t>(wind_speed)) + "],\"players\":[";
+    std::vector<std::uint8_t> recs(10 * kPlayerSize);
+    read_block(gs + kOffPlayers, recs.data(), recs.size());
+    int lo = 0x7FFFFFFF, hi = -1;
+    bool first = true;
+    for (int p = 0; p < 10; ++p) {
+        const std::size_t o = static_cast<std::size_t>(p) * kPlayerSize;
+        if (!get<std::uint32_t>(recs, o) && !recs[o + 0x73]) continue;
+        const int a = unit_id_of(get<std::uint32_t>(recs, o + 0x67)), b = unit_id_of(get<std::uint32_t>(recs, o + 0x6B));
+        if (a > 0 && a < lo) lo = a;
+        if (b > hi) hi = b;
+        line += std::string(first ? "" : ",") + "[" + std::to_string(p) + "," + std::to_string(get<std::uint32_t>(recs, o + 0x8C)) +
+                "," + std::to_string(get<std::uint32_t>(recs, o + 0x98)) + "," +
+                std::to_string(get<std::uint32_t>(recs, o + 0xA4)) + "," + std::to_string(get<std::uint32_t>(recs, o + 0xA8)) + "]";
+        first = false;
+    }
+    line += "],\"units\":[";
+    if (hi >= lo && g_unit_table) {
+        std::vector<std::uint8_t> u(static_cast<std::size_t>(hi - lo + 1) * kUnitSize);
+        read_block(g_unit_table + static_cast<std::uint32_t>(lo) * kUnitSize, u.data(), u.size());
+        first = true;
+        char buf[512];
+        for (int id = lo; id <= hi; ++id) {
+            const std::size_t o = static_cast<std::size_t>(id - lo) * kUnitSize;
+            if (!get<std::uint16_t>(u, o + 0xA6)) continue;  // type index 0: empty entry
+            std::snprintf(buf, sizeof buf, "%s[%d,%u,%u,%d,%d,%d,%d,%u,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,", first ? "" : ",", id,
+                          get<std::uint16_t>(u, o + 0xA6), u[o + 0xFF], get<std::int32_t>(u, o + 0x6A), get<std::int32_t>(u, o + 0x6E),
+                          get<std::int32_t>(u, o + 0x72), get<std::int16_t>(u, o + 0x64), get<std::uint16_t>(u, o + 0x66),
+                          get<std::int16_t>(u, o + 0x68), get<std::int16_t>(u, o + 0x108), get<std::uint32_t>(u, o + 0x104),
+                          u[o + 0x10E], u[o + 0x10F], get<std::uint32_t>(u, o + 0x110), u[o + 0xF6], get<std::uint16_t>(u, o + 0xB8),
+                          get<std::uint16_t>(u, o + 4 + 0x14), get<std::uint16_t>(u, o + 4 + 0x1C + 0x14),
+                          get<std::uint16_t>(u, o + 4 + 0x38 + 0x14));
+            line += buf;
+            line += order_kinds(get<std::uint32_t>(u, o + 0x5C)) + "," + order_kinds(get<std::uint32_t>(u, o + 0x60));
+            // Motion object: [speed, turn, flags & 7, goal vtable, route count, route search
+            // tick, route flags & 15, route points...] ([] without motion).
+            line += ",[";
+            if (const std::uint32_t mo = get<std::uint32_t>(u, o + 0)) {
+                std::vector<std::uint8_t> m(0x30);
+                read_block(mo, m.data(), m.size());
+                line += std::to_string(get<std::int32_t>(m, 0x20)) + "," + std::to_string(get<std::int16_t>(m, 0x24)) + "," +
+                        std::to_string(m[0x2E] & 7);
+                if (const std::uint32_t g = get<std::uint32_t>(m, 0)) {
+                    std::vector<std::uint8_t> gb(0x68);
+                    read_block(g, gb.data(), gb.size());
+                    const std::int32_t count = get<std::int32_t>(gb, 0x5C);
+                    line += "," + std::to_string(get<std::uint32_t>(gb, 0)) + "," + std::to_string(count) + "," +
+                            std::to_string(get<std::uint32_t>(gb, 0x60)) + "," + std::to_string(gb[0x64] & 0xF);
+                    for (std::int32_t k = 0; k < count && k < 20; ++k)
+                        line += "," + std::to_string(get<std::uint32_t>(gb, 0xC + 4u * static_cast<std::uint32_t>(k)));
+                }
+            }
+            line += "]]";
+            first = false;
+        }
+    }
+    line += "],\"proj\":[";
+    if (proj_table) {
+        std::vector<std::uint8_t> pt(kMaxProjectiles * kProjSize);
+        read_block(proj_table, pt.data(), pt.size());
+        first = true;
+        char buf[256];
+        const std::uint32_t wbase = gs + kOffWeaponDefs;
+        for (DWORD s = 0; s < kMaxProjectiles; ++s) {
+            const std::size_t o = static_cast<std::size_t>(s) * kProjSize;
+            const std::uint32_t w = get<std::uint32_t>(pt, o);
+            if (!w) continue;
+            std::snprintf(buf, sizeof buf, "%s[%lu,%u,%d,%d,%d,%d,%d,%d,%d,%d]", first ? "" : ",", s, (w - wbase) / kWeaponDefSize,
+                          get<std::int32_t>(pt, o + 4), get<std::int32_t>(pt, o + 8), get<std::int32_t>(pt, o + 12),
+                          get<std::int32_t>(pt, o + 0x1C), get<std::int32_t>(pt, o + 0x20), get<std::int32_t>(pt, o + 0x24),
+                          unit_id_of(get<std::uint32_t>(pt, o + 0x52)), unit_id_of(get<std::uint32_t>(pt, o + 0x4E)));
+            line += buf;
+            first = false;
+        }
+    }
+    std::uint32_t fh = 2166136261u, uh = 2166136261u;
+    if (cells && mw && mh && mw < 4096 && mh < 4096) {
+        std::vector<std::uint8_t> c(static_cast<std::size_t>(mw) * mh * kCellSize);
+        read_block(cells, c.data(), c.size());
+        for (std::size_t i = 0; i < static_cast<std::size_t>(mw) * mh; ++i) {
+            uh = fnv(uh, &c[i * kCellSize], 4);
+            fh = fnv(fh, &c[i * kCellSize + 8], 5);
+        }
+    }
+    line += "],\"cells\":[" + std::to_string(fh) + "," + std::to_string(uh) + "]}\n";
+    std::fputs(line.c_str(), g_out);
+}
+
+void write_order(const char* fn, const CONTEXT& ctx, bool build_count) {
+    std::uint32_t a[8] = {};
+    for (int k = 0; k < 8; ++k) read_u32(ctx.Esp + 4u * static_cast<DWORD>(k), a[k]);  // a[0] = return address
+    std::string pos = "null";
+    if (build_count) {
+        std::fprintf(g_out, "{\"ev\":\"order\",\"fn\":\"%s\",\"tick\":%u,\"in_step\":%d,\"ret\":%u,\"kind\":%u,\"unit\":%d,\"type\":%u,"
+                            "\"delta\":%d}\n",
+                     fn, game_tick(), g_in_step ? 1 : 0, a[0], a[1] & 0xFF, unit_id_of(a[2]), a[3], static_cast<std::int32_t>(a[4]));
+        return;
+    }
+    if (a[5]) {
+        std::int32_t p[3] = {};
+        read_block(a[5], p, sizeof p);
+        pos = "[" + std::to_string(p[0]) + "," + std::to_string(p[1]) + "," + std::to_string(p[2]) + "]";
+    }
+    std::fprintf(g_out, "{\"ev\":\"order\",\"fn\":\"%s\",\"tick\":%u,\"in_step\":%d,\"ret\":%u,\"kind\":%u,\"queued\":%u,\"unit\":%d,"
+                        "\"target\":%d,\"pos\":%s,\"p0\":%d,\"p1\":%d}\n",
+                 fn, game_tick(), g_in_step ? 1 : 0, a[0], a[1] & 0xFF, a[2], unit_id_of(a[3]), unit_id_of(a[4]), pos.c_str(),
+                 static_cast<std::int32_t>(a[6]), static_cast<std::int32_t>(a[7]));
+}
+
+// Presses the menus' quick keys (main menu S, single player S = skirmish, skirmish S = start)
+// and dismisses message boxes, until the battle starts loading.
+DWORD g_pid = 0;
+struct WindowSearch {
+    std::vector<HWND> game;
+    HWND dialog = nullptr;
+};
+BOOL CALLBACK find_windows(HWND w, LPARAM lp) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (pid != g_pid || !IsWindowVisible(w)) return TRUE;
+    auto* s = reinterpret_cast<WindowSearch*>(lp);
+    char cls[64] = {};
+    GetClassNameA(w, cls, sizeof cls);
+    if (std::strcmp(cls, "#32770") == 0) s->dialog = w;
+    else s->game.push_back(w);
+    return TRUE;
+}
+void post_key(HWND w, WPARAM vk, WPARAM ch) {
+    const LPARAM scan = static_cast<LPARAM>(MapVirtualKeyA(static_cast<UINT>(vk), MAPVK_VK_TO_VSC)) << 16;
+    PostMessageA(w, WM_KEYDOWN, vk, scan | 1);
+    if (ch) PostMessageA(w, WM_CHAR, ch, scan | 1);
+    PostMessageA(w, WM_KEYUP, vk, scan | 1 | 0xC0000000);
+}
+DWORD WINAPI menu_driver(LPVOID) {
+    Sleep(8000);
+    // The game's "DirectX version" notice is skipped at its check (kBpDxCheck). Then S until
+    // the battle loads (main menu S, single player S = skirmish, skirmish S = start). Keys go
+    // to the process's visible top-level windows.
+    for (int round = 0; round < 90 && !g_battle_loading; ++round) {
+        WindowSearch s;
+        EnumWindows(find_windows, reinterpret_cast<LPARAM>(&s));
+        if (s.dialog) {
+            PostMessageA(s.dialog, WM_COMMAND, IDOK, 0);
+        } else {
+            for (HWND w : s.game) {
+                PostMessageA(w, WM_ACTIVATE, WA_ACTIVE, 0);
+                post_key(w, 'S', 's');
+            }
+        }
+        Sleep(3000);
+    }
+    return 0;
+}
+
 // Returns true when the capture should stop.
 bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
     const DWORD addr = ctx.Eip;
@@ -409,7 +772,76 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
         std::fflush(g_out);
         break;
     }
+    case kBpStepEnd:
+        g_in_step = false;
+        write_digest(tid);
+        if (opt.max_ticks && game_tick() >= opt.max_ticks) return true;
+        break;
+    case kBpFrameEnd: {
+        std::uint32_t brng = 0;
+        std::uint8_t view = 0;
+        std::uint16_t map_flags = 0;
+        read_u32(kBattleRngState, brng);
+        if (const std::uint32_t gs = game_state()) {
+            read_block(gs + kOffLocalView, &view, 1);
+            read_block(gs + kOffMapFlags, &map_flags, 2);  // line-of-sight options (console toggles)
+        }
+        bool known = false;
+        const std::uint32_t rs = rand_state_for(tid, known);
+        std::fprintf(g_out, "{\"ev\":\"frame\",\"tick\":%u,\"rand\":%u,\"brng\":%u,\"view\":%u,\"map_flags\":%u}\n", game_tick(), rs, brng,
+                     view, map_flags);
+        break;
+    }
+    case kBpShuffleRandA:
+    case kBpShuffleRandB: {
+        bool known = false;
+        const std::uint32_t rs = rand_state_for(tid, known);
+        std::fprintf(g_out, "{\"ev\":\"shuffle_rand\",\"tid\":%lu,\"at\":%lu,\"state\":%u,\"known\":%d}\n", tid, addr, rs, known ? 1 : 0);
+        break;
+    }
+    case kBpDxCheck:
+        ctx.Eax = 1;  // version accepted: no notice to answer (start-up interface only)
+        break;
+    case kBpMapPath:
+        std::fprintf(g_out, "{\"ev\":\"map\",\"path\":\"%s\"}\n", json_escape(read_cstr(ctx.Eax)).c_str());
+        break;
+    case kBpEnqueueOrder:
+        write_order("enqueue", ctx, false);
+        break;
+    case kBpIssueOrCancel:
+        write_order("issue_or_cancel", ctx, false);
+        break;
+    case kBpBuildCount:
+        write_order("build_count", ctx, true);
+        break;
+    case kBpBuildMenu: {
+        std::uint32_t name = 0, unit = 0, delta = 0;
+        read_u32(ctx.Esp + 4, name);
+        read_u32(ctx.Esp + 8, unit);
+        read_u32(ctx.Esp + 12, delta);
+        std::fprintf(g_out, "{\"ev\":\"order\",\"fn\":\"build_menu\",\"tick\":%u,\"in_step\":%d,\"ret\":%u,\"name\":\"%s\",\"unit\":%d,\"delta\":%d}\n",
+                     game_tick(), g_in_step ? 1 : 0, ret, json_escape(read_cstr(name)).c_str(), unit_id_of(unit),
+                     static_cast<std::int32_t>(delta));
+        break;
+    }
+    case kBpIssueSelected: {
+        std::uint32_t a[6] = {};
+        for (int k = 0; k < 6; ++k) read_u32(ctx.Esp + 4u + 4u * static_cast<DWORD>(k), a[k]);
+        std::fprintf(g_out, "{\"ev\":\"order\",\"fn\":\"issue_selected\",\"tick\":%u,\"in_step\":%d,\"ret\":%u,\"args\":[%u,%u,%u,%u,%u,%u]}\n",
+                     game_tick(), g_in_step ? 1 : 0, ret, a[0], a[1], a[2], a[3], a[4], a[5]);
+        break;
+    }
+    case kBpAiConstructors:
+    case kBpReclaimSites: {
+        std::uint32_t v = 0;
+        read_u32(ctx.Esp - (addr == kBpAiConstructors ? 0x2Cu : 8u), v);
+        std::fprintf(g_out, "{\"ev\":\"stale\",\"what\":\"%s\",\"tick\":%u,\"in_step\":%d,\"value\":%d}\n",
+                     addr == kBpAiConstructors ? "ai_site_y" : "reclaim_site_y", game_tick(), g_in_step ? 1 : 0,
+                     static_cast<std::int32_t>(v));
+        break;
+    }
     case kBpBattleRngSeed:
+        g_battle_loading = true;
         std::fprintf(g_out, "{\"ev\":\"battle_seed\",\"tid\":%lu,\"seed\":%u", tid, arg0);
         if (opt.battle_seed) {
             write_u32(ctx.Esp + 4, *opt.battle_seed);
@@ -471,6 +903,16 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
                      static_cast<unsigned long long>(g_rand_draws_this_step));
         g_battle_draws_this_step = 0;
         g_rand_draws_this_step = 0;
+        if (opt.game) {
+            g_in_step = true;
+            if (!g_start_written) {
+                g_start_written = true;
+                write_start(tid);
+                // From here on the simulation thread's rand() draws are wanted (the loading
+                // thread's ~400,000 draws are not).
+                if (opt.rng_calls && !g_bps.count(kBpRandTd)) add_bp(kBpRandTd);
+            }
+        }
         // Heap addresses some original behaviour depends on (stale stack words holding pointers).
         static bool layout_written = false;
         std::uint32_t unit_table = 0;
@@ -485,7 +927,7 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
             std::fprintf(g_out, "{\"ev\":\"dump_defs\",\"tick\":%u,\"ok\":%s}\n", tick, ok ? "true" : "false");
         }
         std::fflush(g_out);
-        if (opt.max_ticks && tick >= opt.max_ticks) return true;
+        if (!opt.game && opt.max_ticks && tick >= opt.max_ticks) return true;
         break;
     }
     default:
@@ -507,6 +949,8 @@ bool parse_args(int argc, char** argv, Options& opt) {
         else if (a == "--max-ticks" && (v = next())) opt.max_ticks = parse_u32(v);
         else if (a == "--rng-calls") opt.rng_calls = true;
         else if (a == "--dump-defs" && (v = next())) opt.dump_defs = v;
+        else if (a == "--game") opt.game = true;
+        else if (a == "--auto-skirmish") opt.auto_skirmish = true;
         else {
             std::fprintf(stderr, "unknown or incomplete argument: %s\n", a.c_str());
             return false;
@@ -558,9 +1002,25 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "unexpected image base 0x%08lX\n", base);
                 stop = true;
             } else {
-                for (DWORD a : {kBpArchiveOpen, kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpRandTd, kBpBattleRngNext,
-                                kBpSimStep}) {
-                    add_bp(a);
+                if (opt.game) {
+                    // Whole game: no per-draw breakpoints unless asked for (the loading thread's
+                    // rand() calls are many); rand() per draw is armed at the first step.
+                    for (DWORD a : {kBpArchiveOpen, kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpSimStep, kBpStepEnd, kBpFrameEnd,
+                                    kBpShuffleRandA, kBpShuffleRandB, kBpMapPath, kBpEnqueueOrder, kBpIssueOrCancel, kBpBuildCount,
+                                    kBpBuildMenu, kBpIssueSelected, kBpAiConstructors, kBpReclaimSites}) {
+                        add_bp(a);
+                    }
+                    if (opt.rng_calls) add_bp(kBpBattleRngNext);
+                } else {
+                    for (DWORD a : {kBpArchiveOpen, kBpBattleRngSeed, kBpSrand, kBpSrandTd, kBpRandTd, kBpBattleRngNext,
+                                    kBpSimStep}) {
+                        add_bp(a);
+                    }
+                }
+                if (opt.auto_skirmish) {
+                    g_pid = ev.dwProcessId;
+                    add_bp(kBpDxCheck);
+                    CreateThread(nullptr, 0, menu_driver, nullptr, 0, nullptr);
                 }
             }
             if (ev.u.CreateProcessInfo.hFile) CloseHandle(ev.u.CreateProcessInfo.hFile);

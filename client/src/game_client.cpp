@@ -170,7 +170,8 @@ int GameClient::frame(std::uint32_t now_ms) {
     }
     const std::uint32_t dt = scaled - last_scaled_;
     last_scaled_ = scaled;
-    const int steps = budget_.update(now_ms);
+    int steps = budget_.update(now_ms, network.remote_lag ? network.remote_lag() : 0);
+    if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
     for (int k = 0; k < steps; ++k) step_battle(b_);
     end_frame(b_);  // once per frame, after the frame's steps (even none)
     // Console lines expire one per frame, each (text_seconds + 1) seconds after it came.
@@ -966,6 +967,7 @@ void GameClient::key_down(const InputEvent& e) {
     }
     if (k == keys::kPause) {
         budget_.paused = !budget_.paused;  // the paused sign shows it
+        if (network.send_pause) network.send_pause(budget_.paused);
         return;
     }
     if (k == keys::kEscape) {
@@ -974,11 +976,17 @@ void GameClient::key_down(const InputEvent& e) {
         return;
     }
     if (k == '+' || k == '=') {
-        if (budget_.game_speed < 20) set_game_speed(budget_.game_speed + 1);
+        if (budget_.game_speed < 20) {
+            set_game_speed(budget_.game_speed + 1);
+            if (network.send_speed) network.send_speed(budget_.game_speed);
+        }
         return;
     }
     if (k == '-' || k == '_') {
-        if (budget_.game_speed > 1) set_game_speed(budget_.game_speed - 1);
+        if (budget_.game_speed > 1) {
+            set_game_speed(budget_.game_speed - 1);
+            if (network.send_speed) network.send_speed(budget_.game_speed);
+        }
         return;
     }
     if (k == '`' || k == '~' || k == '!' || k == '#' || k == '*') {

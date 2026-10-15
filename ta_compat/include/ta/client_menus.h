@@ -17,6 +17,10 @@
 #include "client/front_end.h"
 #include "client/menu.h"
 #include "client/music.h"
+#if __has_include("client/net_menu.h")
+#include "client/net_menu.h"
+#define TA_CLIENT_HAVE_NET 1
+#endif
 #include "ta/battle_loader.h"
 #include "ta/client_world.h"
 #include "ta/hpi.h"
@@ -84,9 +88,12 @@ private:
 class SkirmishSession : public client::BattleSession {
 public:
     // Loads and starts the battle; null with `error` on failure.
+    // wrap / ttach (network games): the network side's outside and its hook to the battle.
     static std::unique_ptr<SkirmishSession> start(const std::string& game_dir, const BattleRequest& request, int human,
                                                   const client::ClientOptions& options, const client::LoadProgress& progress,
-                                                  std::string& error);
+                                                  std::string& error,
+                                                  const std::function<sim::BattleOutside&(sim::BattleOutside&)>& wrap = {},
+                                                  const std::function<void(sim::Battle&)>& attach = {});
     sim::Battle& battle() override { return world_->battle(); }
     client::Content& content() override { return world_->content(); }
     client::GameClient& client() override { return *client_; }
@@ -103,6 +110,12 @@ private:
 
 // Client options from the settings (interface type, speeds, text, unit chat, ...).
 client::ClientOptions client_options(const client::Settings& settings, int width, int height);
+
+#ifdef TA_CLIENT_HAVE_NET
+// The multiplayer part's configuration: network games load through SkirmishSession with the
+// network side wrapped around the battle's outside; the room compares unit checksums.
+client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* settings_from);
+#endif
 
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);

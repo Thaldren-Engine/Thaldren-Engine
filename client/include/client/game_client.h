@@ -75,6 +75,14 @@ public:
     render::DrawList draw();
     std::vector<SoundEvent> take_sounds();
     bool quit_requested() const { return quit_; }
+    // Network games: the slowest remote player's lag (steps behind) for the step budget, and
+    // the pause and speed keys' packets (0x19). Set = a network game (one step per frame at most).
+    struct NetworkHooks {
+        std::function<std::int32_t()> remote_lag;
+        std::function<void(bool)> send_pause;
+        std::function<void(int)> send_speed;
+    };
+    NetworkHooks network;
     // The chat line (Enter): a typed line goes here when Enter is pressed again.
     std::function<void(const std::string&)> on_chat;
     bool chatting() const { return chat_; }

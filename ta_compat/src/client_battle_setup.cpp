@@ -9,6 +9,7 @@
 #include "sim/missions.h"
 #include "ta/client_world.h"
 #include "ta/model3do.h"
+#include "ta/net_setup.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -104,8 +105,15 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
     stage(0.05f, "Loading map");
     outside_ = std::make_unique<Outside>();
     outside_->w = this;
-    lb_ = load_battle(vfs_, request_, *outside_, error);
+    sim::BattleOutside& out = net_wrap ? net_wrap(*outside_) : static_cast<sim::BattleOutside&>(*outside_);
+    lb_ = load_battle(vfs_, request_, out, error, net_attach ? std::function<void(sim::Battle&)>(net_attach) : std::function<void(sim::Battle&)>());
     if (!lb_) return false;
+    if (net_attach) {
+        // Network games: the weapon table by index, and the network side again now that the
+        // player records exist.
+        set_network_weapons(*lb_->battle, lb_->weapons);
+        net_attach(*lb_->battle);
+    }
     stage(0.55f, "Loading units");
     // Copies the client draws from (static data).
     defs_ = lb_->unit_defs;
