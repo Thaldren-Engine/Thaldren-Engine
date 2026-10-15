@@ -404,6 +404,12 @@ public:
     // death destroying its player's units (0x486F10).
     void victory_turn(int slot);
     void victory_stage_end();
+    // `stale_word`: the kill routine's wreck word for the units that go through it (owners that
+    // do not play): what the caller's stack holds there (a network player leaving, 0x452CC0:
+    // an input); each such kill leaves its final wreck level in it, the detonation leaves it.
+    void kill_team(int slot, std::uint32_t& stale_word);
+    // Commander death: the player plays, so its units only take the damage path (no kill
+    // routine call, the word is never read).
     void kill_team(int slot);
     void deathmatch_respawn(int slot);
     // The route search's step: the first thing the players stage (0x464F80) does, after
@@ -514,7 +520,13 @@ private:
         outside_.release_unit(u);
     }
     void release_motion(Unit& u) override { destroy_motion(motion_, u); }
-    void player_out_of_units(int p) override { outside_.player_out_of_units(p); }
+    void player_out_of_units(int p) override {
+        // The message that a player is out of units picks its wording with one C runtime
+        // rand() (skirmish 0x47BD70, "obliterated"; network game 0x450380, "has left", while
+        // this machine's player is present — always, here). The message itself is presentation.
+        if (settings.provider == 2 || settings.provider == 3) crt_rand.next();
+        outside_.player_out_of_units(p);
+    }
     void commander_died(int p) override {
         outside_.commander_died(p);  // the user interface part (0x491D70)
         kill_team(p);

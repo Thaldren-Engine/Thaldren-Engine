@@ -155,6 +155,17 @@ void Battle::victory_stage_end() {
 }
 
 void Battle::kill_team(int slot) {
+    PlayerSlot& p = players[static_cast<std::size_t>(slot)];
+    // Units in a player's range always belong to it, so a playing player's team never reaches
+    // the kill routine here; if it did, its wreck word would be stack contents we do not know.
+    const bool plays = p.active && (p.controller == 1 || p.controller == 2);
+    if (!plays && p.alive_count != 0 && missions_.fault.empty())
+        missions_.fault = "commander death of a player that does not play: the kill routine's stale word is unknown";
+    std::uint32_t unread = 0;
+    kill_team(slot, unread);
+}
+
+void Battle::kill_team(int slot, std::uint32_t& stale_word) {
     // 0x486F10: every live unit of the player not already dying is destroyed: a playing owner's
     // units take 30000 damage of kind 3 from themselves, others explode and are announced dead.
     PlayerSlot& p = players[static_cast<std::size_t>(slot)];
@@ -168,7 +179,7 @@ void Battle::kill_team(int slot) {
         if (!owner.active || (owner.controller != 1 && owner.controller != 2)) {
             detonate_unit_death(projectile_world_, u, true);
             u.flags |= unit_tick_flags::kDying;
-            kill_unit(combat_, u, 3, unit_env_.stale_word);
+            kill_unit(combat_, u, 3, stale_word);
         } else {
             apply_damage(combat_, &u, u, 30000, 3, 0);
         }
