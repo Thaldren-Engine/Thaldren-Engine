@@ -965,6 +965,40 @@ private:
     MenuArt& art_;
 };
 
+// The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
+// allies, share and control screens (the multiplayer part's). Tab again closes it.
+class TabMenu : public LayoutScreen {
+public:
+    explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) { oy_ = 0; }
+    bool see_through() const override { return true; }
+    void enter(FrontEnd& fe) override {
+        if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu;
+        if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu;
+        if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu;
+    }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kTab) {
+            fe.pop();
+            return;
+        }
+        LayoutScreen::handle(fe, e);
+    }
+
+protected:
+    void on_press(FrontEnd& fe, Widget& w) override {
+        client::BattleSession* s = fe.session();
+        if (!s) return;
+        if (is(w, "OPTIONS") && art_.layout("ARMOPT")) fe.push(std::make_unique<GameMenu>(art_));
+        else if (is(w, "ALLIES") && fe.hooks().allies_menu) fe.push(fe.hooks().allies_menu(fe, *s));
+        else if (is(w, "SHARE") && fe.hooks().share_menu) fe.push(fe.hooks().share_menu(fe, *s));
+        else if (is(w, "CONTROL") && fe.hooks().control_menu) fe.push(fe.hooks().control_menu(fe, *s));
+        else if (is(w, "CANCEL")) fe.pop();
+    }
+
+private:
+    MenuArt& art_;
+};
+
 // ------------------------------------------------------------------ end of the battle (ENDMSN.GUI)
 // The outcome picture with the victory or defeat title, one row per player (colour, name)
 // and seven statistics bars that grow one column at a time (kills, losses, energy and
@@ -1120,6 +1154,10 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.game_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ARMOPT")) return nullptr;
         return std::make_unique<GameMenu>(art);
+    };
+    setup.tab_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
+        if (!art.layout("TABMENU")) return nullptr;
+        return std::make_unique<TabMenu>(art);
     };
     setup.apply_to_battle = [](FrontEnd& fe, client::BattleSession& s) {
         // Options changed in a battle reach its client.

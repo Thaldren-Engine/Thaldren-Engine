@@ -115,6 +115,8 @@ public:
     virtual void send_chat(const std::string& text) { client().message(text); }
     // The local player gives up (in-game menu).
     virtual void surrender() {}
+    // A network game (Tab opens the tab bar instead of the game menu).
+    virtual bool network() const { return false; }
     // Totals for the statistics screen.
     virtual std::vector<PlayerStats> stats() { return {}; }
     // Called once the battle and its end screens are over; may push the next
@@ -144,6 +146,11 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession* session)> load_game_menu;
     // In-game menu > save game.
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> save_game_menu;
+    // Network games: Tab opens the tab bar (options, allies, share, control); its buttons
+    // other than the options use these.
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> allies_menu;
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> share_menu;
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> control_menu;
 };
 
 // ---------------------------------------------------------------- front end
@@ -197,8 +204,10 @@ struct FrontEndSetup {
     std::function<void(FrontEnd&, render::Image8&, float, const std::string&)> draw_loading;
     // The screens after a battle (outcome and statistics); popping below them ends the battle.
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&, BattleOutcome)> battle_over;
-    // The in-game menu (Tab or F2 in a battle).
+    // The in-game menu (F2, and Tab outside network games).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> game_menu;
+    // The tab bar (Tab in network games).
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> tab_menu;
     MusicPlayer* music = nullptr;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;

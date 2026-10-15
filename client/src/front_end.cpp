@@ -141,8 +141,10 @@ public:
         if (in_battle() && stack_.size() == battle_base_) {
             GameClient& c = session_->client();
             // Tab or F2 opens the game menu (the client keeps keys while its chat line is open).
-            if (e.type == InputEvent::Type::KeyDown && !c.chatting() && (e.key == keys::kTab || e.key == keys::kF1 + 1) && s_.game_menu) {
-                push(s_.game_menu(*this, *session_));
+            // F2 opens the game menu; Tab too, except in network games where it opens the tab bar.
+            if (e.type == InputEvent::Type::KeyDown && !c.chatting() && (e.key == keys::kTab || e.key == keys::kF1 + 1)) {
+                if (e.key == keys::kTab && session_->network() && s_.tab_menu) push(s_.tab_menu(*this, *session_));
+                else if (s_.game_menu) push(s_.game_menu(*this, *session_));
                 return;
             }
             c.handle(e);
