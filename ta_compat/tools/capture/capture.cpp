@@ -780,11 +780,16 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
     case kBpFrameEnd: {
         std::uint32_t brng = 0;
         std::uint8_t view = 0;
+        std::uint16_t map_flags = 0;
         read_u32(kBattleRngState, brng);
-        if (const std::uint32_t gs = game_state()) read_block(gs + kOffLocalView, &view, 1);
+        if (const std::uint32_t gs = game_state()) {
+            read_block(gs + kOffLocalView, &view, 1);
+            read_block(gs + kOffMapFlags, &map_flags, 2);  // line-of-sight options (console toggles)
+        }
         bool known = false;
         const std::uint32_t rs = rand_state_for(tid, known);
-        std::fprintf(g_out, "{\"ev\":\"frame\",\"tick\":%u,\"rand\":%u,\"brng\":%u,\"view\":%u}\n", game_tick(), rs, brng, view);
+        std::fprintf(g_out, "{\"ev\":\"frame\",\"tick\":%u,\"rand\":%u,\"brng\":%u,\"view\":%u,\"map_flags\":%u}\n", game_tick(), rs, brng,
+                     view, map_flags);
         break;
     }
     case kBpShuffleRandA:

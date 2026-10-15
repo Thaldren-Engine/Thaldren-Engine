@@ -127,6 +127,11 @@ struct JsonParser {
     }
 };
 
+std::vector<std::string> g_type_names;  // unit names by battle type index (for reports)
+const char* tname(long long type) {
+    return type >= 0 && static_cast<std::size_t>(type) < g_type_names.size() ? g_type_names[static_cast<std::size_t>(type)].c_str() : "?";
+}
+
 std::uint32_t fbits(float f) {
     std::uint32_t b;
     std::memcpy(&b, &f, 4);
@@ -289,7 +294,7 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
     for (const auto& [id, r] : theirs) {
         auto it = ours.find(id);
         if (it == ours.end()) {
-            std::snprintf(m, sizeof m, "unit %d (type %lld, player %lld): exists in the original only, at %lld,%lld,%lld", id, r.v[1], r.v[2],
+            std::snprintf(m, sizeof m, "unit %d (type %lld %s, player %lld): exists in the original only, at %lld,%lld,%lld", id, r.v[1], tname(r.v[1]), r.v[2],
                           r.v[3], r.v[4], r.v[5]);
             diff.push_back(m);
             continue;
@@ -302,7 +307,7 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
                 c &= ~kInterfaceFlags;
             }
             if (a != c) {
-                std::snprintf(m, sizeof m, "unit %d (type %lld, player %lld) %s: original %lld (0x%llx), engine %lld (0x%llx)", id, r.v[1], r.v[2],
+                std::snprintf(m, sizeof m, "unit %d (type %lld %s, player %lld) %s: original %lld (0x%llx), engine %lld (0x%llx)", id, r.v[1], tname(r.v[1]), r.v[2],
                               kUnitFields[k], a, static_cast<unsigned long long>(a), c, static_cast<unsigned long long>(c));
                 diff.push_back(m);
             }
@@ -331,7 +336,7 @@ std::vector<std::string> compare(sim::Battle& b, const Json& d) {
     }
     for (const auto& [id, e] : ours)
         if (!theirs.count(id)) {
-            std::snprintf(m, sizeof m, "unit %d (type %lld, player %lld): exists in the engine only, at %lld,%lld,%lld", id, e.v[1], e.v[2], e.v[3],
+            std::snprintf(m, sizeof m, "unit %d (type %lld %s, player %lld): exists in the engine only, at %lld,%lld,%lld", id, e.v[1], tname(e.v[1]), e.v[2], e.v[3],
                           e.v[4], e.v[5]);
             diff.push_back(m);
         }
@@ -515,6 +520,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     sim::Battle& b = *lb->battle;
+    g_type_names.assign(lb->type_defs.size(), std::string());
+    for (std::size_t k = 1; k < lb->type_defs.size(); ++k)
+        if (lb->type_defs[k]) g_type_names[k] = lb->type_defs[k]->unit_name;
     b.settings.local_view = static_cast<std::uint8_t>(start->i("local_view"));
     b.settings.draw_side_effects = draw_effects;
     if (verbose)
@@ -648,7 +656,7 @@ int main(int argc, char** argv) {
                         }
                 auto it = ours.find(trace_unit);
                 const sim::UnitTickState& t = b.ticks[static_cast<std::size_t>(trace_unit)];
-                std::printf("trace %u: original %s\n          engine   %s  velocity %d,%d,%d\n", b.game_tick(), theirs.c_str(),
+                std::printf("trace %u (%s): original %s\n          engine   %s  velocity %d,%d,%d\n", b.game_tick(), tname(t.type_index), theirs.c_str(),
                             it != ours.end() ? list(it->second.v).c_str() : "-", t.velocity[0], t.velocity[1], t.velocity[2]);
             }
             std::vector<std::string> diff = compare(b, e);
@@ -668,6 +676,17 @@ int main(int argc, char** argv) {
             const auto view = static_cast<std::uint8_t>(e.i("view"));
             b.end_frame();
             b.settings.local_view = view;
+            // Line-of-sight options changed (console toggles; the original then rebuilds sight).
+            if (const Json* mf = e.get("map_flags"); mf && mf->type == Json::Num) {
+                const bool explore = (mf->num & 1) != 0, fog = (mf->num & 2) != 0, true_sight = (mf->num & 4) != 0;
+                if (explore != b.settings.explore || fog != b.settings.fog_of_war || true_sight != b.settings.true_sight) {
+                    std::printf("step %u: line-of-sight options changed by the player (map flags %lld): sight rebuilt\n", b.game_tick(), mf->num);
+                    b.settings.explore = explore;
+                    b.settings.fog_of_war = fog;
+                    b.settings.true_sight = true_sight;
+                    b.rebuild_sight(false);
+                }
+            }
             ++frames;
             ++frame_sizes[in_frame];
             in_frame = 0;
