@@ -27,6 +27,7 @@
 #include "sim/battle_quiet.h"
 #include "sim/commands.h"
 #include "ta/battle_loader.h"
+#include "ta/net_setup.h"
 
 namespace {
 
@@ -73,11 +74,7 @@ std::unique_ptr<ta::LoadedBattle> load(ta::Vfs& vfs, const std::string& map, int
 
 void hook_up(Machine& m) {
     sim::Battle& b = *m.lb->battle;
-    auto& w = b.net_state().weapons;
-    for (const sim::WeaponType& wt : m.lb->weapons) {
-        if (w.size() <= wt.index) w.resize(static_cast<std::size_t>(wt.index) + 1, nullptr);
-        if (!w[wt.index]) w[wt.index] = &wt;
-    }
+    ta::set_network_weapons(b, m.lb->weapons);
     m.net->attach(b);  // again, now that the player records are set up (registers the local players)
     m.net->flush_now();
     m.net->on_chat = [&m](int slot, const std::string& text) { m.chat.push_back(std::to_string(slot) + ": " + text); };
@@ -210,6 +207,15 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
         rooms.push_back(std::make_unique<net::BattleRoom>(*ends.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
         rooms.back()->set_side(static_cast<std::uint8_t>(s & 1));
         rooms.back()->set_colour(static_cast<std::uint8_t>(s));
+    }
+    // Every machine's unit definition checksums (the room compares them).
+    {
+        ta::UnitDefContext ctx;
+        ta::load_unit_context(vfs, ctx);
+        const ta::UnitDefTable defs = ta::load_unit_defs(vfs, ctx);
+        const auto checks = ta::unit_sync_checks(vfs, defs);
+        for (auto& r : rooms) r->set_unit_checks(checks);
+        std::printf("unit definitions: %zu checksums\n", checks.size());
     }
     // The battle room: everybody joins, readies, the host starts.
     rooms[0]->set_map(map);
