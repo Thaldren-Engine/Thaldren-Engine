@@ -236,6 +236,15 @@ void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config) {
 NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, std::unique_ptr<net::NetBattle> net,
                                    std::unique_ptr<BattleSession> inner)
     : transport_(std::move(transport)), net_(std::move(net)), inner_(std::move(inner)) {
+    // The client's step budget waits for the slowest remote player; its pause and speed keys
+    // send packet 0x19 and received ones apply here.
+    GameClient& c = inner_->client();
+    net::NetBattle* n = net_.get();
+    c.network.remote_lag = [n] { return n->remote_lag(); };
+    c.network.send_pause = [n](bool p) { n->send_pause(p); };
+    c.network.send_speed = [n](int s) { n->send_speed(s); };
+    net_->on_pause = [this](bool p) { inner_->client().set_paused(p); };
+    net_->on_speed = [this](int s) { inner_->client().set_game_speed(s); };
     net_->on_chat = [this](int slot, const std::string& text) {
         inner_->client().message("Player " + std::to_string(slot + 1) + ": " + text, true);
     };

@@ -2,6 +2,10 @@
 // playable client: an SDL3 window (GPU), the in-game interface, sound.
 //
 // Usage: ta_play <game_dir> [options]
+//   Without battle options it starts with the original's menus (main menu, single player,
+//   skirmish set-up, options, battles, the end screens); --settings FILE keeps the settings
+//   (default settings.txt in the current directory). Any of --map, --side, --players, --no-ai,
+//   --seed or --direct starts a skirmish at once instead.
 //   --map NAME          map (default Moon Quartet)
 //   --side arm|core     the human player's side (default arm); the opponent takes the other
 //   --players N         players (2..4; extra players are computer players)
@@ -27,6 +31,9 @@
 
 #include "client/front.h"
 #include "client/game_client.h"
+#include "client/music.h"
+#include "ta/client_campaign.h"
+#include "ta/client_menus.h"
 #include "ta/client_world.h"
 
 int main(int argc, char** argv) {
@@ -42,9 +49,17 @@ int main(int argc, char** argv) {
     int players = 2;
     bool ai = true;
     int side = 0;
+    bool direct = false;
+    std::string settings_path = "settings.txt";
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a == "--map" || a == "--side" || a == "--players" || a == "--no-ai" || a == "--seed" || a == "--direct") direct = true;
+        if (a == "--direct") continue;
+        if (a == "--settings") {
+            settings_path = next();
+            continue;
+        }
         if (a == "--map") setup.map = next();
         else if (a == "--side") side = next() == "core" ? 1 : 0;
         else if (a == "--players") players = std::max(2, std::min(4, std::atoi(next().c_str())));
@@ -90,6 +105,44 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "script: %s\n", err.c_str());
             return 2;
         }
+    }
+
+    if (!direct) {
+        // The original's front end.
+        ta::MenuArt art;
+        std::string err;
+        if (!art.load(argv[1], err)) {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return 1;
+        }
+        client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
+        client::FrontEndSetup fes;
+        fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options
+        fes.height = 480;
+        fes.settings_path = settings_path;
+        ta::make_front_end(art, &music, fes);
+        // Campaign, briefings and the saved games (saves next to the settings file).
+        {
+            std::string save_dir = settings_path.substr(0, settings_path.find_last_of("\\/") == std::string::npos ? 0 : settings_path.find_last_of("\\/"));
+            if (save_dir.empty()) save_dir = ".";
+            ta::install_campaign_hooks(fes.hooks, art, save_dir);
+        }
+#ifdef TA_CLIENT_HAVE_NET
+        // Multiplayer: the connection and battle room screens on the main menu's button.
+        client::install_multiplayer(fes.hooks, ta::network_config(art, nullptr));
+#endif
+        {
+            // Track types: the saved list, else the original's default for a 16-track disc
+            // (tracks 1-7 battle, the rest building).
+            client::Settings s;
+            s.load(settings_path);
+            const std::string types = s.get_text("CDLISTS", "");
+            for (int t = 1; t <= music.track_count(); ++t)
+                music.types()[static_cast<std::size_t>(t)] = t - 1 < static_cast<int>(types.size()) ? static_cast<std::uint8_t>(types[static_cast<std::size_t>(t - 1)] - '0')
+                                                                 : static_cast<std::uint8_t>(music.track_count() >= 16 && t <= 7 ? 1 : 0);
+        }
+        std::printf("front end: %d music tracks, %zu skirmish maps\n", music.track_count(), art.skirmish_maps().size());
+        return client::run_front_end(fes, front);
     }
 
     auto world = std::make_unique<ta::ClientWorld>();

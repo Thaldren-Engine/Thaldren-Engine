@@ -2,12 +2,20 @@
 # battle view (engine side, no game data names), its game-data importer and the
 # executable that plays a skirmish from an installed copy of the original game.
 add_library(client STATIC
+    src/audio_decode.cpp
     src/canvas.cpp
     src/commands.cpp
     src/front.cpp
+    src/front_end.cpp
     src/game_client.cpp
     src/hud.cpp
+    src/menu.cpp
+    src/music.cpp
+    src/settings.cpp
 )
+if(WIN32)
+    target_link_libraries(client PRIVATE mfplat mfreadwrite mfuuid ole32)
+endif()
 target_include_directories(client PUBLIC include)
 target_link_libraries(client PUBLIC render sim)
 # Multiplayer menus and session (with the front end's entry-point interface).
@@ -32,6 +40,8 @@ add_library(ta_compat_client STATIC
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_battle_setup.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_campaign.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_content.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/client_menus.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/client_screens.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_scene.cpp
 )
 target_link_libraries(ta_compat_client PUBLIC client ta_compat_render)

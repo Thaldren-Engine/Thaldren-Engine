@@ -11,18 +11,18 @@
 namespace ta {
 
 const std::vector<render::Sprite8>* ClientWorld::frames_of(std::uint32_t seq) {
-    if (!seq || !anim_import_) return nullptr;
+    if (!seq || !lb_->anims) return nullptr;
     auto it = seq_frames_.find(seq);
     if (it != seq_frames_.end()) return &it->second;
     std::vector<render::Sprite8>& v = seq_frames_[seq];
-    const auto o = anim_import_->origins().find(seq);
-    if (o != anim_import_->origins().end())
-        if (const std::vector<std::uint8_t>* data = anim_import_->file(o->second.first)) gaf_sequence_frames(*data, o->second.second, v);
+    const auto o = lb_->anims->origins().find(seq);
+    if (o != lb_->anims->origins().end())
+        if (const std::vector<std::uint8_t>* data = lb_->anims->file(o->second.first)) gaf_sequence_frames(*data, o->second.second, v);
     return &v;
 }
 
 void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t frame_counter) {
-    sim::Battle& b = *battle_;
+    sim::Battle& b = battle();
     scene.terrain.width = tiles_.width;
     scene.terrain.height = tiles_.height;
     scene.terrain.map = &tiles_.map;
@@ -57,7 +57,7 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
             const sim::MapCell& cell = b.map.cells[static_cast<std::size_t>(z * b.map.width + x)];
             if (cell.feature >= sim::kFirstSpecialFeature || cell.feature >= b.features.size()) continue;
             const sim::FeatureTypeInfo& t = b.features[cell.feature];
-            const auto& rec = fdefs_.records()[cell.feature];
+            const auto& rec = lb_->feature_defs.records()[cell.feature];
             if (sight && (rec.flags & feature_flags::kNoDrawUnderGray) && ((cell.flags >> 3) & 0xF) != view) {
                 auto corner = [&](int cx, int cz) {
                     return std::array<std::int32_t, 3>{

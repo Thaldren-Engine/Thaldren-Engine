@@ -19,6 +19,7 @@
 #include "sim/battle.h"
 #include "sim/rng.h"
 #include "ta/battle_features.h"
+#include "ta/battle_loader.h"
 #include "ta/battle_types.h"
 #include "ta/featuredefs.h"
 #include "ta/hpi.h"
@@ -47,9 +48,13 @@ struct SkirmishSetup {
     std::uint32_t seed = 0x12345678u;  // the battle's random seed (the original takes it from the set-up)
 };
 
+// The battle request a SkirmishSetup stands for (sides by sidedata.tdf index, the human
+// player Local, computer players Computer, idle opponents Local).
+BattleRequest to_battle_request(Vfs& vfs, const SkirmishSetup& setup);
+
 // One unit type's drawing data (index = battle type index = definition index).
 struct ClientUnitType {
-    UnitTypeAssets assets;
+    UnitTypeAssets* assets = nullptr;  // the loaded battle's
     std::unique_ptr<Model3doPiece> root;
     render::Model model;
     bool ok = false;
@@ -63,19 +68,31 @@ public:
     ClientWorld& operator=(const ClientWorld&) = delete;
     // Loads the game data and sets up the skirmish; false with a reason on failure.
     bool load(const std::string& game_dir, const SkirmishSetup& setup, std::string& error);
+    // Loads the game data and starts the battle through ta::load_battle (the front end's way);
+    // `human` is the slot the client plays. `progress` (optional) hears the loading stages.
+    bool load(const std::string& game_dir, const BattleRequest& request, int human, std::string& error,
+              const std::function<void(float, const std::string&)>& progress = {});
     // Connects the battle's presentation events to the client (after both exist).
     void attach(client::GameClient* client) { client_ = client; }
+    // Network games: the outside the battle gets (the network side over the client's own) and
+    // the hook that attaches the network side to the battle (before its start and after it).
+    std::function<sim::BattleOutside&(sim::BattleOutside&)> net_wrap;
+    std::function<void(sim::Battle&)> net_attach;
+    // Extra listeners for the battle's events (the front end's music and statistics).
+    std::function<void(std::int32_t)> on_activity;  // combat activity (music battle/peace switching)
 
-    sim::Battle& battle() { return *battle_; }
+    sim::Battle& battle() { return *lb_->battle; }
     client::Content& content() { return content_; }
     const SkirmishSetup& setup() const { return setup_; }
-    // Start position of a player (world units), for the camera.
+    const BattleRequest& request() const { return request_; }
+    LoadedBattle& loaded() { return *lb_; }
+    // Start position of a player (world units), for the camera: its first unit (the commander).
     std::array<int, 2> start_position(int player) const;
     const UnitDefTable& defs() const { return defs_; }
     const std::string& weapon_name(int slot) const { return weapons_.slots[static_cast<std::size_t>(slot & 0xFF)].name; }
 
     // Implementation parts (client_battle_setup.cpp / client_content.cpp / client_scene.cpp).
-    bool setup_battle(std::string& error);
+    bool setup_battle(std::string& error, const std::function<void(float, const std::string&)>& progress);
     bool build_content(std::string& error);
     void fill_scene(render::BattleScene& scene, int view_player, std::uint32_t frame_counter);
 
@@ -84,6 +101,9 @@ public:
     // Game data.
     Vfs vfs_;
     SkirmishSetup setup_;
+    BattleRequest request_;
+    int human_ = 0;
+    std::unique_ptr<LoadedBattle> lb_;  // the battle and everything it points into
     render::Palette palette_{};
     render::BlendTable blend_;
     WeaponDefTable weapons_;
@@ -95,13 +115,8 @@ public:
     TntTiles tiles_;
     sim::HeightMap hm_;
     TntInfo tnt_info_;
-    std::vector<std::array<int, 2>> start_positions_;  // by start position index
-    // The battle.
-    std::vector<sim::WeaponType> weapon_types_;
-    sim::BattleRng rng_;
+    // The battle (its weapons, animations and random generator live in lb_).
     std::unique_ptr<Outside> outside_;
-    std::unique_ptr<sim::Battle> battle_;
-    std::unique_ptr<AnimImporter> anim_import_;
     std::vector<std::string> feature_models_;
     std::vector<std::unique_ptr<ClientUnitType>> types_;  // by battle type index
     // Interface content and the storage its pointers point into.
@@ -161,6 +176,10 @@ struct GuiGadget {
     int quickkey = 0;
     int status = 0;
     std::string text, panel, filename;
+    int stages = 0;          // buttons: switch stages
+    bool grayed = false;     // buttons: grayedout
+    std::string link;        // labels: the button they name
+    std::string crdefault, escdefault, defaultfocus;  // header: Enter / Escape defaults, focus
 };
 bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& out);
 

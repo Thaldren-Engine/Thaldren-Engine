@@ -1,0 +1,513 @@
+// The original game's front end screens (spec: docs/RE_MEMORY.md, "Client", "Menus").
+
+#include "ta/client_menus.h"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
+
+#include "client/audio.h"
+#include "client/canvas.h"
+#include "sim/battle.h"
+#include "sim/economy.h"
+#include "sim/victory.h"
+#include "ta/gaf.h"
+#include "ta/net_setup.h"
+#include "ta/unitdefs.h"
+#include "ta/render_assets.h"
+#include "ta/tdf.h"
+#include "ta/tnt.h"
+
+namespace ta {
+namespace {
+
+using client::FrontEnd;
+using client::Widget;
+using client::WidgetKind;
+
+std::string upper(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+bool ieq(const std::string& a, const std::string& b) { return upper(a) == upper(b); }
+
+std::unique_ptr<TdfSection> parse_tdf(const std::vector<std::uint8_t>& f) {
+    return tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root;
+}
+
+std::uint8_t nearest(const render::Palette& pal, int r, int g, int b) {
+    int best = 0, bd = 1 << 30;
+    for (int i = 0; i < 256; ++i) {
+        const int d = std::abs(pal[static_cast<std::size_t>(i)].r - r) + std::abs(pal[static_cast<std::size_t>(i)].g - g) +
+                      std::abs(pal[static_cast<std::size_t>(i)].b - b);
+        if (d < bd) {
+            bd = d;
+            best = i;
+        }
+    }
+    return static_cast<std::uint8_t>(best);
+}
+
+// The background the original shows behind each screen (by GUI file name).
+const char* background_of(const std::string& gui) {
+    static const std::pair<const char*, const char*> table[] = {
+        {"MAINMENU", "FrontendX"},     {"SINGLE", "singlebg"},         {"SKIRMISH", "Skirmsetup4x"},
+        {"SELMAP", "DSELECTMAP2"},     {"STARTOPT", "options4x"},      {"SOUNDS", "optsound4x"},
+        {"MUSIC", "optmusic4x"},       {"VISUALS", "optvisual4x"},     {"SPEEDS", "optinterface4x"},
+        {"ENDMSN", "outcome0"},        {"HELP", "dhelp"},              {"RESTART", "DRESTART"},
+        {"LOADGAME", "DLoadgame2"},    {"SAVEGAME", "DSavegame2"},     {"BRIEFING", "igmbrief"},
+    };
+    const std::string u = upper(gui);
+    for (const auto& [g, b] : table)
+        if (u == g) return b;
+    return nullptr;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------------- art
+
+bool MenuArt::load(const std::string& game_dir, std::string& error) {
+    game_dir_ = game_dir;
+    vfs_.mount_game_dir(game_dir);
+    if (!load_palette(vfs_, content_.palette) || !load_blend_table(vfs_, content_.blend)) {
+        error = "cannot load the palette / blend table";
+        return false;
+    }
+    std::vector<std::uint8_t> gp;
+    if (vfs_.read("palettes\\GUIPAL.PAL", gp) && gp.size() >= 1024)
+        for (std::size_t i = 0; i < 256; ++i) guipal_[i] = {gp[i * 4], gp[i * 4 + 1], gp[i * 4 + 2]};
+    // Fonts: the interface's picture fonts (hattfont12 for captions, hattfont11 small).
+    fonts_.push_back(gaf_font("anims\\hattfont12.GAF"));
+    content_.font = &fonts_.back();
+    fonts_.push_back(gaf_font("anims\\hattfont11.GAF"));
+    content_.small_font = &fonts_.back();
+    content_.big_font = content_.font;
+    // The sound bank's named sounds.
+    std::vector<std::uint8_t> f;
+    if (vfs_.read("gamedata\\ALLSOUND.TDF", f))
+        if (auto root = parse_tdf(f))
+            for (const auto& s : root->children()) {
+                const std::string file = s->get_string("sound", 64, "");
+                std::vector<std::uint8_t> w;
+                client::Sample smp;
+                if (file.empty() || !vfs_.read("sounds\\" + file + ".wav", w) || !client::decode_wav(w, smp)) continue;
+                sound_index_[upper(s->name())] = static_cast<int>(content_.samples.size());
+                content_.samples.push_back(std::move(smp));
+            }
+    content_.click_sound = sound("SmallButton");
+    content_.error_sound = sound("NOTOKTOBUILD");
+    content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
+    content_.text_colour = gui_colour(content_.palette, 15);
+    content_.text_dim = gui_colour(content_.palette, 8);
+    content_.box_colour = gui_colour(content_.palette, 0);
+    content_.frame_colour = gui_colour(content_.palette, 8);
+    content_.layout = [this](const std::string& n) { return layout(n); };
+    content_.picture = [this](const std::string& n) { return picture(n); };
+    content_.stock_button = [this](int w, int h) -> const std::vector<render::Sprite8>* {
+        const auto* all = sequence("anims\\commongui.GAF", "BUTTONS0");
+        (void)w;
+        (void)h;
+        return all;
+    };
+    // Sides.
+    if (vfs_.read("gamedata\\sidedata.tdf", f))
+        if (auto root = parse_tdf(f))
+            for (int k = 0;; ++k) {
+                const TdfSection* s = root->child("SIDE" + std::to_string(k));
+                if (!s) break;
+                sides_.push_back(s->get_string("name", 32, ""));
+            }
+    // Music: music\1.mp3, 2.mp3, ... next to the game.
+    for (int n = 1; n < 100; ++n) {
+        if (!std::filesystem::exists(std::filesystem::path(game_dir) / "music" / (std::to_string(n) + ".mp3"))) break;
+        music_tracks_ = n;
+    }
+    return true;
+}
+
+std::uint8_t MenuArt::gui_colour(const render::Palette& palette, int k) const {
+    const render::Rgb& c = guipal_[static_cast<std::size_t>(k & 0xFF)];
+    return nearest(palette, c.r, c.g, c.b);
+}
+
+const std::vector<std::uint8_t>* MenuArt::gaf(const std::string& path) {
+    const std::string key = upper(path);
+    auto it = gafs_.find(key);
+    if (it == gafs_.end()) {
+        std::vector<std::uint8_t> f;
+        vfs_.read(path, f);
+        it = gafs_.emplace(key, std::move(f)).first;
+    }
+    return it->second.empty() ? nullptr : &it->second;
+}
+
+const std::vector<render::Sprite8>* MenuArt::sequence(const std::string& gaf_path, const std::string& name) {
+    const std::string key = upper(gaf_path) + "|" + upper(name);
+    if (auto it = seq_index_.find(key); it != seq_index_.end()) return it->second;
+    const std::vector<render::Sprite8>* out = nullptr;
+    if (const auto* g = gaf(gaf_path)) {
+        GafDirectory dir;
+        if (gaf_read_directory(*g, dir)) {
+            const int s = gaf_find_sequence(dir, name);
+            std::vector<render::Sprite8> frames;
+            if (s >= 0 && gaf_sequence_frames(*g, s, frames) && !frames.empty()) {
+                sequences_.push_back(std::move(frames));
+                out = &sequences_.back();
+            }
+        }
+    }
+    seq_index_[key] = out;
+    return out;
+}
+
+client::Font MenuArt::gaf_font(const std::string& path) {
+    // Frame n of the font's one sequence is character n, its offset the baseline; the
+    // glyphs keep their own colours.
+    client::Font font;
+    const auto* g = gaf(path);
+    if (!g) return font;
+    GafDirectory dir;
+    std::vector<render::Sprite8> frames;
+    if (!gaf_read_directory(*g, dir) || !gaf_sequence_frames(*g, 0, frames)) return font;
+    // The text height is the 'I' frame's height plus 2 (as the original measures it); every
+    // glyph sits on the 'I' frame's baseline.
+    if (frames.size() <= 'I') return font;
+    const int above = frames['I'].y_offset;
+    font.height = frames['I'].height + 2;
+    font.raise = 0;
+    for (std::size_t c = 0; c < frames.size() && c < 256; ++c) {
+        const render::Sprite8& f = frames[c];
+        client::Glyph& gl = font.glyphs[c];
+        gl.width = f.width;
+        gl.present = f.width > 0;
+        gl.ink.assign(static_cast<std::size_t>(f.width) * static_cast<std::size_t>(font.height), 0);
+        gl.colours.assign(gl.ink.size(), 0);
+        if (c == ' ') continue;  // a space only advances
+        const int top = above - f.y_offset;
+        for (int y = 0; y < f.height; ++y)
+            for (int x = 0; x < f.width; ++x) {
+                const std::uint8_t p = f.at(x, y);
+                if (f.has_key && p == f.key) continue;
+                const int row = top + y;
+                if (row < 0 || row >= font.height) continue;
+                const std::size_t at = static_cast<std::size_t>(row * f.width + x);
+                gl.ink[at] = 1;
+                gl.colours[at] = p;
+            }
+    }
+    return font;
+}
+
+const render::Sprite8* MenuArt::picture(const std::string& name, const render::Palette** palette) {
+    const std::string key = upper(name);
+    auto it = pictures_.find(key);
+    if (it == pictures_.end()) {
+        std::vector<std::uint8_t> f;
+        render::Sprite8 s;
+        render::Palette p{};
+        std::pair<const render::Sprite8*, const render::Palette*> v{nullptr, nullptr};
+        if (vfs_.read("bitmaps\\" + name + ".pcx", f) && decode_pcx(f, s, &p)) {
+            sprites_.push_back(std::move(s));
+            palettes_.push_back(p);
+            v = {&sprites_.back(), &palettes_.back()};
+        }
+        it = pictures_.emplace(key, v).first;
+    }
+    if (palette) *palette = it->second.second;
+    return it->second.first;
+}
+
+int MenuArt::sound(const std::string& name) {
+    const auto it = sound_index_.find(upper(name));
+    return it == sound_index_.end() ? -1 : it->second;
+}
+
+const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
+    std::string gui = upper(gui_in);
+    if (gui.size() > 4 && gui.compare(gui.size() - 4, 4, ".GUI") == 0) gui.resize(gui.size() - 4);
+    if (auto it = layouts_.find(gui); it != layouts_.end()) return it->second.get();
+    std::vector<std::uint8_t> f;
+    std::vector<GuiGadget> gs;
+    if (!vfs_.read("guis\\" + gui + ".GUI", f) || !parse_gui(f, gs) || gs.empty()) {
+        layouts_[gui] = nullptr;
+        return nullptr;
+    }
+    auto L = std::make_unique<client::ScreenLayout>();
+    L->name = gui;
+    const GuiGadget& head = gs[0];
+    L->x = head.x;
+    L->y = head.y;
+    L->enter_default = head.crdefault;
+    L->escape_default = head.escdefault;
+    L->default_focus = head.defaultfocus;
+    if (const char* bg = background_of(gui)) L->background = picture(bg, &L->palette);
+    const render::Palette& pal = L->palette ? *L->palette : content_.palette;
+    for (int k = 0; k < 256; ++k) L->colours[static_cast<std::size_t>(k)] = gui_colour(pal, k);
+    const std::string own_gaf = "anims\\" + gui + ".GAF";
+    const auto* stock = sequence("anims\\commongui.GAF", "BUTTONS0");
+    for (const GuiGadget& g : gs) {
+        Widget w;
+        switch (g.id) {
+        case 0: w.kind = WidgetKind::Header; break;
+        case 1: w.kind = WidgetKind::Button; break;
+        case 2: w.kind = WidgetKind::ListBox; break;
+        case 3: w.kind = WidgetKind::TextField; break;
+        case 4: w.kind = WidgetKind::ScrollBar; break;
+        case 5: w.kind = WidgetKind::Label; break;
+        case 6: w.kind = WidgetKind::Surface; break;
+        case 7: w.kind = WidgetKind::FontRef; break;
+        case 12: w.kind = WidgetKind::Picture; break;
+        default: w.kind = WidgetKind::Label; w.active = false; break;
+        }
+        w.name = g.name;
+        w.x = g.x;
+        w.y = g.y;
+        w.w = g.w;
+        w.h = g.h;
+        w.attribs = g.attribs;
+        w.fg = g.colorf;
+        w.bg = g.colorb;
+        if (g.id != 0) w.active = w.active && g.active;
+        w.grayed = g.grayed;
+        w.quickkey = g.quickkey > 0 && g.quickkey < 256 ? std::tolower(g.quickkey) : 0;
+        w.stages = g.stages;
+        w.status = g.status;
+        w.text = g.text;
+        w.link = g.link;
+        w.vertical = g.h > g.w;
+        if (w.kind == WidgetKind::Button) {
+            // Art: the gadget's own sequence in the screen's GAF, else the stock buttons of
+            // its size (switches: the stage buttons).
+            w.frames = sequence(own_gaf, g.name);
+            if (!w.frames) w.frames = sequence("anims\\commongui.GAF", g.name);
+            if (!w.frames && g.stages > 0 && g.stages <= 4 && g.w == 120 && g.h == 20)
+                w.frames = sequence("anims\\commongui.GAF", "stagebuttn" + std::to_string(g.stages));
+            if (!w.frames && stock) {
+                // Stock buttons come in groups of four frames by size.
+                for (std::size_t i = 0; i + 3 < stock->size(); i += 4)
+                    if ((*stock)[i].width == g.w && (*stock)[i].height == g.h) {
+                        sequences_.emplace_back(stock->begin() + static_cast<std::ptrdiff_t>(i), stock->begin() + static_cast<std::ptrdiff_t>(i) + 4);
+                        w.frames = &sequences_.back();
+                        break;
+                    }
+            }
+        } else if (w.kind == WidgetKind::Picture) {
+            if (const auto* s = sequence(own_gaf, g.name)) w.picture = &s->front();
+            else if (const auto* c = sequence("anims\\commongui.GAF", g.name)) w.picture = &c->front();
+        }
+        L->widgets.push_back(std::move(w));
+    }
+    auto* raw = L.get();
+    layouts_[gui] = std::move(L);
+    return raw;
+}
+
+const std::vector<std::string>& MenuArt::skirmish_maps() {
+    if (maps_done_) return maps_;
+    maps_done_ = true;
+    for (const std::string& file : vfs_.enumerate("maps\\*.ota")) {
+        std::vector<std::uint8_t> f;
+        if (!vfs_.read("maps\\" + file, f)) continue;
+        auto root = parse_tdf(f);
+        const TdfSection* gh = root ? root->child("GlobalHeader") : nullptr;
+        if (!gh) continue;
+        bool network = false;
+        for (const auto& c : gh->children())
+            if (upper(c->get_string("Type", 64, "")).find("NETWORK") != std::string::npos) network = true;
+        if (!network) continue;
+        std::string name = file.substr(0, file.size() - 4);
+        if (vfs_.size_or_zero("maps\\" + name + ".tnt") == 0) continue;
+        maps_.push_back(name);
+    }
+    std::sort(maps_.begin(), maps_.end(), [](const std::string& a, const std::string& b) { return upper(a) < upper(b); });
+    maps_.erase(std::unique(maps_.begin(), maps_.end(), [](const std::string& a, const std::string& b) { return ieq(a, b); }), maps_.end());
+    return maps_;
+}
+
+const render::Sprite8* MenuArt::map_preview(const std::string& map, int w, int h) {
+    const std::string key = upper(map) + "|" + std::to_string(w) + "x" + std::to_string(h);
+    if (auto it = previews_.find(key); it != previews_.end()) return it->second.get();
+    std::unique_ptr<render::Sprite8> out;
+    std::vector<std::uint8_t> tnt;
+    if (vfs_.read("maps\\" + map + ".tnt", tnt) && tnt.size() > 48) {
+        auto rd32 = [&](std::size_t o) -> std::uint32_t {
+            if (o + 4 > tnt.size()) return 0;
+            std::uint32_t v;
+            std::memcpy(&v, &tnt[o], 4);
+            return v;
+        };
+        // The TNT's own minimap (header word 10), cut to the map's shape, scaled to fit.
+        const std::uint32_t at = rd32(40);
+        const int pw = static_cast<int>(rd32(at)), ph = static_cast<int>(rd32(at + 4));
+        const int mw = static_cast<int>(rd32(4)), mh = static_cast<int>(rd32(8));
+        if (at && pw > 0 && ph > 0 && pw <= 1024 && ph <= 1024 && at + 8 + static_cast<std::size_t>(pw) * ph <= tnt.size()) {
+            int cw = pw, ch = ph;
+            if (mw > mh && mw > 0) ch = std::max(1, ph * mh / mw);
+            else if (mh > mw && mh > 0) cw = std::max(1, pw * mw / mh);
+            int ow = w, oh = h;
+            if (cw > ch) oh = std::max(1, h * ch / cw);
+            else if (ch > cw) ow = std::max(1, w * cw / ch);
+            out = std::make_unique<render::Sprite8>();
+            out->width = ow;
+            out->height = oh;
+            out->has_key = false;
+            out->x_offset = -(w - ow) / 2;
+            out->y_offset = -(h - oh) / 2;
+            out->pixels.resize(static_cast<std::size_t>(ow) * static_cast<std::size_t>(oh));
+            for (int y = 0; y < oh; ++y)
+                for (int x = 0; x < ow; ++x)
+                    out->pixels[static_cast<std::size_t>(y * ow + x)] =
+                        tnt[at + 8 + static_cast<std::size_t>(y * ch / oh) * static_cast<std::size_t>(pw) + static_cast<std::size_t>(x * cw / ow)];
+        }
+    }
+    auto* raw = out.get();
+    previews_[key] = std::move(out);
+    return raw;
+}
+
+std::shared_ptr<const client::Sample> MenuArt::music_track(int n) {
+    if (auto it = music_cache_.find(n); it != music_cache_.end()) return it->second;
+    auto s = std::make_shared<client::Sample>();
+    const std::string path = (std::filesystem::path(game_dir_) / "music" / (std::to_string(n) + ".mp3")).string();
+    std::shared_ptr<const client::Sample> out;
+    if (client::decode_audio_file(path, *s)) {
+        out = s;
+        std::printf("music: track %d (%.0f s)\n", n, static_cast<double>(s->pcm.size()) / std::max(1, s->channels) / std::max(1, s->rate));
+    }
+    else std::printf("music: cannot decode %s\n", path.c_str());
+    // Keep the last few decoded tracks.
+    if (music_cache_.size() > 3) music_cache_.erase(music_cache_.begin());
+    music_cache_[n] = out;
+    return out;
+}
+
+// ---------------------------------------------------------------------------------- session
+
+client::ClientOptions client_options(const client::Settings& s, int width, int height) {
+    client::ClientOptions o;
+    // A battle runs at the chosen display mode (the menus stay 640 x 480).
+    o.width = std::max(640, s.get_int("DisplaymodeWidth", width));
+    o.height = std::max(480, s.get_int("DisplaymodeHeight", height));
+    o.scroll_speed = s.get_int("scrollspeed", 0x20);
+    o.game_speed = std::clamp(s.get_int("gamespeed", 10), 1, 20);
+    o.right_click_orders = s.get_int("Interface Type", 0) == 1;
+    o.damage_bars = s.get_int("damagebars", 0) != 0;
+    o.text_lines = s.get_int("textlines", 10);
+    o.text_seconds = s.get_int("textscroll", 10);
+    o.unit_chat = s.get_int("unitchat", 10);
+    o.unit_chat_text = s.get_int("unitchattext", 5);
+    o.speech = s.get_int("speechfx", 1) != 0;
+    o.alt_groups = s.get_int("SwitchAlt", 0) != 0;
+    o.clock = s.get_int("clock", 0) != 0;
+    o.sound_mode = s.get_int("Sound Mode", 1);
+    return o;
+}
+
+std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_dir, const BattleRequest& request, int human,
+                                                        const client::ClientOptions& options, const client::LoadProgress& progress,
+                                                        std::string& error,
+                                                        const std::function<sim::BattleOutside&(sim::BattleOutside&)>& wrap,
+                                                        const std::function<void(sim::Battle&)>& attach) {
+    auto s = std::unique_ptr<SkirmishSession>(new SkirmishSession);
+    s->world_ = std::make_unique<ClientWorld>();
+    s->world_->net_wrap = wrap;
+    s->world_->net_attach = attach;
+    if (!s->world_->load(game_dir, request, human, error, progress)) return nullptr;
+    client::ClientOptions o = options;
+    o.player = human;
+    const std::string side = request.sides[static_cast<std::size_t>(human)];
+    o.side = 0;
+    {
+        std::vector<std::uint8_t> sd;
+        s->world_->vfs_.read("gamedata\\sidedata.tdf", sd);
+        if (auto root = parse_tdf(sd))
+            for (int k = 0;; ++k) {
+                const TdfSection* sec = root->child("SIDE" + std::to_string(k));
+                if (!sec) break;
+                if (ieq(sec->get_string("name", 32, ""), side)) o.side = k;
+            }
+    }
+    o.fog = request.start.fog_of_war || request.start.explore;
+    s->client_ = std::make_unique<client::GameClient>(s->world_->battle(), s->world_->content(), o);
+    s->world_->attach(s->client_.get());
+    SkirmishSession* raw = s.get();
+    s->world_->on_activity = [raw](std::int32_t amount) {
+        if (raw->combat_activity) raw->combat_activity(amount);
+    };
+    const auto at = s->world_->start_position(human);
+    s->client_->center_on({at[0] << 16, 0, at[1] << 16});
+    return s;
+}
+
+#ifdef TA_CLIENT_HAVE_NET
+client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* fe) {
+    client::NetMenuConfig cfg;
+    if (fe) cfg.player_name = fe->settings().get_text("Nickname", "Player");
+    const std::string dir = art.game_dir();
+    cfg.load_network_game = [dir, fe](const client::NetGameRequest& r, const client::LoadProgress& progress,
+                                      std::string& error) -> std::unique_ptr<client::BattleSession> {
+        BattleRequest req;
+        req.map = r.map;
+        req.sides = r.sides;
+        req.start = r.start;
+        const int human = r.start.local_player;
+        client::Settings none;
+        const client::ClientOptions opt = client_options(fe ? fe->settings() : none, 640, 480);
+        return SkirmishSession::start(dir, req, human, opt, progress, error, r.wrap_outside, r.attach);
+    };
+    cfg.unit_checks = [&art]() -> net::UnitChecks {
+        UnitDefContext ctx;
+        load_unit_context(art.vfs(), ctx);
+        const UnitDefTable defs = load_unit_defs(art.vfs(), ctx);
+        return unit_sync_checks(art.vfs(), defs);
+    };
+    return cfg;
+}
+#endif
+
+client::BattleOutcome SkirmishSession::outcome() {
+    const sim::Battle& b = world_->battle();
+    if (surrendered_) return client::BattleOutcome::Quit;
+    if (b.end_game.flags & sim::end_game_flags::kWon) return client::BattleOutcome::Victory;
+    if (b.end_game.flags & sim::end_game_flags::kLost) return client::BattleOutcome::Defeat;
+    return client::BattleOutcome::None;
+}
+
+void SkirmishSession::surrender() { surrendered_ = true; }
+
+std::vector<client::PlayerStats> SkirmishSession::stats() {
+    std::vector<client::PlayerStats> out;
+    sim::Battle& b = world_->battle();
+    for (int p = 0; p < 10; ++p) {
+        const sim::PlayerSlot& s = b.players[static_cast<std::size_t>(p)];
+        if (!s.active) continue;
+        const sim::PlayerEconomy& e = b.player_economy[static_cast<std::size_t>(p)];
+        client::PlayerStats st;
+        const auto& req = world_->request();
+        st.name = req.start.players[static_cast<std::size_t>(p)].name;
+        if (st.name.empty()) st.name = (req.start.players[static_cast<std::size_t>(p)].kind == sim::PlayerKind::Computer ? "Computer " : "Player ") +
+                                       std::to_string(p + 1);
+        st.colour = req.start.players[static_cast<std::size_t>(p)].colour;
+        st.units_killed = s.units_killed;
+        st.units_lost = s.units_lost;
+        st.energy_produced = static_cast<float>(e.energy_produced);
+        st.metal_produced = static_cast<float>(e.metal_produced);
+        st.energy_wasted = static_cast<float>(e.energy_wasted);
+        st.metal_wasted = static_cast<float>(e.metal_wasted);
+        st.energy_used = static_cast<float>(e.energy_consumed);
+        st.metal_used = static_cast<float>(e.metal_consumed);
+        st.won = p == b.settings.local_player && (b.end_game.flags & sim::end_game_flags::kWon);
+        st.lost = p == b.settings.local_player && (b.end_game.flags & sim::end_game_flags::kLost);
+        out.push_back(st);
+    }
+    return out;
+}
+
+}  // namespace ta

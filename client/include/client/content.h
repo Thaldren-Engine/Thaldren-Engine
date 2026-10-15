@@ -63,6 +63,9 @@ struct SideLayout {
     // Bottom bar (y values are for a 480-row screen; they move with the screen height).
     Region logo2, unit_name, damage_bar, unit_metal_make, unit_metal_use, unit_energy_make, unit_energy_use;
     Region mission_text, unit_name2, damage_bar2, name, description;
+    Region total_units, total_time;     // top bar: unit count and the game clock
+    std::array<Region, 3> reload{};     // bottom bar: the weapons' reload bars
+    const std::vector<render::Sprite8>* logos = nullptr;  // the side's logo by player colour (LOGO / LOGO2)
     std::uint8_t energy_colour = 0, metal_colour = 0;
     const Font* font = nullptr;  // console and bar text
     const render::Sprite8* panel_top = nullptr;
@@ -98,11 +101,17 @@ struct InterfaceSounds {
 // Display data of a unit type (index = battle type index).
 struct UnitTypeLook {
     std::string name, description;
-    UnitSounds sounds{};
+    UnitSounds sounds{};                         // first sound of each notice
+    std::array<std::vector<int>, 24> sound_lists{}; // every sound of each notice (one is picked)
+    std::vector<std::string> categories;          // the type's categories (upper case)
     std::vector<Panel> build_pages;  // empty: no build menu
     // Box around the model at rest (16.16, unit space): the selection outline.
     std::array<std::int32_t, 3> box_min{}, box_max{};
     bool commander = false;
+    // The pointer's pick test (on box_min / box_max): the rank among several hits (smaller
+    // wins: (size y / 2 + size z) * size x >> 16 of the type definition's model sizes).
+    std::array<std::int32_t, 3> pick_min{}, pick_max{};  // the definition's bounds (footprint x, z)
+    std::int64_t pick_rank = 0;
 };
 
 // A decoded sound: signed 16-bit samples.
@@ -143,6 +152,14 @@ struct Content {
     // The paused sign (drawn at the view's centre).
     const render::Sprite8* paused_sign = nullptr;
     std::vector<std::string> start_messages;      // console lines shown at the start
+    // Features: display name and reclaim values by feature type index (hover info).
+    struct FeatureLook {
+        std::string name;
+        int metal = 0, energy = 0;
+    };
+    std::vector<FeatureLook> features;
+    const render::Sprite8* victory_sign = nullptr;  // over the view when the battle is won / lost
+    const render::Sprite8* defeat_sign = nullptr;
     // Builds the battle view of the viewing player (projection, culling and draw order are
     // the renderer's; which units, features and shots are seen is the content's).
     std::function<void(render::BattleScene& scene, int view_player, std::uint32_t frame_counter)> fill_scene;

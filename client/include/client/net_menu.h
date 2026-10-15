@@ -57,6 +57,7 @@ public:
     BattleOutcome outcome() override { return inner_->outcome(); }
     void send_chat(const std::string& text) override;
     void surrender() override;
+    bool network() const override { return true; }
     std::vector<PlayerStats> stats() override { return inner_->stats(); }
     bool after_battle(FrontEnd& fe, BattleOutcome o) override { return inner_->after_battle(fe, o); }
     net::NetBattle& net() { return *net_; }

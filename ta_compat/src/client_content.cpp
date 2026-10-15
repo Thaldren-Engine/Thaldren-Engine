@@ -115,6 +115,12 @@ bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& ou
         g.text = sec->get_string("text", 256, "");
         g.panel = sec->get_string("panel", 32, "");
         g.filename = sec->get_string("filename", 32, "");
+        g.stages = sec->get_int("stages", 0);
+        g.grayed = sec->get_int("grayedout", 0) != 0;
+        g.link = sec->get_string("link", 32, "");
+        g.crdefault = sec->get_string("crdefault", 32, "");
+        g.escdefault = sec->get_string("escdefault", 32, "");
+        g.defaultfocus = sec->get_string("defaultfocus", 32, "");
         out.push_back(std::move(g));
     }
     return true;
@@ -452,6 +458,9 @@ bool ClientWorld::build_content(std::string& error) {
         const UnitDefRecord& d = defs_.units[k];
         client::UnitTypeLook& look = c.types[k];
         look.name = d.name;
+        look.pick_min = {d.model_min_x, d.model_min_y, d.model_min_z};
+        look.pick_max = {d.model_max_x, d.model_max_y, d.model_max_z};
+        look.pick_rank = ((static_cast<std::int64_t>(d.model_size_y) * 0x8000 >> 16) + d.model_size_z) * static_cast<std::int64_t>(d.model_size_x) >> 16;
         look.description = d.description;
         for (const std::string& cm : commanders)
             if (stricmp_c(cm, d.unit_name) == 0) look.commander = true;
@@ -463,13 +472,23 @@ bool ClientWorld::build_content(std::string& error) {
                                                  "cloak",   "uncloak",  "capture",     "count5",   "count4",     "count3",   "count2",
                                                  "count1",  "count0",   nullptr};
             for (int id = 1; id < 24; ++id) {
-                if (!keys[id]) continue;
+                const char* key = id == 23 ? "canceldestruct" : keys[id];
+                if (!key) continue;
+                // The notice's sounds: <key>, then <key>1, <key>2, ... (one is picked when it speaks).
+                auto& list = look.sound_lists[static_cast<std::size_t>(id)];
                 bool found = false;
-                std::string v = cat->get_string(keys[id], 64, "", &found);
-                if (!found) v = cat->get_string(std::string(keys[id]) + "1", 64, "", &found);
-                if (found) look.sounds[static_cast<std::size_t>(id)] = sample(v);
+                std::string v = cat->get_string(key, 64, "", &found);
+                if (found) list.push_back(sample(v));
+                for (int n = 1; n <= 9; ++n) {
+                    v = cat->get_string(std::string(key) + std::to_string(n), 64, "", &found);
+                    if (!found) break;
+                    list.push_back(sample(v));
+                }
+                if (!list.empty()) look.sounds[static_cast<std::size_t>(id)] = list.front();
             }
         }
+        for (const auto& [key, cat] : defs_.categories.all())
+            if (k < 512 && (cat.second[k >> 5] & (1u << (k & 31)))) look.categories.push_back(upper(cat.first));
         if (types_[k] && types_[k]->ok) {
             bool first = true;
             model_box(types_[k]->root.get(), {0, 0, 0}, look.box_min, look.box_max, first);
@@ -518,9 +537,9 @@ bool ClientWorld::build_content(std::string& error) {
 
     // Shots: their sounds (by name, into the sample table) and looks.
     c.shots.resize(256);
-    for (std::size_t i = 0; i < 256 && i < weapon_types_.size(); ++i) {
+    for (std::size_t i = 0; i < 256 && i < lb_->weapons.size(); ++i) {
         const WeaponDefRecord& d = weapons_.slots[i];
-        sim::WeaponType& t = weapon_types_[i];
+        sim::WeaponType& t = lb_->weapons[i];
         auto id = [&](const std::string& n) { const int s = sample(n); return s < 0 ? std::uint16_t{0xFFFF} : static_cast<std::uint16_t>(s); };
         t.sound_start = id(d.sound_start);
         t.sound_hit = id(d.sound_hit);
@@ -581,6 +600,10 @@ bool ClientWorld::build_content(std::string& error) {
         gray_table_ = render::gray_remap_table(palette_);
         fog_.gray_table = &gray_table_;
     }
+    // Features' names and reclaim values (hover info), the victory and defeat signs.
+    for (const FeatureDefRecord& r : lb_->feature_defs.records()) c.features.push_back({r.description.empty() ? r.name : r.description, 0, 0});
+    if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
+    if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };
     c.start_messages.push_back("Skirmish on " + setup_.map);
     return true;

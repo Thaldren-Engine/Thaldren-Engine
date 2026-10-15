@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 
@@ -25,7 +26,12 @@ struct AudioOut::Impl {
     };
     std::vector<Voice> voices;
     std::uint64_t serial = 0;
-    std::vector<std::int16_t> mix;
+    int fx_volume = 256, music_volume = 256;
+    std::shared_ptr<const Sample> music;
+    std::uint64_t music_pos = 0, music_step = 0;
+    bool music_paused = false;
+    std::vector<std::int32_t> mix;
+    std::vector<std::int16_t> out;
 
     static void SDLCALL feed(void* user, SDL_AudioStream* stream, int additional, int) {
         Impl& m = *static_cast<Impl*>(user);
@@ -36,7 +42,8 @@ struct AudioOut::Impl {
             std::lock_guard<std::mutex> g(m.lock);
             for (Voice& v : m.voices) {
                 if (!v.s) continue;
-                const std::size_t n = v.s->pcm.size() / static_cast<std::size_t>(v.s->channels);
+                const std::size_t n = v.s->pcm.size() / static_cast<std::size_t>(std::max(1, v.s->channels));
+                const int lv = v.left * m.fx_volume / 256, rv = v.right * m.fx_volume / 256;
                 for (int f = 0; f < frames; ++f) {
                     const std::size_t at = static_cast<std::size_t>(v.pos >> 32);
                     if (at >= n) {
@@ -46,15 +53,32 @@ struct AudioOut::Impl {
                     const std::size_t i = at * static_cast<std::size_t>(v.s->channels);
                     const int a = v.s->pcm[i];
                     const int b = v.s->channels > 1 ? v.s->pcm[i + 1] : a;
-                    int l = m.mix[static_cast<std::size_t>(f) * 2] + a * v.left / 256;
-                    int r = m.mix[static_cast<std::size_t>(f) * 2 + 1] + b * v.right / 256;
-                    m.mix[static_cast<std::size_t>(f) * 2] = static_cast<std::int16_t>(std::clamp(l, -32768, 32767));
-                    m.mix[static_cast<std::size_t>(f) * 2 + 1] = static_cast<std::int16_t>(std::clamp(r, -32768, 32767));
+                    m.mix[static_cast<std::size_t>(f) * 2] += a * lv / 256;
+                    m.mix[static_cast<std::size_t>(f) * 2 + 1] += b * rv / 256;
                     v.pos += v.step;
                 }
             }
+            if (m.music && !m.music_paused) {
+                const Sample& s = *m.music;
+                const std::size_t n = s.pcm.size() / static_cast<std::size_t>(std::max(1, s.channels));
+                for (int f = 0; f < frames; ++f) {
+                    const std::size_t at = static_cast<std::size_t>(m.music_pos >> 32);
+                    if (at >= n) {
+                        m.music.reset();
+                        break;
+                    }
+                    const std::size_t i = at * static_cast<std::size_t>(s.channels);
+                    const int a = s.pcm[i];
+                    const int b = s.channels > 1 ? s.pcm[i + 1] : a;
+                    m.mix[static_cast<std::size_t>(f) * 2] += a * m.music_volume / 256;
+                    m.mix[static_cast<std::size_t>(f) * 2 + 1] += b * m.music_volume / 256;
+                    m.music_pos += m.music_step;
+                }
+            }
         }
-        SDL_PutAudioStreamData(stream, m.mix.data(), frames * 4);
+        m.out.resize(m.mix.size());
+        for (std::size_t i = 0; i < m.mix.size(); ++i) m.out[i] = static_cast<std::int16_t>(std::clamp(m.mix[i], -32768, 32767));
+        SDL_PutAudioStreamData(stream, m.out.data(), frames * 4);
     }
 };
 
@@ -77,10 +101,21 @@ AudioOut::~AudioOut() {
     if (impl_ && impl_->stream) SDL_DestroyAudioStream(impl_->stream);
 }
 
+void AudioOut::set_samples(const std::vector<Sample>* samples) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    // Voices of the old table stop (their samples may go away).
+    for (auto& v : impl_->voices) v.s = nullptr;
+    impl_->samples = samples;
+}
+
 void AudioOut::play(int index, int pan) {
     if (!impl_ || !impl_->samples || index < 0 || static_cast<std::size_t>(index) >= impl_->samples->size()) return;
-    const Sample& s = (*impl_->samples)[static_cast<std::size_t>(index)];
-    if (s.pcm.empty()) return;
+    play_sample(&(*impl_->samples)[static_cast<std::size_t>(index)], pan, 256);
+}
+
+void AudioOut::play_sample(const Sample* s, int pan, int volume) {
+    if (!impl_ || !s || s->pcm.empty()) return;
     std::lock_guard<std::mutex> g(impl_->lock);
     Impl::Voice* use = nullptr;
     for (auto& v : impl_->voices)
@@ -90,13 +125,54 @@ void AudioOut::play(int index, int pan) {
         }
     if (!use) use = &*std::min_element(impl_->voices.begin(), impl_->voices.end(),
                                        [](const Impl::Voice& a, const Impl::Voice& b) { return a.started < b.started; });
-    use->s = &s;
+    use->s = s;
     use->pos = 0;
-    use->step = (static_cast<std::uint64_t>(s.rate) << 32) / kRate;
+    use->step = (static_cast<std::uint64_t>(s->rate) << 32) / kRate;
     pan = std::clamp(pan, -100, 100);
-    use->left = pan > 0 ? 256 * (100 - pan) / 100 : 256;
-    use->right = pan < 0 ? 256 * (100 + pan) / 100 : 256;
+    volume = std::clamp(volume, 0, 256);
+    use->left = (pan > 0 ? 256 * (100 - pan) / 100 : 256) * volume / 256;
+    use->right = (pan < 0 ? 256 * (100 + pan) / 100 : 256) * volume / 256;
     use->started = ++impl_->serial;
+}
+
+void AudioOut::set_fx_volume(int v) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->fx_volume = std::clamp(v, 0, 256);
+}
+
+void AudioOut::set_music_volume(int v) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->music_volume = std::clamp(v, 0, 256);
+}
+
+void AudioOut::play_music(std::shared_ptr<const Sample> track) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->music = std::move(track);
+    impl_->music_pos = 0;
+    impl_->music_step = impl_->music ? (static_cast<std::uint64_t>(impl_->music->rate) << 32) / kRate : 0;
+}
+
+void AudioOut::stop_music() { play_music(nullptr); }
+
+void AudioOut::pause_music(bool paused) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->music_paused = paused;
+}
+
+bool AudioOut::music_playing() const {
+    if (!impl_) return false;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    return impl_->music != nullptr;
+}
+
+double AudioOut::music_position() const {
+    if (!impl_) return 0.0;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    return impl_->music ? static_cast<double>(impl_->music_pos >> 32) / impl_->music->rate : 0.0;
 }
 
 bool decode_wav(const std::vector<std::uint8_t>& file, Sample& out) {

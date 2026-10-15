@@ -23,6 +23,9 @@ struct Glyph {
     int width = 0;
     bool present = false;
     std::vector<std::uint8_t> ink;  // width * height, row-major, 1 = foreground
+    // Coloured glyphs (fonts drawn from picture art): the pixel values where ink is 1; the
+    // foreground colour is not used for them.
+    std::vector<std::uint8_t> colours;
 };
 
 struct Font {
