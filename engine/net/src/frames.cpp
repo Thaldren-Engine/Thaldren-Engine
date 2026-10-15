@@ -93,8 +93,8 @@ std::size_t FrameReceiver::waiting() const {
     return n;
 }
 
-void FrameReceiver::split(Sender& s, const std::vector<std::uint8_t>& frame, std::uint32_t tick) {
-    // Count the packets the frame holds.
+void FrameReceiver::split(Sender& s, const std::vector<std::uint8_t>& frame, std::uint32_t tick, bool spread) {
+    // 0x463790. Count the packets the frame holds.
     std::int32_t remaining = static_cast<std::int32_t>(frame.size()) - 4;
     std::size_t at = 4;
     int count = 0;
@@ -132,13 +132,22 @@ void FrameReceiver::split(Sender& s, const std::vector<std::uint8_t>& frame, std
             s.queue.push_back(Item{stamp, std::vector<std::uint8_t>(frame.begin() + static_cast<std::ptrdiff_t>(at),
                                                                     frame.begin() + static_cast<std::ptrdiff_t>(at + size))});
             ++queued;
-            if (acc <= static_cast<std::uint32_t>(queued * 16)) {
+            if (spread && acc <= static_cast<std::uint32_t>(queued * 16)) {
                 acc += rate;
                 ++stamp;
             }
         }
         at += size;
     }
+}
+
+bool FrameReceiver::take_head(Sender& s, std::uint32_t tick, Delivered& out) {
+    if (s.queue.empty() || !ready(s.queue.front(), tick)) return false;
+    out.from = s.id;
+    out.to = s.to;
+    out.packet = std::move(s.queue.front().packet);
+    s.queue.pop_front();
+    return true;
 }
 
 bool FrameReceiver::next(std::uint32_t tick, bool frame_timing, const ReadFn& read, Delivered& out) {
@@ -151,48 +160,89 @@ bool FrameReceiver::next(std::uint32_t tick, bool frame_timing, const ReadFn& re
         out.packet = std::move(msg);
         return true;
     }
-    for (Sender& s : senders_) {
-        if (!s.queue.empty() && ready(s.queue.front(), tick)) {
-            out.from = s.id;
-            out.to = s.to;
-            out.packet = std::move(s.queue.front().packet);
-            s.queue.pop_front();
-            return true;
+    // 0x462F30: the first due packet of the senders' queues, in their order.
+    for (Sender& s : senders_)
+        if (take_head(s, tick, out)) return true;
+    if (!current_.present) {
+        if (replay_ != kNone && sender(replay_)->held.present) {
+            // A held frame whose turn came: split without spreading.
+            Sender& s = *sender(replay_);
+            current_ = s.held;
+            current_.spread = false;
+            s.held = Frame{};
+            replay_ = kNone;
+        } else if (deferred_.present) {
+            current_ = deferred_;
+            current_.spread = true;
+            deferred_ = Frame{};
+            replay_ = kNone;
+        } else {
+            replay_ = kNone;
+            if (!read(from, to, msg)) return false;
+            std::vector<std::uint8_t> frame;
+            const UnwrapResult r = unwrap(msg.data(), msg.size(), frame);
+            if (r == UnwrapResult::NotWrapped) {
+                out.from = from;
+                out.to = to;
+                out.packet = std::move(frame);
+                return true;
+            }
+            if (r != UnwrapResult::Ok || frame.size() <= 4) {
+                ++bad_;
+                return false;
+            }
+            Sender& s = *sender(from);
+            s.to = to;
+            Frame f{true, from, to, std::move(frame), true};
+            const std::int32_t head = static_cast<std::int32_t>(get32(f.bytes.data()));
+            if (head != -1) {
+                bool swap = s.held.present;
+                if (s.last_sequence != -1) {
+                    // Running numbers count down; the next one is the last - 1 (back to -2 past the end).
+                    std::int32_t expected = s.last_sequence - 1;
+                    if (expected >= -1) expected = -2;
+                    const bool gap = head != expected && static_cast<std::int32_t>(static_cast<std::uint32_t>(expected) - static_cast<std::uint32_t>(head)) >= 0;
+                    if (gap) {
+                        ++order_mismatches_;
+                        if (!s.held.present) {
+                            s.held = std::move(f);  // wait for the missing one
+                            return false;
+                        }
+                        const std::int32_t held_head = static_cast<std::int32_t>(get32(s.held.bytes.data()));
+                        if (!(head < held_head)) {
+                            // The new frame is older than the held one: it goes now, the held one next.
+                            swap = false;
+                            f.spread = false;
+                            replay_ = s.id;
+                        }
+                    }
+                }
+                if (swap && s.held.present) {
+                    // The held frame goes first (unspread), the new one after it.
+                    deferred_ = std::move(f);
+                    current_ = std::move(s.held);
+                    current_.spread = false;
+                    s.held = Frame{};
+                    s.last_sequence = static_cast<std::int32_t>(get32(current_.bytes.data()));
+                } else {
+                    s.last_sequence = head;
+                    current_ = std::move(f);
+                }
+            } else {
+                current_ = std::move(f);
+            }
         }
     }
-    if (!read(from, to, msg)) return false;
-    std::vector<std::uint8_t> frame;
-    const UnwrapResult r = unwrap(msg.data(), msg.size(), frame);
-    if (r == UnwrapResult::NotWrapped) {
-        out.from = from;
-        out.to = to;
-        out.packet = std::move(frame);
-        return true;
+    Sender& s = *sender(current_.from);
+    if (!s.queue.empty()) {
+        // Packets of an earlier frame still wait: they are all due now; the frame waits.
+        for (Item& it : s.queue) it.release = tick;
+        ++restamps_;
+        return take_head(s, tick, out);
     }
-    if (r != UnwrapResult::Ok || frame.size() <= 4) {
-        ++bad_;
-        return false;
-    }
-    Sender& s = *sender(from);
-    s.to = to;
-    const std::int32_t head = static_cast<std::int32_t>(get32(frame.data()));
-    if (head != -1) {
-        if (s.last_sequence != -1) {
-            std::int32_t expected = s.last_sequence - 1;
-            if (expected > -2) expected = -2;
-            if (head != expected) ++order_mismatches_;
-        }
-        s.last_sequence = head;
-    }
-    split(s, frame, tick);
-    if (!s.queue.empty() && ready(s.queue.front(), tick)) {
-        out.from = s.id;
-        out.to = s.to;
-        out.packet = std::move(s.queue.front().packet);
-        s.queue.pop_front();
-        return true;
-    }
-    return false;
+    split(s, current_.bytes, tick, current_.spread);
+    current_ = Frame{};
+    return take_head(s, tick, out);
 }
 
 } // namespace net

@@ -36,41 +36,28 @@ bool has_net_state(const MotionGoal& g, const MotionState& m) {
     return false;
 }
 
-void write_point_goal(BitWriter& w, const PointGoal& p) {
-    namespace pg = point_goal;
-    w.put(p.flags, 8);
-    if (p.flags & pg::kFollow) {
-        w.put(static_cast<u32>(static_cast<i32>(p.piece)), 16);
-        w.put(p.link.unit ? p.link.unit->id : 0u, 16);
-    }
-    if (p.flags & pg::kRadius) w.put(static_cast<u32>(static_cast<i32>(p.radius)), 16);
-    if (p.flags & pg::kAltitude) w.put(static_cast<u32>(static_cast<i32>(p.altitude)), 16);
-    if (p.flags & pg::kHeading) w.put(static_cast<u32>(static_cast<i32>(p.goal_heading)), 16);
-    if (p.flags & pg::kGround)
-        for (int k = 0; k < 3; ++k) w.put(static_cast<u32>(p.pos[static_cast<std::size_t>(k)]), 32);
+NetPointGoal plain(const PointGoal& p) {
+    NetPointGoal g;
+    g.flags = p.flags;
+    g.piece = p.piece;
+    g.radius = p.radius;
+    g.altitude = p.altitude;
+    g.heading = p.goal_heading;
+    g.link_id = p.link.unit ? p.link.unit->id : 0;
+    g.pos = p.pos;
+    return g;
 }
 
-void write_manoeuvre_goal(BitWriter& w, const ManoeuvreGoal& m) {
-    w.put(m.flags, 1);
-    for (int k = 0; k < 3; ++k) w.put(static_cast<u32>(m.pos[static_cast<std::size_t>(k)]), 32);
-    for (int k = 0; k < 3; ++k) w.put(static_cast<u32>(m.vel[static_cast<std::size_t>(k)]), 32);
-    if (m.flags & 1) w.put(m.target_heading, 16);
+NetManoeuvreGoal plain(const ManoeuvreGoal& m) {
+    NetManoeuvreGoal g;
+    g.flags = m.flags;
+    g.pos = m.pos;
+    g.vel = m.vel;
+    g.target_heading = m.target_heading;
+    return g;
 }
 
 }  // namespace
-
-int unit_type_bits(std::size_t type_count) {
-    int bits = 0;
-    for (std::size_t n = type_count; n; n >>= 1) ++bits;
-    return bits;
-}
-
-std::uint32_t encode_build_fraction(float f) {
-    if (f == 0.0f) return 0;
-    return static_cast<u32>(1 - x87::ftol32(static_cast<double>(f) * -254.0)) & 0xFFu;
-}
-
-double decode_build_fraction(std::uint32_t byte) { return static_cast<double>(byte) * static_cast<double>(0.003921569f); }
 
 // Packet 9 received (0x4861D0): the unit at the packet's id becomes a new, unfinished unit of
 // the packet's type at its position, for the sending player. A live unit there is killed first.
@@ -120,25 +107,22 @@ Unit* Battle::apply_unit_packet(int slot, const std::uint8_t* pk) {
 void Battle::write_full_state(BitWriter& w, const Unit& u) const {
     // 0x48B200: one unit's whole state.
     const UnitTickState& t = ticks[u.id];
-    const int bits = unit_type_bits(types.size());
-    w.put(t.type_index, bits);
-    if (t.type_index == 0) return;
-    w.put(static_cast<u32>(static_cast<i32>(u.hit_points)), 16);
-    w.put(encode_build_fraction(u.build_fraction_left), 8);
-    w.put(u.activate_flags, 8);
-    w.put(u.flags & 3u, 2);
-    if (u.carrier) {
-        w.put_bit(true);
-        w.put(u.carrier->id, 15);
-        w.put(static_cast<u32>(static_cast<i32>(static_cast<std::int8_t>(u.transport_piece))), 8);
-        return;
-    }
-    w.put_bit(false);
-    for (int k = 0; k < 3; ++k) w.put(static_cast<u32>(u.pos[static_cast<std::size_t>(k)]), 32);
-    w.put(u.heading, 16);
-    w.put(static_cast<u16>(u.bank), 16);
-    w.put(static_cast<u16>(u.pitch), 16);
-    if (t.has_motion) w.put(static_cast<u32>(t.motion.speed), 32);
+    NetWholeState st;
+    st.type = t.type_index;
+    st.hit_points = u.hit_points;
+    st.fraction_left = u.build_fraction_left;
+    st.activate = u.activate_flags;
+    st.layer = u.flags & 3u;
+    st.carried = u.carrier != nullptr;
+    st.carrier_id = u.carrier ? u.carrier->id : 0;
+    st.piece = static_cast<std::int8_t>(u.transport_piece);
+    st.pos = u.pos;
+    st.heading = u.heading;
+    st.bank = static_cast<u16>(u.bank);
+    st.pitch = static_cast<u16>(u.pitch);
+    st.has_motion = t.has_motion;
+    st.speed = t.motion.speed;
+    write_whole_state(w, unit_type_bits(types.size()), st);
 }
 
 std::vector<std::uint8_t> Battle::unit_state_packet(int slot) {
@@ -161,25 +145,18 @@ std::vector<std::uint8_t> Battle::unit_state_packet(int slot) {
         w.put(t.type_index, bits);
         if (auto* r = dynamic_cast<RouteGoal*>(&g)) {
             // 0x44F4A0: blocked bit, up to three waypoints of the route.
-            u32 n = 0;
-            if (r->flags & route_flags::kHasRoute) n = r->count > 2 ? 3u : static_cast<u32>(r->count);
-            w.put_bit((t.motion.flags & 4) != 0);
-            w.put(n, 2);
-            for (u32 k = 0; k < n; ++k) {
-                w.put(r->points[k] & 0xFFFFu, 16);
-                w.put(r->points[k] >> 16, 16);
-            }
-            r->flags = static_cast<u8>((r->flags & 0xF3) ^ (t.motion.flags & 4));
+            write_route_state(w, (t.motion.flags & 4) != 0, r->flags, r->count, r->points.data());
+            r->flags = route_flags_after_send(r->flags, t.motion.flags);
         } else if (auto* f = dynamic_cast<FlightGoal*>(&g)) {
             // 0x4908C0: the order goal (none, point, manoeuvre) and the layer.
             if (!f->attached) {
                 w.put(0, 2);
             } else if (auto* pg = dynamic_cast<PointGoal*>(f->attached)) {
                 w.put(1, 2);
-                write_point_goal(w, *pg);
+                write_point_goal_state(w, plain(*pg));
             } else if (auto* mg = dynamic_cast<ManoeuvreGoal*>(f->attached)) {
                 w.put(2, 2);
-                write_manoeuvre_goal(w, *mg);
+                write_manoeuvre_goal_state(w, plain(*mg));
             }  // other kinds write nothing (aircraft never hold them)
             w.put(t.motion.flags & 3u, 2);
             f->net_flags = static_cast<u8>(((t.motion.flags & 3) << 1) | (f->net_flags & 0xF8));
@@ -204,57 +181,51 @@ std::vector<std::uint8_t> Battle::unit_state_packet(int slot) {
 }
 
 void Battle::apply_full_state(BitReader& r, Unit& u) {
-    // 0x48B3F0.
-    const int bits = unit_type_bits(types.size());
-    UnitTickState& t = ticks[u.id];
-    const i16 type = static_cast<i16>(r.get(bits));
-    if (type == 0) {
-        if (t.type_index != 0) u.flags |= kDying;
-        return;
-    }
-    if (static_cast<i16>(t.type_index) != type) {
-        u8 pk[23] = {0x09};
-        wr16(pk + 1, static_cast<u16>(type));
-        wr16(pk + 3, u.id);
-        for (int k = 0; k < 3; ++k) wr32(pk + 5 + 4 * k, static_cast<u32>(u.pos[static_cast<std::size_t>(k)]));
-        apply_unit_packet(t.owner, pk);
-    }
-    u.hit_points = static_cast<i16>(r.get(16));
-    const double f = decode_build_fraction(r.get(8));
-    if (f != static_cast<double>(u.build_fraction_left)) {
-        u.build_fraction_left = static_cast<float>(f);
-        u.flags |= kFractionChanged;
-    }
-    const u8 act = static_cast<u8>(r.get(8));
-    unit_set_activate(u, *this, act, true);
-    unit_set_activate(u, *this, static_cast<u8>(~act), false);
-    const u32 layer = r.get(2);
-    if (r.get_bit()) {
-        const u16 carrier = static_cast<u16>(r.get(15));
-        const u8 piece = static_cast<u8>(r.get_signed(8));
-        apply_transport_attach(missions_, construction_hooks_, u, carrier ? &units[carrier] : nullptr, piece, static_cast<u8>(layer));
-        return;
-    }
-    if (u.carrier) apply_transport_attach(missions_, construction_hooks_, u, nullptr, 0xFF, static_cast<u8>(layer));
-    const i32 x = static_cast<i32>(r.get(32)), y = static_cast<i32>(r.get(32)), z = static_cast<i32>(r.get(32));
-    const u16 heading = static_cast<u16>(r.get(16)), bank = static_cast<u16>(r.get(16)), pitch = static_cast<u16>(r.get(16));
-    const i16 cx = footprint_cell(x, u.footprint_x), cz = footprint_cell(z, u.footprint_z);
-    if (cx == u.cell_x && cz == u.cell_z && layer == (u.flags & 3u)) {
-        u.pos = {x, y, z};
-    } else {
-        release_cells(footprint_, u);
-        u.pos = {x, y, z};
-        u.cell_x = cx;
-        u.cell_z = cz;
-        u.flags = (u.flags & ~3u) | (layer & 3u);
-        claim_footprint(footprint_, u);
-        update_sight(u);
-    }
-    u.flags |= kResettle;
-    u.pitch = static_cast<i16>(pitch);
-    u.heading = heading;
-    u.bank = static_cast<i16>(bank);
-    if (t.has_motion) t.motion.speed = static_cast<i32>(r.get(32));
+    // 0x48B3F0 on this battle's unit.
+    struct Target final : WholeStateTarget {
+        Battle& b;
+        Unit& u;
+        Target(Battle& battle, Unit& unit) : b(battle), u(unit) {}
+        UnitTickState& t() { return b.ticks[u.id]; }
+        std::uint16_t type() override { return t().type_index; }
+        void make(std::uint16_t type) override {
+            u8 pk[23] = {0x09};
+            wr16(pk + 1, type);
+            wr16(pk + 3, u.id);
+            for (int k = 0; k < 3; ++k) wr32(pk + 5 + 4 * k, static_cast<u32>(u.pos[static_cast<std::size_t>(k)]));
+            b.apply_unit_packet(t().owner, pk);
+        }
+        void add_flags(std::uint32_t bits) override { u.flags |= bits; }
+        void set_hit_points(std::int16_t hp) override { u.hit_points = hp; }
+        float fraction_left() override { return u.build_fraction_left; }
+        void set_fraction_left(float f) override { u.build_fraction_left = f; }
+        void activate(std::uint8_t mask, bool on) override { unit_set_activate(u, b, mask, on); }
+        bool carried() override { return u.carrier != nullptr; }
+        void transport(std::uint16_t carrier, std::uint8_t piece, std::uint8_t layer) override {
+            apply_transport_attach(b.missions_, b.construction_hooks_, u, carrier ? &b.units[carrier] : nullptr, piece, layer);
+        }
+        bool same_cells(std::int32_t x, std::int32_t z, std::uint32_t layer) override {
+            return footprint_cell(x, u.footprint_x) == u.cell_x && footprint_cell(z, u.footprint_z) == u.cell_z && layer == (u.flags & 3u);
+        }
+        void set_position(const std::array<std::int32_t, 3>& pos) override { u.pos = pos; }
+        void move_cells(const std::array<std::int32_t, 3>& pos, std::uint32_t layer) override {
+            release_cells(b.footprint_, u);
+            u.pos = pos;
+            u.cell_x = footprint_cell(pos[0], u.footprint_x);
+            u.cell_z = footprint_cell(pos[2], u.footprint_z);
+            u.flags = (u.flags & ~3u) | (layer & 3u);
+            claim_footprint(b.footprint_, u);
+            b.update_sight(u);
+        }
+        void set_angles(std::uint16_t pitch, std::uint16_t heading, std::uint16_t bank) override {
+            u.pitch = static_cast<i16>(pitch);
+            u.heading = heading;
+            u.bank = static_cast<i16>(bank);
+        }
+        bool has_motion() override { return t().has_motion; }
+        void set_speed(std::int32_t speed) override { t().motion.speed = speed; }
+    } target(*this, u);
+    apply_whole_state(r, unit_type_bits(types.size()), target);
 }
 
 std::uint32_t Battle::apply_unit_state_packet(int slot, const std::uint8_t* packet, std::size_t size) {
@@ -291,12 +262,9 @@ std::uint32_t Battle::apply_unit_state_packet(int slot, const std::uint8_t* pack
         MotionGoal& g = *t.motion.goal;
         if (auto* rr = dynamic_cast<RemoteRouteGoal*>(&g)) {
             // 0x44F5C0: blocked bit into the motion flags, up to three waypoints.
-            t.motion.flags = static_cast<u8>((t.motion.flags & 0xFB) | (r.get_bit() ? 4 : 0));
-            rr->count = static_cast<i32>(r.get(2));
-            for (i32 k = 0; k < rr->count; ++k) {
-                const u32 px = r.get(16), pz = r.get(16);
-                rr->points[static_cast<std::size_t>(k)] = (px & 0xFFFFu) | (pz << 16);
-            }
+            bool blocked = false;
+            read_route_state(r, blocked, rr->count, rr->points);
+            t.motion.flags = static_cast<u8>((t.motion.flags & 0xFB) | (blocked ? 4 : 0));
         } else if (auto* f = dynamic_cast<FlightGoal*>(&g); f && !f->local) {
             // 0x490A10: a new order goal (the old one is deleted), then the layer.
             if (net_->remote_goals.size() < units.size()) net_->remote_goals.resize(units.size());
@@ -313,26 +281,29 @@ std::uint32_t Battle::apply_unit_state_packet(int slot, const std::uint8_t* pack
                 pg->owner = &u;
                 pg->pos = net_inputs.fresh_goal_pos;
                 pg->offset = net_inputs.fresh_goal_offset;
-                pg->flags = static_cast<u16>(r.get(8));
-                if (pg->flags & pgf::kFollow) {
-                    pg->piece = static_cast<i16>(r.get(16));
-                    const u16 tid = static_cast<u16>(r.get(16));
-                    relink_unit(orders_, pg->link, tid ? &units[tid < units.size() ? tid : 0] : nullptr);
+                NetPointGoal ng;
+                ng.pos = pg->pos;
+                read_point_goal_state(r, ng);
+                pg->flags = ng.flags;
+                if (ng.flags & pgf::kFollow) {
+                    pg->piece = ng.piece;
+                    relink_unit(orders_, pg->link, ng.link_id ? &units[ng.link_id < units.size() ? ng.link_id : 0] : nullptr);
                     pg->link.goal = pg.get();
                 }
-                pg->radius = (pg->flags & pgf::kRadius) ? static_cast<i16>(r.get(16)) : i16{0};
-                pg->altitude = (pg->flags & pgf::kAltitude) ? static_cast<i16>(r.get(16)) : i16{0};
-                pg->goal_heading = (pg->flags & pgf::kHeading) ? static_cast<i16>(r.get(16)) : i16{0};
-                if (pg->flags & pgf::kGround)
-                    for (int k = 0; k < 3; ++k) pg->pos[static_cast<std::size_t>(k)] = static_cast<i32>(r.get(32));
+                pg->radius = ng.radius;
+                pg->altitude = ng.altitude;
+                pg->goal_heading = ng.heading;
+                pg->pos = ng.pos;
                 slot_goal = pg;
             } else if (kind == 2) {
                 auto mg = std::make_shared<ManoeuvreGoal>();
                 mg->owner = &u;
-                mg->flags = static_cast<u16>(r.get(1));
-                for (int k = 0; k < 3; ++k) mg->pos[static_cast<std::size_t>(k)] = static_cast<i32>(r.get(32));
-                for (int k = 0; k < 3; ++k) mg->vel[static_cast<std::size_t>(k)] = static_cast<i32>(r.get(32));
-                if (mg->flags & 1) mg->target_heading = static_cast<u16>(r.get(16));
+                NetManoeuvreGoal ng;
+                read_manoeuvre_goal_state(r, ng);
+                mg->flags = ng.flags;
+                mg->pos = ng.pos;
+                mg->vel = ng.vel;
+                if (ng.flags & 1) mg->target_heading = ng.target_heading;
                 slot_goal = mg;
             }
             f->attached = slot_goal.get();

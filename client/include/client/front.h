@@ -26,6 +26,7 @@ struct FrontOptions {
     bool gpu = true;                     // window: GPU backend (else CPU frames through an SDL texture)
     bool gpu_check = false;              // headless: also draw screenshots on the GPU and compare
     bool sound = true;
+    bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
 };
 
 // Runs the client until it quits (or for the given frames). Returns a process exit code.

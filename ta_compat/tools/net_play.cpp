@@ -199,14 +199,28 @@ void report(const char* what, std::uint32_t tick, const Comparison& c) {
 
 int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const std::string& map) {
     net::LoopbackHub hub;
-    std::vector<std::unique_ptr<Machine>> ms;
-    std::vector<net::Transport*> ends;
+    std::vector<std::unique_ptr<net::NetSession>> sessions;
     std::vector<std::unique_ptr<net::BattleRoom>> rooms;
+    // NET_PLAY_UDP=<loss>: the machines talk over UDP on this host instead of the loopback, with
+    // that share of datagrams lost (resends and frames out of order).
+    std::vector<std::unique_ptr<net::Transport>> udp;
+    const char* udp_env = std::getenv("NET_PLAY_UDP");
+    for (int s = 0; udp_env && s < machines; ++s) {
+        std::string err;
+        net::UdpOptions o;
+        o.loss = std::atof(udp_env);
+        o.seed = seed * 13u + static_cast<std::uint32_t>(s) + 1u;
+        udp.push_back(s == 0 ? net::udp_host(47700, err, o) : net::udp_join("127.0.0.1", 47700, err, o));
+        if (!udp.back()) {
+            std::printf("udp: %s\n", err.c_str());
+            return 1;
+        }
+    }
     for (int s = 0; s < machines; ++s) {
-        ends.push_back(&hub.add_machine());
-        rooms.push_back(std::make_unique<net::BattleRoom>(*ends.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
+        sessions.push_back(std::make_unique<net::NetSession>(udp_env ? *udp[static_cast<std::size_t>(s)] : hub.add_machine()));
+        rooms.push_back(std::make_unique<net::BattleRoom>(*sessions.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
         rooms.back()->set_side(static_cast<std::uint8_t>(s & 1));
-        rooms.back()->set_colour(static_cast<std::uint8_t>(s));
+        rooms.back()->map_checksum = [&vfs](const std::string& m) { return ta::map_sync_checksum(vfs, m); };
     }
     // Every machine's unit definition checksums (the room compares them).
     {
@@ -217,71 +231,89 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
         for (auto& r : rooms) r->set_unit_checks(checks);
         std::printf("unit definitions: %zu checksums\n", checks.size());
     }
-    // The battle room: everybody joins, readies, the host starts.
-    rooms[0]->set_map(map);
+    rooms[0]->set_map(map, ta::map_sync_checksum(vfs, map));
     rooms[0]->set_map_ready(true);
-    rooms[0]->set_options(0, 0, 250, 100, 100, true);  // 10000 energy and metal
+    std::vector<sim::Lcg15> crt(rooms.size());
+    for (std::size_t k = 0; k < crt.size(); ++k) crt[k].set_state(0xC0FFEEu + static_cast<std::uint32_t>(k));
+    const bool fixed = std::getenv("NET_PLAY_SHUFFLE") == nullptr;
+    rooms[0]->set_options(0, 0, 250, 100, 100, fixed);  // 10000 energy and metal
     std::uint32_t clock = 1000;
-    for (int pass = 0; pass < 200 && !rooms[0]->started(); ++pass) {
-        clock += 2;
-        for (auto& r : rooms) r->frame(clock);
-        if (pass == 4)
-            for (std::size_t k = 0; k < rooms.size(); ++k) {
-                // NET_PLAY_POSITIONS=a,b,c: start positions chosen in the room.
-                if (const char* e = std::getenv("NET_PLAY_POSITIONS")) {
-                    std::string v(e);
-                    std::size_t at = 0;
-                    for (std::size_t i = 0; i < k && at != std::string::npos; ++i) at = v.find(',', at) == std::string::npos ? std::string::npos : v.find(',', at) + 1;
-                    if (at != std::string::npos && at < v.size()) rooms[k]->set_start_position(static_cast<std::int8_t>(std::atoi(v.c_str() + at)));
-                }
-                if (k == 0) continue;
-                rooms[k]->set_map_ready(true);
-                rooms[k]->set_ready(true);
-            }
-        if (pass > 6 && rooms[0]->can_start()) rooms[0]->start();
-    }
-    for (int pass = 0; pass < 10; ++pass) {
-        clock += 2;
-        for (auto& r : rooms) r->frame(clock);
-    }
-    for (auto& r : rooms)
-        if (!r->started()) {
-            std::printf("battle room: the game did not start\n");
-            return 1;
-        }
-    std::printf("battle room: %d players seated, game started by the host\n", machines);
-    for (int s = 0; s < machines; ++s) {
+    // The battle room, then loading: a machine begins its battle when its loading handshake is
+    // over (the clients only when the host's battle traffic released its last frames).
+    std::vector<std::unique_ptr<Machine>> ms(static_cast<std::size_t>(machines));
+    auto begin_battle = [&](std::size_t k) -> bool {
         auto m = std::make_unique<Machine>();
-        m->slot = rooms[static_cast<std::size_t>(s)]->local_slot();
-        m->rng.seed(seed * 31u + static_cast<std::uint32_t>(s));
-        m->net = std::make_unique<net::NetBattle>(m->quiet, *ends[static_cast<std::size_t>(s)]);
-        m->clock = clock;
-        ms.push_back(std::move(m));
-    }
-    // Everybody is in the session before the battles load (their start announces units).
-    for (std::size_t k = 0; k < ms.size(); ++k) {
-        Machine& m = *ms[k];
         const net::BattleRoom& room = *rooms[k];
+        m->slot = room.local_slot();
+        m->rng.seed(seed * 31u + static_cast<std::uint32_t>(k));
+        m->net = std::make_unique<net::NetBattle>(m->quiet, *sessions[k]);
+        m->clock = clock;
         ta::BattleRequest req;
         req.map = room.map();
         req.sides = room.sides();
         req.start = room.battle_start();
         req.start.battle_rng_seed = seed * 7919u + static_cast<std::uint32_t>(k) * 104729u + 1u;
         req.start.loading_rand_seed = seed + static_cast<std::uint32_t>(k);
-        req.start.crt_rand_state = 0xC0FFEEu + static_cast<std::uint32_t>(k);
+        req.start.crt_rand_state = crt[k].state();
         std::string err;
-        m.lb = ta::load_battle(vfs, req, *m.net, err, [&](sim::Battle& b) { m.net->attach(b); });
-        if (!m.lb) {
+        Machine* raw = m.get();
+        m->lb = ta::load_battle(vfs, req, *m->net, err, [raw](sim::Battle& b) { raw->net->attach(b); });
+        if (!m->lb) {
             std::printf("load: %s\n", err.c_str());
-            return 1;
+            return false;
         }
-        hook_up(m);
+        hook_up(*m);
+        m->net->set_room(room.players());
+        const auto bs = room.battle_start();
+        std::printf("machine %zu: battle begins at pass clock %u; slot %d, start position %d, logos", k, clock, m->slot,
+                    bs.players[static_cast<std::size_t>(m->slot)].start_position);
+        for (int s = 0; s < machines; ++s) std::printf(" %d", room.players()[static_cast<std::size_t>(s)].logo);
+        std::printf(", groups");
+        for (int s = 0; s < machines; ++s) std::printf(" %d", room.players()[static_cast<std::size_t>(s)].group);
+        std::printf(", disabled units %zu\n", room.disabled_units().size());
+        ms[k] = std::move(m);
+        return true;
+    };
+    int pass = 0;
+    for (; pass < 3000 && std::any_of(ms.begin(), ms.end(), [](const auto& m) { return !m; }); ++pass) {
+        ++clock;
+        if (udp_env) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        for (std::size_t k = 0; k < rooms.size(); ++k) {
+            if (ms[k]) {
+                Machine& m = *ms[k];
+                m.net->set_clock(++m.clock);
+                m.lb->battle->step();
+                m.lb->battle->end_frame();
+                continue;
+            }
+            rooms[k]->frame(clock, &crt[k]);
+            if (rooms[k]->loaded() && !begin_battle(k)) return 1;
+        }
+        if (pass == 8)
+            for (std::size_t k = 1; k < rooms.size(); ++k) {
+                rooms[k]->set_ready(true);  // (map ready: from the map checksum)
+                rooms[k]->next_logo();
+            }
+        if (pass > 10 && !rooms[0]->started() && rooms[0]->can_start()) rooms[0]->start();
     }
+    if (std::any_of(ms.begin(), ms.end(), [](const auto& m) { return !m; })) {
+        std::printf("battle room: not every machine got to its battle\n");
+        for (std::size_t k = 0; k < rooms.size(); ++k) {
+            std::printf("  machine %zu: slot %d started %d loaded %d battle %d |", k, rooms[k]->local_slot(), rooms[k]->started(), rooms[k]->loaded(),
+                        ms[k] ? 1 : 0);
+            for (const auto& p : rooms[0]->players())
+                if (p.net_id) std::printf(" [%x ready %d map %d logo %d]", p.net_id, p.ready(), p.map_ready, p.logo);
+            std::printf("\n");
+        }
+        return 1;
+    }
+    std::printf("battle room: %d players seated, game started by the host, all loaded after %d passes\n", machines, pass);
     std::vector<Machine*> all;
     for (auto& m : ms) all.push_back(m.get());
     Comparison total;
     int failures = 0;
     for (int step = 0; step < steps; ++step) {
+        if (udp_env) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         if (std::getenv("NET_PLAY_DUEL") && step == 30)
             // A skirmish line: each machine places a few of its own armed units near the first
             // unit of the next player (announced to the others by packet 9 as any new unit).
@@ -330,6 +362,20 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
             m->net->set_clock(++m->clock);
             m->net->flush_now();
         }
+    if (udp_env) {
+        for (int k = 0; k < 50; ++k) {
+            for (auto& t : udp) t->pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        for (std::size_t k = 0; k < udp.size(); ++k) {
+            const net::UdpCounters c = net::udp_counters(*udp[k]);
+            std::printf("udp machine %zu: %llu datagrams delivered, %llu lost on the way out, %llu sent again, %llu duplicates dropped; "
+                        "frames out of order %llu\n",
+                        k, static_cast<unsigned long long>(c.delivered), static_cast<unsigned long long>(c.dropped_by_loss),
+                        static_cast<unsigned long long>(c.resent), static_cast<unsigned long long>(c.duplicates),
+                        static_cast<unsigned long long>(sessions[k]->receiver.order_mismatches()));
+        }
+    }
     for (Machine* m : all) {
         const net::NetCounters& n = m->net->counters();
         std::printf("machine %d: %llu packets sent (%llu unit state), %llu received, %llu refused; %llu frames, %llu bytes sent; chat lines %zu; "

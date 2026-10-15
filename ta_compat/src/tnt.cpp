@@ -20,6 +20,7 @@ bool tnt_load_heights(const std::vector<std::uint8_t>& tnt, sim::HeightMap& heig
     t.height = static_cast<std::int32_t>(h[2]);
     t.tile_count = h[6];
     t.feature_count = h[7];
+    t.gravity = t.version == 0x1020 ? static_cast<std::int32_t>(h[13]) : 0;
     t.sea_level = t.version == 0x2000 ? static_cast<std::int32_t>(h[9]) : 0;
     const std::size_t stride = t.version == 0x2000 ? 4 : 8;
     if (t.width <= 0 || t.height <= 0) return false;

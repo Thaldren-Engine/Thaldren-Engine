@@ -28,8 +28,17 @@ struct UnitBuckets {
     std::int32_t width = 0, height = 0;  // in buckets: (cells + 7) / 8
     std::vector<Unit*> heads;            // row-major
     Unit* off_map = nullptr;
+    // Per bucket, the highest ground around it (the record's second byte): what aircraft
+    // cruise above. The off-map list's record has 0.
+    std::vector<std::uint8_t> top;
     void resize_for_map(std::int32_t cells_x, std::int32_t cells_z);
 };
+
+// The buckets' ground heights at map load (0x482C20, the spatial part): each bucket first
+// takes the highest cell top (MapCell::height_max) of its 8 x 8 cells, at least the sea
+// level; then its "top" is the highest of those over itself and its neighbours, along the
+// rows and then along the columns. A row or column of a single bucket gets 0 there.
+void build_bucket_heights(UnitBuckets& b, const MapGrid& map, std::uint8_t sea_level);
 
 namespace footprint_flags {
 constexpr std::uint32_t kWantsCells = 0x08000000u;   // unit flags: claim again (lost a cell, or yard changed)

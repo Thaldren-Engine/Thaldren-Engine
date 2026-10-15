@@ -24,6 +24,7 @@
 
 #include "remote.h"
 #include "sim/combat.h"
+#include "sim/orders.h"
 #include "sim/fire.h"
 #include "sim/pose.h"
 #include "sim/projectile.h"
@@ -103,7 +104,7 @@ const Stub kStubs[] = {
     {0x00482090, 1, 34, 0, -1, A0},           // forget fog(unit)
     {0x004948B0, 2, 35},                      // kill flash(attacker slot, victim state)
     {0x00486360, 3, 37, 0, -1, A0},           // spawn wreck(unit, level, burn)
-    {0x00489740, 1, 38, 0, -1, A0},           // release unit(unit)
+    // 0x00489740 (release the links pointing at a dying unit) runs for real: sim::release_referrers.
     {0x00450380, 1, 39},                      // network: player out of units(net id)
     {0x0047BD70, 1, 40, 0, -1, A0},           // AI: player out of units(player)
     {0x00491D70, 1, 41},                      // commander death: close menus(1)
@@ -428,7 +429,7 @@ struct World : sim::UnitWorld, sim::UnitTickSystems, sim::CombatSystems, sim::Pr
     }
     void detonate(sim::Unit& u, bool self_destruct) override { sim::detonate_unit_death(*pw, u, self_destruct); }
     void spawn_wreck(sim::Unit& u, i32 level, bool burn) override { rec(37, 0, {tok(u), static_cast<u32>(level), burn ? 1u : 0u}); }
-    void release_unit(sim::Unit& u) override { rec(38, 0, {tok(u)}); }
+    void release_unit(sim::Unit& u) override { sim::release_referrers(u); }
     void release_motion(sim::Unit&) override {}
     void player_out_of_units(int) override {}
     void commander_died(int player) override {

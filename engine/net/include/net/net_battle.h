@@ -20,7 +20,9 @@
 #include <vector>
 
 #include "net/frames.h"
+#include "net/lobby.h"
 #include "net/protocol.h"
+#include "net/session.h"
 #include "net/transport.h"
 #include "sim/battle.h"
 
@@ -34,6 +36,8 @@ struct NetCounters {
 class NetBattle final : public sim::BattleOutside {
 public:
     NetBattle(sim::BattleOutside& inner, Transport& transport, NetTiming timing = {});
+    // On a session the battle room used before (its frames and running numbers continue).
+    NetBattle(sim::BattleOutside& inner, NetSession& session);
     // The battle this machine runs (after it is built; before its first step).
     void attach(sim::Battle& battle);
     sim::Battle* battle() { return battle_; }
@@ -48,6 +52,25 @@ public:
 
     // Chat (packet 5): a line from the local player to everybody; received lines go to on_chat.
     void send_chat(const std::string& text);
+    // Chat with the original's recipient choice (0x453360, GS+0x2BF0): 0 everybody, 1 allies,
+    // 2 enemies, 3 the players marked in `chosen` (by slot); a line starting with '+' always
+    // goes to everybody.
+    void send_chat(const std::string& text, int recipients, const std::array<bool, 10>& chosen = {});
+
+    // The battle room's records of every player (side records, ally teams, groups): the network
+    // side keeps them during the battle, answers changes (0x20, 0x24) and announces its own
+    // watch mode (0x450F90).
+    void set_room(const std::array<RoomPlayer, 10>& players);
+    const std::array<RoomPlayer, 10>& room() const { return room_; }
+    // Time-out of silent players (0x453C20): a remote player not heard from for `seconds` (the
+    // session's setting; 0: no time-out check) is reported, unless several machines are silent.
+    void set_timeout(std::uint32_t seconds, bool disabled = false) {
+        timeout_seconds_ = seconds;
+        timeout_disabled_ = disabled;
+    }
+    std::function<void(int slot)> on_timeout;
+    // "<name> has modified his executable.  Game integrity breached." (0x27).
+    std::function<void(int slot)> on_modified_executable;
     std::function<void(int slot, const std::string& text)> on_chat;
     // Pause and game speed (packet 0x19).
     void send_pause(bool paused);
@@ -171,10 +194,12 @@ private:
     void dispatch(int from, int to, const std::vector<std::uint8_t>& p);
 
     sim::BattleOutside& inner_;
+    std::unique_ptr<NetSession> own_;
+    NetSession& session_;
     Transport& transport_;
+    FrameSender& sender_;
+    FrameReceiver& receiver_;
     sim::Battle* battle_ = nullptr;
-    FrameSender sender_;
-    FrameReceiver receiver_;
     std::uint32_t clock_ = 0;
     Phase phase_ = Phase::Battle;
     bool paused_ = false;
@@ -185,6 +210,13 @@ private:
     std::array<std::array<std::uint8_t, 11>, 11> allied_by_{};
     std::array<ViewState, 11> view_{};
     std::array<std::uint8_t, 11> leaving_{};
+    std::array<RoomPlayer, 10> room_{};
+    bool have_room_ = false, watch_sent_ = false, per_group_ = false, timeout_disabled_ = false;
+    std::uint32_t timeout_seconds_ = 0, pause_clock_ = 0;
+    void announce_records();
+    void check_watch();
+    void check_timeouts();
+    void apply_side_record(int slot, const RoomPlayer& r);
     NetCounters counters_;
     std::string fault_;
 };

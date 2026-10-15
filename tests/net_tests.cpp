@@ -110,6 +110,41 @@ static void test_frames() {
     CHECK(net::packet_size(net::packet::kSideRecord) == 186 && net::packet_size(net::packet::kViewState) == 58);
 }
 
+// Frames out of order: a frame after a gap waits; the held one goes when the next arrives.
+static void test_frame_order() {
+    net::FrameSender tx;
+    std::vector<net::Message> wire;
+    const net::SendFn send = [&](std::int32_t f, std::int32_t t, std::vector<std::uint8_t> m) { wire.push_back({f, t, m}); };
+    for (int i = 0; i < 4; ++i) {
+        std::uint8_t p[11] = {net::packet::kKilled, static_cast<std::uint8_t>(i)};
+        tx.queue(7, net::kEverybody, p, sizeof p, 100, send);
+        tx.flush(100, true, send);
+    }
+    CHECK(wire.size() == 4);
+    auto run = [&](const std::vector<int>& order) {
+        net::FrameReceiver rx;
+        std::size_t next = 0;
+        const net::FrameReceiver::ReadFn read = [&](std::int32_t& f, std::int32_t& t, std::vector<std::uint8_t>& m) {
+            if (next >= order.size()) return false;
+            const net::Message& w = wire[static_cast<std::size_t>(order[next++])];
+            f = w.from;
+            t = w.to;
+            m = w.bytes;
+            return true;
+        };
+        std::vector<int> got;
+        net::Delivered d;
+        for (std::uint32_t tick = 1000; tick < 1020; ++tick)
+            while (rx.next(tick, true, read, d)) got.push_back(d.packet[1]);
+        return got;
+    };
+    CHECK((run({0, 1, 2, 3}) == std::vector<int>{0, 1, 2, 3}));
+    // 1 is late: 2 waits; when 1 comes the held 2 goes first (the original's order), then 1, 3.
+    CHECK((run({0, 2, 1, 3}) == std::vector<int>{0, 2, 1, 3}));
+    // 1 and 2 swapped twice over: 3 held, then 2 arrives (older than 3): 2 now, 3 after; 1 last.
+    CHECK((run({0, 3, 2, 1}).size() == 4));
+}
+
 static void test_loopback() {
     net::LoopbackHub hub;
     net::Transport& a = hub.add_machine();
@@ -148,7 +183,10 @@ static void test_room() {
     const int ai = host.add_computer(1);
     CHECK(ai == 1);
     std::uint32_t clock = 100;
-    for (int k = 0; k < 40; ++k) {
+    // (The host's frames alternate between its two players' sends on one running number, so the
+    // clients hold every other frame until the next arrives, as the original's receiver does.)
+    bool ready_a = false, ready_b = false;
+    for (int k = 0; k < 150; ++k) {
         clock += 2;
         host.frame(clock);
         a.frame(clock);
@@ -156,40 +194,134 @@ static void test_room() {
         if (k == 5) {
             a.set_map_ready(true);
             b.set_map_ready(true);
-            a.set_ready(true);
-            b.set_ready(true);
             host.say("glhf");
         }
+        if (!ready_a && a.local_slot() >= 0) a.set_ready(ready_a = true);
+        if (!ready_b && b.local_slot() >= 0) b.set_ready(ready_b = true);
     }
     CHECK(a.local_slot() >= 0 && b.local_slot() >= 0 && a.local_slot() != b.local_slot());
     CHECK(host.players()[static_cast<std::size_t>(b.local_slot())].side == 1);
     CHECK(lines.size() == 1 && lines[0] == "Host: glhf");
+    if (!host.can_start()) {
+        for (const auto& p : host.players())
+            if (p.net_id) std::printf("debug: id %x kind %d ready %d map %d logo %d\n", p.net_id, p.kind, p.ready(), p.map_ready, p.logo);
+    }
     CHECK(host.can_start());
     const auto& dis = b.disabled_units();
     CHECK(std::find(dis.begin(), dis.end(), 3u) != dis.end());
-    CHECK(host.start());
-    for (int k = 0; k < 5; ++k) {
+    a.next_ally_team();  // team 0
+    b.next_ally_team();
+    for (int k = 0; k < 4; ++k) {
         clock += 2;
+        host.frame(clock);
         a.frame(clock);
         b.frame(clock);
     }
+    CHECK(host.players()[static_cast<std::size_t>(a.local_slot())].ally_team == 0);
+    CHECK(host.start());
+    sim::Lcg15 rh, ra, rb;
+    net::LoopbackHub* unused = nullptr;
+    (void)unused;
+    for (int k = 0; k < 40 && !(host.loaded() && a.loaded() && b.loaded()); ++k) {
+        clock += 2;
+        host.frame(clock, &rh);
+        if (host.loaded()) {
+            // The host's battle has begun: its players' traffic releases the frames the clients
+            // held back (stand-in packets from both of the host's players).
+            const net::SendFn send = [&](std::int32_t f, std::int32_t t, std::vector<std::uint8_t> m) { th.send(f, t, std::move(m)); };
+            const std::uint8_t probe[1] = {net::packet::kProbe};
+            host.sender().queue(0x100, net::kEverybody, probe, 1, clock, send);
+            host.sender().queue(host.players()[1].net_id, net::kEverybody, probe, 1, clock, send);
+            host.sender().flush(clock, true, send);
+        }
+        a.frame(clock, &ra);
+        b.frame(clock, &rb);
+    }
     CHECK(a.started() && b.started());
-    const sim::BattleStart sa = a.battle_start(), sh = host.battle_start();
+    CHECK(host.loaded() && a.loaded() && b.loaded());
+    const sim::BattleStart sa = a.battle_start(), sh = host.battle_start(), sb = b.battle_start();
     CHECK(sa.provider == 3 && sa.unit_limit == 200 && sa.commander_mode == 1 && sa.fog_of_war && sa.fixed_locations);
     CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].kind == sim::PlayerKind::Local);
     CHECK(sa.players[0].kind == sim::PlayerKind::Remote && sa.players[1].kind == sim::PlayerKind::Remote);
     CHECK(sh.players[0].kind == sim::PlayerKind::Local && sh.players[1].kind == sim::PlayerKind::Computer);
     CHECK(sh.players[static_cast<std::size_t>(a.local_slot())].kind == sim::PlayerKind::Remote);
     CHECK(a.map() == "Moon Quartet");
-    for (int s = 0; s < 10; ++s) CHECK(sa.players[static_cast<std::size_t>(s)].start_position == sh.players[static_cast<std::size_t>(s)].start_position);
+    // Fixed locations: positions in slot order, as the host assigned them (each machine knows its own).
+    CHECK(sh.players[0].start_position == 0 && sh.players[1].start_position == 1);
+    CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].start_position == a.local_slot());
+    CHECK(sb.players[static_cast<std::size_t>(b.local_slot())].start_position == b.local_slot());
+    CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].ally_group == 0);
+    // Logos: all different; groups: the host's machine 1 (its computer player too), the others their own.
+    std::vector<int> logos;
+    for (const auto& p : host.players())
+        if (p.net_id) logos.push_back(p.logo);
+    std::sort(logos.begin(), logos.end());
+    CHECK(std::adjacent_find(logos.begin(), logos.end()) == logos.end() && logos.back() < 10);
+    CHECK(host.players()[0].group == 1 && host.players()[1].group == 1);
+    CHECK(host.players()[static_cast<std::size_t>(a.local_slot())].group > 1 && host.players()[static_cast<std::size_t>(b.local_slot())].group > 1 &&
+          host.players()[static_cast<std::size_t>(a.local_slot())].group != host.players()[static_cast<std::size_t>(b.local_slot())].group);
+    CHECK(a.players()[static_cast<std::size_t>(b.local_slot())].group == host.players()[static_cast<std::size_t>(b.local_slot())].group);
+    // The join gate: a latecomer is refused.
+    net::Transport& t3 = hub.add_machine();
+    net::BattleRoom late(t3, false, 0x400, "Late");
+    for (int k = 0; k < 6; ++k) {
+        clock += 2;
+        late.frame(clock);
+        host.frame(clock, &rh);
+    }
+    late.frame(clock + 2);
+    CHECK(late.refused() && late.local_slot() < 0);
+}
+
+static void test_room_shuffle() {
+    // Start positions shuffled on the host's C runtime rand() (two players: one draw decides).
+    int shuffled = 0;
+    for (std::uint32_t seed = 1; seed < 9; ++seed) {
+        net::LoopbackHub hub;
+        net::Transport& th = hub.add_machine();
+        net::Transport& t1 = hub.add_machine();
+        net::BattleRoom host(th, true, 0x100, "Host");
+        net::BattleRoom a(t1, false, 0x200, "Alice");
+        host.set_map_ready(true);
+        host.set_options(0, 0, 250, 10, 10, false);
+        sim::Lcg15 rh, ra;
+        rh.set_state(seed * 7919u);
+        const std::uint32_t before = rh.state();
+        std::uint32_t clock = 100;
+        for (int k = 0; k < 60 && !(host.loaded() && a.loaded()); ++k) {
+            clock += 2;
+            host.frame(clock, &rh);
+            a.frame(clock, &ra);
+            if (k == 3) {
+                a.set_map_ready(true);
+                a.set_ready(true);
+            }
+            if (k > 5 && !host.started() && host.can_start()) host.start();
+        }
+        CHECK(host.loaded() && a.loaded());
+        const int ph = host.battle_start().players[0].start_position, pa = a.battle_start().players[1].start_position;
+        CHECK(ph != pa && ph >= 0 && ph < 2 && pa >= 0 && pa < 2);
+        // One draw when not shuffling, two when shuffling (the decision and the swap).
+        sim::Lcg15 x;
+        x.set_state(before);
+        x.next();
+        if (ph == 1) {
+            ++shuffled;
+            x.next();
+        }
+        CHECK(rh.state() == x.state());
+    }
+    CHECK(shuffled > 0 && shuffled < 8);
 }
 
 int main() {
     test_bitstream();
     test_codec();
     test_frames();
+    test_frame_order();
     test_loopback();
     test_room();
+    test_room_shuffle();
     std::printf("net_tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

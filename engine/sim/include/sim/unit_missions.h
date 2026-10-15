@@ -106,7 +106,7 @@ public:
 struct UnitMissionEnvironment {
     std::int32_t map_width = 0, map_height = 0;  // visible map size in world units (cells x 16 - 32, cells x 16 - 128)
     std::uint8_t sea_level = 0;
-    std::int32_t gravity = 0;
+    std::int32_t gravity = 0;  // the map info's own value (+0xD3C), as the bomb run reads it
     // The stack address of the air repair patrol's metal site record (its event argument ends
     // up pointing there; run-varying in the original, so an input).
     std::uint32_t air_repair_patrol_site_address = 0;

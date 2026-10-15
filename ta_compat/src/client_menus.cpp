@@ -459,7 +459,8 @@ client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* fe) {
         req.start = r.start;
         const int human = r.start.local_player;
         client::Settings none;
-        const client::ClientOptions opt = client_options(fe ? fe->settings() : none, 640, 480);
+        // The user's settings (screen size, speeds, interface type) as the front end passes them.
+        const client::ClientOptions opt = client_options(r.settings ? *r.settings : (fe ? fe->settings() : none), 640, 480);
         return SkirmishSession::start(dir, req, human, opt, progress, error, r.wrap_outside, r.attach);
     };
     cfg.unit_checks = [&art]() -> net::UnitChecks {

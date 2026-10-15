@@ -1027,15 +1027,4 @@ std::int32_t ai_threat_near(Ai& ai, int side, const std::array<std::int32_t, 3>&
     return sum;
 }
 
-void ai_air_bases_in_radius(Ai& ai, int table, const std::array<std::int32_t, 3>& pos, std::int32_t radius, std::vector<Unit*>& out) {
-    AiTable* tb = table_of(ai, table);
-    if (!tb) return;
-    const i32 r2 = wmul(radius, radius);
-    for (Unit* u : tb->air_bases) {
-        const AiTypeInfo& t = type_of(ai, *u);
-        if (!(t.type_flags & kBuilderType) || !(t.type_flags & kAirBaseType) || !(u->activate_flags & unit_flags::kActivated)) continue;
-        if (wadd(square_hi(wsub(pos[0], u->pos[0])), square_hi(wsub(pos[2], u->pos[2]))) <= r2) out.push_back(u);
-    }
-}
-
 }  // namespace sim

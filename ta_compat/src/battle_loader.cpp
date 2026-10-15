@@ -8,6 +8,7 @@
 #include "ta/sight_tables.h"
 #include "ta/tdf.h"
 #include "ta/tnt.h"
+#include "sim/x87.h"
 
 namespace ta {
 
@@ -136,7 +137,14 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
         error = "bad map file";
         return nullptr;
     }
-    lb->weapon_defs = load_weapon_defs(vfs, WeaponDefOptions{});
+    std::unique_ptr<TdfSection> ota_root;
+    if (!lb->ota.empty()) ota_root = tdf_parse(std::string_view(reinterpret_cast<const char*>(lb->ota.data()), lb->ota.size())).root;
+    const TdfSection* header = ota_root ? ota_root->child("GlobalHeader") : nullptr;
+    // The map info's GlobalHeader switches (0x435DA0, read before the map load; 0 when missing).
+    auto header_int = [&](const char* key) { return header ? header->get_int(key, 0) : 0; };
+    WeaponDefOptions weapon_options;
+    weapon_options.lava_world = header_int("lavaworld") != 0;
+    lb->weapon_defs = load_weapon_defs(vfs, weapon_options);
     std::array<std::string, 256> weapon_names;
     for (std::size_t i = 0; i < 256; ++i) weapon_names[i] = lb->weapon_defs.slots[i].name;
     lb->feature_defs.load_library(vfs, weapon_names);
@@ -146,9 +154,6 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     // The map info and its schema (chosen as the original does for skirmish and network games
     // when request.schema < 0, else the requested one); the schema's features come after the
     // TNT's in the feature table (Mission_SpawnMapFeatures, called by Map_LoadTnt).
-    std::unique_ptr<TdfSection> ota_root;
-    if (!lb->ota.empty()) ota_root = tdf_parse(std::string_view(reinterpret_cast<const char*>(lb->ota.data()), lb->ota.size())).root;
-    const TdfSection* header = ota_root ? ota_root->child("GlobalHeader") : nullptr;
     int schema = req.schema;
     if (schema < 0 && header) {
         int players = 0;
@@ -178,8 +183,26 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     b.fx_lists.smoke2_frames = frames("smoke 2");
     b.fx_lists.flame_frames = frames("flamestream");
     b.settings.sea_level = static_cast<std::uint8_t>(info.sea_level);
-    b.settings.gravity = 112;
+    // Gravity (Map_LoadTnt 0x483610): the map info's GlobalHeader "gravity" (an int, 0 when the
+    // key is missing; -1 without a map info) for TA maps, else the 0x1020 header's value; a
+    // value per second squared becomes 16.16 per step squared as ftol(g · 65536 · (1/900)); with
+    // neither, 0x1FDB (112 per second squared).
+    b.settings.map_gravity = header ? header->get_int("gravity", 0) : -1;
+    {
+        std::int32_t g = 0;
+        if (b.settings.map_gravity >= 0 && info.version >= 0x2000) g = b.settings.map_gravity;
+        else g = info.version == 0x2000 ? 0 : info.gravity;
+        const bool from_map = b.settings.map_gravity >= 0 && info.version >= 0x2000;
+        b.settings.gravity = (from_map || g != 0) ? static_cast<std::int32_t>(sim::x87::ftol32(static_cast<double>(g) * 65536.0 * (1.0 / 900.0)))
+                                                  : 0x1FDB;
+    }
     b.settings.damage_options = 8;
+    // Lava world (+0xD44: splashes, debris, edges, respawn), no sea-level trigger (+0xD48: shots and
+    // debris ignore the water), water damage (+0xD4C on and +0xD50 amount: the unit pass).
+    b.settings.lava_world = header_int("lavaworld") != 0;
+    b.settings.no_sea_level_trigger = header_int("nosealeveltrigger") != 0;
+    b.settings.water_damage_enabled = header_int("waterdoesdamage") != 0;
+    b.settings.water_damage = header_int("waterdamage");
 
     // Unit types: battle type index = definition index ([0] is the blank "None").
     const std::size_t ntypes = lb->unit_defs.units.size();
