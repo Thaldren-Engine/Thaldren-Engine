@@ -4,9 +4,11 @@
 #include "client/game_client.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 
+#include "sim/features.h"
 #include "sim/missions.h"
 #include "sim/orders.h"
 #include "sim/targeting.h"
@@ -157,7 +159,14 @@ int GameClient::frame(std::uint32_t now_ms) {
     if (!console_.empty() && console_.front().tick + static_cast<std::uint32_t>(opt_.text_seconds + 1) * 30u < b_.game_tick())
         console_.pop_front();
     scroll_step(dt);
+    // The tracked unit keeps the view centred on it.
+    if (tracked_) {
+        if (tracked_ < b_.units.size() && b_.ticks[tracked_].type_index && b_.units[tracked_].hit_points > 0) center_on(b_.units[tracked_].pos);
+        else tracked_ = 0;
+    }
     hover_ = in_view(mouse_x_, mouse_y_) ? unit_at(mouse_x_, mouse_y_) : 0;
+    hover_feature_ = in_view(mouse_x_, mouse_y_) && !hover_ ? feature_under(mouse_x_, mouse_y_) : -1;
+    speech_step();
     if (panel_dirty_) refresh_panel();
     ++frame_counter_;
     return steps;
@@ -219,14 +228,88 @@ void GameClient::speak(const sim::Unit& u, std::uint32_t id) {
     play_ui(c_.types[t].sounds[id]);
 }
 
+namespace {
+// The original's notice table: priority, minimum gap between two sounds of the notice (in
+// seconds of game time) and the console text (id = the simulation's speech id).
+struct SpeechRule {
+    int priority, gap;
+    const char* text;
+};
+constexpr SpeechRule kSpeech[24] = {
+    {0, 0, nullptr},           {10, 0, nullptr},        {9, 20, "Under Attack"}, {4, 2, nullptr},
+    {4, 2, nullptr},           {5, 1, nullptr},         {3, 4, "Arrived"},       {8, 1, "Cannot Comply"},
+    {3, 3, "Nanolathe Complete"}, {4, 2, nullptr},      {3, 1, nullptr},         {2, 1, nullptr},
+    {7, 1, nullptr},           {7, 1, nullptr},         {7, 1, "Cloaked"},       {7, 1, "Visible"},
+    {4, 1, nullptr},           {10, 0, "five"},         {10, 0, "four"},         {10, 0, "three"},
+    {10, 0, "two"},            {10, 0, "one"},          {10, 0, "zero"},         {10, 0, "Self destruct terminated"},
+};
+constexpr int kSpeechVolume = 131;  // notices play 5.85 dB below full volume
+}  // namespace
+
 void GameClient::on_speech(sim::Unit& u, std::uint32_t id) {
-    // Unit notices are heard for the viewing player's own units.
-    if (b_.ticks[u.id].type_index == 0 || !own(u)) return;
-    speak(u, id);
-    static const char* const texts[24] = {nullptr, nullptr, "Under Attack", nullptr, nullptr, nullptr, "Arrived", "Cannot Comply",
-                                          "Nanolathe Complete", nullptr, nullptr, nullptr, nullptr, nullptr, "Cloaked", "Visible"};
-    if (id < 24 && texts[id] && b_.ticks[u.id].type_index < c_.types.size())
-        message(c_.types[b_.ticks[u.id].type_index].name + ": " + texts[id]);
+    // Notices of the viewed player's own live units join the queue, unless the notice is
+    // still in its gap or already queued; a full queue (8) drops its last entry, which
+    // only shows its text.
+    if (id == 0 || id >= 24 || b_.ticks[u.id].type_index == 0 || !own(u) || u.hit_points <= 0) return;
+    const std::uint32_t tick = b_.game_tick();
+    if (speech_next_[id] > tick) return;
+    for (const Speech& s : speech_)
+        if (s.id == id) return;
+    if (speech_.size() == 8) {
+        speech_play(7, false, true);
+        speech_.pop_back();
+    }
+    Speech s;
+    s.id = id;
+    s.tick = tick;
+    s.unit = u.id;
+    s.priority = static_cast<std::uint8_t>(kSpeech[id].priority);
+    if (kSpeech[id].text) s.text = kSpeech[id].text;
+    std::size_t at = 0;
+    while (at < speech_.size() && kSpeech[speech_[at].id].priority >= kSpeech[id].priority) ++at;
+    speech_.insert(speech_.begin() + static_cast<std::ptrdiff_t>(at), std::move(s));
+}
+
+void GameClient::speech_play(std::size_t index, bool sound, bool text) {
+    const Speech& s = speech_[index];
+    const std::uint16_t t = b_.ticks[s.unit].type_index;
+    const std::vector<int>* list = t < c_.types.size() ? &c_.types[t].sound_lists[s.id] : nullptr;
+    const int count = list ? static_cast<int>(list->size()) : 0;
+    // One of the notice's sounds, by the simulation thread's rand() (drawn every time).
+    const std::uint32_t r = b_.crt_rand.next();
+    const int pick = static_cast<int>(static_cast<std::int64_t>(r) * count / 0x8000);
+    if (static_cast<int>(s.priority) > 10 - opt_.unit_chat && count > 0 && sound && opt_.speech) {
+        const int sample = (*list)[static_cast<std::size_t>(pick)];
+        if (sample >= 0) {
+            sounds_.push_back({sample, 0, kSpeechVolume});
+            const Sample& sm = c_.samples[static_cast<std::size_t>(sample)];
+            speech_length_ = sm.rate > 0 ? static_cast<std::uint32_t>(sm.pcm.size() / static_cast<std::size_t>(std::max(1, sm.channels)) * 30 /
+                                                                    static_cast<std::size_t>(sm.rate))
+                                         : 0;
+        }
+        speech_next_[s.id] = b_.game_tick() + static_cast<std::uint32_t>(kSpeech[s.id].gap) * 30u;
+    }
+    if (text && static_cast<int>(s.priority) > 10 - opt_.unit_chat_text && !s.text.empty() && t < c_.types.size())
+        message(c_.types[t].name + ": " + s.text);
+}
+
+void GameClient::speech_step() {
+    // One queued notice per frame: it speaks unless the last spoken one is still playing
+    // (then only its text shows).
+    if (speech_.empty()) return;
+    const std::uint32_t tick = b_.game_tick();
+    if (tick < speech_last_ + speech_length_) {
+        speech_play(0, false, true);
+    } else {
+        speech_play(0, true, true);
+        speech_last_ = tick;
+    }
+    speech_.erase(speech_.begin());
+}
+
+void GameClient::forget_speech(sim::Unit& u) {
+    speech_.erase(std::remove_if(speech_.begin(), speech_.end(), [&](const Speech& s) { return s.unit == u.id; }), speech_.end());
+    if (tracked_ == u.id) tracked_ = 0;
 }
 
 void GameClient::on_under_attack(sim::Unit& u) {
@@ -235,7 +318,6 @@ void GameClient::on_under_attack(sim::Unit& u) {
         if (s.id == u.id) return;
     on_speech(u, 2);
 }
-
 void GameClient::message(const std::string& text, bool highlight) {
     if (text.empty()) return;
     console_.push_back({text.substr(0, 64), b_.game_tick(), highlight});
@@ -663,6 +745,15 @@ void GameClient::handle(const InputEvent& e) {
     case InputEvent::Type::MouseMove:
         mouse_x_ = e.x;
         mouse_y_ = e.y;
+        if (mdrag_) {
+            const int cx = (e.x - mdrag_x_) / 4, cy = (e.y - mdrag_y_) / 4;
+            if (cx || cy) {
+                set_scroll((scroll_x_ / 16 + cx) * 16, (scroll_y_ / 16 + cy) * 16);
+                mdrag_x_ += cx * 4;
+                mdrag_y_ += cy * 4;
+            }
+            break;
+        }
         if (left_down_ && !dragging_ && in_view(press_x_, press_y_) && mode_ != Action::BuildUnit &&
             (std::abs(e.x - press_x_) > 3 || std::abs(e.y - press_y_) > 3))
             dragging_ = true;
@@ -693,6 +784,12 @@ void GameClient::mouse_down(const InputEvent& e) {
             for (const Button& btn : p->buttons)
                 if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h && button_enabled(btn)) held_button_ = &btn;
         if (on_minimap(e.x, e.y) && mode_ == Action::None) minimap_jump(e.x, e.y);
+    } else if (e.button == 2 || (e.button == 3 && e.ctrl && !opt_.right_click_orders)) {
+        // Dragging the view: every 4 pixels of pointer travel scroll one cell (16 pixels).
+        mdrag_ = true;
+        mdrag_x_ = e.x;
+        mdrag_y_ = e.y;
+        tracked_ = 0;
     } else if (e.button == 3) {
         right_down_ = true;
         if (const Panel* p = current_panel())
@@ -708,6 +805,10 @@ void GameClient::mouse_down(const InputEvent& e) {
 void GameClient::mouse_up(const InputEvent& e) {
     mouse_x_ = e.x;
     mouse_y_ = e.y;
+    if (mdrag_ && (e.button == 2 || e.button == 3)) {
+        mdrag_ = false;
+        return;
+    }
     if (e.button == 1) {
         const bool was_drag = dragging_;
         left_down_ = false;
@@ -788,8 +889,39 @@ void GameClient::right_click_map(const InputEvent& e) {
     deselect_all();
 }
 
+void GameClient::set_game_speed(int speed) {
+    speed = std::clamp(speed, 1, 20);
+    budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(speed);
+    const int d = speed - 10;
+    message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
+}
+
 void GameClient::key_down(const InputEvent& e) {
     const int k = e.key;
+    // The chat line takes every key while it is open.
+    if (chat_) {
+        if (k == keys::kEnter) {
+            chat_ = false;
+            if (!chat_text_.empty()) {
+                if (on_chat) on_chat(chat_text_);
+                else message(chat_text_);
+            }
+            chat_text_.clear();
+        } else if (k == keys::kEscape) {
+            chat_ = false;
+            chat_text_.clear();
+        } else if (k == keys::kBackspace) {
+            if (!chat_text_.empty()) chat_text_.pop_back();
+        } else if (k >= 32 && k < 127 && chat_text_.size() < 60) {
+            chat_text_.push_back(e.shift ? static_cast<char>(std::toupper(k)) : static_cast<char>(k));
+        }
+        return;
+    }
+    if (k == keys::kEnter) {
+        chat_ = true;
+        chat_text_.clear();
+        return;
+    }
     if (k == keys::kPause) {
         budget_.paused = !budget_.paused;  // the paused sign shows it
         return;
@@ -800,57 +932,87 @@ void GameClient::key_down(const InputEvent& e) {
         return;
     }
     if (k == '+' || k == '=') {
-        if (budget_.game_speed < 20) {
-            budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(budget_.game_speed + 1);
-            const int d = budget_.game_speed - 10;
-            message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
-        }
+        if (budget_.game_speed < 20) set_game_speed(budget_.game_speed + 1);
         return;
     }
     if (k == '-' || k == '_') {
-        if (budget_.game_speed > 1) {
-            budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(budget_.game_speed - 1);
-            const int d = budget_.game_speed - 10;
-            message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
-        }
+        if (budget_.game_speed > 1) set_game_speed(budget_.game_speed - 1);
         return;
     }
-    if (k == '`' || k == '~') {
+    if (k == '`' || k == '~' || k == '!' || k == '#' || k == '*') {
         opt_.damage_bars = !opt_.damage_bars;
+        return;
+    }
+    if (k == ',' || k == '.') {
+        step_build_page(k == '.');
         return;
     }
     if (k >= '1' && k <= '9') {
         if (e.ctrl) assign_group(k - '0');
-        else select_group(k - '0', e.shift);
-        return;
-    }
-    if (e.ctrl && k == 'a') {
-        for (std::size_t i = 1; i < b_.units.size(); ++i)
-            if (selectable(b_.units[i])) b_.units[i].flags |= kSelected;
-        panel_dirty_ = true;
-        play_ui(c_.ui_sounds.select_multiple);
-        return;
-    }
-    if (e.ctrl && k == 'c') {
-        // The commander: selected and centred.
-        for (std::size_t i = 1; i < b_.units.size(); ++i) {
-            const std::uint16_t t = b_.ticks[i].type_index;
-            if (t && t < c_.types.size() && c_.types[t].commander && selectable(b_.units[i])) {
-                deselect_all();
-                b_.units[i].flags |= kSelected;
-                center_on(b_.units[i].pos);
-                speak(b_.units[i], 1);
-                panel_dirty_ = true;
-                break;
+        else if (opt_.alt_groups != e.alt) {
+            // With the group keys switched, the plain digit picks a build menu page instead.
+            if (focus_) {
+                const std::uint16_t t = b_.ticks[focus_].type_index;
+                const int pages = t < c_.types.size() ? static_cast<int>(c_.types[t].build_pages.size()) : 0;
+                const int page = k - '1';
+                if (page < pages) {
+                    sim::Unit& u = b_.units[focus_];
+                    u.flags = (u.flags & ~(kBuildPageMask | kBuildMenuShown)) | (page > 0 ? kBuildMenuShown : 0u) |
+                              (page > 0 ? (static_cast<std::uint32_t>(page & 7) << kBuildPageShift) : 0u);
+                    play_ui(c_.ui_sounds.next_build_menu);
+                }
             }
+        } else {
+            select_group(k - '0', e.shift);
         }
         return;
     }
-    if (e.ctrl && k == 'd') {
-        command_selected_kind(b_, opt_.player, sim::mission::kSelfDestruct, 0, false);
+    if (k >= keys::kF1 + 4 && k <= keys::kF1 + 7) {
+        // F5..F8 recall a stored view; with Ctrl they store the current one.
+        const std::size_t v = static_cast<std::size_t>(k - (keys::kF1 + 4));
+        play_ui(c_.ui_sounds.select_squad);
+        if (e.ctrl) views_[v] = {scroll_x_, scroll_y_};
+        else {
+            tracked_ = 0;
+            set_scroll(views_[v][0], views_[v][1]);
+        }
         return;
     }
-    if (k == keys::kF1 + 1 && false) return;
+    if (e.ctrl && k >= 'a' && k <= 'z') {
+        switch (k) {
+        case 'a':
+            for (std::size_t i = 1; i < b_.units.size(); ++i)
+                if (selectable(b_.units[i])) b_.units[i].flags |= kSelected;
+            panel_dirty_ = true;
+            play_ui(c_.ui_sounds.select_multiple);
+            return;
+        case 'c':
+            // The commander: selected (its category), and the view follows it.
+            select_category("CTRL_C", e.shift);
+            for (std::size_t i = 1; i < b_.units.size(); ++i) {
+                const std::uint16_t t = b_.ticks[i].type_index;
+                if (t && t < c_.types.size() && c_.types[t].commander && own(b_.units[i])) tracked_ = static_cast<std::uint16_t>(i);
+            }
+            return;
+        case 'd': command_selected_kind(b_, opt_.player, sim::mission::kSelfDestruct, 0, false); return;
+        case 's': select_on_screen(); return;
+        case 'z': select_same_types(); return;
+        default: {
+            std::string cat = "CTRL_";
+            cat += static_cast<char>(std::toupper(k));
+            select_category(cat, e.shift);
+            return;
+        }
+        }
+    }
+    if (k == 't') {
+        track_next(e.shift);
+        return;
+    }
+    if (k == 'n') {
+        next_unit();
+        return;
+    }
     // Quick keys of the shown panel's buttons.
     if (!e.ctrl && k > 0 && k < 0x100)
         if (const Panel* p = current_panel())
@@ -859,6 +1021,143 @@ void GameClient::key_down(const InputEvent& e) {
                     press_button(btn, e);
                     return;
                 }
+}
+
+void GameClient::select_category(const std::string& category, bool keep) {
+    // Selectable own units of the category join the selection; the others leave it unless
+    // shift keeps them.
+    for (std::size_t i = 1; i < b_.units.size(); ++i) {
+        sim::Unit& u = b_.units[i];
+        if (!selectable(u)) continue;
+        const std::uint16_t t = b_.ticks[i].type_index;
+        bool in = false;
+        if (t < c_.types.size())
+            for (const std::string& c : c_.types[t].categories)
+                if (c == category) in = true;
+        if (in) u.flags |= kSelected;
+        else if (!keep) u.flags &= ~kSelected;
+    }
+    focus_ = 0;
+    panel_dirty_ = true;
+}
+
+void GameClient::select_on_screen() {
+    // Every unit loses the selection and the on-screen marks; the selectable own units drawn
+    // this frame are selected.
+    bool any = false;
+    for (std::size_t i = 1; i < b_.units.size(); ++i) b_.units[i].flags &= ~(kSelected | kOnScreen | kOnScreenOld);
+    for (const UnitScreen& s : on_screen_) {
+        sim::Unit& u = b_.units[s.id];
+        if (selectable(u)) {
+            u.flags |= kSelected;
+            any = true;
+        }
+    }
+    if (any) {
+        focus_ = 0;
+        panel_dirty_ = true;
+    }
+}
+
+void GameClient::select_same_types() {
+    // Every selectable own unit of a type that is selected now.
+    std::vector<bool> types(b_.types.size() + 1, false);
+    for (std::size_t i = 1; i < b_.units.size(); ++i)
+        if (b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected) && b_.ticks[i].type_index < types.size())
+            types[b_.ticks[i].type_index] = true;
+    for (std::size_t i = 1; i < b_.units.size(); ++i)
+        if (selectable(b_.units[i]) && b_.ticks[i].type_index < types.size() && types[b_.ticks[i].type_index]) b_.units[i].flags |= kSelected;
+    focus_ = 0;
+    panel_dirty_ = true;
+}
+
+void GameClient::track_next(bool backward) {
+    // The next (or previous) selected own unit after the tracked one, in unit table order,
+    // wrapping over the player's range; none selected stops tracking.
+    const sim::PlayerSlot& p = b_.players[static_cast<std::size_t>(opt_.player)];
+    const int first = p.first_unit, last = p.last_unit;
+    if (first <= 0 || last < first) return;
+    int at = tracked_ >= first && tracked_ <= last ? tracked_ : first;
+    const int n = last - first + 1;
+    for (int k = 1; k <= n; ++k) {
+        int id = backward ? at - k : at + k;
+        while (id < first) id += n;
+        while (id > last) id -= n;
+        if (static_cast<std::size_t>(id) < b_.units.size() && b_.ticks[static_cast<std::size_t>(id)].type_index &&
+            (b_.units[static_cast<std::size_t>(id)].flags & kSelected)) {
+            tracked_ = static_cast<std::uint16_t>(id);
+            return;
+        }
+    }
+    tracked_ = 0;
+}
+
+void GameClient::next_unit() {
+    // The first own unit not yet visited (on-screen marks clear) is centred on; when every
+    // unit is marked the marks start over.
+    const sim::PlayerSlot& p = b_.players[static_cast<std::size_t>(opt_.player)];
+    auto find = [&]() -> std::uint16_t {
+        for (int id = std::max(1, p.first_unit); id <= p.last_unit && static_cast<std::size_t>(id) < b_.units.size(); ++id)
+            if (b_.ticks[static_cast<std::size_t>(id)].type_index && !(b_.units[static_cast<std::size_t>(id)].flags & (kOnScreen | kOnScreenOld)))
+                return static_cast<std::uint16_t>(id);
+        return 0;
+    };
+    std::uint16_t id = find();
+    if (!id) {
+        for (std::size_t i = 1; i < b_.units.size(); ++i) b_.units[i].flags &= ~(kOnScreen | kOnScreenOld);
+        id = find();
+    }
+    if (!id) return;
+    tracked_ = 0;
+    center_on(b_.units[id].pos);
+    for (const UnitScreen& s : on_screen_)
+        if (b_.ticks[s.id].owner == opt_.player) b_.units[s.id].flags = (b_.units[s.id].flags & ~kOnScreenOld) | kOnScreen;
+    b_.units[id].flags = (b_.units[id].flags & ~kOnScreenOld) | kOnScreen;
+}
+
+void GameClient::step_build_page(bool forward) {
+    // '.' and ',' walk the focus unit's menus: the orders, then its build pages in turn.
+    if (focus_) {
+        sim::Unit& u = b_.units[focus_];
+        const std::uint16_t t = b_.ticks[focus_].type_index;
+        const int pages = t < c_.types.size() ? static_cast<int>(c_.types[t].build_pages.size()) : 0;
+        if (pages > 0) {
+            const bool shown = (u.flags & kBuildMenuShown) != 0;
+            int page = static_cast<int>((u.flags & kBuildPageMask) >> kBuildPageShift);
+            if (forward) {
+                if (!shown) page = 1;
+                else if (page >= pages) page = 0;
+                else ++page;
+            } else {
+                if (!shown) page = pages;
+                else if (page <= 1) page = 0;
+                else --page;
+            }
+            u.flags &= ~(kBuildMenuShown | kBuildPageMask);
+            if (page > 0) u.flags |= kBuildMenuShown | (static_cast<std::uint32_t>(page & 7) << kBuildPageShift);
+            panel_dirty_ = true;
+        }
+    }
+    play_ui(c_.ui_sounds.next_build_menu);
+}
+
+int GameClient::feature_under(int sx, int sy) const {
+    const sim::Vec3i p = world_at(sx, sy);
+    const int cx = (p[0] >> 16) >> 4, cz = (p[2] >> 16) >> 4;
+    // A big feature covers several cells; only its corner cell names it.
+    for (int dz = 0; dz < 8; ++dz)
+        for (int dx = 0; dx < 8; ++dx) {
+            const int x = cx - dx, z = cz - dz;
+            if (x < 0 || z < 0 || x >= b_.map.width || z >= b_.map.height) continue;
+            const std::uint16_t f = b_.map.cells[static_cast<std::size_t>(z * b_.map.width + x)].feature;
+            if (f >= sim::kFirstSpecialFeature || f >= b_.features.size()) {
+                if (dx == 0 && dz == 0 && f >= sim::kFirstSpecialFeature) continue;
+                continue;
+            }
+            const sim::FeatureTypeInfo& ft = b_.features[f];
+            if (dx < std::max<int>(1, ft.footprint_x) && dz < std::max<int>(1, ft.footprint_z)) return f;
+        }
+    return -1;
 }
 
 } // namespace client

@@ -43,6 +43,7 @@ class Battle;
 namespace client {
 
 class FrontEnd;
+class MusicPlayer;   // client/music.h
 struct MenuContent;  // client/menu.h
 
 // ---------------------------------------------------------------- settings
@@ -76,6 +77,8 @@ public:
     virtual void draw(FrontEnd& fe, render::Image8& out) = 0;
     // Screens under a see-through one are drawn first (dialogs).
     virtual bool see_through() const { return false; }
+    // The palette the screen is shown with (null: the one below, else the game palette).
+    virtual const render::Palette* palette() const { return nullptr; }
 };
 
 // ---------------------------------------------------------------- battles
@@ -118,6 +121,9 @@ public:
     // screen (campaign debriefing / next mission). Return false to go back to
     // the screen the battle was started from (the default).
     virtual bool after_battle(FrontEnd&, BattleOutcome) { return false; }
+    // Set by the front end: the session reports combat involving the local player here (+1 a
+    // hit, +5 a kill it scores; the music's battle/peace switch).
+    std::function<void(int)> combat_activity;
 };
 
 // Progress of a battle being loaded: fraction 0..1 and the stage's name. The
@@ -169,6 +175,35 @@ public:
     virtual int height() const = 0;
     // Plays an interface sound (index into menu_content().samples).
     virtual void play_sound(int sample) = 0;
+    // The music player (null when there is no music).
+    virtual MusicPlayer* music() = 0;
+    // Applies the settings (volumes, speeds, interface options) after an options screen.
+    virtual void apply_settings() = 0;
+    // Milliseconds since the program started (the main loop's clock).
+    virtual std::uint32_t now_ms() const = 0;
 };
+
+// ---------------------------------------------------------------- running it
+// What the importer gives the front end (the game's screens are built there).
+struct FrontEndSetup {
+    MenuContent* content = nullptr;
+    int width = 640, height = 480;
+    std::string settings_path;           // where the settings live (loaded at start, saved at exit)
+    FrontEndHooks hooks;
+    std::function<std::unique_ptr<Screen>(FrontEnd&)> main_menu;
+    // Draws the loading screen (fraction 0..1, stage name).
+    std::function<void(FrontEnd&, render::Image8&, float, const std::string&)> draw_loading;
+    // The screens after a battle (outcome and statistics); popping below them ends the battle.
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&, BattleOutcome)> battle_over;
+    // The in-game menu (Tab or F2 in a battle).
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> game_menu;
+    MusicPlayer* music = nullptr;
+    // Applies the settings to a running battle's client (game speed, interface type, ...).
+    std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;
+};
+
+struct FrontOptions;  // client/front.h
+// Runs menus and battles until the program quits. Returns a process exit code.
+int run_front_end(FrontEndSetup& setup, const FrontOptions& options);
 
 }  // namespace client

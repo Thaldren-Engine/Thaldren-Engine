@@ -5,6 +5,7 @@
 // the client draws them and runs their input (spec: docs/RE_MEMORY.md, "Client",
 // "Menus"). Part of the front end's entry-point interface (client/front_end.h).
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -67,6 +68,8 @@ struct Widget {
 struct ScreenLayout {
     std::string name;
     const render::Sprite8* background = nullptr;  // full-screen picture (may be null)
+    const render::Palette* palette = nullptr;     // the picture's palette (null: the game palette)
+    std::array<std::uint8_t, 256> colours{};      // interface colour k -> index in that palette
     int x = 0, y = 0;                             // origin (dialogs are centred by the front end)
     std::vector<Widget> widgets;                  // [0] is the header
     std::string default_focus, enter_default, escape_default;
@@ -74,7 +77,8 @@ struct ScreenLayout {
 
 // Art and sounds of the menus (filled by an importer).
 struct MenuContent {
-    render::Palette palette{};
+    render::Palette palette{};   // the game palette (screens may switch to their picture's)
+    render::BlendTable blend;      // the game's mixing table (the GPU backend needs one)
     const Font* font = nullptr;        // captions and lists
     const Font* small_font = nullptr;
     const Font* big_font = nullptr;    // titles
@@ -101,6 +105,7 @@ public:
     explicit LayoutScreen(const ScreenLayout* layout);
     void handle(FrontEnd& fe, const InputEvent& e) override;
     void draw(FrontEnd& fe, render::Image8& out) override;
+    const render::Palette* palette() const override { return layout_ ? layout_->palette : nullptr; }
 
     Widget* widget(const std::string& name);
     const ScreenLayout* layout() const { return layout_; }
@@ -118,17 +123,25 @@ protected:
     virtual void draw_under(FrontEnd&, render::Image8&) {}
     virtual void draw_over(FrontEnd&, render::Image8&) {}
     void press(FrontEnd& fe, Widget& w);
+    // Text of a widget for its current stage (staged captions are '|'-separated).
+    static std::string caption(const Widget& w);
+    // Draws one widget (derived screens may call it for widgets they add).
+    void draw_widget(FrontEnd& fe, render::Image8& out, const Widget& w, bool held);
+    std::uint8_t colour(int k) const;
 
     std::vector<Widget> widgets_;  // the screen's own copy (state)
     int ox_ = 0, oy_ = 0;          // origin on the frame
-    Widget* focus_ = nullptr;      // text field taking keys
-    Widget* held_ = nullptr;       // pressed button (pointer down)
+    int focus_ = -1;               // index of the text field taking keys (-1: none)
+    int held_ = -1;                // index of the pressed button (pointer down)
+    int drag_ = -1;                // index of the scroll bar being dragged
+    int press_button_ = 1;         // mouse button of the last press (1 left, 3 right)
     std::uint32_t last_click_ms_ = 0;
     int last_click_row_ = -1;
 
 private:
     const ScreenLayout* layout_;
-    Widget* hit(int x, int y);
+    int hit(int x, int y);
+    void scroll_to(Widget& bar, int x, int y);
 };
 
 }  // namespace client

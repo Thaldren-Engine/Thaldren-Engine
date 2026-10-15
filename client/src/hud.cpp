@@ -9,7 +9,9 @@
 
 #include "client/canvas.h"
 #include "client/game_client.h"
+#include "sim/economy.h"
 #include "sim/sight.h"
+#include "sim/victory.h"
 #include "sim/unit_tick.h"
 
 namespace client {
@@ -176,8 +178,32 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
                     draw_text(o, o.bounds(), *side_->font, "+" + std::to_string(n), btn.x + 4, btn.y + 4 + side_->font->raise,
                               c_.hud[15]);
             }
-    // Paused sign.
-    if (budget_.paused && c_.paused_sign) render::blit(o, o.bounds(), *c_.paused_sign, (opt_.width + 128) / 2, opt_.height / 2);
+    // Paused sign; the victory and defeat signs once the battle is decided (end flags).
+    const int cx = (opt_.width + 128) / 2, cy = opt_.height / 2;
+    if (budget_.paused && c_.paused_sign) render::blit(o, o.bounds(), *c_.paused_sign, cx, cy);
+    if ((b_.end_game.flags & sim::end_game_flags::kWonMovie) && c_.victory_sign) render::blit(o, o.bounds(), *c_.victory_sign, cx, cy);
+    if ((b_.end_game.flags & sim::end_game_flags::kLost) && c_.defeat_sign) render::blit(o, o.bounds(), *c_.defeat_sign, cx, cy);
+    draw_clock_and_units(o);
+    draw_chat(o);
+}
+
+void GameClient::draw_clock_and_units(render::Image8& o) {
+    // The game clock (option): "Game Time: hh:mm:ss" of game steps at 130, above the bottom bar.
+    if (!opt_.clock || !side_ || !side_->font) return;
+    const Font& f = *side_->font;
+    const std::uint32_t s = b_.game_tick() / 30;
+    char buf[64];
+    std::snprintf(buf, sizeof buf, "Game Time: %02u:%02u:%02u", s / 3600, (s / 60) % 60, s % 60);
+    draw_text(o, o.bounds(), f, buf, 130, opt_.height - 34 - f.height + f.raise, c_.hud[15]);
+}
+
+void GameClient::draw_chat(render::Image8& o) {
+    // The chat line being typed, in the top bar's place while it is open.
+    if (!chat_ || !side_ || !side_->font) return;
+    const Font& f = *side_->font;
+    fill_rect(o, o.bounds(), 128, 0, opt_.width - 1, 31, c_.hud[0]);
+    outline_rect(o, o.bounds(), 140, 6, std::min(opt_.width - 1, 500), 25, c_.hud[15]);
+    draw_text(o, o.bounds(), f, "> " + chat_text_ + "_", 144, 9 + f.raise, c_.hud[15], -1, 350);
 }
 
 void GameClient::draw_unit_marks(render::Image8& o) {
@@ -310,6 +336,16 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     if (!id && selected_count() == 1)
         for (std::size_t i = 1; i < b_.units.size(); ++i)
             if (b_.ticks[i].type_index != 0 && b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected)) id = static_cast<std::uint16_t>(i);
+    if ((!id || b_.ticks[id].type_index == 0) && hover_feature_ >= 0 && static_cast<std::size_t>(hover_feature_) < b_.features.size()) {
+        // A feature under the pointer: its name and what reclaiming it yields.
+        const sim::FeatureTypeInfo& ft = b_.features[static_cast<std::size_t>(hover_feature_)];
+        std::string n = static_cast<std::size_t>(hover_feature_) < c_.features.size() ? c_.features[static_cast<std::size_t>(hover_feature_)].name : std::string();
+        char buf[64];
+        std::snprintf(buf, sizeof buf, " M:%d E:%d", static_cast<int>(ft.metal), static_cast<int>(ft.energy));
+        n += buf;
+        draw_text(o, all, f, n, side_->unit_name.x1 - f.text_width(n) / 2, side_->unit_name.y1 + dy + f.raise, 0x53);
+        return;
+    }
     if (!id || b_.ticks[id].type_index == 0) return;
     const sim::Unit& u = b_.units[id];
     const sim::UnitTickState& t = b_.ticks[id];

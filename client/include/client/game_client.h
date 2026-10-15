@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,7 +24,8 @@ namespace client {
 // the rest below.
 namespace keys {
 constexpr int kLeft = 0x100, kRight = 0x101, kUp = 0x102, kDown = 0x103, kPause = 0x104, kEscape = 0x105,
-              kEnter = 0x106, kTab = 0x107, kShift = 0x108, kCtrl = 0x109, kAlt = 0x10A, kF1 = 0x110;  // kF1 + n - 1 = Fn
+              kEnter = 0x106, kTab = 0x107, kShift = 0x108, kCtrl = 0x109, kAlt = 0x10A, kBackspace = 0x10B,
+              kDelete = 0x10C, kHome = 0x10D, kEnd = 0x10E, kF1 = 0x110;  // kF1 + n - 1 = Fn
 }
 
 struct InputEvent {
@@ -46,11 +48,17 @@ struct ClientOptions {
     bool selection_boxes = true;
     int text_lines = 10, text_seconds = 10;  // console (the original's defaults)
     bool fog = true;                 // draw the viewed player's fog of war
+    int unit_chat = 10;              // unit speech level 0..10 (Off 0, Medium 5, Full 10): notices of priority > 10 - level speak
+    int unit_chat_text = 5;          // the same for their console text
+    bool speech = true;              // unit speech on (the sound options' speech switch)
+    bool alt_groups = false;         // the alternate group keys (Alt+digit selects)
+    bool clock = false;              // the game clock on the top bar (option)
 };
 
 struct SoundEvent {
     int sample = -1;
-    int pan = 0;  // -100 (left) .. 100 (right)
+    int pan = 0;         // -100 (left) .. 100 (right)
+    int volume = 256;    // 0..256
 };
 
 class GameClient {
@@ -66,11 +74,22 @@ public:
     render::DrawList draw();
     std::vector<SoundEvent> take_sounds();
     bool quit_requested() const { return quit_; }
+    // The chat line (Enter): a typed line goes here when Enter is pressed again.
+    std::function<void(const std::string&)> on_chat;
+    bool chatting() const { return chat_; }
+    // The battle and options, for the front end (in-game menus, end of the battle).
+    sim::Battle& battle() { return b_; }
+    ClientOptions& options_mut() { return opt_; }
+    void set_game_speed(int speed);
+    bool paused() const { return budget_.paused; }
+    void set_paused(bool p) { budget_.paused = p; }
+    std::uint16_t tracked() const { return tracked_; }
 
     // Presentation events from the simulation (the battle's outside forwards them).
     void on_sound(std::uint16_t sample, const sim::Vec3i& pos);
     void on_speech(sim::Unit& unit, std::uint32_t id);
     void on_under_attack(sim::Unit& unit);
+    void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
     void message(const std::string& text, bool highlight = false);
     void selection_changed() { panel_dirty_ = true; }
 
@@ -121,6 +140,19 @@ private:
     sim::Vec3i minimap_world(int x, int y);
     void play_ui(int sample);
     void speak(const sim::Unit& u, std::uint32_t id);
+    // Unit notices: the original's speech queue (8 entries by priority, per-notice gaps).
+    void speech_play(std::size_t index, bool sound, bool text);
+    void speech_step();
+    void select_category(const std::string& category, bool keep);
+    void select_on_screen();
+    void select_same_types();
+    void track_next(bool backward);
+    void next_unit();
+    void step_build_page(bool forward);
+    int feature_under(int sx, int sy) const;  // feature type index under a screen point (-1: none)
+    void draw_chat(render::Image8& o);
+    void draw_clock_and_units(render::Image8& o);
+    void draw_reload_bars(render::Image8& o, const sim::Unit& u, int dy);
 
     // Interface state.
     void refresh_panel();
@@ -174,6 +206,22 @@ private:
     std::vector<SoundEvent> sounds_;
     std::array<float, 8> shown_{};   // eased top-bar values: energy, metal stored; storages (unused), incomes
     bool quit_ = false;
+    struct Speech {
+        std::uint32_t id = 0, tick = 0;
+        std::uint16_t unit = 0;
+        std::uint8_t priority = 0;
+        std::string text;
+    };
+    std::vector<Speech> speech_;                // the queue, highest priority first
+    std::array<std::uint32_t, 24> speech_next_{};  // per notice: first step it may sound again
+    std::uint32_t speech_last_ = 0, speech_length_ = 0;  // last spoken notice: step and length in steps
+    std::uint16_t tracked_ = 0;                 // unit the view follows (t / T, Ctrl+C)
+    std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
+    bool chat_ = false;
+    std::string chat_text_;
+    bool mdrag_ = false;                        // dragging the view with the middle button
+    int mdrag_x_ = 0, mdrag_y_ = 0;
+    int hover_feature_ = -1;
     // Drawing resources made once.
     void prepare_drawing();
     bool prepared_ = false;
