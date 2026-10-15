@@ -65,7 +65,12 @@ struct BattleUnitType {
 // Settings and per-step inputs shared by the systems.
 struct BattleSettings {
     std::uint8_t sea_level = 0;
+    // Gravity in world units (16.16) per step per step (GS+0x14263; the map load turns the map's
+    // value per second squared into it, see RE_MEMORY "Motion").
     std::int32_t gravity = 0;
+    // The map info's own "gravity" value as written (map info +0xD3C: 0 when the key is
+    // missing, -1 without a map info). Only the bomb run's drop lead reads it (AirStrike).
+    std::int32_t map_gravity = -1;
     bool net_game = false;            // network game: state broadcasts and packets
     std::uint8_t local_player = 0;
     std::uint8_t local_view = 0;

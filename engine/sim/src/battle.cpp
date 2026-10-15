@@ -137,7 +137,7 @@ void Battle::sync_settings() {
     unit_mission_env_.map_width = map.width * 16 - 32;
     unit_mission_env_.map_height = map.height * 16 - 128;
     unit_mission_env_.sea_level = s.sea_level;
-    unit_mission_env_.gravity = s.gravity;
+    unit_mission_env_.gravity = s.map_gravity;  // the bomb run reads the map info's raw value
     unit_mission_env_.air_repair_patrol_site_address = s.air_repair_patrol_site_address;
     route_.env.game_tick = unit_env_.game_tick;
     route_.env.sea_level = s.sea_level;
