@@ -95,7 +95,6 @@ struct BattleSettings {
     std::uint8_t feature_network_role = 0;  // feature damage: 0 alone, 1 network host, 2 other machine
     float tidal_strength = 0.0f;      // the map's tidal strength (tidal generators)
     std::uint16_t build_menu_focus = 0;     // unit whose build menu this machine shows (user interface)
-    std::int32_t network_provider = 0;      // the map info's provider type (3: reclaims are announced)
     // Inputs the original takes from stale stack memory (sim/unit_missions.h): the y of the
     // reclaim sites repair patrols find, and the address the air repair patrol leaves in its
     // event argument.
@@ -783,7 +782,7 @@ private:
         void builder_menu(Unit& u) override { b.outside_.builder_menu(u); }
         void build_menu_refresh(Unit& u) override { b.outside_.build_menu_refresh(u); }
         void orders_panel_changed() override { b.outside_.orders_panel_changed(); }
-        std::int32_t network_provider() override { return b.settings.network_provider; }
+        std::int32_t network_provider() override { return b.settings.provider; }
         // TransportLinks
         void bucket_unlink(Unit& u) override { sim::bucket_unlink(b.footprint_, u); }
         void bucket_prepend(Unit& u) override { sim::bucket_prepend(b.footprint_, u); }

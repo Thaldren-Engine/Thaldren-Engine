@@ -278,7 +278,7 @@ void Battle::sync_ai() {
     ai_env_.map_width = map.width;
     ai_env_.map_height = map.height;
     ai_env_.surface_metal = settings.surface_metal;
-    ai_env_.provider = settings.network_provider;
+    ai_env_.provider = settings.provider;
     ai_env_.units_per_player = settings.units_per_player;
     ai_env_.wind_fraction = wind.fraction;
     ai_env_.wind_max_speed = wind.max_speed;
