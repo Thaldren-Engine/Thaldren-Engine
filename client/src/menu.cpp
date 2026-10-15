@@ -27,6 +27,7 @@ int row_height(const MenuContent& mc) { return mc.font ? mc.font->height + 1 : 1
 LayoutScreen::LayoutScreen(const ScreenLayout* layout) : layout_(layout) {
     if (!layout_) return;
     widgets_ = layout_->widgets;
+    focus_limit_ = widgets_.size();
     ox_ = layout_->x;
     oy_ = layout_->y;
     for (std::size_t i = 0; i < widgets_.size(); ++i)
@@ -66,17 +67,54 @@ int LayoutScreen::hit(int x, int y) {
     return -1;
 }
 
+namespace {
+// A slider's value from its knob offset: offset / (travel - 1) x maximum, truncated.
+int slider_value(const Widget& s, int knob) {
+    if (s.span < 2) return 0;
+    return static_cast<int>(static_cast<double>(knob) / (s.span - 1) * s.range);
+}
+// The knob offset for a value (clamped to the maximum) as the option pages set it: value x
+// (travel - 1) x the single-precision reciprocal of the maximum, rounded up when not whole (so
+// a reciprocal a little above the exact one moves a knob that would sit on a whole pixel one on).
+int slider_knob(const Widget& s, int value) {
+    if (s.range <= 0) return 0;
+    const double t = static_cast<double>(std::min(value, s.range)) * (s.span - 1) * static_cast<double>(1.0f / static_cast<float>(s.range));
+    const int k = static_cast<int>(t);
+    return t - k != 0.0 ? static_cast<int>(t + 1.0) : k;
+}
+}  // namespace
+
 void LayoutScreen::press(FrontEnd& fe, Widget& w) {
     if (w.grayed) return;
+    if (w.slider_step != 0) {
+        // A slider's arrow moves its knob one pixel; the value follows the knob.
+        if (Widget* s = widget(w.link)) {
+            if (s->knob_value != s->position) s->knob_pos = slider_knob(*s, s->position);
+            s->knob_pos = std::clamp(s->knob_pos + w.slider_step, 0, std::max(0, s->span - 1));
+            s->position = slider_value(*s, s->knob_pos);
+            s->knob_value = s->position;
+            on_press(fe, *s);
+        }
+        return;
+    }
     if (w.stages > 0) {
         // A switch steps forward (left click) or back (right click) through its stages.
         w.stage = press_button_ == 3 ? (w.stage + w.stages - 1) % w.stages : (w.stage + 1) % w.stages;
     }
     fe.play_sound(w.sound >= 0 ? w.sound : fe.menu_content().click_sound);
+    for (std::size_t i = 0; i < widgets_.size(); ++i)
+        if (&widgets_[i] == &w) focus_gadget_ = static_cast<int>(i);  // a pressed gadget takes the focus
     on_press(fe, w);
 }
 
 void LayoutScreen::scroll_to(Widget& bar, int x, int y) {
+    if (bar.slider_base >= 0 && !bar.vertical) {
+        // The knob follows the pointer; the value follows the knob.
+        bar.knob_pos = std::clamp(x - (ox_ + bar.x) - 3 - bar.knob / 2, 0, std::max(0, bar.span - 1));
+        bar.position = slider_value(bar, bar.knob_pos);
+        bar.knob_value = bar.position;
+        return;
+    }
     // The knob follows the pointer; a scroll bar linked to a list moves the list's first row.
     const int span = bar.vertical ? bar.h : bar.w;
     const int at = bar.vertical ? y - (oy_ + bar.y) : x - (ox_ + bar.x);
@@ -170,6 +208,13 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
                     press_button_ = 1;
                     press(fe, w);
                     return;
+                } else if (w.kind == WidgetKind::Label && w.active && w.quickkey && w.quickkey == std::tolower(k) && !w.link.empty()) {
+                    // A linked label's key presses the gadget it names.
+                    if (Widget* t = widget(w.link); t && t->active && t->kind == WidgetKind::Button) {
+                        press_button_ = 1;
+                        press(fe, *t);
+                    }
+                    return;
                 }
         return;
     }
@@ -182,21 +227,54 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
     const render::ClipRect clip = out.bounds();
     const int x = ox_ + w.x, y = oy_ + w.y;
     const Font* font = mc.font;
-    auto text_at = [&](const std::string& s, int align, int pressed, std::uint8_t fg) {
+    // mark: the quick key to mark in the caption (0: none; only buttons that are not grayed).
+    auto text_at = [&](const std::string& s, int align, int pressed, std::uint8_t fg, int mark = 0) {
         if (!font || s.empty()) return;
         // Characters are dropped from the end until the caption fits (width - 6).
         std::string t = s;
         while (!t.empty() && font->text_width(t) > w.w - 6) t.pop_back();
         const int tw = font->text_width(t);
-        const int ty = y + ((w.h - 1) - font->height) / 2 + pressed + font->raise;
+        const int top = y + ((w.h - 1) - font->height) / 2 + pressed;  // the text's top row
+        const int ty = top + font->raise;
         int tx = x + 3 + pressed;
-        if (align & 4) tx = std::max(x, x + w.w - tw - 3);
-        else if (align & 2) tx = x + (w.w - tw) / 2 + pressed + 1;
+        if (align & 1) {
+        } else if (align & 4) {
+            tx = std::max(x, x + w.w - tw - 3);
+        } else if (align & 2) {
+            tx = x + (w.w - 1 - tw) / 2 + pressed + 1;
+            // The quick key's first occurrence (exact case) is underlined: a row under the
+            // character in interface colour 2 (0 while pressed).
+            const auto at = mark ? t.find(static_cast<char>(mark)) : std::string::npos;
+            draw_text(out, clip, *font, t, tx, ty, fg);
+            if (at != std::string::npos) {
+                const int cx = tx + font->text_width(t.substr(0, at));
+                const int cw = font->text_width(t.substr(at, 1));
+                if (cw > 0) fill_rect(out, clip, cx, top + font->height - 1, cx + cw - 1, top + font->height - 1, colour(pressed ? 0 : 2));
+            }
+            return;
+        } else if (align & 0x20) {
+            // Centred on the bottom edge; the quick key's character in interface colour 10.
+            tx = x + (w.w - 1 - tw) / 2 + pressed + 1;
+            const int by = y + w.h - 1 + pressed - font->height - 4 + font->raise;
+            const auto at = mark ? t.find(static_cast<char>(mark)) : std::string::npos;
+            if (at == std::string::npos) {
+                draw_text(out, clip, *font, t, tx, by, fg);
+                return;
+            }
+            const std::string a = t.substr(0, at), k = t.substr(at, 1), b = t.substr(at + 1);
+            draw_text(out, clip, *font, a, tx, by, fg);
+            draw_text(out, clip, *font, k, tx + font->text_width(a), by, colour(10));
+            draw_text(out, clip, *font, b, tx + font->text_width(a) + font->text_width(k), by, fg);
+            return;
+        } else {
+            return;  // no alignment bit: no caption
+        }
         draw_text(out, clip, *font, t, tx, ty, fg);
     };
     switch (w.kind) {
     case WidgetKind::Button: {
-        const bool pressed = held && !w.grayed;
+        // Pressed while held, and while its status is set (a selected page's button).
+        const bool pressed = (held || w.status != 0) && !w.grayed;
         if (w.frames && !w.frames->empty()) {
             const int n = static_cast<int>(w.frames->size());
             int f = 0;
@@ -206,21 +284,49 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
             const render::Sprite8& s = (*w.frames)[static_cast<std::size_t>(f)];
             render::blit(out, clip, s, x + s.x_offset, y + s.y_offset);
         } else {
-            // A framed box: light top and left, dark bottom and right (swapped while pressed).
-            const std::uint8_t light = mc.text_colour, dark = mc.frame_colour, fill = mc.box_colour;
-            fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, fill);
-            fill_rect(out, clip, x, y, x + w.w - 1, y, pressed ? dark : light);
-            fill_rect(out, clip, x, y, x, y + w.h - 1, pressed ? dark : light);
-            fill_rect(out, clip, x, y + w.h - 1, x + w.w - 1, y + w.h - 1, pressed ? light : dark);
-            fill_rect(out, clip, x + w.w - 1, y, x + w.w - 1, y + w.h - 1, pressed ? light : dark);
+            // A filled box with a two-pixel bevel (interface colours of the screen): filled with
+            // colour 20 (grayed: 19); top and left edges in colour 17 and bottom and right in
+            // colour 0 (pressed: the other way round; grayed: top/left 0, bottom/right 19).
+            const int x2 = x + w.w - 1, y2 = y + w.h - 1;
+            std::uint8_t fill = colour(20), tl = colour(17), br = colour(0);
+            if (w.grayed) fill = colour(19), tl = colour(0), br = colour(19);
+            else if (pressed) tl = colour(0), br = colour(17);
+            fill_rect(out, clip, x, y, x2, y2, fill);
+            fill_rect(out, clip, x, y, x2, y, tl);
+            fill_rect(out, clip, x, y + 1, x2 - 1, y + 1, tl);
+            fill_rect(out, clip, x, y, x, y2, tl);
+            fill_rect(out, clip, x + 1, y, x + 1, y2 - 1, tl);
+            fill_rect(out, clip, x2, y + 1, x2, y2, br);
+            fill_rect(out, clip, x2 - 1, y + 2, x2 - 1, y2, br);
+            fill_rect(out, clip, x + 1, y2, x2, y2, br);
+            fill_rect(out, clip, x + 2, y2 - 1, x2, y2 - 1, br);
         }
         const std::uint8_t fg = w.grayed ? mc.text_dim : (w.fg ? colour(w.fg) : mc.text_colour);
-        text_at(caption(w), w.attribs & 0x27 ? w.attribs : 2, pressed ? 1 : 0, fg);
+        text_at(caption(w), w.attribs, pressed ? 1 : 0, fg, w.grayed ? 0 : w.quickkey_char);
         break;
     }
-    case WidgetKind::Label:
-        text_at(w.text, w.attribs, 0, w.fg ? colour(w.fg) : mc.text_colour);
+    case WidgetKind::Label: {
+        // Labels draw with the small picture font from their top edge: x as given, attribute 2
+        // centred on the middle (x + w/2 - text width/2), 4 right-aligned; a background colour
+        // fills the rectangle first; the quick key's first occurrence is underlined in
+        // interface colour 2 on the text's last row.
+        const Font* lf = mc.small_font ? mc.small_font : font;
+        if (!lf) break;
+        if (w.bg) fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, colour(w.bg));
+        const int tw = lf->text_width(w.text);
+        int tx = x;
+        if (w.attribs & 4) tx = x + w.w - tw;
+        else if (w.attribs & 2) tx = x + w.w / 2 - tw / 2;
+        // One line clipped to the width (taller labels wrap; drawn here as one line).
+        draw_text(out, clip, *lf, w.text, tx, y + lf->raise, w.fg ? colour(w.fg) : mc.text_colour, -1, w.w);
+        if (w.quickkey_char && !w.grayed)
+            if (const auto at = w.text.find(static_cast<char>(w.quickkey_char)); at != std::string::npos) {
+                const int cx = tx + lf->text_width(w.text.substr(0, at));
+                const int cw = lf->text_width(w.text.substr(at, 1));
+                if (cw > 0) fill_rect(out, clip, cx, y + lf->height - 1, cx + cw - 1, y + lf->height - 1, colour(2));
+            }
         break;
+    }
     case WidgetKind::Picture:
         if (w.picture) render::blit(out, clip, *w.picture, x + w.picture->x_offset, y + w.picture->y_offset);
         else if (w.frames && !w.frames->empty()) {
@@ -243,6 +349,52 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         break;
     }
     case WidgetKind::ScrollBar: {
+        if (w.slider_base >= 0 && w.frames && w.frames->size() >= 20) {
+            const auto& fr = *w.frames;
+            const auto f = [&](int k) -> const render::Sprite8& { return fr[static_cast<std::size_t>(w.slider_base + k)]; };
+            auto put = [&](const render::Sprite8& s, int px, int py) { render::blit(out, clip, s, px, py); };
+            const int x2 = x + w.w - 1, y2 = y + w.h - 1;
+            if (w.w < w.h) {
+                // Vertical: track down the bar; the knob centred across it.
+                int cy = y;
+                put(f(0), x, cy);
+                cy += f(0).height;
+                while (cy + f(1).height <= y2) {
+                    put(f(1), x, cy);
+                    cy += f(1).height;
+                }
+                put(f(2), x, y2 - f(2).height + 1);
+                const int kx = x + f(2).width / 2 - f(3).width / 2;
+                const int kp = w.knob_value == w.position ? w.knob_pos : slider_knob(w, w.position);
+                int top = kp + 3 + y;
+                const int len = std::min(w.knob > 0 ? w.knob : 10, w.h - 6);
+                const int bottom = std::min(top + len - 1, y + w.h - 4);
+                top = std::min(top, bottom - len + 1);
+                put(f(3), kx, top);
+                int ky = top + f(3).height;
+                while (ky <= bottom - f(4).height) {
+                    put(f(4), kx, ky);
+                    ky += f(4).height;
+                }
+                put(f(4), kx, bottom - f(4).height);
+                put(f(5), kx, bottom - f(5).height + 1);
+            } else {
+                // Horizontal: track along the bar; the knob centred on the end piece's height.
+                int cx = x;
+                put(f(0), cx, y);
+                cx += f(0).width;
+                while (cx + f(1).width <= x2) {
+                    put(f(1), cx, y);
+                    cx += f(1).width;
+                }
+                put(f(2), x2 - f(2).width + 1, y);
+                const int kp = w.knob_value == w.position ? w.knob_pos : slider_knob(w, w.position);
+                const int ky = y + f(2).height / 2 - f(3).height / 2;
+                const int kx = std::min(kp + 3 + x, x2 - f(3).width - 2);
+                put(f(3), kx, ky);
+            }
+            break;
+        }
         outline_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, mc.frame_colour);
         const int span = w.vertical ? w.h : w.w;
         const int knob = std::max(6, std::min(span, w.knob > 0 ? w.knob : 8));
@@ -266,7 +418,114 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
     }
 }
 
+void LayoutScreen::place(int fw, int fh) {
+    placed_ = true;
+    if (!layout_ || widgets_.empty()) return;
+    const Widget& h = widgets_.front();
+    int x = layout_->x, y = layout_->y;
+    if (x == -1) {
+        x = (fw - h.w) / 2;
+        y = (fh - h.h) / 2;
+    } else if (x == -2) {
+        x = (fw - 128 - h.w) / 2 + 128;
+        y = (fh - h.h) / 2;
+    }
+    if (x + h.w > fw) x = (fw - h.w) / 2;
+    if (y + h.h > fh) y = (fh - h.h) / 2;
+    if (y < 0) y += fh;
+    ox_ = x;
+    oy_ = y;
+    // The focus: the header's default, else the first focusable gadget after the header in reading
+    // order (key x + 5000 y; keys not past the header's own come after all others).
+    focus_gadget_ = -1;
+    if (!layout_->default_focus.empty())
+        for (std::size_t i = 1; i < widgets_.size(); ++i)
+            if (same_name(widgets_[i].name, layout_->default_focus)) {
+                focus_gadget_ = static_cast<int>(i);
+                break;
+            }
+    if (focus_gadget_ < 0) {
+        const long long here = x + 5000LL * y;
+        long long best = here + 100000000LL;
+        for (std::size_t i = 1; i < widgets_.size() && i < focus_limit_; ++i) {
+            const Widget& w = widgets_[i];
+            if (!w.active || (w.attribs & 0x400)) continue;
+            const bool ok = (w.kind == WidgetKind::Button && !w.grayed) || (w.kind == WidgetKind::ListBox && !(w.attribs & 0x100)) ||
+                            w.kind == WidgetKind::TextField || w.kind == WidgetKind::Surface || (w.kind == WidgetKind::ScrollBar && w.w >= w.h);
+            if (!ok) continue;
+            long long k = w.x + 5000LL * w.y;
+            if (k <= here) k += 100000000LL;
+            if (k < best) {
+                best = k;
+                focus_gadget_ = static_cast<int>(i);
+            }
+        }
+    }
+}
+
+void LayoutScreen::reassign_quick_keys(const std::vector<Widget>& before) {
+    std::vector<int> used;
+    for (const Widget& w : before)
+        if (w.quickkey) used.push_back(w.quickkey);
+    for (Widget& w : widgets_) {
+        if (w.kind != WidgetKind::Button || w.stages > 0 || (w.attribs & 0x1800) || w.text.empty()) continue;
+        w.quickkey = w.quickkey_char = 0;
+        for (const char ch : w.text) {
+            if (ch == ' ') continue;
+            const int lc = std::tolower(static_cast<unsigned char>(ch));
+            if (std::find(used.begin(), used.end(), lc) != used.end()) continue;
+            w.quickkey = lc;
+            w.quickkey_char = static_cast<unsigned char>(ch);
+            used.push_back(lc);
+            break;
+        }
+    }
+}
+
+void LayoutScreen::set_caption(Widget& w, const std::string& text) {
+    w.text = text;
+    if (w.kind != WidgetKind::Button || (w.attribs & 0x10000)) return;
+    w.quickkey = w.quickkey_char = 0;
+    if (w.stages > 0) return;
+    for (const char ch : text) {
+        if (ch == ' ') continue;
+        const int lc = std::tolower(static_cast<unsigned char>(ch));
+        bool used = false;
+        for (const Widget& o : widgets_) used |= &o != &w && o.quickkey == lc;
+        if (used) continue;
+        w.quickkey = lc;
+        w.quickkey_char = static_cast<unsigned char>(ch);
+        break;
+    }
+}
+
+void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
+    // Six shaded outlines around the focused gadget, one to six pixels out, light levels 31,
+    // 28, 24, 19, 13, 6 (the four sides drawn as separate lines, so corners are lit twice).
+    const std::vector<std::uint8_t>& light = fe.menu_content().light;
+    if (!focus_ring_ || focus_gadget_ < 0 || light.size() < 0x2000) return;
+    const Widget& w = widgets_[static_cast<std::size_t>(focus_gadget_)];
+    if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox) return;
+    const int gx0 = ox_, gy0 = oy_, gx1 = ox_ + widgets_.front().w - 1, gy1 = oy_ + widgets_.front().h - 1;  // the screen's own surface
+    auto px = [&](int x, int y, int level) {
+        if (x < gx0 || y < gy0 || x > gx1 || y > gy1 || x < 0 || y < 0 || x >= out.width || y >= out.height) return;
+        std::uint8_t& p = out.row(y)[x];
+        p = light[static_cast<std::size_t>(level) * 256 + p];
+    };
+    int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+    int level = 31;
+    for (int i = 0; i < 6; ++i) {
+        --x0, --y0, ++x1, ++y1;
+        for (int x = x0; x <= x1; ++x) px(x, y0, level);
+        for (int y = y0; y <= y1; ++y) px(x1, y, level);
+        for (int x = x0; x <= x1; ++x) px(x, y1, level);
+        for (int y = y0; y <= y1; ++y) px(x0, y, level);
+        level -= 3 + i;
+    }
+}
+
 void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
+    if (!placed_) place(out.width, out.height);
     if (layout_ && layout_->background) {
         const render::Sprite8& bg = *layout_->background;
         const bool full = bg.width >= out.width && bg.height >= out.height;
@@ -282,6 +541,7 @@ void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
         }
         draw_widget(fe, out, w, static_cast<int>(i) == held_);
     }
+    draw_focus_ring(fe, out);
     draw_over(fe, out);
 }
 

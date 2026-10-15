@@ -26,6 +26,7 @@ struct FrontOptions {
     bool gpu = true;                     // window: GPU backend (else CPU frames through an SDL texture)
     bool gpu_check = false;              // headless: also draw screenshots on the GPU and compare
     bool sound = true;
+    bool draw_pointer = true;            // false: frames without the pointer (comparisons with the original's screen surface)
     bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
 };
 

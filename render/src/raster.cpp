@@ -182,6 +182,20 @@ void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& tex, b
     });
 }
 
+void textured_quad_uv(RasterTarget& t, const RasterVertex* v, const int (*uv)[2], const Sprite8& tex) {
+    if (tex.width <= 0 || tex.height <= 0) return;
+    const EdgeVertex vs[4] = {{v[0].x, v[0].y, v[0].z, uv[0][0], uv[0][1]},
+                              {v[1].x, v[1].y, v[1].z, uv[1][0], uv[1][1]},
+                              {v[2].x, v[2].y, v[2].z, uv[2][0], uv[2][1]},
+                              {v[3].x, v[3].y, v[3].z, uv[3][0], uv[3][1]}};
+    scan(t, vs, 4, [&](std::uint8_t& p, std::int32_t u, std::int32_t vv, std::int32_t) {
+        const long long lin = static_cast<long long>(u >> 16) + static_cast<long long>(vv >> 16) * tex.width;
+        p = lin >= 0 && lin < static_cast<long long>(tex.pixels.size()) ? tex.pixels[static_cast<std::size_t>(lin)]
+                                                                       : tex.at(std::clamp(u >> 16, 0, tex.width - 1), std::clamp(vv >> 16, 0, tex.height - 1));
+        return true;
+    });
+}
+
 void fill_polygon_lit(RasterTarget& t, const LitVertex* v, int count, std::uint8_t colour, const std::uint8_t* shade) {
     std::vector<EdgeVertex> vs(static_cast<std::size_t>(std::max(count, 0)));
     for (int i = 0; i < count; ++i) vs[static_cast<std::size_t>(i)] = {v[i].x, v[i].y, v[i].z, 0, 0, v[i].light};

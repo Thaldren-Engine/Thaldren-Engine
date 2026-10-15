@@ -9,6 +9,7 @@
 #include <ctime>
 
 #include "client/canvas.h"
+#include "render/raster.h"
 #include "sim/battle.h"
 #include "sim/economy.h"
 #include "sim/rng.h"
@@ -119,7 +120,9 @@ std::vector<std::array<int, 2>> display_modes(FrontEnd& fe) {
 // widgets map to settings by name, the same on both kinds of pages.
 class OptionsPage : public LayoutScreen {
 public:
-    OptionsPage(MenuArt& art, const std::string& gui, bool in_battle) : LayoutScreen(art.layout(gui)), art_(art), in_battle_(in_battle) {}
+    OptionsPage(MenuArt& art, const std::string& gui, bool in_battle) : LayoutScreen(art.layout(gui)), art_(art), in_battle_(in_battle) {
+        focus_ring_ = false;  // the page joins its menu's screen: the menu's button keeps the focus
+    }
     void enter(FrontEnd& fe) override { load(fe); }
     bool see_through() const override { return in_battle_; }
 
@@ -132,7 +135,7 @@ protected:
                 // Sliders: range and value.
                 if (is(w, "FXVOL")) set(w, 64, s.get_int("fxvol", 27));
                 else if (is(w, "MUSICVOL")) set(w, 64, s.get_int("musicvol", 32));
-                else if (is(w, "GAME")) set(w, 20, s.get_int("gamespeed", 10));
+                else if (is(w, "GAME")) set(w, 21, s.get_int("gamespeed", 10));  // the original's maximum is 21
                 else if (is(w, "SCREEN")) set(w, 65, s.get_int("scrollspeed", 0x20));
                 else if (is(w, "TXTSCROL")) set(w, 20, s.get_int("textscroll", 10));
                 else if (is(w, "MAXLINES")) set(w, 30, s.get_int("textlines", 10));
@@ -165,12 +168,17 @@ protected:
     }
     void labels(FrontEnd& fe) {
         if (Widget* t = widget("TRACKNUM")) t->text = track_ ? "#" + std::to_string(track_) : "NO DISC";
-        if (Widget* g = widget("GAMETEXT")) {
-            const int sp = fe.settings().get_int("gamespeed", 10);
-            g->text = sp == 10 ? "Normal" : (sp > 10 ? "+" : "-") + std::to_string(std::abs(sp - 10));
+        // GAMETEXT stays empty (the original never fills it); MAXLINESTEXT shows the text lines.
+        if (Widget* m = widget("MAXLINESTEXT")) {
+            const int n = fe.settings().get_int("textlines", 10);
+            m->text = n == 0 ? "None" : std::to_string(n);
         }
-        if (Widget* v = widget("VIDVAL"))
-            v->text = std::to_string(fe.settings().get_int("DisplaymodeWidth", 640)) + " X " + std::to_string(fe.settings().get_int("DisplaymodeHeight", 480));
+        // "W X H" of the current mode when the list has it; otherwise the label keeps its text.
+        if (Widget* v = widget("VIDVAL")) {
+            const int mw = fe.settings().get_int("DisplaymodeWidth", 640), mh = fe.settings().get_int("DisplaymodeHeight", 480);
+            for (const auto& m : modes_)
+                if (m[0] == mw && m[1] == mh) v->text = std::to_string(mw) + " X " + std::to_string(mh);
+        }
     }
     static void set(Widget& w, int range, int v) {
         w.range = range;
@@ -318,11 +326,13 @@ public:
         LayoutScreen::handle(fe, e);
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
+        if (!placed_) place(out.width, out.height);
         if (page_ && !in_battle_) {
             // The page's picture fills the screen; the menu's buttons stay over it.
             page_->draw(fe, out);
             for (std::size_t i = 1; i < widgets_.size(); ++i)
                 if (widgets_[i].active) draw_widget(fe, out, widgets_[i], static_cast<int>(i) == held_);
+            draw_focus_ring(fe, out);
             return;
         }
         LayoutScreen::draw(fe, out);
@@ -343,7 +353,13 @@ protected:
                         if (g == a) g = b;
                 if (art_.layout(g)) {
                     page_ = std::make_unique<OptionsPage>(art_, g, in_battle_);
+                    page_->reassign_quick_keys(widgets_);  // the page joins this screen
                     page_->enter(fe);
+                    placed_ = false;  // the menu is set up anew: its default focus returns
+                    // The open page's button shows pressed (status 1), the others not.
+                    for (Widget& b : widgets_)
+                        if (b.kind == WidgetKind::Button && b.stages == 0)
+                            for (const auto& [bn, bg] : pages) b.status = is(b, bn) ? (is(b, button) ? 1 : 0) : b.status;
                 }
                 return;
             }
@@ -517,6 +533,8 @@ protected:
         const auto* team_art = art_.sequence(gaf, "TEAMICONSx");
         colours_ = art_.sequence("textures\\logos.gaf", "32xlogos");
         for (int i = 0; i < n; ++i, y += step) {
+            // Appended after the screen was set up: no quick keys; metal and energy carry attribute
+            // 0x10000 as in the original.
             auto add = [&](WidgetKind k, const std::string& name, int x, int w, const std::vector<render::Sprite8>* frames, const std::string& help) {
                 Widget wd;
                 wd.kind = k;
@@ -526,15 +544,14 @@ protected:
                 wd.w = frames && !frames->empty() ? frames->front().width : w;
                 wd.h = frames && !frames->empty() ? frames->front().height : 20;
                 wd.frames = frames;
-                wd.attribs = 2;
-                wd.status = 0x10000;
+                wd.attribs = name == "Metal" || name == "Energy" ? 2 | 0x10000 : 2;
                 wd.text.clear();
                 help_[wd.name] = help;
                 widgets_.push_back(wd);
             };
             add(WidgetKind::Button, "Player", 45, 112, name_art, "");
             add(WidgetKind::Button, "Side", 163, 45, side_art, "");
-            add(WidgetKind::Button, "Color", 214, 20, nullptr, "");
+            add(WidgetKind::Surface, "Color", 214, 20, nullptr, "");  // a hotspot: only the logo is drawn
             add(WidgetKind::Button, "Allies", 241, 40, team_art, "Click to select an allegiance symbol.");
             add(WidgetKind::Button, "Metal", 286, 45, res_art, "Left click to increase metal. Right click to decrease metal.");
             add(WidgetKind::Button, "Energy", 337, 45, res_art, "Left click to increase energy. Right click to decrease energy.");
@@ -548,7 +565,7 @@ protected:
             const std::string n = std::to_string(i);
             const bool on = r.kind != 0;
             if (Widget* w = widget("Player" + n)) {
-                w->text = r.kind == 1 ? "Player" : r.kind == 2 ? "Computer" : "Open";
+                set_caption(*w, r.kind == 1 ? "Player" : r.kind == 2 ? "Computer" : "Open");
                 w->active = true;
             }
             if (Widget* w = widget("Side" + n)) {
@@ -617,9 +634,17 @@ protected:
         for (std::size_t i = 0; i < rows_.size(); ++i) {
             const Widget* w = widget("Color" + std::to_string(i));
             if (!w || !w->active || !colours_ || colours_->empty()) continue;
+            // The colour's logo mapped onto the box as a textured quad: corners on the box's
+            // edges, texture corners (1,1) .. (w-1,h-1) (the scan rules leave the last row and column).
             const render::Sprite8& s = (*colours_)[static_cast<std::size_t>(rows_[i].colour) % colours_->size()];
-            const render::ClipRect c{ox_ + w->x, oy_ + w->y, ox_ + w->x + w->w - 1, oy_ + w->y + w->h - 1};
-            render::blit(out, c, s, ox_ + w->x + (w->w - s.width) / 2 + s.x_offset, oy_ + w->y + (w->h - s.height) / 2 + s.y_offset);
+            const int x0 = ox_ + w->x, y0 = oy_ + w->y, x1 = x0 + w->w - 1, y1 = y0 + w->h - 1;
+            const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+            const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+            render::RasterTarget t;
+            t.pixels = out.pixels.data();
+            t.pitch = out.width;
+            t.clip = out.bounds();
+            render::textured_quad_uv(t, v, uv, s);
         }
     }
 
@@ -822,7 +847,13 @@ private:
 class MainMenu : public LayoutScreen {
 public:
     explicit MainMenu(MenuArt& art) : LayoutScreen(art.layout("MAINMENU")), art_(art) {
-        if (Widget* d = widget("DebugString")) d->active = false;
+        // The version label: shown with the text "v3.1", moved left by half the text's width in
+        // the caption font.
+        if (Widget* d = widget("DebugString")) {
+            d->active = true;
+            d->text = "v3.1";
+            if (art.content().font) d->x -= art.content().font->text_width(d->text) / 2;
+        }
     }
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("MULTI")) w->grayed = !fe.hooks().multiplayer_menu;
@@ -1009,7 +1040,7 @@ private:
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
 public:
-    explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) { oy_ = 0; }
+    explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) {}
     bool see_through() const override { return true; }
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu;

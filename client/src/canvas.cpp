@@ -71,12 +71,13 @@ void draw_text(render::Image8& dst, const render::ClipRect& clip, const Font& fo
     for (unsigned char c : s) {
         const Glyph& g = font.glyphs[c];
         if (!g.present) continue;
-        for (int r = 0; r < font.height; ++r)
+        const int rows = g.rows > 0 ? g.rows : font.height;
+        for (int r = 0; r < rows; ++r)
             for (int k = 0; k < g.width; ++k) {
                 const std::size_t at = static_cast<std::size_t>(r * g.width + k);
                 const bool ink = g.ink[at] != 0;
                 const int v = ink ? (g.colours.empty() ? fg : g.colours[at]) : bg;
-                if (v >= 0) put_pixel(dst, clip, x + k, top + r, static_cast<std::uint8_t>(v));
+                if (v >= 0) put_pixel(dst, clip, x + g.left + k, top + g.top + r, static_cast<std::uint8_t>(v));
             }
         x += g.width;
     }

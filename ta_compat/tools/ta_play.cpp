@@ -22,6 +22,7 @@
 //   --headless          no window: run --frames N frames at 30 per second with --script FILE
 //                       (see client/front.h) and write --shots a,b,c as <--out PREFIX>NNNN.bmp
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
+//   --no-pointer        frames without the pointer (as the original's screen surface has them)
 //   --realtime          headless: run the frames at wall-clock speed (network games)
 
 #include <cstdint>
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
         else if (a == "--script") script_file = next();
         else if (a == "--out") front.screenshot_prefix = next();
         else if (a == "--gpu-check") front.gpu_check = true;
+        else if (a == "--no-pointer") front.draw_pointer = false;
         else if (a == "--realtime") front.realtime = true;
         else if (a == "--shots") {
             std::stringstream ss(next());

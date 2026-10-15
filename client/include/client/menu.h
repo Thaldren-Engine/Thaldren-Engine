@@ -43,6 +43,7 @@ struct Widget {
     bool active = true; // shown and usable
     bool grayed = false;
     int quickkey = 0;   // lower-case character that presses it (0: none)
+    int quickkey_char = 0;  // the quick key as the description gives it (marked in the caption)
     int stages = 0;     // multi-stage button: number of stages (0: plain)
     int stage = 0;      // current stage
     int status = 0;     // the description's status value
@@ -59,6 +60,12 @@ struct Widget {
     int max_chars = 0;
     // Scroll bars: range and position; the list box it moves (by name).
     int range = 0, position = 0, knob = 0;
+    // Slider art (the SLIDERS sequence in frames): first frame of its set (0 vertical, 10
+    // horizontal), -1 without art; the knob's travel in pixels (span) and its size.
+    int slider_base = -1, span = 0;
+    int knob_pos = 0, knob_value = -1;  // the knob's pixel offset and the value it was set from
+    // Arrow buttons of a slider: -1 steps the linked slider (link) down, +1 up.
+    int slider_step = 0;
     bool vertical = true;
     std::string link;   // label -> button it belongs to, scroll bar -> list box
     int sound = -1;     // sample played when pressed (-1: the menu's click)
@@ -92,6 +99,9 @@ struct MenuContent {
     std::function<const render::Sprite8*(const std::string& name)> picture;
     // Button art sized w x h when the description gives none (the game's stock buttons).
     std::function<const std::vector<render::Sprite8>*(int w, int h)> stock_button;
+    // The game's light table (32 levels x 256 entries, palettes\PALETTE.LHT; empty when absent):
+    // shaded outlines (the focus ring) replace a pixel p by light[level * 256 + p].
+    std::vector<std::uint8_t> light;
     // Interface colours (palette indices).
     std::uint8_t text_colour = 255, text_dim = 8, text_highlight = 0xF4, box_colour = 0, frame_colour = 8;
 };
@@ -111,6 +121,14 @@ public:
     const ScreenLayout* layout() const { return layout_; }
     // True when an active widget lies under the point.
     bool over(int x, int y) { return hit(x, y) >= 0; }
+    // Gives the plain buttons new quick keys as if this screen's gadgets followed `before`'s in one
+    // screen (an options page joins its menu's screen): the first caption character, not a space,
+    // that no earlier gadget has.
+    void reassign_quick_keys(const std::vector<Widget>& before);
+    // Sets a gadget's caption the way the original does: a plain button (no attribute 0x10000)
+    // takes a new quick key from it (the first character, not a space, no other gadget has).
+    void set_caption(Widget& w, const std::string& text);
+
 
 protected:
     // A button was clicked (released over it) or its quick key pressed.
@@ -133,10 +151,21 @@ protected:
 
     std::vector<Widget> widgets_;  // the screen's own copy (state)
     int ox_ = 0, oy_ = 0;          // origin on the frame
+    // Places the screen on a frame of the given size (done once, at the first draw): a header
+    // at -1 is centred on the frame, at -2 centred in the area right of the 128-pixel side
+    // panel; one that would cross the right or bottom edge is centred that way; a negative y
+    // counts from the bottom edge.
+    void place(int frame_w, int frame_h);
+    // The focus ring around the focused gadget (shaded outlines through the light table).
+    void draw_focus_ring(FrontEnd& fe, render::Image8& out);
+    bool placed_ = false;
+    std::size_t focus_limit_ = 0;  // gadgets the first focus is chosen from (those of the description)
+    bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     int held_ = -1;                // index of the pressed button (pointer down)
     int drag_ = -1;                // index of the scroll bar being dragged
     int press_button_ = 1;         // mouse button of the last press (1 left, 3 right)
+    int focus_gadget_ = -1;        // the gadget with the focus ring (-1: none)
     std::uint32_t last_click_ms_ = 0;
     int last_click_row_ = -1;
 

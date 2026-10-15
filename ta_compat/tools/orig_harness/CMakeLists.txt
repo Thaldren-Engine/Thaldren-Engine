@@ -723,6 +723,10 @@ add_executable(render_harness
 target_include_directories(render_harness PRIVATE ${ROOT}/render/include ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(render_harness PRIVATE /W4 /permissive- /fp:precise)
 
+# Front end: the original's menus and in-game panels drawn offscreen (the game held at WinMain).
+add_executable(gui_harness gui_harness.cpp)
+target_compile_options(gui_harness PRIVATE /W4 /permissive-)
+target_link_libraries(gui_harness PRIVATE user32 gdi32)
 # Unit state packets (whole states, goal states) vs sim/net_units.h.
 add_executable(netstate_harness
     netstate_harness.cpp

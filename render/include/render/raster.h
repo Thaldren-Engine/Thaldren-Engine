@@ -32,6 +32,10 @@ void fill_polygon(RasterTarget& t, const RasterVertex* v, int count, std::uint8_
 // memory there) is clamped and reported through `out_of_range`.
 void textured_quad(RasterTarget& t, const RasterVertex* v, const Sprite8& texture, bool* out_of_range = nullptr);
 
+// Quad with given texture coordinates per vertex (texels, whole numbers), same scan rules (the
+// interface's picture boxes draw a frame this way: corners (1,1), (w-1,1), (w-1,h-1), (1,h-1)).
+void textured_quad_uv(RasterTarget& t, const RasterVertex* v, const int (*uv)[2], const Sprite8& texture);
+
 // The lit (shaded) path's vertex: a light level 0..31 per vertex, interpolated like depth.
 struct LitVertex {
     int x = 0, y = 0, z = 0, light = 0;

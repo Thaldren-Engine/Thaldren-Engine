@@ -36,6 +36,7 @@ std::string upper(std::string s) {
 }
 
 bool ieq(const std::string& a, const std::string& b) { return upper(a) == upper(b); }
+bool g_link_empty(const GuiGadget& g) { return g.link.empty(); }
 
 std::unique_ptr<TdfSection> parse_tdf(const std::vector<std::uint8_t>& f) {
     return tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root;
@@ -101,6 +102,8 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
                 sound_index_[upper(s->name())] = static_cast<int>(content_.samples.size());
                 content_.samples.push_back(std::move(smp));
             }
+    vfs_.read("palettes\\PALETTE.LHT", content_.light);
+    if (content_.light.size() < 0x2000) content_.light.clear();
     content_.click_sound = sound("SmallButton");
     content_.error_sound = sound("NOTOKTOBUILD");
     content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
@@ -176,28 +179,30 @@ client::Font MenuArt::gaf_font(const std::string& path) {
     GafDirectory dir;
     std::vector<render::Sprite8> frames;
     if (!gaf_read_directory(*g, dir) || !gaf_sequence_frames(*g, 0, frames)) return font;
-    // The text height is the 'I' frame's height plus 2 (as the original measures it); every
-    // glyph sits on the 'I' frame's baseline.
+    // The text height is the 'I' frame's height plus 2 (as the original measures it). The
+    // original lowers every glyph's offset by the 'I' frame's height and draws a glyph with its
+    // offset at the text position, so a glyph's top row lies (I height - its y offset) below
+    // the text's top; glyphs may reach outside the cell (descenders).
     if (frames.size() <= 'I') return font;
-    const int above = frames['I'].y_offset;
-    font.height = frames['I'].height + 2;
+    const int i_height = frames['I'].height;
+    font.height = i_height + 2;
     font.raise = 0;
     for (std::size_t c = 0; c < frames.size() && c < 256; ++c) {
         const render::Sprite8& f = frames[c];
         client::Glyph& gl = font.glyphs[c];
         gl.width = f.width;
-        gl.present = f.width > 0;
-        gl.ink.assign(static_cast<std::size_t>(f.width) * static_cast<std::size_t>(font.height), 0);
+        gl.present = f.width > 0 && c >= 0x20;
+        gl.rows = std::max(1, static_cast<int>(f.height));
+        gl.top = i_height - f.y_offset;
+        gl.left = -f.x_offset;
+        gl.ink.assign(static_cast<std::size_t>(f.width) * static_cast<std::size_t>(gl.rows), 0);
         gl.colours.assign(gl.ink.size(), 0);
         if (c == ' ') continue;  // a space only advances
-        const int top = above - f.y_offset;
         for (int y = 0; y < f.height; ++y)
             for (int x = 0; x < f.width; ++x) {
                 const std::uint8_t p = f.at(x, y);
                 if (f.has_key && p == f.key) continue;
-                const int row = top + y;
-                if (row < 0 || row >= font.height) continue;
-                const std::size_t at = static_cast<std::size_t>(row * f.width + x);
+                const std::size_t at = static_cast<std::size_t>(y * f.width + x);
                 gl.ink[at] = 1;
                 gl.colours[at] = p;
             }
@@ -247,11 +252,20 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
     L->enter_default = head.crdefault;
     L->escape_default = head.escdefault;
     L->default_focus = head.defaultfocus;
-    if (const char* bg = background_of(gui)) L->background = picture(bg, &L->palette);
+    if (const char* bg = background_of(gui)) {
+        L->background = picture(bg, &L->palette);
+        // Only some screens put their picture's palette on the display (the main menu, the end of
+        // a battle); the others keep the one shown before, the main menu's, and their interface
+        // colours come from it.
+        if (gui != "MAINMENU" && gui != "ENDMSN") {
+            const render::Palette* menu_pal = nullptr;
+            if (picture("FrontendX", &menu_pal) && menu_pal) L->palette = menu_pal;
+        }
+    }
     const render::Palette& pal = L->palette ? *L->palette : content_.palette;
     for (int k = 0; k < 256; ++k) L->colours[static_cast<std::size_t>(k)] = gui_colour(pal, k);
     const std::string own_gaf = "anims\\" + gui + ".GAF";
-    const auto* stock = sequence("anims\\commongui.GAF", "BUTTONS0");
+    std::vector<Widget> slider_arrows;  // appended after the gadgets (the original adds them at the end)
     for (const GuiGadget& g : gs) {
         Widget w;
         switch (g.id) {
@@ -277,32 +291,159 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
         if (g.id != 0) w.active = w.active && g.active;
         w.grayed = g.grayed;
         w.quickkey = g.quickkey > 0 && g.quickkey < 256 ? std::tolower(g.quickkey) : 0;
+        w.quickkey_char = g.quickkey > 0 && g.quickkey < 256 ? g.quickkey : 0;
         w.stages = g.stages;
         w.status = g.status;
         w.text = g.text;
         w.link = g.link;
         w.vertical = g.h > g.w;
-        if (w.kind == WidgetKind::Button) {
-            // Art: the gadget's own sequence in the screen's GAF, else the stock buttons of
-            // its size (switches: the stage buttons).
+        if (w.kind == WidgetKind::Button && (g.attribs & 0x1800) == 0) {
+            // Art: the gadget's own sequence in the screen's GAF, else commongui's sequence of
+            // its name; else (attribute 0x80 clear) a switch takes "stagebuttn<stages>" (a
+            // one-stage switch, or one whose caption is "Off|On", becomes a two-stage
+            // "stagebuttn1") and a plain button the stock "BUTTONS0"; attribute 0x80 takes
+            // "CHECKBOX". In those stock sequences the frame group (every fourth frame) whose
+            // size is nearest the gadget's (|dw| + |dh|, first of equals) is used, and the
+            // gadget takes that frame's size.
             w.frames = sequence(own_gaf, g.name);
             if (!w.frames) w.frames = sequence("anims\\commongui.GAF", g.name);
-            if (!w.frames && g.stages > 0 && g.stages <= 4 && g.w == 120 && g.h == 20)
-                w.frames = sequence("anims\\commongui.GAF", "stagebuttn" + std::to_string(g.stages));
-            if (!w.frames && stock) {
-                // Stock buttons come in groups of four frames by size.
-                for (std::size_t i = 0; i + 3 < stock->size(); i += 4)
-                    if ((*stock)[i].width == g.w && (*stock)[i].height == g.h) {
-                        sequences_.emplace_back(stock->begin() + static_cast<std::ptrdiff_t>(i), stock->begin() + static_cast<std::ptrdiff_t>(i) + 4);
-                        w.frames = &sequences_.back();
-                        break;
+            if (!w.frames) {
+                std::string stock_name;
+                if (g.attribs & 0x80) {
+                    stock_name = "CHECKBOX";
+                } else if (g.stages > 0) {
+                    if (g.text == "Off|On" || g.stages == 1) {
+                        w.stages = 2;
+                        stock_name = "stagebuttn1";
+                    } else {
+                        stock_name = "stagebuttn" + std::to_string(g.stages);
                     }
+                } else {
+                    stock_name = "BUTTONS0";
+                }
+                if (const auto* all = sequence("anims\\commongui.GAF", stock_name); all && !all->empty()) {
+                    std::size_t base = 0;
+                    int best = 1000;
+                    for (std::size_t i = 0; i < all->size(); i += 4) {
+                        const int d = std::abs(g.h - (*all)[i].height) + std::abs(g.w - (*all)[i].width);
+                        if (d < best) {
+                            best = d;
+                            base = i;
+                        }
+                    }
+                    // The frames from the chosen group on (staged switches index from it).
+                    sequences_.emplace_back(all->begin() + static_cast<std::ptrdiff_t>(base), all->end());
+                    for (render::Sprite8& s : sequences_.back()) s.x_offset = s.y_offset = 0;  // stock frames lose their offsets
+                    w.frames = &sequences_.back();
+                    w.w = (*all)[base].width;
+                    w.h = (*all)[base].height;
+                }
+            } else if (!w.frames->empty()) {
+                w.w = w.frames->front().width;
+                w.h = w.frames->front().height;
+            }
+        } else if (w.kind == WidgetKind::ScrollBar) {
+            // Slider art: the SLIDERS sequence (the screen's GAF, else commongui), offsets
+            // dropped; frames from 0 for a vertical slider (w <= h), from 10 for a horizontal one:
+            // +0 / +1 / +2 track start, middle (repeated), end; +3 knob (+4 its middle and +5 its
+            // end when vertical); +6 / +8 the two arrow buttons, placed at the ends, the bar
+            // shrinking between them. The cross size takes the first frame's; a horizontal knob is
+            // frame +5's width wide and travels w - knob - 4 pixels.
+            const auto* seq = sequence(own_gaf, "SLIDERS");
+            if (!seq) seq = sequence("anims\\commongui.GAF", "SLIDERS");
+            if (seq && seq->size() >= 20) {
+                sequences_.emplace_back(*seq);
+                for (render::Sprite8& s : sequences_.back()) s.x_offset = s.y_offset = 0;
+                const auto& fr = sequences_.back();
+                w.frames = &fr;
+                w.slider_base = w.w <= w.h ? 0 : 10;
+                const auto base = static_cast<std::size_t>(w.slider_base);
+                if (w.w < w.h) w.w = fr[base].width;
+                else w.h = fr[base].height;
+                Widget a, b;
+                a.kind = b.kind = WidgetKind::Button;
+                a.link = b.link = w.name;
+                a.active = b.active = w.active;
+                a.slider_step = -1;
+                b.slider_step = 1;
+                a.attribs = 0x3400;
+                b.attribs = 0x2C00;
+                sequences_.emplace_back(fr.begin() + static_cast<std::ptrdiff_t>(base) + 6, fr.begin() + static_cast<std::ptrdiff_t>(base) + 8);
+                a.frames = &sequences_.back();
+                sequences_.emplace_back(fr.begin() + static_cast<std::ptrdiff_t>(base) + 8, fr.begin() + static_cast<std::ptrdiff_t>(base) + 10);
+                b.frames = &sequences_.back();
+                const render::Sprite8& arrow = fr[base + 6];
+                a.x = w.x;
+                a.y = w.y;
+                a.w = arrow.width;
+                a.h = arrow.height;
+                b.w = fr[base + 8].width;
+                b.h = fr[base + 8].height;
+                if (w.h < w.w) {
+                    b.x = w.x - arrow.width + w.w;
+                    b.y = w.y;
+                    w.w -= 2 * arrow.width;
+                    w.x += arrow.width;
+                    w.knob = fr[base + 5].width;
+                    w.span = w.w - w.knob - 4;
+                } else {
+                    b.x = w.x;
+                    b.y = w.y - arrow.height + w.h;
+                    w.h -= 2 * arrow.height;
+                    w.y += arrow.height;
+                }
+                slider_arrows.push_back(a);
+                slider_arrows.push_back(b);
+            } else {
+                w.span = std::max(w.w, w.h) - 6;
             }
         } else if (w.kind == WidgetKind::Picture) {
             if (const auto* s = sequence(own_gaf, g.name)) w.picture = &s->front();
             else if (const auto* c = sequence("anims\\commongui.GAF", g.name)) w.picture = &c->front();
         }
         L->widgets.push_back(std::move(w));
+    }
+    for (Widget& a : slider_arrows) L->widgets.push_back(std::move(a));
+    // Without a named Enter / Escape default the first button whose name begins with "OK" or
+    // "NEXT" takes Enter and the first beginning with "PREV" or "Cancel" takes Escape (names
+    // compared without case).
+    {
+        auto begins = [](const std::string& s, const char* p) {
+            const std::size_t n = std::strlen(p);
+            return s.size() >= n && ieq(s.substr(0, n), p);
+        };
+        for (std::size_t i = 1; i < gs.size(); ++i)
+            if (gs[i].id == 1 && L->enter_default.empty() && (begins(gs[i].name, "OK") || begins(gs[i].name, "NEXT"))) L->enter_default = gs[i].name;
+        for (std::size_t i = 1; i < gs.size(); ++i)
+            if (gs[i].id == 1 && L->escape_default.empty() && (begins(gs[i].name, "PREV") || begins(gs[i].name, "Cancel")))
+                L->escape_default = gs[i].name;
+    }
+    // Quick keys come from the captions (the front end clears the files' keys when a screen
+    // opens): in gadget order, each plain button (switches get none) and each label with a
+    // caption takes the first character of its caption, not a space, that no gadget has as its
+    // key yet (letters compared without case); the key keeps the caption's case.
+    {
+        auto& ws = L->widgets;
+        for (Widget& w : ws)
+            if (w.kind == WidgetKind::Button) w.quickkey = w.quickkey_char = 0;
+        for (std::size_t i = 0; i < ws.size() && i < gs.size(); ++i) {
+            Widget& w = ws[i];
+            const bool button = w.kind == WidgetKind::Button && (gs[i].attribs & 0x1800) == 0 && (gs[i].attribs & 0x10000) == 0;
+            const bool label = gs[i].id == 5 && !w.text.empty() && !g_link_empty(gs[i]);  // only labels linked to a gadget
+            if (!button && !label) continue;
+            if (button && w.stages > 0) continue;
+            w.quickkey = w.quickkey_char = 0;
+            for (const char c : w.text) {
+                if (c == ' ') continue;
+                const int lc = std::tolower(static_cast<unsigned char>(c));
+                bool used = false;
+                for (const Widget& o : ws) used |= (o.kind == WidgetKind::Button || o.kind == WidgetKind::Label) && o.quickkey == lc;
+                if (used) continue;
+                w.quickkey = lc;
+                w.quickkey_char = static_cast<unsigned char>(c);
+                break;
+            }
+        }
     }
     auto* raw = L.get();
     layouts_[gui] = std::move(L);
