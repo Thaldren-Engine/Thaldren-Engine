@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "sim/mission_goals.h"
+
 namespace sim {
 
 class Battle;
@@ -51,6 +53,16 @@ struct StartRule {
     std::int16_t x = 0, z = 0;  // world units
 };
 
+// A scripted mission's part of the start (provider 1, docs/RE_MEMORY.md "Campaign").
+struct MissionStart {
+    std::vector<MissionUnit> units;        // placed after the line-of-sight rebuild
+    MissionOrderParser parse_orders;       // the units' order strings (the importer's)
+    MissionGoals goals;                    // win and loss goals
+    std::array<float, 10> metal{}, energy{};  // per player record: stored amounts and storage bonus
+    bool restrict_types = false;           // only `allowed_types` can be made (the mission's unit list)
+    std::vector<std::uint16_t> allowed_types;
+};
+
 struct BattleStart {
     std::array<StartPlayer, 10> players{};
     std::vector<StartRule> start_rules;  // the selected schema's start positions
@@ -79,6 +91,7 @@ struct BattleStart {
     // Runs once every player record is set up, before the commanders and the step-0 players'
     // stage (the importer reads the computer players' profile here).
     std::function<void(Battle&)> after_player_setup;
+    MissionStart mission;  // provider 1 only
 };
 
 // Runs the original's battle set-up on a battle whose static data is loaded. Returns false

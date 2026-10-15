@@ -32,6 +32,7 @@
 #include "client/front.h"
 #include "client/game_client.h"
 #include "client/music.h"
+#include "ta/client_campaign.h"
 #include "ta/client_menus.h"
 #include "ta/client_world.h"
 
@@ -120,6 +121,12 @@ int main(int argc, char** argv) {
         fes.height = 480;
         fes.settings_path = settings_path;
         ta::make_front_end(art, &music, fes);
+        // Campaign, briefings and the saved games (saves next to the settings file).
+        {
+            std::string save_dir = settings_path.substr(0, settings_path.find_last_of("\\/") == std::string::npos ? 0 : settings_path.find_last_of("\\/"));
+            if (save_dir.empty()) save_dir = ".";
+            ta::install_campaign_hooks(fes.hooks, art, save_dir);
+        }
 #ifdef TA_CLIENT_HAVE_NET
         // Multiplayer: the connection and battle room screens on the main menu's button.
         client::install_multiplayer(fes.hooks, ta::network_config(art, nullptr));

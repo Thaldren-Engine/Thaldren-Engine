@@ -30,7 +30,7 @@ Addresses are identical in both Ghidra programs.
 10. `Camera_TickFollowEaseShakeClamp` `0x0041CA10` (the view is presentation, but its shake decay draws `rand()`: built, `sim/sky.h`)
 11. `Fx_SweepAndPruneListenerSlots` `0x00471EB0` (built: `sim/effect_lists.h` lists 0-5 and 7-9, nano list 6)
 12. `Minimap_TickBlinkDirtyFlag` `0x00466580` (not sim)
-The whole step is `Battle::step()`; battle start `sim::start_battle` / `ta::load_battle` (RE_MEMORY "Battle start").
+The whole step is `Battle::step()`; battle start `sim::start_battle` / `ta::load_battle` (RE_MEMORY "Battle start"; campaign missions: "Campaign").
 13. Networked: `Share_AutoAllyResourcesAndMap` (built: `Share_AutoShareResources`, `Battle::auto_share_resources`) + `Net_FlushPendingFrames` (built: `net::NetBattle::network_flush`, frames `net/frames.h`)
 
 After all steps in a frame: `Los_ExpireLingeringSight` (`0x00482130`, built: `Battle::expire_lingering_sight`), chat HUD index.
@@ -139,7 +139,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 | **Features** | Feature 13, FeatureDef 4 | Animation, reproduce, tree fire, reclaim, wreckage |
 | **Map / terrain** | Map 35, MapInfo 33, HeightMap 10, SpatialBucket 2 | Heights, footprints, passability |
 | **Environment** | Wind 1, Meteor 7 | Wind every 150–420 ticks; meteor showers |
-| **Victory / defeat** | VictoryCond 44, DefeatCond 25, VictoryConditions 13 | Built for skirmish/network (`engine/sim/src/victory.cpp`, RE_MEMORY "Victory"); campaign condition classes open |
+| **Victory / defeat** | VictoryCond 44, DefeatCond 25, VictoryConditions 13 | Built for skirmish/network (`engine/sim/src/victory.cpp`, RE_MEMORY "Victory") and campaigns (`sim/mission_goals.h`, RE_MEMORY "Campaign"; smoke-verified) |
 | **Commands (input)** | Cmd 93, Orders 4 | How player orders enter the sim |
 | **Net lockstep / sync** | Net 66, Sync 59 | The original replicates unit states (not lockstep); Sync = unit-definition checksums. Built: the original's model (`engine/net`, `net_units.cpp`; wire format differential-tested in `net_harness`), the battle room with the checksum exchange (`net/lobby.h`), TCP and loopback transports; the engine lockstep tool (`sim/lockstep.h`) remains for tests. Open: DirectPlay interoperability, the side record's unread bytes, resend/out-of-order frame paths |
 | **Debris / FX** | Fx 55, Debris 3 | **Open:** which parts change sim state (debris can deal damage?) and which are visual |
@@ -169,7 +169,7 @@ The engine defines its **own** structs. These layouts are only for understanding
 |---|---|---|
 | `Game_InitializeBattle` | `0x00497180` | Sim initialization order (map, players, RNG seed, start units) |
 | `Game_LoadMapTnt` | `0x004917D0` | Map plus environment init (wind denominator 5000) |
-| GameSave (22 functions) | — | Reading the full state layout |
+| GameSave (22 functions) | — | Read (RE_MEMORY "Saved games"): a partial snapshot (no generators, projectiles, effects, route search, AI); the engine saves the start plus an input journal (`sim/journal.h`, `ta/saved_game.h`) in the original's bank container |
 | **Ghidra debugger** (ghidra-mcp `debugger_*`) | — | Run the original TotalA.exe, break per sim step, dump RNG/unit state → **golden traces** to compare against the engine tick-for-tick |
 
 **Out of scope for the sim:** rendering, GUI, sound, lobby, CD audio, camera, minimap.

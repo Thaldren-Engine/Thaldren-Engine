@@ -117,6 +117,14 @@ void read_meteors(Vfs& vfs, const TdfSection* schema, sim::MeteorShower& m, std:
 
 std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, sim::BattleOutside& outside, std::string& error,
                                           const std::function<void(sim::Battle&)>& before_start) {
+    for (const std::filesystem::path& a : req.extra_archives) {
+        bool mounted = false;
+        std::error_code ec;
+        for (const auto& m : vfs.archives())
+            if (std::filesystem::equivalent(m->path(), a, ec)) mounted = true;
+        HpiError err;
+        if (!mounted) vfs.mount(a, err);
+    }
     auto lb = std::make_unique<LoadedBattle>();
     if (!vfs.read("maps\\" + req.map + ".tnt", lb->tnt)) {
         error = "map not found: " + req.map;
@@ -135,6 +143,20 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     std::vector<std::string> tnt_names;
     tnt_feature_names(lb->tnt, tnt_names);
     lb->feature_defs.load_map_features(tnt_names);
+    // The map info and its schema (chosen as the original does for skirmish and network games
+    // when request.schema < 0, else the requested one); the schema's features come after the
+    // TNT's in the feature table (Mission_SpawnMapFeatures, called by Map_LoadTnt).
+    std::unique_ptr<TdfSection> ota_root;
+    if (!lb->ota.empty()) ota_root = tdf_parse(std::string_view(reinterpret_cast<const char*>(lb->ota.data()), lb->ota.size())).root;
+    const TdfSection* header = ota_root ? ota_root->child("GlobalHeader") : nullptr;
+    int schema = req.schema;
+    if (schema < 0 && header) {
+        int players = 0;
+        for (int s = 0; s < 10; ++s)
+            if (req.start.players[static_cast<std::size_t>(s)].kind != sim::PlayerKind::Empty) players = s + 1;
+        schema = select_schema(*header, players);
+    }
+    if (ota_root && schema >= 0) lb->feature_defs.load_schema_features(*ota_root, "Schema " + std::to_string(schema));
     load_unit_context(vfs, lb->unit_context);
     lb->unit_defs = load_unit_defs(vfs, lb->unit_context, &lb->feature_defs);
     lb->feature_defs.resolve_chains();
@@ -191,19 +213,26 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     b.init_buckets();
     b.reset_features_and_effects();
     place_tnt_features(b, lb->tnt);
-    sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
-    // The map info's schema: chosen as the original does for skirmish and network games
-    // (request.schema < 0), else the requested one.
-    std::unique_ptr<TdfSection> ota_root;
-    if (!lb->ota.empty()) ota_root = tdf_parse(std::string_view(reinterpret_cast<const char*>(lb->ota.data()), lb->ota.size())).root;
-    const TdfSection* header = ota_root ? ota_root->child("GlobalHeader") : nullptr;
-    int schema = req.schema;
-    if (schema < 0 && header) {
-        int players = 0;
-        for (int s = 0; s < 10; ++s)
-            if (req.start.players[static_cast<std::size_t>(s)].kind != sim::PlayerKind::Empty) players = s + 1;
-        schema = select_schema(*header, players);
+    const TdfSection* schema_sec_f = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
+    if (const TdfSection* list = schema_sec_f ? schema_sec_f->child("features") : nullptr) {
+        // Each listed feature at its cell (a 3D feature's position is its footprint's centre).
+        sim::FeatureWorld& fw = b.feature_world();
+        for (const auto& e : list->children()) {
+            const std::string name = e->get_string("Featurename", 0x80, "");
+            std::int32_t x = e->get_int("XPos", -1), z = e->get_int("ZPos", -1);
+            if (name.empty() || x < 0 || z < 0) continue;
+            const int idx = lb->feature_defs.find(name);
+            if (idx < 0) continue;
+            const FeatureDefRecord& d = lb->feature_defs.records()[static_cast<std::size_t>(idx)];
+            if (!(d.flags & feature_flags::kGaf)) {
+                x -= d.footprint_x / 2;
+                z -= d.footprint_z / 2;
+            }
+            if (x >= b.map.width || z >= b.map.height || x < 0 || z < 0) continue;  // off the map (not checked by the original)
+            sim::place_feature(fw, z * b.map.width + x, static_cast<std::uint16_t>(idx), nullptr, nullptr, 10);
+        }
     }
+    sim::mark_map_edges(b.map, b.settings.sea_level, b.settings.lava_world);  // the end of the map load (0x4833B0)
     const TdfSection* schema_sec = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
     MapEconomy me;
     if (!lb->ota.empty()) read_map_economy(lb->ota, schema < 0 ? 0 : schema, me);
@@ -237,6 +266,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
         AiProfileReport report;
         load_ai_profile(vfs, ai_profile_path(lb->ota, profile_schema), lb->unit_defs, battle.ai(), report);
     };
+    if (req.prepare_start) req.prepare_start(*lb, start);
     if (before_start) before_start(b);
     if (!sim::start_battle(b, start, error)) return nullptr;
     return lb;

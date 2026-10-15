@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -24,6 +25,8 @@
 
 namespace ta {
 
+struct LoadedBattle;
+
 struct BattleRequest {
     std::string map = "Moon Quartet";  // maps\<map>.tnt / .ota
     int schema = -1;                   // the OTA schema (-1: chosen as the original does)
@@ -32,6 +35,12 @@ struct BattleRequest {
     // start.players / start.*. A player's commander_type is filled from its side.
     std::array<std::string, 10> sides{};
     sim::BattleStart start;
+    // Optional: sees the loaded data and the start description just before the set-up runs
+    // (missions resolve their unit names to type indices here).
+    std::function<void(LoadedBattle&, sim::BattleStart&)> prepare_start;
+    // Archives to mount before loading when the file system has not mounted them yet (a
+    // mission on the game CD's archives).
+    std::vector<std::filesystem::path> extra_archives;
 };
 
 struct LoadedBattle {

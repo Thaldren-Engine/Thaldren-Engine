@@ -25,6 +25,7 @@
 #include "sim/ground_settle.h"
 #include "sim/heightmap.h"
 #include "sim/missions.h"
+#include "sim/mission_goals.h"
 #include "sim/motion.h"
 #include "sim/net_units.h"
 #include "sim/nano_spray.h"
@@ -224,6 +225,9 @@ public:
     // the computer player's constructor site height (per role call) and the reclaim sites' y.
     virtual std::int32_t ai_site_height_word(int /*player*/, std::int32_t fallback) { return fallback; }
     virtual std::int32_t reclaim_site_y(std::int32_t fallback) { return fallback; }
+    // Missions (sim/mission_goals.h): a goal was met for the first time (the original plays
+    // its "goal met" sound; presentation only).
+    virtual void mission_goal_met() {}
 };
 
 class Battle final : UnitWorld,
@@ -277,6 +281,8 @@ public:
     VictoryState victory;  // outcome per player and the end of the game (sim/victory.h)
     MeteorShower meteors;  // meteor showers (sim/sky.h), configured by the loader
     CameraShake shake;     // the camera shake, whose decay draws rand() (sim/sky.h)
+    MissionGoals mission_goals;  // a mission's win and loss goals (sim/mission_goals.h; provider 1)
+    void outside_cue_goal_met() { outside_.mission_goal_met(); }
 
     // Setup: `count` unit table entries (ids 0..count-1; entry 0 unused), and a player's
     // inclusive range of them (the entries' owner is fixed by it).
@@ -482,7 +488,10 @@ private:
     void stats_activity(std::int32_t kind) override { outside_.stats_activity(kind); }
     void network_send(std::int32_t net, const std::uint8_t* p, std::int32_t size) override { outside_.network_send(net, p, size); }
     void reveal_dead_unit(Unit& u) override;
-    void victory_unit_destroyed(Unit& u) override { outside_.victory_unit_destroyed(u); }
+    void victory_unit_destroyed(Unit& u) override {
+        mission_unit_destroyed(*this, u);  // 0x4904C0
+        outside_.victory_unit_destroyed(u);
+    }
     void clear_orders(Unit& unit) override;
     void forget_speech(Unit& u) override { outside_.forget_speech(u); }
     void leave_group(Unit& u) override {
@@ -732,7 +741,10 @@ private:
             spawn_nano_stream(b.nano, b.crt_rand, b.unit_env_.game_tick, box, point_box(to));
         }
         void kill_feature(std::int32_t x, std::int32_t z, bool reclaimed) override { sim::kill_feature(b.feature_world_, x, z, reclaimed); }
-        void victory_unit_transferred(Unit& u) override { b.outside_.victory_unit_transferred(u); }
+        void victory_unit_transferred(Unit& u) override {
+            mission_unit_transferred(b, u);  // 0x490520
+            b.outside_.victory_unit_transferred(u);
+        }
         void network_send(std::int32_t net, const std::uint8_t* p, std::int32_t size) override { b.outside_.network_send(net, p, size); }
         void broadcast_script_call_args(Unit& u, std::int16_t f, std::int32_t n, std::int32_t a) override { b.outside_.broadcast_script_call_args(u, f, n, a); }
         void builder_menu(Unit& u) override { b.outside_.builder_menu(u); }

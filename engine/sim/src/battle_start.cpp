@@ -62,6 +62,13 @@ void init_resources(Battle& b, const BattleStart& s) {
         } else if (s.provider == 2) {
             p.energy_stored = static_cast<float>(start_energy(s, k));
             p.metal_stored = static_cast<float>(start_metal(s, k));
+        } else if (s.provider == 1) {
+            // Missions: the schema's amounts per record (player 0 the human's, 1 the computer's),
+            // also as the storage bonus (truncated, at least 200).
+            const float e = s.mission.energy[static_cast<std::size_t>(k)], m = s.mission.metal[static_cast<std::size_t>(k)];
+            set_storage_bonus(p, b.player_economy[static_cast<std::size_t>(k)], static_cast<std::int32_t>(m), static_cast<std::int32_t>(e));
+            p.energy_stored = e;
+            p.metal_stored = m;
         }
     }
 }
@@ -106,6 +113,15 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
     st.local_player = start.local_player;
     st.local_view = start.local_player;
     st.net_game = start.net_game;
+    if (start.provider == 1) {
+        // A mission's unit list (0x431740): only the listed types can be made.
+        if (start.mission.restrict_types) {
+            for (std::size_t k = 1; k < b.types.size(); ++k) b.types[k].create.type_flags &= ~create_flags::kLoadable;
+            for (std::uint16_t t : start.mission.allowed_types)
+                if (t > 0 && t < b.types.size()) b.types[t].create.type_flags |= create_flags::kLoadable;
+        }
+        b.mission_goals = start.mission.goals;
+    }
     // Player records and the unit table: ten ranges of `unit_limit` entries.
     b.init_unit_table(static_cast<std::size_t>(start.unit_limit) * 10 + 1);
     int last_player = 0;
@@ -206,6 +222,8 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
         init_resources(b, start);
     }
     if (sight) b.rebuild_sight(true);
+    // Missions: the placed units and their first orders (0x488310).
+    if (start.provider == 1 && !place_mission_units(b, start.mission.units, start.mission.parse_orders, error)) return false;
     // One players' stage at step 0, then the stored amounts are set again.
     b.players_stage();
     init_resources(b, start);
