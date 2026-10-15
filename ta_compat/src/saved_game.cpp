@@ -180,7 +180,7 @@ bool read_bank(const std::vector<std::uint8_t>& bytes, Bank& out, std::string& e
     return true;
 }
 
-void write_bank(const Bank& bank, std::vector<std::uint8_t>& out) {
+void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<std::size_t>* stale) {
     out.assign(0x22, 0);
     std::memcpy(out.data(), "HAPIBANK", 8);
     std::vector<std::uint8_t> dir;
@@ -214,15 +214,18 @@ void write_bank(const Bank& bank, std::vector<std::uint8_t>& out) {
         for (const auto& b : s.blobs) nb += !b.data.empty();
         std::size_t data_at = out.size() + nb * 16u;
         std::int32_t last_index = 0;
+        bool index_known = false;
         for (const auto& b : s.blobs) {
             if (b.data.empty()) continue;
             if (b.named) {
                 wr32(out, add(b.name));
+                if (!index_known && stale) stale->push_back(out.size());
                 wr32(out, static_cast<std::uint32_t>(last_index));  // the original leaves a stale word here
             } else {
                 wr32(out, 0xFFFFFFFFu);
                 wr32(out, static_cast<std::uint32_t>(b.index));
                 last_index = b.index;
+                index_known = true;
             }
             wr32(out, static_cast<std::uint32_t>(data_at));
             wr32(out, static_cast<std::uint32_t>(b.data.size()));

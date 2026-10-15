@@ -65,7 +65,10 @@ struct Bank {
 // Parses a bank (squashed accounts and directory included). `only`: read just that section.
 bool read_bank(const std::vector<std::uint8_t>& bytes, Bank& out, std::string& error, const char* only = nullptr);
 // Writes a bank (accounts and directory stored, not squashed, which the original also reads).
-void write_bank(const Bank& bank, std::vector<std::uint8_t>& out);
+// A named blob's descriptor carries a word the original's writer leaves from its stack (the
+// last numbered blob's index in that account, else whatever was there); `stale` (optional)
+// receives the file offsets of those words this writer had to choose (it writes 0).
+void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<std::size_t>* stale = nullptr);
 
 // --- What a game was started from.
 struct GameStart {

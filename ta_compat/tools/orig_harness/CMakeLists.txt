@@ -643,3 +643,31 @@ add_executable(order_harness
 )
 target_include_directories(order_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(order_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# The saved-game bank container vs the original's store and writer (ta/saved_game.h).
+file(GLOB BANK_HARNESS_SIM ${ROOT}/engine/sim/src/*.cpp)
+add_executable(bank_harness bank_harness.cpp
+    ${ROOT}/ta_compat/src/ai_profile.cpp
+    ${ROOT}/ta_compat/src/battle_economy.cpp
+    ${ROOT}/ta_compat/src/battle_features.cpp
+    ${ROOT}/ta_compat/src/battle_loader.cpp
+    ${ROOT}/ta_compat/src/battle_types.cpp
+    ${ROOT}/ta_compat/src/campaign.cpp
+    ${ROOT}/ta_compat/src/mission_text.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/saved_game.cpp
+    ${ROOT}/ta_compat/src/sight_tables.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/tnt.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${BANK_HARNESS_SIM}
+)
+target_include_directories(bank_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(bank_harness PRIVATE /W4 /permissive- /fp:precise)
