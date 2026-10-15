@@ -147,7 +147,7 @@ void BattleRoom::grant_logo(std::int32_t asker, std::uint8_t wanted) {
         if (!taken) break;
         ++logo;
     }
-    if (logo > 9) logo = 0;
+    // Every logo taken (cannot happen with ten seats): the original grants the count past the last.
     const int s = slot_of(asker);
     if (s >= 0) players_[static_cast<std::size_t>(s)].logo = logo;
     if (s >= 0 && mine(players_[static_cast<std::size_t>(s)])) {

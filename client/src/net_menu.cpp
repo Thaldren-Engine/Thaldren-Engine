@@ -69,6 +69,7 @@ public:
         if (launched_) fe.pop();  // back from the game
     }
     void handle(FrontEnd& fe, const InputEvent& e) override {
+        if (!room_) return;  // handed to the game
         if (e.type == InputEvent::Type::KeyDown) {
             if (e.key == keys::kEscape) {
                 fe.pop();
@@ -100,31 +101,34 @@ public:
         }
     }
     void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        if (!room_) return;
         room_->frame(now_clock(now_ms), &crt_rand_);
         if (room_->refused() && !launched_) push(room_->error());
         if (room_->loaded() && !launched_) launch(fe);
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
         background(fe, out, "BATTLROOM");
+        if (!room_) return;
         draw_line(fe, out, std::string(room_->is_host() ? "Battle room (host)" : "Battle room") + "  -  map " + room_->map(), 20, 16);
         int y = 44;
         for (int s = 0; s < 10; ++s) {
             const net::RoomPlayer& p = room_->players()[static_cast<std::size_t>(s)];
             if (!p.net_id) continue;
             std::string line = std::to_string(s + 1) + ". " + p.name + "  " + (p.side ? "CORE" : "ARM") + "  logo " +
-                               std::to_string(p.logo) + (p.kind == 2 ? "  computer" : "") + (p.ready() || p.kind == 2 || (p.flags & net::room::kHost) ? "  ready" : "") +
+                               std::to_string(p.logo) + (p.ally_team < 5 ? "  team " + std::to_string(p.ally_team + 1) : "") + (p.kind == 2 ? "  computer" : "") + (p.ready() || p.kind == 2 || (p.flags & net::room::kHost) ? "  ready" : "") +
                                (p.latency_ms ? "  " + std::to_string(p.latency_ms) + " ms" : "");
             draw_line(fe, out, line, 20, y, s != room_->local_slot());
             y += 16;
         }
         const int by = out.height - 120;
-        side_ = {20, by, 90, 20, "Side"};
-        colour_ = {120, by, 90, 20, "Colour"};
-        ready_ = {220, by, 90, 20, ready_value_ ? "Ready!" : "Ready"};
-        computer_ = {320, by, 110, 20, "Computer"};
-        start_ = {440, by, 90, 20, "Start"};
-        back_ = {540, by, 80, 20, "Back"};
-        for (Box* b : {&side_, &colour_, &ready_, &back_}) draw_box(fe, out, *b, b == &ready_ && ready_value_);
+        side_ = {20, by, 80, 20, "Side"};
+        colour_ = {105, by, 80, 20, "Colour"};
+        team_ = {190, by, 80, 20, "Team"};
+        ready_ = {275, by, 80, 20, ready_value_ ? "Ready!" : "Ready"};
+        computer_ = {360, by, 95, 20, "Computer"};
+        start_ = {460, by, 80, 20, "Start"};
+        back_ = {545, by, 75, 20, "Back"};
+        for (Box* b : {&side_, &colour_, &team_, &ready_, &back_}) draw_box(fe, out, *b, b == &ready_ && ready_value_);
         if (room_->is_host()) {
             draw_box(fe, out, computer_);
             draw_box(fe, out, start_, room_->can_start());
