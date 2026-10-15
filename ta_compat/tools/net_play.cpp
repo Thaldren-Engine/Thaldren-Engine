@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "net/lobby.h"
 #include "net/net_battle.h"
 #include "net/transport.h"
 #include "sim/battle.h"
@@ -85,7 +86,7 @@ void hook_up(Machine& m) {
 // Scripted orders for the machine's own player: move, build, stop.
 void give_orders(Machine& m) {
     sim::Battle& b = *m.lb->battle;
-    if (m.rng() % 6 != 0) return;
+    if (m.rng() % 40 != 0) return;
     const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(m.slot)];
     std::vector<std::uint16_t> mine;
     for (int id = p.first_unit; id <= p.last_unit; ++id)
@@ -111,6 +112,28 @@ void give_orders(Machine& m) {
     const std::uint16_t type = b.ticks[sel.units[0]].type_index;
     const ta::UnitDefRecord* d = type < m.lb->type_defs.size() ? m.lb->type_defs[type] : nullptr;
     const unsigned what = m.rng() % 4;
+    if (what == 3) {
+        // Attack a unit of another player (as this machine sees it).
+        std::vector<std::uint16_t> theirs;
+        for (std::size_t id = 1; id < b.units.size(); ++id)
+            if (b.ticks[id].type_index && b.ticks[id].owner != m.slot && (b.units[id].flags & sim::unit_flags::kAlive))
+                theirs.push_back(static_cast<std::uint16_t>(id));
+        if (!theirs.empty()) {
+            const std::uint16_t t = theirs[m.rng() % theirs.size()];
+            c.kind = sim::command::Kind::IssueIntent;
+            c.intent = sim::intent::kAttack;
+            c.target = t;
+            c.has_pos = true;
+            c.pos = b.units[t].pos;
+            sim::command::apply(b, c);
+            if (std::getenv("NET_PLAY_VERBOSE")) {
+                const sim::Unit& me = b.units[sel.units[0]];
+                std::printf("  machine %d step %u: unit %u attacks %u: first order kind %d\n", m.slot, b.game_tick(), me.id, t,
+                            me.orders ? me.orders->kind : -1);
+            }
+            return;
+        }
+    }
     if (what < 2 && d && d->build_options_count > 0) {
         if (b.ticks[sel.units[0]].has_motion) {
             c.kind = sim::command::Kind::MobileBuild;
@@ -180,24 +203,90 @@ void report(const char* what, std::uint32_t tick, const Comparison& c) {
 int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const std::string& map) {
     net::LoopbackHub hub;
     std::vector<std::unique_ptr<Machine>> ms;
+    std::vector<net::Transport*> ends;
+    std::vector<std::unique_ptr<net::BattleRoom>> rooms;
+    for (int s = 0; s < machines; ++s) {
+        ends.push_back(&hub.add_machine());
+        rooms.push_back(std::make_unique<net::BattleRoom>(*ends.back(), s == 0, 0x100 * (s + 1), "Player " + std::to_string(s + 1)));
+        rooms.back()->set_side(static_cast<std::uint8_t>(s & 1));
+        rooms.back()->set_colour(static_cast<std::uint8_t>(s));
+    }
+    // The battle room: everybody joins, readies, the host starts.
+    rooms[0]->set_map(map);
+    rooms[0]->set_map_ready(true);
+    rooms[0]->set_options(0, 0, 250, 100, 100, true);  // 10000 energy and metal
+    std::uint32_t clock = 1000;
+    for (int pass = 0; pass < 200 && !rooms[0]->started(); ++pass) {
+        clock += 2;
+        for (auto& r : rooms) r->frame(clock);
+        if (pass == 4)
+            for (std::size_t k = 0; k < rooms.size(); ++k) {
+                // NET_PLAY_POSITIONS=a,b,c: start positions chosen in the room.
+                if (const char* e = std::getenv("NET_PLAY_POSITIONS")) {
+                    std::string v(e);
+                    std::size_t at = 0;
+                    for (std::size_t i = 0; i < k && at != std::string::npos; ++i) at = v.find(',', at) == std::string::npos ? std::string::npos : v.find(',', at) + 1;
+                    if (at != std::string::npos && at < v.size()) rooms[k]->set_start_position(static_cast<std::int8_t>(std::atoi(v.c_str() + at)));
+                }
+                if (k == 0) continue;
+                rooms[k]->set_map_ready(true);
+                rooms[k]->set_ready(true);
+            }
+        if (pass > 6 && rooms[0]->can_start()) rooms[0]->start();
+    }
+    for (int pass = 0; pass < 10; ++pass) {
+        clock += 2;
+        for (auto& r : rooms) r->frame(clock);
+    }
+    for (auto& r : rooms)
+        if (!r->started()) {
+            std::printf("battle room: the game did not start\n");
+            return 1;
+        }
+    std::printf("battle room: %d players seated, game started by the host\n", machines);
     for (int s = 0; s < machines; ++s) {
         auto m = std::make_unique<Machine>();
-        m->slot = s;
+        m->slot = rooms[static_cast<std::size_t>(s)]->local_slot();
         m->rng.seed(seed * 31u + static_cast<std::uint32_t>(s));
-        m->net = std::make_unique<net::NetBattle>(m->quiet, hub.add_machine());
+        m->net = std::make_unique<net::NetBattle>(m->quiet, *ends[static_cast<std::size_t>(s)]);
+        m->clock = clock;
         ms.push_back(std::move(m));
     }
     // Everybody is in the session before the battles load (their start announces units).
-    for (auto& m : ms) {
-        m->lb = load(vfs, map, machines, m->slot, seed, *m->net);
-        if (!m->lb) return 1;
-        hook_up(*m);
+    for (std::size_t k = 0; k < ms.size(); ++k) {
+        Machine& m = *ms[k];
+        const net::BattleRoom& room = *rooms[k];
+        ta::BattleRequest req;
+        req.map = room.map();
+        req.sides = room.sides();
+        req.start = room.battle_start();
+        req.start.battle_rng_seed = seed * 7919u + static_cast<std::uint32_t>(k) * 104729u + 1u;
+        req.start.loading_rand_seed = seed + static_cast<std::uint32_t>(k);
+        req.start.crt_rand_state = 0xC0FFEEu + static_cast<std::uint32_t>(k);
+        std::string err;
+        m.lb = ta::load_battle(vfs, req, *m.net, err, [&](sim::Battle& b) { m.net->attach(b); });
+        if (!m.lb) {
+            std::printf("load: %s\n", err.c_str());
+            return 1;
+        }
+        hook_up(m);
     }
     std::vector<Machine*> all;
     for (auto& m : ms) all.push_back(m.get());
     Comparison total;
     int failures = 0;
     for (int step = 0; step < steps; ++step) {
+        if (std::getenv("NET_PLAY_DUEL") && step == 30)
+            // A skirmish line: each machine places a few of its own armed units near the first
+            // unit of the next player (announced to the others by packet 9 as any new unit).
+            for (Machine* m : all) {
+                sim::Battle& b = *m->lb->battle;
+                const int foe = (m->slot + 1) % machines;
+                const sim::Unit& target = b.units[static_cast<std::size_t>(b.players[static_cast<std::size_t>(foe)].first_unit)];
+                const std::uint16_t type = m->lb->type_index(m->slot & 1 ? "CORAK" : "ARMPW");
+                for (int k = 0; k < 4 && type; ++k)
+                    b.create_unit(m->slot, type, target.pos[0] + ((k * 40 - 60) << 16), target.pos[1], target.pos[2] + (160 << 16), true, 1);
+            }
         for (Machine* m : all) {
             give_orders(*m);
             if (step == 10) m->net->send_chat("hello from " + std::to_string(m->slot));
@@ -210,6 +299,15 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
                 return 1;
             }
         }
+        if (std::getenv("NET_PLAY_VERBOSE") && (step + 1) % 150 == 0)
+            for (Machine* m : all) {
+                sim::Battle& b = *m->lb->battle;
+                std::printf("  machine %d step %u:", m->slot, b.game_tick());
+                for (std::size_t id = 1; id < b.units.size(); ++id)
+                    if (b.ticks[id].type_index && (b.units[id].flags & sim::unit_flags::kAlive))
+                        std::printf(" [%zu %d,%d hp %d]", id, b.units[id].pos[0] >> 16, b.units[id].pos[2] >> 16, b.units[id].hit_points);
+                std::printf(" shots %d\n", b.projectiles.count);
+            }
         if ((step + 1) % 60 == 0 || step + 1 == steps) {
             Comparison c;
             compare(all, c);
@@ -235,6 +333,10 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
                     static_cast<unsigned long long>(m->net->sender().frames_sent()), static_cast<unsigned long long>(m->net->sender().bytes_sent()),
                     m->chat.size(), static_cast<unsigned long long>(m->lb->battle->net_state().units_made),
                     static_cast<unsigned long long>(m->lb->battle->net_state().states_read), m->net->remote_lag());
+        std::printf("  packets by type (sent and received):");
+        for (std::size_t t = 0; t < n.by_type.size(); ++t)
+            if (n.by_type[t]) std::printf(" %02zx:%llu", t, static_cast<unsigned long long>(n.by_type[t]));
+        std::printf("\n");
         if (m->chat.size() != static_cast<std::size_t>(machines - 1)) ++failures;
     }
     std::printf("loopback: %zu messages, %llu bytes; %s\n", static_cast<std::size_t>(hub.messages()), static_cast<unsigned long long>(hub.bytes()),

@@ -103,6 +103,10 @@ void BattleRoom::set_team(std::uint8_t team) {
     if (local_slot_ >= 0) me().team = team;
     dirty_ = true;
 }
+void BattleRoom::set_start_position(std::int8_t position) {
+    if (local_slot_ >= 0) me().start_position = position;
+    dirty_ = true;
+}
 void BattleRoom::set_map(const std::string& map) {
     if (!host_) return;
     for (RoomPlayer& p : players_)

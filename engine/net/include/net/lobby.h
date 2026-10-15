@@ -74,6 +74,8 @@ public:
     void set_colour(std::uint8_t colour);
     void set_ready(bool ready);
     void set_team(std::uint8_t team);
+    // The start position chosen in the room (-1: the host assigns one).
+    void set_start_position(std::int8_t position);
     // Host: the game's settings.
     void set_map(const std::string& map);
     void set_options(std::uint8_t commander_mode, std::uint8_t map_flags, std::uint16_t unit_limit, std::uint16_t energy_hundreds,
