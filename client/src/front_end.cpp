@@ -113,6 +113,8 @@ public:
         h = desktop_h_;
     }
     int desktop_w_ = 1920, desktop_h_ = 1080;
+    std::vector<std::array<int, 2>> modes_;
+    void display_modes(std::vector<std::array<int, 2>>& out) const override { out = modes_; }
     // The frame size now: a battle's own, else the menus'.
     void frame_size(int& w, int& h) {
         if (in_battle() && !ended_) {
@@ -475,6 +477,14 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     if (const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {
         run.desktop_w_ = dm->w;
         run.desktop_h_ = dm->h;
+    }
+    {
+        // The display's modes (the original lists the display's modes in full-screen play).
+        int n = 0;
+        if (SDL_DisplayMode** list = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n)) {
+            for (int i = 0; i < n; ++i) run.modes_.push_back({list[i]->w, list[i]->h});
+            SDL_free(list);
+        }
     }
     int cur_w = w, cur_h = h;  // the frame size the window shows (menus 640 x 480, battles their own)
     int frame_no = 0;

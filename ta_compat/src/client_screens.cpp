@@ -95,6 +95,18 @@ void show_message(FrontEnd& fe, MenuArt& art, const std::string& text) {
 // The screen sizes offered: 640 x 480, 800 x 600 and 1024 x 768, then 1280 x 1024 and
 // 1600 x 1200 when the desktop is at least that big; ascending, nothing below 640 x 480.
 std::vector<std::array<int, 2>> display_modes(FrontEnd& fe) {
+    // The display's own modes when the platform lists them (the original's full-screen path):
+    // sorted by width then height, duplicates and modes below 640 x 480 dropped.
+    std::vector<std::array<int, 2>> listed;
+    fe.display_modes(listed);
+    if (!listed.empty()) {
+        std::sort(listed.begin(), listed.end());
+        listed.erase(std::unique(listed.begin(), listed.end()), listed.end());
+        listed.erase(std::remove_if(listed.begin(), listed.end(), [](const std::array<int, 2>& m) { return m[0] < 640 || m[1] < 480; }),
+                     listed.end());
+        if (!listed.empty()) return listed;
+    }
+    // Otherwise the original's windowed list.
     int dw = 0, dh = 0;
     fe.desktop_size(dw, dh);
     std::vector<std::array<int, 2>> m = {{640, 480}, {800, 600}, {1024, 768}};

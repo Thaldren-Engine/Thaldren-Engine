@@ -25,6 +25,7 @@
 //    running session's send_chat(); incoming lines are shown with
 //    GameClient::message().
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -190,6 +191,8 @@ public:
     virtual std::uint32_t now_ms() const = 0;
     // The desktop's size in pixels (the screen-size choices depend on it).
     virtual void desktop_size(int& w, int& h) const = 0;
+    // The display's modes (width, height), when the platform lists them (else none).
+    virtual void display_modes(std::vector<std::array<int, 2>>& out) const { out.clear(); }
 };
 
 // ---------------------------------------------------------------- running it
