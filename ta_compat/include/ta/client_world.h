@@ -142,6 +142,7 @@ public:
     std::vector<std::uint8_t> shade_table_, water_table_;  // unit looks (lit structures, under water)
     std::deque<sim::Unit> feature_proxies_;                 // 3D features drawn as the original's stand-in unit
     std::deque<render::UnitInstance> feature_proxy_views_;
+    std::map<std::string, const std::vector<render::Sprite8>*> scene_sequences_;  // by "file|sequence"
     render::FogOfWar fog_;
     std::array<std::vector<render::Sprite8>, 4> fog_black_, fog_gray_;
     render::BlendTable gray_table_;

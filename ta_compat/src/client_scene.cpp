@@ -250,31 +250,86 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
         scene.fog = &fog_;
     }
 
-    // Shots in the viewer's sight, by their weapon's look.
+    // Shots (the original's 0x49BE60): every table entry that is not a burst launcher, at a
+    // point the viewer sees, by its weapon's render type.
+    scene.crt_rand_state = b.crt_rand.state();
+    auto fx_seq = [&](const char* name) {
+        auto it = scene_sequences_.find(name);
+        if (it == scene_sequences_.end()) it = scene_sequences_.emplace(name, sequence("anims\\FX.GAF", name)).first;
+        return it->second;
+    };
+    const std::vector<render::Sprite8>* fx_shadow = fx_seq("shadow");
+    const std::vector<render::Sprite8>* fx_flame = fx_seq("flamestream");
+    static const char* const kShells[5] = {"cannonshell", "plasmasm", "plasmamd", "ultrashell", "plasmasm"};
+    // Render type 3 turns its model by three stack words the shot drawing never sets: what the
+    // last call at that depth left there. When the nano list drew any particle, that is the last
+    // particle's square: its top row as a 32-bit value (two words), then the low word of its
+    // right column. (After other drawing the words depend on the sprite cache and are not
+    // modelled: zero.)
+    std::array<std::int16_t, 3> stale_angles{};
+    for (const sim::NanoStream& ns : b.nano.streams)
+        if (!ns.particles.empty()) {
+            const sim::NanoParticle& q = ns.particles.back();
+            auto w = [](std::int32_t v) { return static_cast<std::int16_t>(static_cast<std::uint32_t>(v) >> 16); };
+            const std::int32_t top = static_cast<std::int16_t>(w(q.pos[2]) - static_cast<std::int16_t>(cam.scroll_y)) - (w(q.pos[1]) >> 1) + 0x20;
+            const std::int32_t right = static_cast<std::int16_t>(w(q.pos[0]) - static_cast<std::int16_t>(cam.scroll_x)) + 0x81;
+            stale_angles = {static_cast<std::int16_t>(top), static_cast<std::int16_t>(static_cast<std::uint32_t>(top) >> 16),
+                            static_cast<std::int16_t>(right)};
+        }
     for (std::int32_t k = 0; k < b.projectiles.count; ++k) {
         const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(k)];
-        if (p.flags & sim::projectile_flags::kDeleted) continue;
-        if (b.settings.fog_of_war && !b.point_seen_by(view, p.pos)) continue;
-        const std::size_t wi = p.weapon ? p.weapon->index : 0;
-        const client::ShotLook* look = wi < content_.shots.size() ? &content_.shots[wi] : nullptr;
-        if (look && look->hidden) continue;
+        if (p.burst_left != 0 || !p.weapon) continue;
+        if (!block_seen(p.pos)) continue;
+        const WeaponDefRecord& wd = weapons_.slots[p.weapon->index];
+        const client::ShotLook* wl = p.weapon->index < content_.shots.size() ? &content_.shots[p.weapon->index] : nullptr;
         render::ProjectileInstance pi;
         pi.pos = p.pos;
-        for (int a = 0; a < 3; ++a) pi.tail[static_cast<std::size_t>(a)] = p.pos[static_cast<std::size_t>(a)] - p.vel[static_cast<std::size_t>(a)] * 2;
-        if (p.weapon && (p.weapon->flags & sim::weapon_flags::kBeam)) pi.tail = p.trail;
-        pi.colour = look ? look->colour : 0xE0;
-        if (look && look->look == render::ProjectileLook::Sprite && look->frames && !look->frames->empty()) {
-            pi.look = render::ProjectileLook::Sprite;
-            pi.sprite = &(*look->frames)[(b.game_tick() - p.spawn_tick) % look->frames->size()];
-        } else if (look && look->look == render::ProjectileLook::Model && look->model) {
-            pi.look = render::ProjectileLook::Model;
-            pi.model = look->model;
-            pi.pose_model = look->pose_model;
-            pi.heading = p.yaw;
-            pi.pitch = static_cast<std::int16_t>(p.elevation);
-            pi.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(p.pos[0] >> 16), static_cast<std::int16_t>(p.pos[2] >> 16)));
-        } else {
-            pi.look = render::ProjectileLook::Line;
+        pi.tail = p.trail;
+        pi.render_type = wd.render_type;
+        pi.colour = content_.hud[wd.color];
+        pi.colour2 = content_.hud[wd.color2];
+        pi.second_line = wd.color2 != 0;
+        pi.ground = static_cast<std::uint16_t>(p.ground_height);
+        pi.blob = fx_shadow && !fx_shadow->empty() ? &fx_shadow->front() : nullptr;
+        const std::uint32_t tick = b.game_tick();
+        if (wd.render_type == 4) {
+            if (wd.color == 0xFF) {
+                pi.blob = nullptr;
+            } else if (wd.color < 5) {
+                const std::vector<render::Sprite8>* seq = fx_seq(kShells[wd.color]);
+                if (seq && !seq->empty())
+                    pi.frame = &(*seq)[static_cast<std::size_t>(static_cast<std::int32_t>(tick - p.spawn_tick) % static_cast<std::int32_t>(seq->size()))];
+            }
+        } else if (wd.render_type == 5) {
+            if (fx_flame && !fx_flame->empty() && wd.weapon_timer) {
+                const std::int32_t n = static_cast<std::int32_t>(fx_flame->size());
+                const std::int32_t f = n - (static_cast<std::int32_t>(p.expire_tick - tick) * n) / static_cast<std::int32_t>(static_cast<std::uint16_t>(wd.weapon_timer));
+                if (f >= 0 && f < n) pi.frame = &(*fx_flame)[static_cast<std::size_t>(f)];
+            }
+        } else if (wd.render_type == 1 || wd.render_type == 3 || wd.render_type == 6) {
+            if (wl && wl->model && wl->pose_model && wl->pose_model->root >= 0) {
+                const sim::PoseModel& pm = *wl->pose_model;
+                auto node = [&](int i) {
+                    render::ProjectileInstance::Node n;
+                    if (i >= 0 && static_cast<std::size_t>(i) < pm.nodes.size() && static_cast<std::size_t>(i) < wl->model->pieces.size()) {
+                        n.piece = &wl->model->pieces[static_cast<std::size_t>(i)];
+                        n.vertices = &pm.nodes[static_cast<std::size_t>(i)].vertices;
+                    }
+                    return n;
+                };
+                pi.node = node(pm.root);
+                const auto yaw = static_cast<std::int16_t>(p.yaw - 0x8000), elev = static_cast<std::int16_t>(p.elevation - 0x8000);
+                if (wd.render_type == 1) {
+                    pi.angles = {p.tumble, yaw, elev};
+                    if (static_cast<std::int32_t>(tick) < static_cast<std::int32_t>(p.expire_tick)) {
+                        pi.child = node(pm.nodes[static_cast<std::size_t>(pm.root)].child);
+                        pi.child_angles = (wd.flags & 0x200000u) ? std::array<std::int16_t, 3>{p.propeller, yaw, elev} : pi.angles;
+                    }
+                } else if (wd.render_type == 6) {
+                    pi.angles = {p.tumble, static_cast<std::int16_t>(p.yaw), static_cast<std::int16_t>(p.elevation)};
+                }
+                else if (wd.render_type == 3) pi.angles = stale_angles;
+            }
         }
         scene.projectiles.push_back(pi);
     }

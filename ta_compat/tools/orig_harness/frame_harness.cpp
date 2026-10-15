@@ -83,7 +83,7 @@ template <class T> T get_at(const std::vector<u8>& b, std::size_t off) {
 struct Original {
     harness::Remote r;
     u32 heap = 0, heap_end = 0, bump_ptr = 0, stubs = 0, gs = 0, display = 0, ctx = 0, frame_hdr = 0, frame = 0;
-    u32 key_state = 0, vis_table = 0, cache = 0, scratch = 0;
+    u32 key_state = 0, vis_table = 0, cache = 0, scratch = 0, rand_state = 0, probe = 0;
     int w = 0, h = 0;
     u32 host_next = 0;  // our own allocations (above the original's bump allocator)
     std::map<std::string, u32> gafs;                 // GAF file -> remote copy
@@ -166,6 +166,50 @@ struct Original {
             s.insert(s.end(), {0xC2, 0x08, 0x00});
             align16();
             if (!r.patch_jump(kUnitVisible, at)) return false;
+        }
+        // rand() on a state we set (the C runtime is not initialised in the suspended process).
+        rand_state = r.alloc(0x1000);
+        {
+            const u32 at = stubs + static_cast<u32>(s.size());
+            s.push_back(0xA1);
+            put32(s, rand_state);
+            s.insert(s.end(), {0x69, 0xC0});
+            put32(s, 214013u);
+            s.push_back(0x05);
+            put32(s, 2531011u);
+            s.push_back(0xA3);
+            put32(s, rand_state);
+            s.insert(s.end(), {0xC1, 0xE8, 0x10, 0x25});
+            put32(s, 0x7FFF);
+            s.push_back(0xC3);
+            align16();
+            if (!r.patch_jump(0x004E4870, at)) return false;
+        }
+        // Observation: the stack words the shot drawing reads without setting (type 3's angles at
+        // entry ESP - 0x40) are copied to `probe` on entry to 0x49BE60.
+        probe = r.alloc(0x1000);
+        {
+            const u32 at = stubs + static_cast<u32>(s.size());
+            s.insert(s.end(), {0x8B, 0x44, 0x24, 0xC0});  // mov eax,[esp-0x40]
+            s.push_back(0xA3);
+            put32(s, probe);
+            s.insert(s.end(), {0x8B, 0x44, 0x24, 0xC4});  // mov eax,[esp-0x3C]
+            s.push_back(0xA3);
+            put32(s, probe + 4);
+            s.insert(s.end(), {0x89, 0x25});  // mov [probe+8],esp
+            put32(s, probe + 8);
+            s.push_back(0xA1);  // mov eax,[watch count]
+            put32(s, r.watch_count_address());
+            s.push_back(0xA3);  // mov [probe+12],eax
+            put32(s, probe + 12);
+            s.insert(s.end(), {0x83, 0xEC, 0x68});  // sub esp,0x68
+            s.push_back(0xA1);
+            put32(s, kGameStatePtr);  // mov eax,[GameState]
+            s.push_back(0xE9);
+            const u32 next = stubs + static_cast<u32>(s.size()) + 4;
+            put32(s, 0x0049BE68u - next);
+            align16();
+            if (!r.patch_jump(0x0049BE60, at)) return false;
         }
         if (!r.write(stubs, s.data(), s.size())) return false;
         r.w32(bump_ptr, heap);
@@ -330,6 +374,7 @@ struct Options {
     int width = 640, height = 480;
     int steps = 300;      // steps between scenes
     int players = 4;
+    int shots = 12;       // extra shots per scene (up to)
     bool fog = true;
     bool verbose = false;
 };
@@ -357,6 +402,7 @@ int main(int argc, char** argv) {
         else if (a == "--steps" && k + 1 < argc) opt.steps = std::atoi(argv[++k]);
         else if (a == "--players" && k + 1 < argc) opt.players = std::atoi(argv[++k]);
         else if (a == "--no-fog") opt.fog = false;
+        else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
@@ -370,7 +416,7 @@ int main(int argc, char** argv) {
     ta::SkirmishSetup setup;
     setup.map = opt.map.empty() ? kMaps[rnd(0, 5)] : opt.map;
     setup.players.clear();
-    for (int p = 0; p < opt.players; ++p) setup.players.push_back({rnd(0, 1), p != 0, -1});
+    for (int p = 0; p < opt.players; ++p) setup.players.push_back({rnd(0, 1), true, -1});
     setup.human = 0;
     setup.line_of_sight = opt.fog;
     setup.mapping = opt.fog;
@@ -544,6 +590,56 @@ int main(int argc, char** argv) {
         r.w32(models_tbl + static_cast<u32>(k) * 4, type_model[k]);
         return type_model[k] != 0;
     };
+    // Weapons (fields the shot drawing reads) with their models.
+    const u32 wdefs = o.alloc(256 * 0x115);
+    {
+        std::map<std::string, u32> wmodels;
+        auto upper = [](std::string s) {
+            for (char& ch : s) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            return s;
+        };
+        for (int slot = 0; slot < 256; ++slot) {
+            const ta::WeaponDefRecord& d = world.weapons_.slots[static_cast<std::size_t>(slot)];
+            std::vector<u8> w(0x115, 0);
+            std::string name = d.model_name;
+            if (name.empty() && d.model_slot >= 0 && d.model_slot < 256) name = world.weapons_.slots[static_cast<std::size_t>(d.model_slot)].model_name;
+            u32 model = 0;
+            if (!name.empty()) {
+                auto it = wmodels.find(upper(name));
+                if (it != wmodels.end()) {
+                    model = it->second;
+                } else {
+                    const auto wm = world.weapon_models_.find(upper(name));
+                    if (wm != world.weapon_models_.end() && wm->second && wm->second->root) model = o.model(wm->second->file, wm->second->model, 0);
+                    wmodels[upper(name)] = model;
+                }
+            }
+            put_at<u32>(w, 0x74, model);
+            put_at<i16>(w, 0xE6, d.weapon_timer);
+            w[0x10A] = static_cast<u8>(slot);
+            w[0x10C] = d.render_type;
+            w[0x10D] = d.color;
+            w[0x10E] = d.color2;
+            put_at<u32>(w, 0x111, d.flags);
+            r.write(wdefs + static_cast<u32>(slot) * 0x115, w.data(), w.size());
+        }
+    }
+    if (opt.verbose) {
+        std::map<int, std::string> by_type;
+        for (int slot = 0; slot < 256; ++slot) {
+            const ta::WeaponDefRecord& d = world.weapons_.slots[static_cast<std::size_t>(slot)];
+            if (d.name.empty()) continue;
+            std::string& s = by_type[d.render_type];
+            if (s.size() < 300) s += " " + d.name;
+        }
+        for (const auto& [t, s] : by_type) std::printf("render type %d:%s\n", t, s.c_str());
+    }
+    const u32 proj_at = o.alloc(300 * 0x6B + 16);
+    r.w32(gs + 0x141F7, proj_at);
+    // Scratch arrays of the projected-model routine (0x46BAE0): points, screen points, polygon.
+    r.w32(gs + 0x14383, o.alloc(0x10000));
+    r.w32(gs + 0x14387, o.alloc(0x10000));
+    r.w32(gs + 0x1438B, o.alloc(0x10000));
     // Players: records, info blocks (team colour), sight count maps; explored map.
     const u32 infos = o.alloc(10 * 0x100);
     const int bw = b.sight.width, bh = b.sight.height;
@@ -681,6 +777,32 @@ int main(int argc, char** argv) {
         u16 visual = 0x02 | 0x04 | 0x08 | 0x10 | 0x20;  // anti-aliasing, shadows, unit and feature shadows, shading
 
         // Engine frame.
+        // Extra shots of random weapons around the view (coverage of every render type); the
+        // battle's own table is put back after the scene.
+        const sim::ProjectileTable saved_shots = b.projectiles;
+        {
+            std::vector<int> armed;
+            for (int slot = 0; slot < 256; ++slot)
+                if (!world.weapons_.slots[static_cast<std::size_t>(slot)].name.empty() && static_cast<std::size_t>(slot) < world.lb_->weapons.size())
+                    armed.push_back(slot);
+            const int extra = armed.empty() ? 0 : rnd(0, opt.shots);
+            for (int k = 0; k < extra && b.projectiles.count < sim::kMaxProjectiles; ++k) {
+                sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(b.projectiles.count++)];
+                p = sim::Projectile();
+                p.weapon = &world.lb_->weapons[static_cast<std::size_t>(armed[static_cast<std::size_t>(rnd(0, static_cast<int>(armed.size()) - 1))])];
+                const int wx = sx + rnd(-40, W - 128 + 40), wz = sy + rnd(-40, H - 64 + 40);
+                const int gh = std::max(0, world.hm_.sample(static_cast<std::int16_t>(wx), static_cast<std::int16_t>(wz)));
+                p.pos = {(wx << 16) | rnd(0, 0xFFFF), ((gh + rnd(0, 80)) << 16) | rnd(0, 0xFFFF), (wz << 16) | rnd(0, 0xFFFF)};
+                p.trail = {p.pos[0] + (rnd(-150, 150) << 16), p.pos[1] + (rnd(-60, 60) << 16), p.pos[2] + (rnd(-150, 150) << 16)};
+                p.tumble = static_cast<std::int16_t>(rnd(-32768, 32767));
+                p.yaw = static_cast<std::uint16_t>(rnd(0, 65535));
+                p.elevation = static_cast<std::uint16_t>(rnd(0, 65535));
+                p.propeller = static_cast<std::int16_t>(rnd(-32768, 32767));
+                p.spawn_tick = b.game_tick() - static_cast<std::uint32_t>(rnd(0, 40));
+                p.expire_tick = b.game_tick() + static_cast<std::uint32_t>(rnd(-5, 40));
+                p.ground_height = static_cast<std::int16_t>(gh);
+            }
+        }
         // Engine frame: the client's battle view (its scene and draw list; the interface around and
         // over it belongs to the front end and is not compared).
         render::BattleScene scene;
@@ -796,6 +918,45 @@ int main(int argc, char** argv) {
             for (std::size_t i = 1; i < b.units.size(); ++i)
                 if (b.ticks[i].type_index) vis[b.units[i].id] = b.unit_seen_by(view, b.units[i]) ? 1 : 0;
             r.write(o.vis_table, vis.data(), vis.size());
+        }
+        // Shots (0x6B bytes each) and the C runtime's random state.
+        {
+            std::vector<u8> pt(300 * 0x6B, 0);
+            auto unit_ptr = [&](const sim::Unit* u) { return u ? units_at + static_cast<u32>(u->id) * kUnitSize : 0u; };
+            for (i32 s = 0; s < b.projectiles.count && s < 300; ++s) {
+                const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(s)];
+                const std::size_t o0 = static_cast<std::size_t>(s) * 0x6B;
+                put_at<u32>(pt, o0, p.weapon ? wdefs + static_cast<u32>(p.weapon->index) * 0x115 : 0u);
+                for (int k = 0; k < 3; ++k) {
+                    put_at<i32>(pt, o0 + 4 + 4 * static_cast<std::size_t>(k), p.pos[static_cast<std::size_t>(k)]);
+                    put_at<i32>(pt, o0 + 0x10 + 4 * static_cast<std::size_t>(k), p.trail[static_cast<std::size_t>(k)]);
+                    put_at<i32>(pt, o0 + 0x1C + 4 * static_cast<std::size_t>(k), p.vel[static_cast<std::size_t>(k)]);
+                    put_at<i32>(pt, o0 + 0x28 + 4 * static_cast<std::size_t>(k), p.aim[static_cast<std::size_t>(k)]);
+                }
+                put_at<i16>(pt, o0 + 0x34, p.tumble);
+                put_at<u16>(pt, o0 + 0x36, p.yaw);
+                put_at<u16>(pt, o0 + 0x38, p.elevation);
+                put_at<i32>(pt, o0 + 0x3A, p.speed);
+                put_at<i32>(pt, o0 + 0x3E, p.distance);
+                put_at<u32>(pt, o0 + 0x42, p.spawn_tick);
+                put_at<u32>(pt, o0 + 0x46, p.expire_tick);
+                put_at<u32>(pt, o0 + 0x4A, p.next_smoke_tick);
+                put_at<u32>(pt, o0 + 0x4E, unit_ptr(p.target));
+                put_at<u32>(pt, o0 + 0x52, unit_ptr(p.owner));
+                put_at<u32>(pt, o0 + 0x56, p.intercepted >= 0 ? proj_at + static_cast<u32>(p.intercepted) * 0x6B : 0u);
+                put_at<i16>(pt, o0 + 0x5A, p.last_feature_x);
+                put_at<i16>(pt, o0 + 0x5C, p.last_feature_z);
+                put_at<i16>(pt, o0 + 0x5E, p.ground_height);
+                put_at<u16>(pt, o0 + 0x60, p.burst_left);
+                put_at<i16>(pt, o0 + 0x62, p.piece);
+                put_at<i16>(pt, o0 + 0x64, p.propeller);
+                pt[o0 + 0x66] = p.owner_slot;
+                put_at<i16>(pt, o0 + 0x67, p.compact_index);
+                put_at<u16>(pt, o0 + 0x69, p.flags);
+            }
+            r.write(proj_at, pt.data(), pt.size());
+            r.w32(gs + 0x141F3, static_cast<u32>(b.projectiles.count));
+            r.w32(o.rand_state, b.crt_rand.state());
         }
         // Effect list 6: the nano streams (objects of vtable 0x4FD5B8: +4 deadline, +8 next
         // emission, +0x10/+0x14 particle array of 0x30-byte particles {pos, target, velocity, flags,
@@ -950,6 +1111,7 @@ int main(int argc, char** argv) {
         }
         std::vector<u8> theirs(static_cast<std::size_t>(W * H));
         r.read(o.frame, theirs.data(), theirs.size());
+        b.projectiles = saved_shots;
 
         // Compare the battle view.
         long long diff = 0, n = 0;
@@ -968,8 +1130,30 @@ int main(int argc, char** argv) {
         if (!diff) ++st.identical;
         int nunits = 0;
         for (std::size_t i = 1; i < b.units.size(); ++i) nunits += b.ticks[i].type_index != 0;
-        std::printf("scene %d: tick %u scroll %d,%d units %d visible %u: %lld of %lld view pixels differ\n", sc, b.game_tick(), sx, sy, nunits,
-                    r.r32(gs + gVisibleCount), diff, n);
+        std::printf("scene %d: tick %u scroll %d,%d units %d visible %u shots %d: %lld of %lld view pixels differ\n", sc, b.game_tick(), sx, sy, nunits,
+                    r.r32(gs + gVisibleCount), static_cast<int>(scene.projectiles.size()), diff, n);
+        if (opt.verbose) {
+            std::uint16_t w[4];
+            r.read(o.probe, w, 8);
+            std::printf("  stack words at the shot drawing's entry - 0x40: %04X %04X %04X %04X\n", w[0], w[1], w[2], w[3]);
+            // Who wrote them: the frame again with write watchpoints on the two words.
+            u32 esp0 = 0;
+            std::vector<u32> hits;
+            r.call_watch(kVisibleList, 0, {}, {}, hits);
+            if (r.call_watch(kDrawFrame, 0, {1, 0}, {}, hits, &esp0)) {
+                const int delta = static_cast<int>(r.r32(o.probe + 8)) - static_cast<int>(esp0);
+                r.call_watch(kDrawFrame, 0, {1, 0}, {delta - 0x40, delta - 0x3C}, hits, &esp0);
+                const std::size_t at_entry = std::min<std::size_t>(r.r32(o.probe + 12), hits.size());
+                std::printf("  writers before the shot drawing (%zu):", at_entry);
+                for (std::size_t k = at_entry > 8 ? at_entry - 8 : 0; k < at_entry; ++k) std::printf(" %08X", hits[k]);
+                std::printf("\n");
+            }
+        }
+        if (diff && opt.verbose)
+            for (const render::ProjectileInstance& p : scene.projectiles)
+                std::printf("  shot type %d at %d,%d colour %u frame %p %dx%d off %d,%d\n", p.render_type, render::screen_x(scene.camera, p.pos[0]),
+                            render::screen_y(scene.camera, p.pos[1], p.pos[2]), p.colour, static_cast<const void*>(p.frame), p.frame ? p.frame->width : 0,
+                            p.frame ? p.frame->height : 0, p.frame ? p.frame->x_offset : 0, p.frame ? p.frame->y_offset : 0);
         if (!opt.out_dir.empty() && (diff || opt.verbose) && written < 40) {
             ++written;
             render::Image8 a(W, H), e(W, H);

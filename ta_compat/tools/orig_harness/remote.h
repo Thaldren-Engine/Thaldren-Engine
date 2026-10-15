@@ -6,6 +6,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -133,11 +134,37 @@ public:
         auto put32 = [&](u32 v) {
             for (int i = 0; i < 4; ++i) s.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
         };
-        const u32 exit_stub_at = code + 0x80;
+        const u32 exit_stub_at = code + 0x100;
         put({0x56, 0x57});                    // push esi; push edi
         put({0x8B, 0x44, 0x24, 0x0C});        // mov eax,[esp+12] (EXCEPTION_POINTERS*)
         put({0x8B, 0x08});                    // mov ecx,[eax] (record)
         put({0x8B, 0x11});                    // mov edx,[ecx] (code)
+        // Data watchpoints (call_watch): a single-step trap logs the address after the writing
+        // instruction at info+0x800 (count at info+0x7FC, at most 0x1F0) and execution goes on.
+        {
+            std::vector<std::uint8_t> w;
+            auto wp = [&](std::initializer_list<int> b) {
+                for (int v : b) w.push_back(static_cast<std::uint8_t>(v));
+            };
+            auto wp32 = [&](u32 v) {
+                for (int i = 0; i < 4; ++i) w.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+            };
+            wp({0x8B, 0x48, 0x04});               // mov ecx,[eax+4] (context)
+            wp({0x8B, 0x91, 0xB8, 0, 0, 0});      // mov edx,[ecx+B8] (eip)
+            wp({0x8B, 0x35}); wp32(info_ + 0x7FC);  // mov esi,[count]
+            wp({0x8B, 0xFE});                     // mov edi,esi
+            wp({0x81, 0xE7}); wp32(0x1FF);        // and edi,0x1FF (a ring of 512)
+            wp({0x89, 0x14, 0xBD}); wp32(info_ + 0x800);  // mov [edi*4+log],edx
+            wp({0x46});                           // inc esi
+            wp({0x89, 0x35}); wp32(info_ + 0x7FC);  // mov [count],esi
+            wp({0xC7, 0x41, 0x14, 0, 0, 0, 0});   // mov dword [ecx+14],0 (Dr6)
+            wp({0x5F, 0x5E});                     // pop edi; pop esi
+            wp({0x83, 0xC8, 0xFF});               // or eax,-1
+            wp({0xC2, 0x04, 0x00});               // ret 4
+            put({0x81, 0xFA}); put32(0x80000004u);  // cmp edx,EXCEPTION_SINGLE_STEP
+            put({0x75, static_cast<int>(w.size())});  // jne past the watch handler
+            s.insert(s.end(), w.begin(), w.end());
+        }
         put({0x89, 0x15}); put32(info_);      // mov [info],edx
         put({0x8B, 0x51, 0x0C});              // mov edx,[ecx+0C] (address)
         put({0x89, 0x15}); put32(info_ + 4);  // mov [info+4],edx
@@ -162,13 +189,56 @@ public:
         put({0x5F, 0x5E});                    // pop edi; pop esi
         put({0x83, 0xC8, 0xFF});              // or eax,-1 (EXCEPTION_CONTINUE_EXECUTION)
         put({0xC2, 0x04, 0x00});              // ret 4
-        while (s.size() < 0x80) s.push_back(0xCC);
+        while (s.size() < 0x100) s.push_back(0xCC);
         put({0x68}); put32(0xDEAD);           // push 0xDEAD
         put({0xB8}); put32(exit_thread);      // mov eax,ExitThread
         put({0xFF, 0xD0});                    // call eax
         if (!write(code, s.data(), s.size())) return false;
         return call(add_veh, 0, {1, code});
     }
+    // call() with up to two 4-byte write watchpoints at the new thread's initial ESP plus
+    // `watch` offsets; returns the logged addresses (the instruction after each write) and the
+    // thread's initial ESP. Needs install_crash_catcher().
+    bool call_watch(u32 fn, u32 self, const std::vector<u32>& args, const std::vector<int>& watch, std::vector<u32>& hits,
+                    u32* initial_esp = nullptr, DWORD timeout_ms = 20000) {
+        hits.clear();
+        if (!info_) return false;
+        const u32 zero = 0;
+        write(info_ + 0x7FC, &zero, 4);
+        write(info_, &zero, 4);
+        u32 blk[12] = {fn, self, static_cast<u32>(args.size())};
+        for (std::size_t i = 0; i < args.size() && i < 8; ++i) blk[3 + i] = args[i];
+        if (!write(block_, blk, sizeof blk)) return false;
+        HANDLE th = CreateRemoteThread(pi_.hProcess, nullptr, 0, reinterpret_cast<LPTHREAD_START_ROUTINE>(static_cast<std::uintptr_t>(code_)),
+                                       reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(block_)), CREATE_SUSPENDED, nullptr);
+        if (!th) return false;
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+        GetThreadContext(th, &ctx);
+        if (initial_esp) *initial_esp = ctx.Esp;
+        DWORD dr7 = 0;
+        for (std::size_t k = 0; k < watch.size() && k < 2; ++k) {
+            const DWORD a = static_cast<DWORD>(static_cast<long long>(ctx.Esp) + watch[k]);
+            (k == 0 ? ctx.Dr0 : ctx.Dr1) = a;
+            dr7 |= (1u << (2 * k)) | (0xDu << (16 + 4 * k));  // local enable, write, 4 bytes
+        }
+        ctx.Dr7 = dr7;
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        SetThreadContext(th, &ctx);
+        ResumeThread(th);
+        const DWORD w = WaitForSingleObject(th, timeout_ms);
+        DWORD exit_code = 1;
+        GetExitCodeThread(th, &exit_code);
+        CloseHandle(th);
+        // The log is a ring of 512: hits[k] is write number k for the last 512 writes (older ones 0).
+        const u32 n = r32(info_ + 0x7FC);
+        std::vector<u32> ring(512);
+        read(info_ + 0x800, ring.data(), 512 * 4);
+        hits.assign(n, 0);
+        for (u32 k = n > 512 ? n - 512 : 0; k < n; ++k) hits[k] = ring[k & 0x1FF];
+        return w == WAIT_OBJECT_0 && exit_code == 0;
+    }
+    u32 watch_count_address() const { return info_ + 0x7FC; }
     struct Crash {
         u32 code = 0, address = 0, esp = 0, ebp = 0;
         u32 stack[96] = {};

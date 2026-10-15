@@ -107,6 +107,23 @@ struct ProjectileInstance {
     std::uint16_t heading = 0;
     const Sprite8* shadow = nullptr;               // shadow blob blended at the ground point
     std::int32_t ground_height = 0;
+
+    // The original's drawing by the weapon's render type (0x49BE60); -1: the looks above.
+    // 0 line(s) head -> tail, 1/3/6 model node(s) with the shadow blob, 2 lens, 4 shell frame
+    // with the blob, 5 flame frame (blended), 7 lightning.
+    int render_type = -1;
+    std::uint8_t colour2 = 0;            // second line's colour (type 0 with a second colour)
+    bool second_line = false;
+    std::uint16_t ground = 0;            // the shot's ground height word (+0x5E): blob row
+    const Sprite8* blob = nullptr;       // anims\fx.gaf "shadow" frame 0
+    const Sprite8* frame = nullptr;      // type 4 shell frame / type 5 flame frame (none: not drawn)
+    struct Node {
+        const ModelPiece* piece = nullptr;
+        const std::vector<std::array<std::int32_t, 3>>* vertices = nullptr;
+    };
+    Node node, child;                    // types 1/3/6: the model's root; type 1: its first child
+    std::array<std::int16_t, 3> angles{}, child_angles{};
+    std::uint8_t team_colour = 0;
 };
 
 // The viewed player's fog of war over the battle view (the original's 0x4843C0 and 0x4848E0;
@@ -142,6 +159,9 @@ struct BattleScene {
     LookTables tables;                            // mixing, shade and water tables for unit looks
     int sea_level = 0;
     const FogOfWar* fog = nullptr;                // drawn over everything (none: no fog)
+    // The C runtime random state when the frame is drawn: lightning shots draw from a copy of
+    // it (the original's draw calls rand(); the renderer never advances the simulation's).
+    std::uint32_t crt_rand_state = 0;
     std::uint8_t clear_index = 0;
 };
 
