@@ -49,6 +49,11 @@ public:
     Runner(FrontEndSetup& setup) : s_(setup) {
         if (!s_.settings_path.empty()) settings_.load(s_.settings_path);
     }
+    ~Runner() override {
+        // Screens go before the battle they may refer to.
+        graveyard_.clear();
+        while (!stack_.empty()) stack_.pop_back();
+    }
 
     // ---- FrontEnd
     void push(std::unique_ptr<Screen> screen) override {
@@ -57,17 +62,17 @@ public:
         stack_.back()->enter(*this);
     }
     void pop() override {
-        if (!stack_.empty()) stack_.pop_back();
+        if (!stack_.empty()) trim(stack_.size() - 1);
         if (session_ && ended_ && stack_.size() <= battle_base_) finish_battle();
         else if (session_ && stack_.size() < battle_base_) finish_battle();
         if (!stack_.empty()) stack_.back()->enter(*this);
     }
     void to_main_menu() override {
         if (session_) {
-            stack_.resize(std::min(stack_.size(), battle_base_));
+            trim(std::min(stack_.size(), battle_base_));
             finish_battle(false);
         }
-        if (stack_.size() > 1) stack_.resize(1);
+        if (stack_.size() > 1) trim(1);
         if (!stack_.empty()) stack_.back()->enter(*this);
     }
     void start_battle(BattleLauncher launcher) override { pending_ = std::move(launcher); }
@@ -76,7 +81,7 @@ public:
         if (!session_ || ended_) return;
         ended_ = true;
         outcome_ = outcome;
-        stack_.resize(std::min(stack_.size(), battle_base_));
+        trim(std::min(stack_.size(), battle_base_));
         if (s_.battle_over) push(s_.battle_over(*this, *session_, outcome));
         if (stack_.size() <= battle_base_) finish_battle();
     }
@@ -156,11 +161,12 @@ public:
 
     void frame(std::uint32_t now) {
         now_ = now;
+        graveyard_.clear();  // screens closed during the last pass go now
         const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
         if (pending_) run_launcher();
         if (in_battle()) {
-            // The battle runs while no menu is open over it.
-            if (stack_.size() == battle_base_) session_->frame(now);
+            // The battle goes on under menus (the game menu pauses it outside network games).
+            session_->frame(now);
             sim::Battle& b = session_->battle();
             if (s_.music) {
                 const int me = b.settings.local_player;
@@ -258,6 +264,14 @@ public:
 
 private:
     bool in_battle() const { return session_ != nullptr; }
+    // Closes the screens above the first n (kept until the next pass: a screen may close itself or the
+    // battle from its own handler).
+    void trim(std::size_t n) {
+        while (stack_.size() > n) {
+            graveyard_.push_back(std::move(stack_.back()));
+            stack_.pop_back();
+        }
+    }
 
     void add_pointer(render::DrawList& list) {
         const auto* c = s_.content->cursor;
@@ -315,6 +329,7 @@ private:
     FrontEndSetup& s_;
     Settings settings_;
     std::vector<std::unique_ptr<Screen>> stack_;
+    std::vector<std::unique_ptr<Screen>> graveyard_;
     std::unique_ptr<BattleSession> session_;
     std::size_t battle_base_ = 0;  // stack size when the battle started (screens above are its menus)
     bool ended_ = false, mood_set_ = false;

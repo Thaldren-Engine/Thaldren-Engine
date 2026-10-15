@@ -15,6 +15,7 @@ void AudioOut::set_fx_volume(int) {}
 void AudioOut::set_music_volume(int) {}
 void AudioOut::play_music(std::shared_ptr<const Sample>) {}
 void AudioOut::stop_music() {}
+void AudioOut::pause_music(bool) {}
 bool AudioOut::music_playing() const { return false; }
 double AudioOut::music_position() const { return 0.0; }
 bool decode_wav(const std::vector<std::uint8_t>&, Sample&) { return false; }

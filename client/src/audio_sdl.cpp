@@ -29,6 +29,7 @@ struct AudioOut::Impl {
     int fx_volume = 256, music_volume = 256;
     std::shared_ptr<const Sample> music;
     std::uint64_t music_pos = 0, music_step = 0;
+    bool music_paused = false;
     std::vector<std::int32_t> mix;
     std::vector<std::int16_t> out;
 
@@ -57,7 +58,7 @@ struct AudioOut::Impl {
                     v.pos += v.step;
                 }
             }
-            if (m.music) {
+            if (m.music && !m.music_paused) {
                 const Sample& s = *m.music;
                 const std::size_t n = s.pcm.size() / static_cast<std::size_t>(std::max(1, s.channels));
                 for (int f = 0; f < frames; ++f) {
@@ -155,6 +156,12 @@ void AudioOut::play_music(std::shared_ptr<const Sample> track) {
 }
 
 void AudioOut::stop_music() { play_music(nullptr); }
+
+void AudioOut::pause_music(bool paused) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->music_paused = paused;
+}
 
 bool AudioOut::music_playing() const {
     if (!impl_) return false;

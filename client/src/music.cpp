@@ -142,7 +142,7 @@ void MusicPlayer::update(std::uint32_t now, AudioOut* out) {
         next();
     }
     // The end of a track picks the next one.
-    if (playing_ && fade_level_ < 0 && out_ && !out_->music_playing()) {
+    if (playing_ && !paused_ && fade_level_ < 0 && out_ && !out_->music_playing()) {
         playing_ = false;
         next();
     }

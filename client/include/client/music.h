@@ -44,6 +44,11 @@ public:
     // Plays track n now (the options screen's play button); 0 stops.
     void play(int track);
     void stop();
+    // The in-game menu holds the track (the original pauses the CD) and lets it go on.
+    void set_paused(bool p) {
+        paused_ = p;
+        if (out_) out_->pause_music(p);
+    }
     // Picks the next track by the mode (the original's "track ended" routine).
     void next();
     // Once per pass of the main loop: `now` in 1/30 s ticks. Drives fades, delays and

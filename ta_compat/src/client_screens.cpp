@@ -945,10 +945,30 @@ protected:
 class GameMenu : public LayoutScreen {
 public:
     explicit GameMenu(MenuArt& art) : LayoutScreen(art.layout("ARMOPT")), art_(art) {}
+    ~GameMenu() override {
+        // Closing it lets the battle and the music go on again (outside network games).
+        if (session_) session_->client().set_paused(false);
+        if (music_) music_->set_paused(false);
+    }
     bool see_through() const override { return true; }
     void enter(FrontEnd& fe) override {
-        if (Widget* w = widget("SAVEGAME")) w->grayed = !fe.hooks().save_game_menu;
-        if (Widget* w = widget("LOADGAME")) w->grayed = !fe.hooks().load_game_menu;
+        client::BattleSession* s = fe.session();
+        const bool net = s && s->network();
+        // Saving and loading are not offered in network games; the briefing button reads
+        // "Settings" outside campaigns.
+        if (Widget* w = widget("SAVEGAME")) w->grayed = net || !fe.hooks().save_game_menu;
+        if (Widget* w = widget("LOADGAME")) w->grayed = net || !fe.hooks().load_game_menu;
+        if (Widget* w = widget("MISSION")) w->text = "Settings";
+        if (!opened_) {
+            opened_ = true;
+            // Opening it pauses the battle outside network games and holds the music.
+            if (s && !net) {
+                s->client().set_paused(true);
+                session_ = s;
+            }
+            music_ = fe.music();
+            if (music_) music_->set_paused(true);
+        }
     }
 
 protected:
@@ -963,6 +983,9 @@ protected:
 
 private:
     MenuArt& art_;
+    bool opened_ = false;
+    client::BattleSession* session_ = nullptr;
+    client::MusicPlayer* music_ = nullptr;
 };
 
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the

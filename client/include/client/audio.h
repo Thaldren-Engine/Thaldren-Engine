@@ -33,6 +33,8 @@ public:
     // Music channel: one track at a time.
     void play_music(std::shared_ptr<const Sample> track);
     void stop_music();
+    // Holds the music where it is (true) or lets it go on (false).
+    void pause_music(bool paused);
     bool music_playing() const;
     // Seconds of the music track played so far (0 when none).
     double music_position() const;
