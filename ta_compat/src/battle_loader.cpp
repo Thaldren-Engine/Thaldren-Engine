@@ -212,6 +212,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     sim::refresh_height_range(b.map, 0, 0, static_cast<std::int16_t>(b.map.width), static_cast<std::int16_t>(b.map.height));
     b.init_buckets();
     b.reset_features_and_effects();
+    if (req.loading_srand_given) b.crt_rand.set_state(req.loading_srand);  // the loading thread's rand()
     place_tnt_features(b, lb->tnt);
     const TdfSection* schema_sec_f = header && schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
     if (const TdfSection* list = schema_sec_f ? schema_sec_f->child("features") : nullptr) {
@@ -252,6 +253,12 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
 
     // Players.
     sim::BattleStart start = req.start;
+    if (req.loading_srand_given) {
+        // The explosion tables are computed after the map (presentation; their draws only move
+        // the loading thread's generator), then the start positions are shuffled from there.
+        for (std::uint32_t k = 0; k < kExplosionTableDraws; ++k) b.crt_rand.next();
+        start.loading_rand_seed = b.crt_rand.state();
+    }
     if (schema_sec && start.start_rules.empty()) read_start_rules(*schema_sec, start.start_rules);
     const std::unique_ptr<TdfSection> sides = parse_file(vfs, "gamedata\\sidedata.tdf");
     for (std::size_t s = 0; s < 10; ++s) {

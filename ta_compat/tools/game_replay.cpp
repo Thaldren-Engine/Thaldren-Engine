@@ -164,6 +164,22 @@ struct ReplayOutside : sim::QuietBattleOutside {
         q.pop_front();
         return v;
     }
+    // The hover bob's wall clock (0x4B6340), per call; the air repair patrol's site record
+    // address per step (a stack address: the same for every call of a step).
+    std::map<std::uint32_t, std::deque<std::uint32_t>> clock;
+    std::map<std::uint32_t, std::uint32_t> air_repair_site;
+    std::uint32_t last_clock = 0;
+    std::uint32_t clock_ticks() override {
+        auto& q = clock[battle ? battle->game_tick() : 0];
+        if (q.empty()) {
+            notes.push_back("step " + std::to_string(battle ? battle->game_tick() : 0) +
+                            ": the engine read the hover clock more often than the original");
+            return last_clock;
+        }
+        last_clock = q.front();
+        q.pop_front();
+        return last_clock;
+    }
     std::int32_t reclaim_site_y(std::int32_t fallback) override {
         auto& q = reclaim_y[battle ? battle->game_tick() : 0];
         if (q.empty()) {
@@ -400,6 +416,7 @@ int main(int argc, char** argv) {
     std::uint32_t max_steps = 0xFFFFFFFFu;
     bool keep_going = false, draw_effects = true, verbose = false, ignore_cells = false;
     int trace_unit = 0;  // print this unit's row (original and engine) after every step
+    bool shuffle_from_capture = false;  // take the shuffle's rand() state from the capture
     for (int k = 3; k < argc; ++k) {
         const std::string a = argv[k];
         if (a == "--steps" && k + 1 < argc) max_steps = static_cast<std::uint32_t>(std::strtoul(argv[++k], nullptr, 0));
@@ -407,6 +424,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-draw-effects") draw_effects = false;
         else if (a == "--verbose") verbose = true;
         else if (a == "--ignore-cells") ignore_cells = true;
+        else if (a == "--shuffle-from-capture") shuffle_from_capture = true;
         else if (a == "--trace-unit" && k + 1 < argc) trace_unit = std::atoi(argv[++k]);
     }
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -440,12 +458,18 @@ int main(int argc, char** argv) {
     const Json* start = nullptr;
     std::string map;
     std::uint32_t seed = 0, shuffle = 0, sim_rand = 0;
-    bool have_seed = false, have_shuffle = false;
+    bool have_seed = false, have_shuffle = false, have_loading_srand = false;
+    long long loading_tid = -1;
+    std::uint32_t loading_srand = 0;
     for (const Json& e : events) {
         const std::string ev = e.s("ev");
         if (ev == "battle_seed" && !have_seed) {
             seed = static_cast<std::uint32_t>(e.get("override") ? e.i("override") : e.i("seed"));
             have_seed = true;
+            loading_tid = e.i("tid");
+        } else if (ev == "srand" && have_seed && !have_loading_srand && e.i("tid") == loading_tid) {
+            loading_srand = static_cast<std::uint32_t>(e.i("seed"));  // srand(time()) of the loading thread
+            have_loading_srand = true;
         } else if (ev == "shuffle_rand" && !have_shuffle) {
             shuffle = static_cast<std::uint32_t>(e.i("state"));
             have_shuffle = true;
@@ -456,7 +480,12 @@ int main(int argc, char** argv) {
             sim_rand = static_cast<std::uint32_t>(e.i("sim_rand"));
         } else if (ev == "stale") {
             const auto t = static_cast<std::uint32_t>(e.i("tick"));
-            (e.s("what") == "ai_site_y" ? out.site_y : out.reclaim_y)[t].push_back(static_cast<std::int32_t>(e.i("value")));
+            const std::string what = e.s("what");
+            if (what == "ai_site_y") out.site_y[t].push_back(static_cast<std::int32_t>(e.i("value")));
+            else if (what == "reclaim_site_y") out.reclaim_y[t].push_back(static_cast<std::int32_t>(e.i("value")));
+            else if (what == "clock") out.clock[t].push_back(static_cast<std::uint32_t>(e.i("value")));
+            else if (what == "air_repair_site" && !out.air_repair_site.count(t))
+                out.air_repair_site[t] = static_cast<std::uint32_t>(e.i("value"));
         }
     }
     if (!start || !have_seed || map.empty()) {
@@ -482,6 +511,12 @@ int main(int argc, char** argv) {
     bs.battle_rng_seed = seed;
     bs.fixed_locations = !have_shuffle;
     bs.loading_rand_seed = shuffle;
+    // From the loading thread's srand(time()) instead (the map's vents and the explosion tables
+    // drawn by the loader): the shuffle's state is then derived, not taken from the capture.
+    if (have_loading_srand && !shuffle_from_capture) {
+        req.loading_srand_given = true;
+        req.loading_srand = loading_srand;
+    }
     bs.crt_rand_state = sim_rand;
     if (const Json* ps = start->get("players"))
         for (const Json& p : ps->arr) {
@@ -508,6 +543,9 @@ int main(int argc, char** argv) {
     const auto gs = static_cast<std::uint32_t>(start->i("game_state")), table = static_cast<std::uint32_t>(start->i("unit_table"));
     std::printf("capture: %s, %zu events; map %s, battle seed %08x, shuffle rand %08x, simulation rand %08x, game state %08x, unit table %08x\n",
                 argv[2], events.size(), map.c_str(), seed, shuffle, sim_rand, gs, table);
+    if (have_loading_srand && have_shuffle)
+        std::printf("start: the loading thread drew rand() %lld times between srand(time()) and the shuffle (map load and explosion tables)\n",
+                    lcg_distance(loading_srand, shuffle, 4000000));
 
     std::string err;
     auto lb = ta::load_battle(vfs, req, out, err, [&](sim::Battle& b) {
@@ -638,6 +676,8 @@ int main(int argc, char** argv) {
                 std::printf("step %u: battle generator differs before the step: original %08x, engine %08x\n", t, want_rng, b.battle_rng().state());
             }
             frame_start = false;
+            if (auto it = out.air_repair_site.find(t); it != out.air_repair_site.end())
+                b.settings.air_repair_patrol_site_address = it->second;
             b.step();
             ++steps;
             ++in_frame;

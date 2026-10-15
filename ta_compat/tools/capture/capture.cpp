@@ -726,7 +726,7 @@ ULONGLONG g_deadline = 0;
 //                                                           6 pick up, 7 guard, 8 repair, 9 patrol,
 //                                                           10 stop, 12 reclaim, ...)
 // Units are named by type: "ARMCOM" = the last finished live unit of that type of the local player,
-// "ARMPW#2" = its second (by id), "ARMPW*" = every one (one call each); a target "ENEMY" = the
+// "ARMPW:2" = its second (by id), "ARMPW*" = every one (one call each); a target "ENEMY" = the
 // enemy unit nearest to the acting unit, "-" = none. dx/dz are world units from the acting unit
 // (a target's position when dx = dz = "t"). An action runs at the first frame end at or after its
 // tick at which all its units exist (actions run in file order, one call per frame). Each call
@@ -849,7 +849,7 @@ std::vector<LiveUnit> select_units(const std::vector<LiveUnit>& all, const std::
     std::string name = sel;
     int nth = 0;
     bool every = false;
-    if (const auto h = sel.find('#'); h != std::string::npos) {
+    if (const auto h = sel.find(':'); h != std::string::npos) {
         name = sel.substr(0, h);
         nth = std::atoi(sel.c_str() + h + 1);
     } else if (!sel.empty() && sel.back() == '*') {

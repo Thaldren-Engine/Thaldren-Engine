@@ -1,0 +1,23 @@
+# Scripted local player for ta_capture --script (ARM side, Moon Quartet skirmish, run with
+# --local-resources 10000). Actions run in order; each waits until its units exist and are
+# finished. Covers construction (mobile builds, factories, assisting), aircraft (a constructor
+# aircraft on patrol = the air repair patrol, fighters), a transport (pick up, unload) and combat.
+#
+# tick kind    unit      args
+10    build   ARMCOM    ARMAP 160 0
+20    factory ARMAP     ARMATLAS 1
+21    factory ARMAP     ARMCA 1
+22    factory ARMAP     ARMFIG 3
+23    order   ARMCOM    7 ARMAP 0 0
+# The constructor aircraft patrols: the air repair patrol.
+30    order   ARMCA     9 - 400 400
+# The commander builds a kbot lab and helps it.
+31    build   ARMCOM    ARMLAB -192 0
+40    factory ARMLAB    ARMPW 4
+41    order   ARMCOM    7 ARMLAB 0 0
+# The transport picks up a kbot and drops it further away.
+50    order   ARMATLAS  6 ARMPW:1 0 0
+51    order   ARMATLAS  5 - 0 -480 q
+# Combat: fighters and kbots attack the nearest enemy.
+60    order   ARMFIG*   3 ENEMY t 0
+61    order   ARMPW*    3 ENEMY t 0
