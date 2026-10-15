@@ -84,7 +84,28 @@ void Battle::victory_turn(int slot) {
         return false;
     };
     if (settings.provider == 1) {
-        // Campaign missions: their victory and defeat conditions are not built (both false).
+        // Missions (sim/mission_goals.h): every win goal (0x490230), else any loss goal; the
+        // goals of a mission without placed units never decide (and skip the copy check).
+        if (mission_won(*this)) {
+            win();
+            return;
+        }
+        if (!mission_goals.active) return;
+        bool lost = false;
+        if (settings.cd_mismatch) {
+            if (victory.cd_force_tick == 0) victory.cd_force_tick = static_cast<std::uint32_t>(static_cast<std::int64_t>(crt_rand.next()) * 9000 / 0x8000) + 9000;
+            if (victory.cd_force_tick <= unit_env_.game_tick) {
+                victory.cd_force_tick = 0;
+                lost = true;
+            }
+        }
+        if (!lost) lost = mission_lost(*this);
+        if (!lost) return;
+        mark_decided();
+        if (!count_down(end_game)) return;
+        end_game.flags = static_cast<std::uint16_t>(((end_game.flags | end_game_flags::kEnding) & ~end_game_flags::kWon) | end_game_flags::kLost);
+        victory.outcome[static_cast<std::size_t>(slot)] = Outcome::Lost;
+        victory.over = true;
         return;
     }
     if ((!me.active || !side.watching) && defeated()) {

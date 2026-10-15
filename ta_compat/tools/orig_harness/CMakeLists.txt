@@ -280,6 +280,7 @@ add_executable(create_harness
     ${ROOT}/engine/sim/src/sky.cpp
     ${ROOT}/engine/sim/src/step_budget.cpp
     ${ROOT}/engine/sim/src/victory.cpp
+    ${ROOT}/engine/sim/src/mission_goals.cpp
     ${ROOT}/engine/sim/src/world.cpp
     ${ROOT}/engine/sim/src/sight.cpp
     ${ROOT}/engine/sim/src/anim.cpp

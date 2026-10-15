@@ -35,6 +35,7 @@ add_library(sim STATIC
     engine/sim/src/lockstep.cpp
     engine/sim/src/motion.cpp
     engine/sim/src/missions.cpp
+    engine/sim/src/mission_goals.cpp
     engine/sim/src/construction.cpp
     engine/sim/src/unit_missions_common.cpp
     engine/sim/src/air_missions.cpp
@@ -71,6 +72,7 @@ add_library(ta_compat STATIC
     ta_compat/src/battle_features.cpp
     ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
+    ta_compat/src/campaign.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp
@@ -88,7 +90,7 @@ target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow campaign_check)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
