@@ -21,6 +21,7 @@ add_library(sim STATIC
     engine/sim/src/anim.cpp
     engine/sim/src/battle.cpp
     engine/sim/src/battle_start.cpp
+    engine/sim/src/bitstream.cpp
     engine/sim/src/commands.cpp
     engine/sim/src/commands_core.cpp
     engine/sim/src/effects.cpp
@@ -62,6 +63,20 @@ add_library(sim STATIC
 )
 target_include_directories(sim PUBLIC engine/sim/include)
 target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
+
+# Network play: wire format, frames, transports, the battle's network side and the battle room.
+add_library(net STATIC
+    engine/net/src/codec.cpp
+    engine/net/src/frames.cpp
+    engine/net/src/protocol.cpp
+    engine/net/src/transport.cpp
+)
+target_include_directories(net PUBLIC engine/net/include)
+target_link_libraries(net PUBLIC sim)
+if(WIN32)
+    target_link_libraries(net PUBLIC ws2_32)
+endif()
+target_compile_options(net PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
 # TA compatibility layer (importers for the original game's data). Kept apart
 # from the engine; the engine never depends on it.
@@ -105,6 +120,11 @@ target_compile_options(sim_tests PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 target_compile_definitions(sim_tests PRIVATE
     FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures")
 add_test(NAME sim_tests COMMAND sim_tests)
+
+add_executable(net_tests tests/net_tests.cpp)
+target_link_libraries(net_tests PRIVATE net)
+target_compile_options(net_tests PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
+add_test(NAME net_tests COMMAND net_tests)
 
 add_executable(compat_tests tests/compat_tests.cpp)
 target_link_libraries(compat_tests PRIVATE ta_compat)
