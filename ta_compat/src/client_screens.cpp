@@ -154,7 +154,7 @@ protected:
         // Screen size: a slider over the display modes (only outside a battle).
         modes_ = display_modes(fe);
         for (Widget& w : widgets_)
-            if (upper(w.name).compare(0, 3, "VID") == 0 && in_battle_) w.active = false;
+            if ((upper(w.name).compare(0, 3, "VID") == 0 || upper(w.name).compare(0, 3, "MAP") == 0) && in_battle_) w.active = false;
         if (Widget* v = widget("VIDSLDR")) {
             v->range = static_cast<int>(modes_.size()) - 1;
             v->position = 0;
@@ -335,7 +335,12 @@ protected:
             {"SOUND", "SOUNDS"}, {"MUSIC", "MUSIC"}, {"SPEEDS", "SPEEDS"}, {"VISUALS", "VISUALS"}};
         for (const auto& [button, gui] : pages)
             if (is(w, button)) {
-                const std::string g = in_battle_ ? std::string(gui) == "SOUNDS" ? std::string("SOUNDSRT") : std::string(gui) + "RT" : std::string(gui);
+                // In a battle the pages are SOUNDSRT, MUSICRT, SPEEDSRT and VISUALRT (no S).
+                static const std::pair<const char*, const char*> rt[] = {{"SOUNDS", "SOUNDSRT"}, {"MUSIC", "MUSICRT"}, {"SPEEDS", "SPEEDSRT"}, {"VISUALS", "VISUALRT"}};
+                std::string g = gui;
+                if (in_battle_)
+                    for (const auto& [a, b] : rt)
+                        if (g == a) g = b;
                 if (art_.layout(g)) {
                     page_ = std::make_unique<OptionsPage>(art_, g, in_battle_);
                     page_->enter(fe);
