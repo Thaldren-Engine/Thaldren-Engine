@@ -390,8 +390,9 @@ std::shared_ptr<const client::Sample> MenuArt::music_track(int n) {
 
 client::ClientOptions client_options(const client::Settings& s, int width, int height) {
     client::ClientOptions o;
-    o.width = width;
-    o.height = height;
+    // A battle runs at the chosen display mode (the menus stay 640 x 480).
+    o.width = std::max(640, s.get_int("DisplaymodeWidth", width));
+    o.height = std::max(480, s.get_int("DisplaymodeHeight", height));
     o.scroll_speed = s.get_int("scrollspeed", 0x20);
     o.game_speed = std::clamp(s.get_int("gamespeed", 10), 1, 20);
     o.right_click_orders = s.get_int("Interface Type", 0) == 1;
@@ -403,6 +404,7 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
     o.speech = s.get_int("speechfx", 1) != 0;
     o.alt_groups = s.get_int("SwitchAlt", 0) != 0;
     o.clock = s.get_int("clock", 0) != 0;
+    o.sound_mode = s.get_int("Sound Mode", 1);
     return o;
 }
 

@@ -116,8 +116,8 @@ int main(int argc, char** argv) {
         }
         client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
         client::FrontEndSetup fes;
-        fes.width = opt.width;
-        fes.height = opt.height;
+        fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options
+        fes.height = 480;
         fes.settings_path = settings_path;
         ta::make_front_end(art, &music, fes);
         {

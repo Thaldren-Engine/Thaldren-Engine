@@ -243,14 +243,27 @@ std::vector<SoundEvent> GameClient::take_sounds() {
 }
 
 void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos) {
-    // World sounds play when the viewed player sees the spot; panned by its place on screen.
-    if (sample == 0xFFFF || sample >= c_.samples.size()) return;
-    if (opt_.fog && b_.settings.fog_of_war && !b_.point_seen_by(opt_.player, pos)) return;
-    const int sx = (pos[0] >> 16) - scroll_x_ - (opt_.width - 128) / 2;
-    const int pan = std::clamp(sx * 100 / std::max(1, opt_.width), -100, 100);
-    sounds_.push_back({sample, pan});
+    // World sounds play when the viewed player sees the spot (sight counts with the line of
+    // sight option, else the explored map; the block of x and z minus half the height).
+    // Mono mode plays them centred at full volume wherever they are; 3D mode places them
+    // around the view's centre, full volume within half the view's size and falling off
+    // with the distance beyond it, silent past the map's size.
+    if (sample == 0xFFFF || sample >= c_.samples.size() || opt_.sound_mode == 0) return;
+    if (!b_.point_seen_by(opt_.player, pos)) return;
+    if (opt_.sound_mode != 2) {
+        sounds_.push_back({sample, 0, 256});
+        return;
+    }
+    const int vw = (opt_.width - 128) / 16, vh = (opt_.height - 64) / 16;
+    const double rx = (pos[0] >> 16) - (vw / 2) * 16 - scroll_x_;
+    const double ry = scroll_y_ + (vh / 2) * 16 + ((pos[1] >> 16) >> 1) - (pos[2] >> 16);
+    const double dist = std::sqrt(rx * rx + ry * ry);
+    const double near_d = ((vw + vh) / 2) * 16.0, far_d = (b_.map.width + b_.map.height) * 16.0;
+    if (dist > far_d) return;
+    const int volume = dist <= near_d ? 256 : static_cast<int>(256.0 * near_d / dist);
+    const int pan = dist > 0 ? static_cast<int>(std::clamp(rx / dist * 100.0, -100.0, 100.0)) : 0;
+    sounds_.push_back({sample, pan, volume});
 }
-
 void GameClient::speak(const sim::Unit& u, std::uint32_t id) {
     const std::uint16_t t = b_.ticks[u.id].type_index;
     if (t >= c_.types.size() || id >= c_.types[t].sounds.size()) return;

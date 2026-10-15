@@ -181,6 +181,8 @@ public:
     virtual void apply_settings() = 0;
     // Milliseconds since the program started (the main loop's clock).
     virtual std::uint32_t now_ms() const = 0;
+    // The desktop's size in pixels (the screen-size choices depend on it).
+    virtual void desktop_size(int& w, int& h) const = 0;
 };
 
 // ---------------------------------------------------------------- running it

@@ -53,6 +53,7 @@ struct ClientOptions {
     bool speech = true;              // unit speech on (the sound options' speech switch)
     bool alt_groups = false;         // the alternate group keys (Alt+digit selects)
     bool clock = false;              // the game clock on the top bar (option)
+    int sound_mode = 1;              // 0 off, 1 mono (world sounds centred), 2 3D (placed around the view's centre)
 };
 
 struct SoundEvent {
@@ -84,6 +85,8 @@ public:
     bool paused() const { return budget_.paused; }
     void set_paused(bool p) { budget_.paused = p; }
     std::uint16_t tracked() const { return tracked_; }
+    // A menu over the battle draws its own pointer.
+    void set_pointer_hidden(bool h) { pointer_hidden_ = h; }
 
     // Presentation events from the simulation (the battle's outside forwards them).
     void on_sound(std::uint16_t sample, const sim::Vec3i& pos);
@@ -223,6 +226,7 @@ private:
     bool mdrag_ = false;                        // dragging the view with the middle button
     int mdrag_x_ = 0, mdrag_y_ = 0;
     int hover_feature_ = -1;
+    bool pointer_hidden_ = false;
     // Drawing resources made once.
     void prepare_drawing();
     bool prepared_ = false;

@@ -155,7 +155,7 @@ render::DrawList GameClient::draw() {
     const CursorKind ck = cursor_kind();
     const auto* look = c_.cursors.looks[static_cast<std::size_t>(ck)];
     if (!look || look->empty()) look = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Normal)];
-    if (look && !look->empty()) {
+    if (look && !look->empty() && !pointer_hidden_) {
         const render::Sprite8& s = (*look)[(frame_counter_ / 2) % look->size()];
         list.blit(&s, mouse_x_, mouse_y_, screen, true);
     }

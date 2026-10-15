@@ -103,6 +103,21 @@ public:
         if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
     }
     std::uint32_t now_ms() const override { return now_; }
+    void desktop_size(int& w, int& h) const override {
+        w = desktop_w_;
+        h = desktop_h_;
+    }
+    int desktop_w_ = 1920, desktop_h_ = 1080;
+    // The frame size now: a battle's own, else the menus'.
+    void frame_size(int& w, int& h) {
+        if (in_battle() && !ended_) {
+            w = session_->client().options().width;
+            h = session_->client().options().height;
+        } else {
+            w = s_.width;
+            h = s_.height;
+        }
+    }
 
     // ---- the loop's side
     void begin(AudioOut* audio) {
@@ -174,12 +189,14 @@ public:
 
     // The frame and its palette.
     render::DrawList draw(const render::Palette*& palette) {
-        const int w = s_.width, h = s_.height;
+        int w = 0, h = 0;
+        frame_size(w, h);
         render::DrawList list;
         list.width = w;
         list.height = h;
         palette = &s_.content->palette;
         if (in_battle() && !ended_) {
+            session_->client().set_pointer_hidden(stack_.size() > battle_base_);
             list = session_->client().draw();
             palette = &session_->content().palette;
             if (stack_.size() > battle_base_) {
@@ -244,7 +261,7 @@ private:
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
             const render::Sprite8& s = (*c)[(now_ / 66) % c->size()];
-            list.blit(&s, mouse_x_, mouse_y_, {0, 0, s_.width - 1, s_.height - 1}, true);
+            list.blit(&s, mouse_x_, mouse_y_, {0, 0, list.width - 1, list.height - 1}, true);
         }
     }
 
@@ -438,10 +455,27 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     if (o.sound && !audio.open(nullptr)) std::printf("no sound output: %s\n", SDL_GetError());
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     const std::uint64_t start = SDL_GetTicks();
+    if (const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {
+        run.desktop_w_ = dm->w;
+        run.desktop_h_ = dm->h;
+    }
+    int cur_w = w, cur_h = h;  // the frame size the window shows (menus 640 x 480, battles their own)
     int frame_no = 0;
     auto present = [&]() -> bool {
         const render::Palette* pal = nullptr;
         render::DrawList list = run.draw(pal);
+        if (list.width != cur_w || list.height != cur_h) {
+            // The screen size changes between the menus and a battle (the chosen display mode).
+            cur_w = list.width;
+            cur_h = list.height;
+            SDL_SetWindowSize(win, cur_w * scale, cur_h * scale);
+            rgba.assign(static_cast<std::size_t>(cur_w) * static_cast<std::size_t>(cur_h) * 4, 0);
+            if (tex) {
+                SDL_DestroyTexture(tex);
+                tex = SDL_CreateTexture(sr, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, cur_w, cur_h);
+                if (tex) SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+            }
+        }
         if (wants_shot(frame_no)) save_shot(render::execute(list, run.blend()), *pal, o.screenshot_prefix, frame_no);
         if (gpu) {
             render::lines_to_sprites(list);
@@ -455,7 +489,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
                 const render::Rgb& c = (*pal)[img.pixels[i]];
                 rgba[i * 4] = c.r, rgba[i * 4 + 1] = c.g, rgba[i * 4 + 2] = c.b, rgba[i * 4 + 3] = 255;
             }
-            SDL_UpdateTexture(tex, nullptr, rgba.data(), w * 4);
+            SDL_UpdateTexture(tex, nullptr, rgba.data(), cur_w * 4);
             SDL_RenderTexture(sr, tex, nullptr, nullptr);
             SDL_RenderPresent(sr);
         }
@@ -482,14 +516,14 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: e.type = InputEvent::Type::Quit; break;
             case SDL_EVENT_MOUSE_MOTION:
                 e.type = InputEvent::Type::MouseMove;
-                e.x = std::clamp(static_cast<int>(ev.motion.x) / scale, 0, w - 1);
-                e.y = std::clamp(static_cast<int>(ev.motion.y) / scale, 0, h - 1);
+                e.x = std::clamp(static_cast<int>(ev.motion.x) / scale, 0, cur_w - 1);
+                e.y = std::clamp(static_cast<int>(ev.motion.y) / scale, 0, cur_h - 1);
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP:
                 e.type = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? InputEvent::Type::MouseDown : InputEvent::Type::MouseUp;
-                e.x = std::clamp(static_cast<int>(ev.button.x) / scale, 0, w - 1);
-                e.y = std::clamp(static_cast<int>(ev.button.y) / scale, 0, h - 1);
+                e.x = std::clamp(static_cast<int>(ev.button.x) / scale, 0, cur_w - 1);
+                e.y = std::clamp(static_cast<int>(ev.button.y) / scale, 0, cur_h - 1);
                 e.button = ev.button.button == SDL_BUTTON_LEFT ? 1 : ev.button.button == SDL_BUTTON_RIGHT ? 3 : 2;
                 break;
             case SDL_EVENT_KEY_DOWN:

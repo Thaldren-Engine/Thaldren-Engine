@@ -92,6 +92,17 @@ void show_message(FrontEnd& fe, MenuArt& art, const std::string& text) {
 }
 
 // ------------------------------------------------------------------ options
+// The screen sizes offered: 640 x 480, 800 x 600 and 1024 x 768, then 1280 x 1024 and
+// 1600 x 1200 when the desktop is at least that big; ascending, nothing below 640 x 480.
+std::vector<std::array<int, 2>> display_modes(FrontEnd& fe) {
+    int dw = 0, dh = 0;
+    fe.desktop_size(dw, dh);
+    std::vector<std::array<int, 2>> m = {{640, 480}, {800, 600}, {1024, 768}};
+    if (dw > 0x4ff && dh > 0x3ff) m.push_back({1280, 1024});
+    if (dw > 0x63f && dh > 0x4af) m.push_back({1600, 1200});
+    return m;
+}
+
 // One options page (full-screen in the menus, the side panel pages in a battle). The
 // widgets map to settings by name, the same on both kinds of pages.
 class OptionsPage : public LayoutScreen {
@@ -128,6 +139,16 @@ protected:
             }
         }
         if (m && track_ == 0) track_ = std::max(1, m->current_track());
+        // Screen size: a slider over the display modes (only outside a battle).
+        modes_ = display_modes(fe);
+        for (Widget& w : widgets_)
+            if (upper(w.name).compare(0, 3, "VID") == 0 && in_battle_) w.active = false;
+        if (Widget* v = widget("VIDSLDR")) {
+            v->range = static_cast<int>(modes_.size()) - 1;
+            v->position = 0;
+            for (std::size_t i = 0; i < modes_.size(); ++i)
+                if (modes_[i][0] == s.get_int("DisplaymodeWidth", 640) && modes_[i][1] == s.get_int("DisplaymodeHeight", 480)) v->position = static_cast<int>(i);
+        }
         labels(fe);
     }
     void labels(FrontEnd& fe) {
@@ -137,7 +158,7 @@ protected:
             g->text = sp == 10 ? "Normal" : (sp > 10 ? "+" : "-") + std::to_string(std::abs(sp - 10));
         }
         if (Widget* v = widget("VIDVAL"))
-            v->text = std::to_string(fe.width()) + "x" + std::to_string(fe.height());
+            v->text = std::to_string(fe.settings().get_int("DisplaymodeWidth", 640)) + " X " + std::to_string(fe.settings().get_int("DisplaymodeHeight", 480));
     }
     static void set(Widget& w, int range, int v) {
         w.range = range;
@@ -154,6 +175,11 @@ protected:
             else if (is(w, "TXTSCROL")) s.set_int("textscroll", w.position);
             else if (is(w, "MAXLINES")) s.set_int("textlines", w.position);
             else if (is(w, "GAMMA")) s.set_int("Gamma", w.position);
+            else if (is(w, "VIDSLDR") && !modes_.empty()) {
+                const auto& md = modes_[static_cast<std::size_t>(std::clamp(w.position, 0, static_cast<int>(modes_.size()) - 1))];
+                s.set_int("DisplaymodeWidth", md[0]);
+                s.set_int("DisplaymodeHeight", md[1]);
+            }
             fe.apply_settings();
             labels(fe);
             return;
@@ -231,6 +257,10 @@ protected:
             if (is(w, "SHADING")) s.set_int("Shading", 1);
             if (is(w, "ANTI")) s.set_int("Anti Alias", 1);
             if (is(w, "BSHADOWS")) s.set_int("FeatureShadows", 1);
+            if (is(w, "VIDSLDR") && !in_battle_) {
+                s.set_int("DisplaymodeWidth", 640);
+                s.set_int("DisplaymodeHeight", 480);
+            }
         }
         load(fe);
     }
@@ -246,6 +276,7 @@ protected:
     bool in_battle_;
     int track_ = 0;
     client::Settings saved_;
+    std::vector<std::array<int, 2>> modes_;
 };
 
 // The options menu: STARTOPT.GUI in the menus (its pages full-screen behind its buttons),
@@ -1104,6 +1135,7 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
         cur.speech = o.speech;
         cur.alt_groups = o.alt_groups;
         cur.clock = o.clock;
+        cur.sound_mode = o.sound_mode;
         if (o.game_speed != static_cast<int>(c.budget().game_speed)) c.set_game_speed(o.game_speed);
     };
 }
