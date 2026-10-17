@@ -677,6 +677,7 @@ DrawList build_draw_list(const BattleScene& s) {
     out.clear_index = s.clear_index;
 
     draw_terrain(s, out);
+    if (s.after_terrain) s.after_terrain(out);
 
     // Unit rows: 16 world units of z each, starting 16 rows above the view.
     const int row_count = c.view_height / 16 + 32;
@@ -760,6 +761,7 @@ DrawList build_draw_list(const BattleScene& s) {
     for (const auto& row : rows)
         for (const UnitInstance* ui : row)
             if (!ui->ground) draw_unit(s, *ui, out);
+    if (s.before_fog) s.before_fog(out);
     if (s.fog) draw_fog(s, out);
     return out;
 }

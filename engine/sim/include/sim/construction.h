@@ -126,6 +126,12 @@ void transfer_ownership(Missions& m, Unit& unit, int new_owner);
 // Yard map placement of a structure type with its footprint corner at the cell (0x47D2E0,
 // as the simulation calls it: no view checks, every occupant blocks).
 bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z);
+// The same check as the player's interface makes it (with the viewing player's record): the
+// caller decides the view part (the footprint centre's block unexplored refuses); occupants
+// and marked cells block only when `occupants_block` (the centre's block is in sight). The
+// height the structure would stand at (the original's last-place height) goes to `height`.
+bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z, bool occupants_block,
+                    std::uint8_t* height);
 // Height a structure stands at on the cells (0x47D820): the lowest slope-sampled cell height,
 // or the sea level minus the waterline when no cell samples the slope.
 std::uint8_t structure_place_height(const Construction& c, std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z);

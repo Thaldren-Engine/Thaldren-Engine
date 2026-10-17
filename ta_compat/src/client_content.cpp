@@ -66,6 +66,38 @@ void model_box(const Model3doPiece* root, std::array<std::int32_t, 3>& lo, std::
         }
 }
 
+// A picture font (a GAF whose first sequence's frame n is character n): the glyphs keep their
+// own colours; the text height is the 'I' frame's height + 2 and a glyph's top row lies (that
+// height - its y offset) below the text's top (as the menus' captions, see "Front end").
+client::Font picture_font(const std::vector<std::uint8_t>* g) {
+    client::Font font;
+    std::vector<render::Sprite8> frames;
+    if (!g || !gaf_sequence_frames(*g, 0, frames) || frames.size() <= 'I') return font;
+    const int i_height = frames['I'].height;
+    font.height = i_height + 2;
+    font.raise = 0;
+    for (std::size_t c = 0x20; c < frames.size() && c < 256; ++c) {
+        const render::Sprite8& f = frames[c];
+        client::Glyph& gl = font.glyphs[c];
+        gl.width = f.width;
+        gl.present = f.width > 0;
+        gl.rows = std::max(1, f.height);
+        gl.top = i_height - f.y_offset;
+        gl.left = -f.x_offset;
+        gl.ink.assign(static_cast<std::size_t>(f.width) * static_cast<std::size_t>(gl.rows), 0);
+        gl.colours.assign(gl.ink.size(), 0);
+        if (c == ' ') continue;
+        for (int y = 0; y < f.height; ++y)
+            for (int x = 0; x < f.width; ++x) {
+                const std::uint8_t px = f.at(x, y);
+                if (f.has_key && px == f.key) continue;
+                gl.ink[static_cast<std::size_t>(y * f.width + x)] = 1;
+                gl.colours[static_cast<std::size_t>(y * f.width + x)] = px;
+            }
+    }
+    return font;
+}
+
 } // namespace
 
 bool parse_fnt(const std::vector<std::uint8_t>& f, client::Font& out) {
@@ -110,6 +142,7 @@ bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& ou
         g.common_attribs = c->get_int("commonattribs", 0);
         g.colorf = c->get_int("colorf", 0);
         g.colorb = c->get_int("colorb", 0);
+        g.font_number = c->get_int("fontnumber", 0);
         g.active = c->get_int("active", 1) != 0;
         g.quickkey = sec->get_int("quickkey", 0);
         g.status = sec->get_int("status", 0);
@@ -225,6 +258,10 @@ bool ClientWorld::build_content(std::string& error) {
             for (int i = 0; i < 256; ++i) c.hud[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(i);
     }
     const std::string common = "anims\\commongui.GAF";
+    // Panel captions (the build buttons' counts) are drawn in the interface's picture font
+    // (hattfont12) whenever it is loaded, whatever font gadget the description names.
+    fonts_.push_back(picture_font(gaf("anims\\hattfont12.GAF")));
+    const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
     // Buttons from a GUI file's gadgets: the gadget's name is the art's sequence name.
     auto unit_index = [&](const std::string& name) -> std::uint16_t {
         for (std::size_t k = 1; k < defs_.units.size(); ++k)
@@ -264,6 +301,10 @@ bool ClientWorld::build_content(std::string& error) {
         if (!head.panel.empty())
             if (const auto* p = sequence(common, head.panel)) out.background = &p->front();
         const std::string gui_gaf = "anims\\" + gui_name + ".GAF";
+        // The description's font gadgets in order (a caption names one by its font number).
+        std::vector<const client::Font*> gui_fonts;
+        for (std::size_t i = 1; i < gs.size(); ++i)
+            if (gs[i].id == 7) gui_fonts.push_back(gs[i].filename.empty() ? nullptr : font(gs[i].filename));
         for (std::size_t i = 1; i < gs.size(); ++i) {
             const GuiGadget& g = gs[i];
             if (g.id != 1) continue;
@@ -293,6 +334,10 @@ bool ClientWorld::build_content(std::string& error) {
                     if (tail == name) b.action = act;
             }
             b.staged = (g.attribs & 0x100) != 0;
+            b.attribs = g.attribs;
+            b.colorf = static_cast<std::uint8_t>(g.colorf);
+            if (g.font_number >= 0 && static_cast<std::size_t>(g.font_number) < gui_fonts.size()) b.font = gui_fonts[static_cast<std::size_t>(g.font_number)];
+            if (caption_font) b.font = caption_font;
             b.frames = button_art(gui_gaf, g.name, unit != 0);
             if (b.frames || b.action != client::Action::None) out.buttons.push_back(b);
         }
@@ -362,7 +407,41 @@ bool ClientWorld::build_content(std::string& error) {
             {client::CursorKind::TooFar, "cursortoofar"},   {client::CursorKind::Busy, "cursorhourglass"},
             {client::CursorKind::Red, "cursorred"},
         };
-        for (const auto& [k, name] : looks) c.cursors.looks[static_cast<std::size_t>(k)] = sequence(cur, name);
+        // A sequence's timing: the loop byte of its entry (+2) and each frame's duration (the
+        // frame entry's second word, low 16 bits).
+        auto timing = [&](const std::string& name) {
+            client::FrameTiming t;
+            const std::vector<std::uint8_t>* g = gaf(cur);
+            GafDirectory dir;
+            if (!g || !gaf_read_directory(*g, dir)) return t;
+            const int s = gaf_find_sequence(dir, name);
+            auto u32_at = [&](std::size_t o) -> std::uint32_t {
+                if (o + 4 > g->size()) return 0;
+                std::uint32_t v;
+                std::memcpy(&v, &(*g)[o], 4);
+                return v;
+            };
+            if (s < 0) return t;
+            const std::uint32_t entry = u32_at(12 + static_cast<std::size_t>(s) * 4);
+            if (entry + 0x28 > g->size()) return t;
+            const std::uint16_t frames = static_cast<std::uint16_t>((*g)[entry] | ((*g)[entry + 1] << 8));
+            t.loop = (*g)[entry + 2] != 0;
+            for (std::uint16_t i = 0; i < frames; ++i) t.durations.push_back(static_cast<std::uint16_t>(u32_at(entry + 0x28 + 8u * i + 4)));
+            return t;
+        };
+        for (const auto& [k, name] : looks) {
+            c.cursors.looks[static_cast<std::size_t>(k)] = sequence(cur, name);
+            c.cursors.timing[static_cast<std::size_t>(k)] = timing(name);
+        }
+        static const char* const kByNumber[22] = {nullptr,          "cursorattack",   "cursorairstrike", "cursortoofar",   "cursorcapture",
+                                                  "cursordefend",   "cursorrepair",   "cursorpatrol",    "cursorpickup",   "cursorteleport",
+                                                  "cursorrevive",   "cursorreclamate", "cursorload",     "cursorunload",   "cursormove",
+                                                  "cursorselect",   "cursorfindsite", "cursorred",       "cursorgrn",      "cursornormal",
+                                                  "cursorhourglass", "pathicon"};
+        for (std::size_t n = 1; n < 22; ++n) {
+            c.cursors.by_number[n] = sequence(cur, kByNumber[n]);
+            c.cursors.by_number_timing[n] = timing(kByNumber[n]);
+        }
         c.radar_dots = sequence("anims\\FX.GAF", "radlogo");
         c.team_logos = sequence("textures\\logos.GAF", "32xlogos");
         for (std::size_t p = 0; p < c.player_colour.size(); ++p) c.player_colour[p] = request_.start.players[p].colour;
@@ -438,6 +517,32 @@ bool ClientWorld::build_content(std::string& error) {
             for (std::size_t k = 0; k < kinds.size(); ++k)
                 for (const auto& [lookup, text] : kStatus)
                     if (kinds[k] == lookup) c.mission_status[k] = text;
+            // The queued-order view's drawing by mission kind (the same table's entries: what
+            // to draw, the marker's pointer number). Kinds not listed draw nothing.
+            struct OrderLook {
+                const char* lookup;
+                std::uint8_t draw, marker;
+            };
+            static const OrderLook kOrderLooks[] = {
+                {"Attack_NoMove", 0x08, 1},   {"QMove", 0x02, 14},          {"QPatrol", 0x02, 7},          {"Standby", 0x10, 15},
+                {"Standby_Mine", 0x10, 15},   {"Move_Ground", 0x12, 14},    {"Follow_Ground", 0x12, 5},    {"Suppress", 0x08, 1},
+                {"Attack_Chase", 0x08, 1},    {"Attack_Kamikaze", 0x08, 1}, {"AttackSpecial", 0x08, 1},    {"Patrol", 0x12, 7},
+                {"Ground_Pickup", 0x08, 12},  {"Ground_Unload", 0x08, 13},  {"Teleport", 0x08, 9},         {"MobileBuild", 0x13, 0},
+                {"HelpBuild", 0x18, 6},       {"RepairPatrol", 0x12, 7},    {"RepairUnit", 0x12, 6},       {"Capture", 0x08, 4},
+                {"Resurrect", 0x12, 11},      {"Reclaim", 0x12, 11},        {"ReclaimUnit", 0x12, 11},     {"RepairUnitNoMove", 0x18, 6},
+                {"VTOL_Move", 0x02, 14},      {"VTOL_Landing", 0x08, 14},   {"VTOL_Pickup", 0x08, 8},      {"VTOL_Unload", 0x08, 9},
+                {"VTOL_Follow", 0x02, 5},     {"VTOL_Patrol", 0x02, 7},     {"AirStrike", 0x08, 2},        {"AirToAir", 0x08, 1},
+                {"AirToGround", 0x08, 1},     {"AirToGroundHover", 0x08, 1}, {"VTOL_MobileBuild", 0x03, 0}, {"VTOL_HelpBuild", 0x08, 6},
+                {"VTOL_RepairPatrol", 0x02, 7}, {"VTOL_RepairUnit", 0x02, 6}, {"VTOL_Reclaim", 0x02, 11},  {"VTOL_ReclaimUnit", 0x02, 11},
+            };
+            c.mission_draw.assign(kinds.size(), 0);
+            c.mission_marker.assign(kinds.size(), 0);
+            for (std::size_t k = 0; k < kinds.size(); ++k)
+                for (const OrderLook& o : kOrderLooks)
+                    if (kinds[k] == o.lookup) {
+                        c.mission_draw[k] = o.draw;
+                        c.mission_marker[k] = o.marker;
+                    }
         }
         auto& u = c.ui_sounds;
         u.immediate = ui("IMMEDIATEORDERS");
@@ -503,6 +608,13 @@ bool ClientWorld::build_content(std::string& error) {
         look.no_build_line = stricmp_c(d.unit_name, "CORBUILD") == 0;
         look.cost_metal = d.build_cost_metal;
         look.cost_energy = d.build_cost_energy;
+        look.structure = d.bm_code == 0;
+        look.builds = d.has_build_options;
+        look.kamikaze = (d.type_flags & 0x10000000u) != 0;
+        look.min_cloak_distance = d.min_cloak_distance;
+        look.sight_distance = d.sight_distance;
+        look.kamikaze_distance = static_cast<std::uint16_t>(d.kamikaze_distance);
+        if (d.explode_as >= 0 && d.explode_as < 256) look.explosion_area = static_cast<std::uint16_t>(weapons_.slots[static_cast<std::size_t>(d.explode_as)].area_of_effect);
         for (const std::string& cm : commanders)
             if (stricmp_c(cm, d.unit_name) == 0) look.commander = true;
         look.sounds.fill(-1);
@@ -567,7 +679,14 @@ bool ClientWorld::build_content(std::string& error) {
             b.y = pg.y + slot_xy[e.slot][1];
             b.w = b.h = 64;
             b.frames = button_art("", defs_.units[e.unit].unit_name, true);
-            // It takes the slot's place (an empty slot's filler goes).
+            // It takes over the slot's gadget (its caption layout, colour and font) ...
+            for (const client::Button& o : pg.buttons)
+                if (o.x == b.x && o.y == b.y && o.w == 64 && o.h == 64) {
+                    b.attribs = o.attribs;
+                    b.colorf = o.colorf;
+                    b.font = o.font;
+                }
+            // ... and its place (an empty slot's filler goes).
             pg.buttons.erase(std::remove_if(pg.buttons.begin(), pg.buttons.end(),
                                             [&](const client::Button& o) { return o.x == b.x && o.y == b.y && o.w == 64 && o.h == 64; }),
                              pg.buttons.end());

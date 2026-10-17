@@ -163,10 +163,24 @@ public:
         if (!stack_.empty()) stack_.back()->handle(*this, e);
     }
 
+    // The modifier keys held now (a battle's client polls them).
+    void poll_modifiers(bool shift, bool ctrl, bool alt) {
+        if (in_battle()) session_->client().poll_modifiers(shift, ctrl, alt);
+    }
+
     void frame(std::uint32_t now) {
         now_ = now;
         graveyard_.clear();  // screens closed during the last pass go now
         const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
+        // The menu pointer steps by its frames' own times with the wall-clock ticks since the
+        // last pass (as the battle's pointer does).
+        if (!pointer_started_) {
+            pointer_started_ = true;
+            pointer_ticks_ = ticks;
+            pointer_.start(s_.content->cursor_timing);
+        }
+        pointer_.step(s_.content->cursor_timing, ticks - pointer_ticks_);
+        pointer_ticks_ = ticks;
         if (pending_) run_launcher();
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
@@ -290,7 +304,8 @@ private:
         if (!draw_pointer_) return;
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
-            const render::Sprite8& s = (*c)[(now_ / 66) % c->size()];
+            if (pointer_.ended) return;
+            const render::Sprite8& s = (*c)[static_cast<std::size_t>(pointer_.frame) % c->size()];
             list.blit(&s, mouse_x_, mouse_y_, {0, 0, list.width - 1, list.height - 1}, true);
         }
     }
@@ -357,6 +372,9 @@ private:
     int fx_volume_ = 256;
     std::vector<int> menu_sounds_;
     std::uint32_t now_ = 0;
+    FrameClock pointer_;  // the menu pointer's animation
+    std::uint32_t pointer_ticks_ = 0;
+    bool pointer_started_ = false;
     int mouse_x_ = 0, mouse_y_ = 0;
     BattleMusicJudge judge_;
 
@@ -582,6 +600,10 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             default: continue;
             }
             run.handle(e);
+        }
+        {
+            const SDL_Keymod mod = SDL_GetModState();
+            run.poll_modifiers((mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_ALT) != 0);
         }
         run.frame(now);
         run.play_pending_sounds();

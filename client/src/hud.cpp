@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <set>
 
 #include "client/canvas.h"
@@ -30,10 +31,53 @@ std::string fmt(const char* f, double v) {
     std::snprintf(buf, sizeof buf, f, v);
     return buf;
 }
+// A fixed-point number as the game's C runtime prints it ("%.Nf"): the exact value rounded
+// half away from zero (a tie such as 2261393.25 gives .3; today's runtimes round ties to
+// even), a minus sign for negative values (also when they round to zero).
+std::string crt_fixed(double v, int decimals) {
+    if (v != v) return fmt("%f", v);
+    const bool neg = std::signbit(v) && v != 0.0;
+    char buf[400];
+    std::snprintf(buf, sizeof buf, "%.60f", std::fabs(v));  // exact digits of the value
+    std::string s = buf;
+    const std::size_t dot = s.find('.');
+    std::string digits = s.substr(0, dot) + s.substr(dot + 1, static_cast<std::size_t>(decimals));
+    const bool up = dot + 1 + static_cast<std::size_t>(decimals) < s.size() && s[dot + 1 + static_cast<std::size_t>(decimals)] >= '5';
+    if (up) {
+        int k = static_cast<int>(digits.size()) - 1;
+        while (k >= 0 && digits[static_cast<std::size_t>(k)] == '9') digits[static_cast<std::size_t>(k--)] = '0';
+        if (k < 0) digits.insert(digits.begin(), '1');
+        else ++digits[static_cast<std::size_t>(k)];
+    }
+    const std::size_t int_len = digits.size() - static_cast<std::size_t>(decimals);
+    std::string out = neg ? "-" : "";
+    out += digits.substr(0, int_len);
+    if (decimals > 0) out += "." + digits.substr(int_len);
+    return out;
+}
+// The C runtime's float -> int conversion (truncation; out of range or NaN gives the integer
+// indefinite value).
+long long ftol(double v) {
+    if (!(v > -2147483649.0 && v < 2147483648.0)) return static_cast<long long>(static_cast<std::int32_t>(0x80000000u));
+    return static_cast<long long>(static_cast<std::int32_t>(v));
+}
+long long magnitude32(long long v) {
+    // |v| as the 32-bit negate does it (the integer indefinite value stays as it is).
+    const std::uint32_t u = static_cast<std::uint32_t>(v);
+    return static_cast<std::int32_t>(static_cast<std::int32_t>(u) < 0 ? 0u - u : u);
+}
 std::string fmti(const char* f, long long v) {
     char buf[64];
     std::snprintf(buf, sizeof buf, f, v);
     return buf;
+}
+
+// The bars' text routine: a line is drawn only when its whole box (x .. x + width, y .. y +
+// the font's height) lies inside the frame; otherwise nothing of it.
+void bar_text(render::Image8& o, const Font& f, const std::string& s, int x, int y, int colour) {
+    const int w = f.text_width(s);
+    if (x < 0 || y < 0 || x + w > o.width - 1 || y + f.height > o.height - 1) return;
+    draw_text(o, o.bounds(), f, s, x, y, colour);
 }
 
 // Nearest-neighbour scaling of a picture into w x h.
@@ -108,6 +152,7 @@ void GameClient::prepare_drawing() {
 
 render::DrawList GameClient::draw() {
     if (!prepared_) prepare_drawing();
+    update_top_bar();
     const int w = opt_.width, h = opt_.height;
     render::BattleScene scene;
     scene.camera.screen_width = w;
@@ -125,6 +170,32 @@ render::DrawList GameClient::draw() {
     scene.options.unit_shadows = opt_.unit_shadows;
     scene.options.feature_shadows = opt_.feature_shadows;
     add_selection_outlines(scene);
+    // The top bar's art is drawn right after the terrain (its pieces may reach into the view's
+    // first rows; units, shots and effects draw over them there): its own piece at x 129, then
+    // (wider screens) the bottom bar's piece repeated.
+    scene.after_terrain = [this, w, h](render::DrawList& out) {
+        if (!side_) return;
+        const render::ClipRect all{0, 0, w - 1, bar_redrawn_ ? h - 1 : 31};
+        for (int x = 129; side_->panel_top && x < w;) {
+            const render::Sprite8* s = x == 129 || !side_->panel_bottom ? side_->panel_top : side_->panel_bottom;
+            out.blit(s, x + s->x_offset, s->y_offset, all, true);
+            x += std::max(1, s->width);
+        }
+    };
+    scene.before_fog = [this, &scene, w, h](render::DrawList& out) {
+        draw_queued_orders(out, scene.camera);
+        if (opt_.damage_bars) {
+            render::Image8 bars(w, h, overlay_key_);
+            draw_unit_bars(bars);
+            render::Sprite8 sp;
+            sp.width = w;
+            sp.height = h;
+            sp.key = overlay_key_;
+            sp.has_key = true;
+            sp.pixels = std::move(bars.pixels);
+            out.blit(out.keep(std::move(sp)), 0, 0, scene.camera.view_clip(), false);
+        }
+    };
     // The units drawn this frame (picking, double clicks, notices).
     on_screen_.clear();
     for (const render::UnitInstance& ui : scene.units) {
@@ -139,12 +210,7 @@ render::DrawList GameClient::draw() {
     // Interface art: the side panel, the top and bottom bars (repeated across wider screens).
     if (side_) {
         if (side_->panel_side) list.blit(side_->panel_side, side_->panel_side->x_offset, side_->panel_side->y_offset, screen, true);
-        // The top bar: its own piece first, then (wider screens) the bottom bar's piece repeated.
-        for (int x = 129; side_->panel_top && x < w;) {
-            const render::Sprite8* s = x == 129 || !side_->panel_bottom ? side_->panel_top : side_->panel_bottom;
-            list.blit(s, x + s->x_offset, s->y_offset, screen, true);
-            x += std::max(1, s->width);
-        }
+        // (The top bar's art: drawn after the terrain, see scene.after_terrain.)
         for (int x = 129; side_->panel_bottom && x < w; x += std::max(1, side_->panel_bottom->width))
             list.blit(side_->panel_bottom, x + side_->panel_bottom->x_offset, h - 32 + side_->panel_bottom->y_offset, screen, true);
     }
@@ -152,12 +218,9 @@ render::DrawList GameClient::draw() {
     if (const Panel* p = current_panel()) {
         if (p->background) list.blit(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset, screen, true);
         for (const Button& btn : p->buttons) {
-            const bool held = held_button_ == &btn && left_down_ && mouse_x_ >= btn.x && mouse_x_ < btn.x + btn.w &&
-                              mouse_y_ >= btn.y && mouse_y_ < btn.y + btn.h;
-            const bool selected_mode = mode_ != Action::None && mode_ == btn.action;
-            const bool tab_on = (btn.action == Action::OrdersTab && (!focus_ || !(b_.units[focus_].flags & 0x400000))) ||
-                                (btn.action == Action::BuildTab && focus_ && (b_.units[focus_].flags & 0x400000));
-            const int f = button_frame(btn, held || selected_mode || tab_on, !button_enabled(btn), button_stage(btn));
+            // Pressed: only the button the pointer holds (while over it), the tab of the menu
+            // shown and the active order mode's button (see button_pressed_look).
+            const int f = button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn));
             if (f >= 0) {
                 const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
                 list.blit(&s, btn.x + s.x_offset, btn.y + s.y_offset, screen, true);
@@ -180,12 +243,17 @@ render::DrawList GameClient::draw() {
     }
     list.blit(list.keep(std::move(layer)), 0, 0, screen, false);
 
-    // The pointer (animated looks step every 2 frames of 30 per second, by the frame counter).
-    const CursorKind ck = cursor_kind();
-    const auto* look = c_.cursors.looks[static_cast<std::size_t>(ck)];
-    if (!look || look->empty()) look = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Normal)];
-    if (look && !look->empty() && !pointer_hidden_) {
-        const render::Sprite8& s = (*look)[(frame_counter_ / 2) % look->size()];
+    // The pointer: the look set by the last pass at the frame its animation reached (frame
+    // times from the art, counted down by the wall clock; see advance_pointer).
+    if (!cursor_set_) set_pointer(cursor_kind());
+    const auto* look = c_.cursors.looks[static_cast<std::size_t>(cursor_shown_)];
+    int frame = cursor_clock_.frame;
+    if (!look || look->empty()) {
+        look = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Normal)];
+        frame = 0;
+    }
+    if (look && !look->empty() && !pointer_hidden_ && !cursor_clock_.ended) {
+        const render::Sprite8& s = (*look)[static_cast<std::size_t>(frame) % look->size()];
         list.blit(&s, mouse_x_, mouse_y_, screen, true);
     }
     return list;
@@ -229,15 +297,15 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
     draw_top_bar(o);
     draw_bottom_bar(o);
     draw_minimap(o);
-    // Build counts on factory buttons.
+    // Build buttons' captions: the focus unit's queued count of the type ("+n", none at 0),
+    // laid out as the button's description says, in its font and colour (black while pressed).
     if (const Panel* p = current_panel())
-        if (focus_ && side_ && side_->font)
+        if (focus_)
             for (const Button& btn : p->buttons) {
-                if (btn.action != Action::BuildUnit || !btn.unit_type) continue;
+                if (btn.action != Action::BuildUnit || !btn.unit_type || !btn.font) continue;
                 const std::int32_t n = build_count(b_.units[focus_], btn.unit_type);
-                if (n > 0)
-                    draw_text(o, o.bounds(), *side_->font, "+" + std::to_string(n), btn.x + 4, btn.y + 4 + side_->font->raise,
-                              c_.hud[15]);
+                if (n == 0) continue;
+                draw_caption(o, btn, "+" + std::to_string(n), button_pressed_look(btn) ? 1 : 0);
             }
     // Paused sign; the victory and defeat signs once the battle is decided (end flags).
     const int cx = (opt_.width + 128) / 2, cy = opt_.height / 2;
@@ -278,23 +346,33 @@ void GameClient::draw_unit_marks(render::Image8& o) {
         const int y0 = std::min(sy0, mouse_y_) + 1, y1 = std::max(sy0, mouse_y_) - 1;
         if (x0 <= x1 && y0 <= y1) outline_rect(o, view, x0, y0, x1, y1, c_.hud[0]);
     }
-    // Placement: the footprint at the pointer, in the "fits" or "blocked" colour.
-    if (mode_ == Action::BuildUnit && in_view(mouse_x_, mouse_y_) && build_type_ < b_.types.size()) {
-        const sim::Vec3i p = world_at(mouse_x_, mouse_y_);
+    // Placement (pointer over the view): the footprint's outline from its corner cell to the
+    // cell past its far corner (both edges drawn: (footprint x 16) + 1 pixels across) at the
+    // height the check found, and a second outline one pixel inside it, both in [10] when it
+    // fits, else [4].
+    if (mode_ == Action::BuildUnit && in_view(mouse_x_, mouse_y_) && place_valid_ && build_type_ < b_.types.size()) {
         const int fx = b_.types[build_type_].construction.footprint_x, fz = b_.types[build_type_].construction.footprint_z;
-        const int cx = ((p[0] >> 16) >> 4) - fx / 2, cz = ((p[2] >> 16) >> 4) - fz / 2;
-        const bool ok = structure_fits(b_, build_type_, cx, cz);
-        const int hgt = (p[1] >> 16) / 2;
-        const int x0 = cx * 16 - scroll_x_ + 128, z0 = cz * 16 - scroll_y_ + 32 - hgt;
-        outline_rect(o, view, x0, z0, x0 + fx * 16 - 1, z0 + fz * 16 - 1, c_.hud[ok ? 10 : 4]);
+        const int ax = place_cx_ * 16 - scroll_x_ + 128, bx = (place_cx_ * 16 + fx * 16) - scroll_x_ + 128;
+        const int ay = place_cz_ * 16 - (place_h_ >> 1) - scroll_y_ + 32, by = (place_cz_ * 16 + fz * 16) - (place_h_ >> 1) - scroll_y_ + 32;
+        const int x0 = std::min(ax, bx), x1 = std::max(ax, bx), y0 = std::min(ay, by), y1 = std::max(ay, by);
+        const std::uint8_t col = c_.hud[place_ok_ ? 10 : 4];
+        outline_rect(o, view, x0, y0, x1, y1, col);
+        outline_rect(o, view, x0 + 1, y0 + 1, x1 - 1, y1 - 1, col);
     }
+    // (Health bars and group numbers: draw_unit_bars, before the fog.)
+}
+
+void GameClient::draw_unit_bars(render::Image8& o) {
+    // With the health bar option only (the group number too): own units' health bars and group
+    // numbers. The frame draws them after the units, effects and queued orders, before the fog.
+    if (!opt_.damage_bars) return;
+    const render::ClipRect view = view_rect();
     for (const UnitScreen& s : on_screen_) {
         const sim::Unit& u = b_.units[s.id];
         const sim::UnitTickState& t = b_.ticks[s.id];
         if (t.type_index == 0 || t.owner != opt_.player) continue;
         // (The selection outline is drawn with the unit itself: add_selection_outlines.)
-        // Health bar (option, or units in a group) and the group number.
-        if ((opt_.damage_bars || u.group != 0) && u.hit_points > 0 && u.type && u.type->max_damage > 0) {
+        if (u.hit_points > 0 && u.type && u.type->max_damage > 0) {
             const int x = s.x, y = s.y + 10;
             fill_rect(o, view, x - 17, y - 2, x + 17, y + 2, c_.hud[0]);
             const int maxd = static_cast<int>(u.type->max_damage);
@@ -320,14 +398,10 @@ void GameClient::draw_console(render::Image8& o) {
     }
 }
 
-void GameClient::draw_top_bar(render::Image8& o) {
-    if (!side_ || !side_->font) return;
-    const Font& f = *side_->font;
-    const render::ClipRect all = o.bounds();
+void GameClient::update_top_bar() {
+    // Once per drawn frame, before anything is drawn.
     const sim::PlayerSlot& me = b_.players[static_cast<std::size_t>(opt_.player)];
     const sim::PlayerEconomy& ec = b_.player_economy[static_cast<std::size_t>(opt_.player)];
-    // The viewed player's colour logo in LOGO (right after the bar's art).
-    draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(opt_.player) % c_.player_colour.size()], side_->logo, 0);
     // The stored amounts shown move an eighth of the way to the real value each frame.
     const float stored[2] = {me.energy_stored, me.metal_stored};
     const float cap[2] = {ec.energy_storage, ec.metal_storage};
@@ -342,31 +416,108 @@ void GameClient::draw_top_bar(render::Image8& o) {
         if (cap[k] < v) v = cap[k];
         shown_[static_cast<std::size_t>(k)] = v;
     }
+    // The rates shown are read again only when the player's display timer has fallen behind the
+    // game step (it then moves on 30 steps): energy made and used, metal made and used. The
+    // client keeps its own copy of that timer (it starts at the record's).
+    if (!bar_timer_set_) {
+        bar_timer_set_ = true;
+        bar_timer_ = ec.display_tick;
+    }
+    if (bar_timer_ < b_.game_tick()) {
+        bar_timer_ += 30;
+        bar_rates_ = {ec.energy_income, ec.energy_usage, ec.metal_income, ec.metal_usage};
+    }
+    // The original redraws the bar (art included) only when what it shows changed; the bar's own
+    // rows keep it in between, but the art's rows inside the view (from row 32) are drawn over by
+    // the terrain every frame, so they show the art only in frames that redrew the bar.
+    const std::array<float, 9> copy = {static_cast<float>(opt_.player), shown_[0], bar_rates_[0], bar_rates_[1], shown_[1],
+                                       bar_rates_[2], bar_rates_[3], cap[0], cap[1]};
+    bar_redrawn_ = !bar_copy_valid_ || std::memcmp(copy.data(), bar_copy_.data(), sizeof copy) != 0;
+    bar_copy_ = copy;
+    bar_copy_valid_ = true;
+}
+
+void GameClient::draw_top_bar(render::Image8& o) {
+    if (!side_ || !side_->font) return;
+    const Font& f = *side_->font;
+    const render::ClipRect all = o.bounds();
+    const sim::PlayerSlot& me = b_.players[static_cast<std::size_t>(opt_.player)];
+    const sim::PlayerEconomy& ec = b_.player_economy[static_cast<std::size_t>(opt_.player)];
+    // The viewed player's colour logo in LOGO (right after the bar's art).
+    draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(opt_.player) % c_.player_colour.size()], side_->logo, 0);
+    // (The shown amounts and rates of this frame: update_top_bar.)
+    const float stored[2] = {me.energy_stored, me.metal_stored};
+    const float cap[2] = {ec.energy_storage, ec.metal_storage};
     struct Res {
         const Region *bar, *num, *max, *zero, *produced, *consumed;
         std::uint8_t colour;
-        float shown, cap, income, usage;
+        float shown, cap, stored, threshold;
     };
     const Res res[2] = {
         {&side_->energy_bar, &side_->energy_num, &side_->energy_max, &side_->energy_zero, &side_->energy_produced,
-         &side_->energy_consumed, side_->energy_colour, shown_[0], cap[0], ec.energy_income, ec.energy_usage},
+         &side_->energy_consumed, side_->energy_colour, shown_[0], cap[0], stored[0], ec.share_energy_above},
         {&side_->metal_bar, &side_->metal_num, &side_->metal_max, &side_->metal_zero, &side_->metal_produced,
-         &side_->metal_consumed, side_->metal_colour, shown_[1], cap[1], ec.metal_income, ec.metal_usage},
+         &side_->metal_consumed, side_->metal_colour, shown_[1], cap[1], stored[1], ec.share_metal_above},
     };
-    for (const Res& r : res) {
+    for (int k = 0; k < 2; ++k) {
+        const Res& r = res[k];
+        // The bar (only with a storage above 0): from x1 to x1 + width x shown / storage (a
+        // shown 0 still fills the x1 column); the sharing threshold's mark, 3 columns in [12],
+        // when one is set and the real stored amount is above it.
         if (r.cap > 0.0f) {
-            const int x2 = r.bar->x1 + static_cast<int>((r.bar->x2 - r.bar->x1) * std::clamp(r.shown / r.cap, 0.0f, 1.0f));
-            if (r.shown > 0.0f) fill_rect(o, all, r.bar->x1, r.bar->y1, x2, r.bar->y2, r.colour);
+            const int w = r.bar->x2 - r.bar->x1;
+            const int x2 = static_cast<int>(ftol(static_cast<double>(w) * static_cast<double>(r.shown) / static_cast<double>(r.cap) + r.bar->x1));
+            if (x2 >= r.bar->x1) fill_rect(o, all, r.bar->x1, r.bar->y1, x2, r.bar->y2, r.colour);  // (an end left of the start: nothing)
+            if (r.threshold > 0.0f && r.stored > r.threshold) {
+                const int t = static_cast<int>(ftol(static_cast<double>(w) * static_cast<double>(r.threshold) / static_cast<double>(r.cap) + r.bar->x1));
+                fill_rect(o, all, t, r.bar->y1, t + 2, r.bar->y2, c_.hud[12]);
+            }
         }
-        draw_text(o, all, f, fmti("%lld", static_cast<long long>(r.shown)), r.num->x1, r.num->y1, c_.hud[15]);
-        draw_text(o, all, f, "0", r.zero->x1, r.zero->y1, c_.hud[15]);
-        const std::string mx = fmti("%lld", static_cast<long long>(r.cap));
-        draw_text(o, all, f, mx, r.max->x1 - f.text_width(mx), r.max->y1, c_.hud[15]);
-        const std::string inc = r.income <= 99999.0f ? fmt("%.1f", r.income) : fmti("%lldK", static_cast<long long>(r.income / 1000));
-        draw_text(o, all, f, inc, r.produced->x1, r.produced->y1, c_.hud[10]);
-        const std::string use = r.usage >= -99999.0f ? fmt("%.1f", r.usage) : fmti("%lldK", static_cast<long long>(r.usage / 1000));
-        draw_text(o, all, f, use, r.consumed->x1, r.consumed->y1, c_.hud[12]);
+        bar_text(o, f, fmti("%lld", ftol(r.shown)), r.num->x1, r.num->y1, c_.hud[15]);
+        bar_text(o, f, "0", r.zero->x1, r.zero->y1, c_.hud[15]);
+        const std::string mx = fmti("%lld", ftol(r.cap));
+        bar_text(o, f, mx, r.max->x1 - f.text_width(mx), r.max->y1, c_.hud[15]);
+        const float income = bar_rates_[static_cast<std::size_t>(2 * k)], usage = bar_rates_[static_cast<std::size_t>(2 * k + 1)];
+        std::string inc, use;
+        if (k == 0) {
+            // Energy in whole units (truncated): made "%d" ("%dK" in thousands above 99999), used
+            // "%d" of its size ("%dK" below -99999).
+            inc = !(income > 99999.0f) ? fmti("%lld", ftol(income)) : fmti("%lldK", ftol(income) / 1000);
+            use = !(usage < -99999.0f) && usage == usage ? fmti("%lld", magnitude32(ftol(usage))) : fmti("%lldK", ftol(usage) / 1000);
+        } else {
+            // Metal with one decimal, the use by its size.
+            inc = crt_fixed(income, 1);
+            use = crt_fixed(std::fabs(static_cast<double>(usage)), 1);
+        }
+        bar_text(o, f, inc, r.produced->x1, r.produced->y1, c_.hud[10]);
+        bar_text(o, f, use, r.consumed->x1, r.consumed->y1, c_.hud[12]);
     }
+}
+
+void GameClient::draw_caption(render::Image8& o, const Button& b, const std::string& text, int pressed) {
+    // A button caption as the panel's gadgets lay it out: dropped from the end until it fits the
+    // width less 6; attribute 1 left (x + 3), 4 right, 2 centred, 0x20 centred on the bottom
+    // edge (4 rows up); pressed moves it one pixel right and down. Colour: the gadget's
+    // interface colour, black while pressed.
+    if (!b.font || text.empty()) return;
+    const Font& f = *b.font;
+    std::string t = text;
+    while (!t.empty() && f.text_width(t) > b.w - 6) t.pop_back();
+    const int tw = f.text_width(t);
+    const std::uint8_t fg = pressed ? c_.hud[0] : c_.hud[b.colorf];
+    int tx = b.x + 3 + pressed, top = b.y + ((b.h - 1) - f.height) / 2 + pressed;
+    if (b.attribs & 1) {
+    } else if (b.attribs & 4) {
+        tx = std::max(b.x, b.x + b.w - tw - 3);
+    } else if (b.attribs & 2) {
+        tx = b.x + (b.w - 1 - tw) / 2 + pressed + 1;
+    } else if (b.attribs & 0x20) {
+        tx = b.x + (b.w - 1 - tw) / 2 + pressed + 1;
+        top = b.y + b.h - 1 + pressed - f.height - 4;
+    } else {
+        return;
+    }
+    draw_text(o, o.bounds(), f, t, tx, top + f.raise, fg);
 }
 
 void GameClient::draw_bottom_bar(render::Image8& o) {
@@ -375,7 +526,7 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     const render::ClipRect all = o.bounds();
     const int dy = opt_.height - 480;  // the side description's rows are for a 480-row screen
     auto centred = [&](const std::string& s, const Region& r) {
-        draw_text(o, all, f, s, r.x1 - f.text_width(s) / 2, r.y1 + dy, 0x53);
+        bar_text(o, f, s, r.x1 - f.text_width(s) / 2, r.y1 + dy, 0x53);
     };
     auto bar = [&](const Region& r, int value, int max) {
         // Filled for value / max (value clamped to 0..max) in [10], the rest in [4].
@@ -396,8 +547,8 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
             if (look.no_build_line) return;
             char buf[160];
             std::snprintf(buf, sizeof buf, "%s  M:%d E:%d", look.name.c_str(), whole(look.cost_metal), whole(look.cost_energy));
-            draw_text(o, all, f, buf, side_->name.x1, side_->name.y1 + dy, 0x53);
-            draw_text(o, all, f, look.description, side_->description.x1, side_->description.y1 + dy, 0x53);
+            bar_text(o, f, buf, side_->name.x1, side_->name.y1 + dy, 0x53);
+            bar_text(o, f, look.description, side_->description.x1, side_->description.y1 + dy, 0x53);
             return;
         }
 
@@ -421,7 +572,7 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
             if (!(ft.energy == 0.0f || ft.energy != ft.energy)) std::snprintf(e, sizeof e, " E:%d", whole(ft.energy));
             n += std::string(" ") + m + e;
         }
-        draw_text(o, all, f, n, side_->name.x1, side_->name.y1 + dy, 0x53);
+        bar_text(o, f, n, side_->name.x1, side_->name.y1 + dy, 0x53);
         return;
     }
     const sim::Unit& u = b_.units[id];
@@ -439,16 +590,16 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     // The owner's colour logo in LOGO2.
     draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(t.owner) % c_.player_colour.size()], side_->logo2, dy);
     if (mine) {
-        draw_text(o, all, f, fmt("+%.1f", t.metal_make_prev), side_->unit_metal_make.x1, side_->unit_metal_make.y1 + dy, c_.hud[10]);
-        draw_text(o, all, f, fmt("+%.0f", t.energy_make_prev), side_->unit_energy_make.x1, side_->unit_energy_make.y1 + dy,
+        bar_text(o, f, "+" + crt_fixed(t.metal_make_prev, 1), side_->unit_metal_make.x1, side_->unit_metal_make.y1 + dy, c_.hud[10]);
+        bar_text(o, f, "+" + crt_fixed(t.energy_make_prev, 0), side_->unit_energy_make.x1, side_->unit_energy_make.y1 + dy,
                   c_.hud[10]);
-        draw_text(o, all, f, fmt("-%.1f", t.metal_use_prev), side_->unit_metal_use.x1, side_->unit_metal_use.y1 + dy, c_.hud[12]);
-        draw_text(o, all, f, fmt("-%.0f", t.energy_use_prev), side_->unit_energy_use.x1, side_->unit_energy_use.y1 + dy,
+        bar_text(o, f, "-" + crt_fixed(t.metal_use_prev, 1), side_->unit_metal_use.x1, side_->unit_metal_use.y1 + dy, c_.hud[12]);
+        bar_text(o, f, "-" + crt_fixed(t.energy_use_prev, 0), side_->unit_energy_use.x1, side_->unit_energy_use.y1 + dy,
                   c_.hud[12]);
         // Kills of armed units (unit flag bit 31): "1 kill", "<n> kills", from 5 "<n> kills - Veteran".
         if (t.kill_count > 0 && (u.flags & 0x80000000u)) {
             const std::string k = std::to_string(t.kill_count) + (t.kill_count == 1 ? " kill" : " kills") + (t.kill_count >= 5 ? " - Veteran" : "");
-            draw_text(o, all, f, k, side_->damage_bar.x1, side_->damage_bar.y2 + 2 + dy, c_.hud[15]);
+            bar_text(o, f, k, side_->damage_bar.x1, side_->damage_bar.y2 + 2 + dy, c_.hud[15]);
         }
         // The unit's status: what its head order does (the mission table's text of the kind;
         // the text of mission kind 0 without orders), centred on the status line's x1.

@@ -176,6 +176,7 @@ struct GuiGadget {
     std::string name;
     int x = 0, y = 0, w = 0, h = 0;
     int attribs = 0, common_attribs = 0, colorf = 0, colorb = 0;
+    int font_number = 0;     // which of the description's font gadgets (in order) the caption uses
     bool active = true;
     int quickkey = 0;
     int status = 0;

@@ -75,6 +75,13 @@ public:
     GameClient(sim::Battle& battle, Content& content, const ClientOptions& options);
 
     void handle(const InputEvent& e);
+    // The modifier keys held now (the front polls them every pass: the original asks the
+    // keyboard when it needs them, e.g. Shift for the queued-order view and kept order modes).
+    void poll_modifiers(bool shift, bool ctrl, bool alt) {
+        shift_ = shift;
+        ctrl_ = ctrl;
+        alt_ = alt;
+    }
     // One pass of the main loop at wall-clock time `now_ms`: the due simulation steps (at
     // most 5), the per-frame sight expiry, scrolling and interface refresh. Returns the
     // number of steps run.
@@ -135,6 +142,39 @@ public:
     // The selection outlines of the selected units in a battle view scene (draw() does this;
     // tests that build the scene themselves call it).
     void add_selection_outlines(render::BattleScene& scene) const;
+    // The queued orders of the units the view shows them for (drawn while Shift is held, into
+    // `out` before the fog; draw() does this, tests building their own scene call it).
+    void draw_queued_orders(render::DrawList& out, const render::Camera& camera);
+    // Placement mode for a structure type (what its build button starts), and one pass of its
+    // check at the pointer (frame() runs it while the pointer is over the view), for tests.
+    void start_placement(std::uint16_t type);
+    void update_placement();
+    // The top bar's state (the shown amounts, the rates last read and the refresh timer), for
+    // tests that compare it with the original's copy.
+    struct TopBarState {
+        std::array<float, 2> shown{};
+        std::array<float, 4> rates{};
+        std::uint32_t timer = 0;
+        bool timer_set = false;
+    };
+    TopBarState top_bar_state() const { return {{shown_[0], shown_[1]}, bar_rates_, bar_timer_, bar_timer_set_}; }
+    void set_top_bar_state(const TopBarState& s) {
+        shown_[0] = s.shown[0];
+        shown_[1] = s.shown[1];
+        bar_rates_ = s.rates;
+        bar_timer_ = s.timer;
+        bar_timer_set_ = s.timer_set;
+        bar_copy_valid_ = false;  // (the next frame redraws the bar)
+    }
+    // The pointer's animation: the look shown and its frame (tests); a new look (not the one
+    // shown) starts at its first frame.
+    CursorKind pointer_kind() const { return cursor_shown_; }
+    bool pointer_ended() const { return cursor_clock_.ended; }
+    void set_pointer(CursorKind k);
+    int pointer_frame() const { return cursor_clock_.frame; }
+    // One pass of the pointer's animation with `dt` ticks (1/30 s) of wall clock since the last
+    // (frame() does this; tests drive it directly).
+    void advance_pointer(std::uint32_t dt);
 
 private:
     // Geometry.
@@ -186,6 +226,7 @@ private:
     void draw_chat(render::Image8& o);
     void draw_clock_and_units(render::Image8& o);
     void draw_reload_bars(render::Image8& o, const sim::Unit& u, int dy);
+    void draw_caption(render::Image8& o, const Button& b, const std::string& text, int pressed);
 
     // Interface state.
     void refresh_panel();
@@ -198,9 +239,16 @@ private:
     // Drawing.
     void draw_overlay(render::Image8& o, std::vector<std::uint8_t>& written);
     void draw_top_bar(render::Image8& o);
+    void update_top_bar();
+    // The bar's copy of what it showed last (player, shown energy, its rates, shown metal, its
+    // rates, storages) and whether this frame changed it (the bar was drawn anew).
+    std::array<float, 9> bar_copy_{};
+    bool bar_copy_valid_ = false;
+    bool bar_redrawn_ = true;
     void draw_bottom_bar(render::Image8& o);
     void draw_minimap(render::Image8& o);
     void draw_unit_marks(render::Image8& o);
+    void draw_unit_bars(render::Image8& o);
     void draw_console(render::Image8& o);
 
     sim::Battle& b_;
@@ -222,6 +270,36 @@ private:
     Action mode_ = Action::None;  // order mode (None = default commands)
     std::uint16_t build_type_ = 0;  // placement mode: type to build (with mode_ == BuildUnit)
     const Button* held_button_ = nullptr;
+    int held_with_ = 0;              // mouse button holding it (1 left, 3 right)
+    Action pressed_order_ = Action::None;  // the order-mode button shown pressed (one of a group)
+    // Back to the default mode; the order buttons' group shows none pressed.
+    void end_order_mode();
+    void release_button(const Button& b, const InputEvent& e);
+    bool button_pressed_look(const Button& b) const;
+    bool mode_kept_ = false;         // an order given with Shift kept the order mode (Shift's release ends it)
+    // Placement (updated every pass while the pointer is over the view): the footprint's
+    // corner cell, whether it fits and the height it would stand at; the outline's corners.
+    int place_cx_ = 0, place_cz_ = 0;
+    bool place_ok_ = false;
+    int place_h_ = 0;
+    bool place_valid_ = false;
+    // The pointer's look and animation (the original changes the look only when it differs;
+    // a new look starts at its first frame).
+    CursorKind cursor_shown_ = CursorKind::Normal;
+    FrameClock cursor_clock_;
+    bool cursor_set_ = false;
+    // The top bar's rates as last refreshed (energy made, used, metal made, used) and the timer
+    // of the refresh (every 30 steps, from the player's display timer).
+    std::array<float, 4> bar_rates_{};
+    std::uint32_t bar_timer_ = 0;
+    bool bar_timer_set_ = false;
+    // Where an order's target unit was last seen (the queued-order view keeps it per order).
+    struct OrderSeen {
+        const sim::MissionOrder* order;
+        std::uint32_t created;  // the order's creation step (a freed order's memory may come back)
+        std::array<std::int16_t, 2> xz;
+    };
+    std::vector<OrderSeen> order_seen_;
     std::uint16_t hover_ = 0;
     std::uint16_t focus_ = 0;       // unit whose build menu / panel is shown
     bool show_build_ = false;       // build menu instead of orders for the focus unit
