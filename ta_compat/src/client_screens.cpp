@@ -528,11 +528,15 @@ MapSummary map_summary(MenuArt& art, const std::string& map) {
 // MAPPIC its picture. Handler (0x47A910): MAPNAMES (double click, Enter, Space) and LOAD ("Select
 // Map", sound SmallButton) take the selected map as the skirmish map and close; PREVMENU (Cancel,
 // Escape) plays Previous and closes.
+// The battle room's map choice (0x444EA0, handler 0x444CB0) is the same screen opened with flags
+// 0x980 (centred on the screen) over the room: a pick or LOAD plays Multi and takes the map,
+// PREVMENU plays Previous.
 class SelectMap : public LayoutScreen {
 public:
-    SelectMap(MenuArt& art, std::string current, std::function<void(const std::string&)> chosen)
-        : LayoutScreen(art.layout("SELMAP")), art_(art), chosen_(std::move(chosen)) {
+    SelectMap(MenuArt& art, std::string current, std::function<void(const std::string&)> chosen, bool room = false)
+        : LayoutScreen(art.layout("SELMAP")), art_(art), chosen_(std::move(chosen)), room_(room) {
         background_in_box_ = true;
+        if (room) open_centred_ = -1;
         if (Widget* list = widget("MAPNAMES")) {
             set_list(*list, art.skirmish_maps());
             for (std::size_t i = 0; i < list->items.size(); ++i)
@@ -568,9 +572,10 @@ protected:
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         if (is(w, "MAPNAMES")) {
+            if (room_) sfx(fe, art_, "Multi");
             choose(fe, w);
         } else if (is(w, "LOAD")) {
-            sfx(fe, art_, "SmallButton");
+            sfx(fe, art_, room_ ? "Multi" : "SmallButton");
             if (Widget* l = widget("MAPNAMES")) choose(fe, *l);
         } else if (is(w, "PREVMENU")) {
             sfx(fe, art_, "Previous");
@@ -587,6 +592,59 @@ protected:
 private:
     MenuArt& art_;
     std::function<void(const std::string&)> chosen_;
+    bool room_ = false;
+};
+
+// A joining player's map view (0x444A20 over VIEWMAP.GUI, opened from the battle room with flags
+// 0x900: centred, the room dimmed; DVIEWMAP's top-left part in its box, its palette not put up):
+// MAPNAME the map's name, SIZE "<memory>  Players: <numplayers>", MAPPIC its picture,
+// DESCRIPTION its description. The room keeps it on the host's map (0x44A680 shows the map
+// again when the host's changes). OK (0x444BA0) plays Multi and closes.
+class ViewMap : public LayoutScreen {
+public:
+    ViewMap(MenuArt& art, std::function<std::string()> host_map) : LayoutScreen(art.layout("VIEWMAP")), art_(art), host_map_(std::move(host_map)) {
+        background_in_box_ = true;
+        background_ = art.picture("DVIEWMAP", nullptr);
+        open_centred_ = -1;
+        show();
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        if (host_map_ && host_map_() != shown_) show();
+        LayoutScreen::frame(fe, now_ms);
+    }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        LayoutScreen::draw(fe, out);
+    }
+
+protected:
+    void show() {
+        shown_ = host_map_ ? host_map_() : std::string();
+        if (Widget* n = widget("MAPNAME")) n->text = shown_;
+        const MapSummary m = map_summary(art_, shown_);
+        if (!m.loaded) return;
+        if (Widget* s = widget("SIZE")) s->text = m.memory + "  Players: " + m.players;
+        if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(shown_, pic->w, pic->h);
+        if (Widget* d = widget("DESCRIPTION")) d->text = m.description;
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Multi");
+            fe.pop();
+        }
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        const Widget& h = widgets_.front();
+        const render::ClipRect box{std::max(ox_, 0), std::max(oy_, 0), std::min(ox_ + h.w - 1, out.width - 1), std::min(oy_ + h.h - 1, out.height - 1)};
+        draw_surface_picture(out, box, w.picture, ox_ + w.x, oy_ + w.y, w.w, w.h, colour(7));
+    }
+
+private:
+    MenuArt& art_;
+    std::function<std::string()> host_map_;
+    std::string shown_;
 };
 
 // ------------------------------------------------------------------ skirmish (SKIRMISH.GUI)
@@ -1785,5 +1843,11 @@ void stock_panel(MenuArt& art, render::Image8& out, const render::ClipRect& clip
     draw_back_tile(art, out, clip, x0, y0, w, h);
 }
 void dim_screen_rect(client::FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1) { dim_rect(fe, out, x0, y0, x1, y1); }
+std::unique_ptr<client::Screen> make_room_map_choice(MenuArt& art, const std::string& current, std::function<void(const std::string&)> chosen) {
+    return std::make_unique<SelectMap>(art, current, std::move(chosen), true);
+}
+std::unique_ptr<client::Screen> make_room_map_view(MenuArt& art, std::function<std::string()> host_map) {
+    return std::make_unique<ViewMap>(art, std::move(host_map));
+}
 
 }  // namespace ta

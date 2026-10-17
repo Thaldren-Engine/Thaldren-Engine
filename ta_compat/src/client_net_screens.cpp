@@ -25,6 +25,7 @@
 #include "net/dplay_tcpip.h"
 #include "net/protocol.h"
 #include "render/raster.h"
+#include "ta/net_setup.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -887,6 +888,9 @@ private:
 // The battle room and the network side live in the second part of this file.
 namespace net_screens_detail {
 std::unique_ptr<client::Screen> make_lounge(std::shared_ptr<void> part, bool host, const std::string& room_file);
+// The room of a live session (the session protocol's transport, this machine's player id).
+std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<void> part, bool host, std::unique_ptr<net::Transport> transport,
+                                                 std::int32_t id);
 }
 
 namespace {
@@ -952,9 +956,9 @@ void enter_room(FrontEnd& fe, std::shared_ptr<NetPart> part, bool host) {
         show_net_message(fe, part->art, "Direct Play failed to add new player");
         return;
     }
-    client::NetMenuConfig cfg = part->cfg;
-    cfg.player_name = part->nickname;
-    fe.push(client::make_room_screen(cfg, std::move(part->session), host, id, part->game_name));
+    // The original's battle room (LOUNGE2) over the session.
+    std::unique_ptr<net::Transport> transport = std::move(part->session);
+    fe.push(net_screens_detail::make_live_lounge(fe, as_void(part), host, std::move(transport), id));
 }
 
 void TcpAsk::ok(FrontEnd& fe) {
@@ -1365,14 +1369,95 @@ LoungeState read_lounge(const std::string& path) {
     return st;
 }
 
+// ------------------------------------------------------------------ the live room
+// A live room: the session's transport (until the game takes it), the session, the engine's
+// room (net/lobby.h) and this machine's C runtime rand() (the host's start position shuffle).
+struct LiveRoom {
+    std::unique_ptr<net::Transport> transport;
+    std::shared_ptr<net::NetSession> session;
+    std::shared_ptr<net::BattleRoom> room;
+    std::shared_ptr<sim::Lcg15> crt_rand;
+    client::NetMenuConfig cfg;
+    int sides = 2;          // the sides the SIDE buttons step through (GS+0x37F39)
+    int text_lines = 10;    // the console's lines (GS+0x37F27)
+    int unit_limit = 250;   // the settings' unit limit: the MAXUNITS slider's most (GS+0x37EEA)
+    std::string dump;       // tests: the room's states written as room files and frames (TA_ROOM_DUMP)
+};
+
+// Why a machine is out of the room (0x452C40), shown over the game list.
+std::string out_text(int reason) {
+    switch (reason) {
+    case 3: return "The game is closed";
+    case 4: return "You did not have the correct password";
+    case 5: return "The game is full";
+    case 6: return "You have lost connection with the host";
+    case 7: return "You need a unit you don't have for this game";
+    case 8: return "You need a newer version of the game to join";
+    case 9: return "No watching is allowed for this game";
+    case 10: return "The creator has left the game";
+    default: return "You were rejected from the game";
+    }
+}
+
+// Writes a room in the room file format (read_lounge / gui_harness lounge:).
+void write_lounge(const std::string& path, const struct LoungeState& st);
+
+// The kick question (0x446080: YESORNO.GUI opened with flags 0x100, centred): TITLE "Reject
+// <name>?", CHOICE1 "Yes" sends the player away (status 1, 0x446020), CHOICE2 "No".
+class RejectQuestion : public LayoutScreen {
+public:
+    RejectQuestion(MenuArt& art, const std::string& name, std::function<void()> yes) : LayoutScreen(art.layout("YESORNO")), art_(art), yes_(std::move(yes)) {
+        open_centred_ = -1;
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
+        if (Widget* w = widget("TITLE")) w->text = "Reject " + name + "?";
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        stock_panel(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "CHOICE1")) {
+            auto yes = yes_;
+            fe.pop();
+            if (yes) yes();
+        } else if (is(w, "CHOICE2")) {
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    std::function<void()> yes_;
+};
+
+}  // namespace
+
+std::unique_ptr<client::Screen> make_room_map_choice(MenuArt& art, const std::string& current, std::function<void(const std::string&)> chosen);
+std::unique_ptr<client::Screen> make_room_map_view(MenuArt& art, std::function<std::string()> host_map);
+
+namespace {
+
 // The room screen. The rows are made from the description's templates (0x4455B0): each template
 // (PLAYERx, READYx, LOGOx, SIDEx, PINGx, MEMx, RESx, ALLYx, CDx, TEAMICONSx) is copied for rows 0-9,
 // named with the row's digit, 20 pixels a row down; the local player's PLAYER button becomes a
 // label (2 pixels lower, left-aligned) and so do the other rows' RES buttons (centred).
+//
+// Live (a session): every frame runs the room's network part (net::BattleRoom: records 0x20,
+// ally teams 0x24, logos 0x17 / 0x18, slot table 0x26, alliances 0x23, chat 0x05, the unit
+// definition exchange 0x1A, the start 0x08) and shows its records; each control changes this
+// machine's records (or, on the host, the game's) the way the room's handler (0x447B10) does,
+// and the records go out to the others.
 class Lounge : public NetScreen {
 public:
-    Lounge(std::shared_ptr<NetPart> part, bool host, LoungeState st, bool test)
-        : NetScreen(part->art, net_layout(part->art, "LOUNGE2", "battleroom", true)), part_(part), host_(host), test_(test), st_(std::move(st)) {
+    Lounge(std::shared_ptr<NetPart> part, bool host, LoungeState st, bool test, std::shared_ptr<LiveRoom> live = {})
+        : NetScreen(part->art, net_layout(part->art, "LOUNGE2", "battleroom", true)), part_(part), host_(host), test_(test), st_(std::move(st)),
+          live_(std::move(live)) {
+        rows_base_ = widgets_.size();
+        if (live_) text_lines_ = live_->text_lines;
         build_rows();
         if (EditState* e = edit("MESSAGE")) e->max_chars = 0x7F;
         focus_edit("MESSAGE");
@@ -1402,30 +1487,46 @@ public:
                 if (Widget* w = widget(n)) w->grayed = true;
         fixed_clock_ = st_.clock;
         clock_ = fixed_clock_;
+        if (live_) unit_limit_setting_ = live_->unit_limit;
         set_sliders();
         // A joining machine's room opens on the first map of its list (0x449BB0); unless the host
         // plays that map, the first making of the rows finds the host's map missing (0x448C70):
         // "<name> does not have this map" on the chat (also sent to the others) and the ready
         // bit off. The name is the session's player name (tests: none, as gui_harness has no
         // session).
-        if (!host_ && !st_.map.empty() && upper(st_.map) != upper(first_network_map(art_))) {
+        if (!live_ && !host_ && !st_.map.empty() && upper(st_.map) != upper(first_network_map(art_))) {
             const std::string line = "<" + (test ? std::string() : part_->nickname) + "> does not have this map";
             st_.chat.add(line, text_lines_);
             st_.slots[static_cast<std::size_t>(st_.local)].options &= static_cast<std::uint16_t>(~0x20u);
             join_line_ = line;
         }
+        if (live_) {
+            shown_map_ = live_->room->is_host() ? st_.map : first_network_map(art_);
+            live_->room->on_chat_line = [this](int, const std::string& line) {
+                // 0x453D40: a chat packet's text goes on the console as it came (colour 8).
+                st_.chat.add(line, text_lines_);
+                dirty_ = true;
+            };
+        }
         refresh();
+    }
+    ~Lounge() override {
+        if (live_ && live_->room) live_->room->on_chat_line = nullptr;
     }
     std::string join_line_;  // the line above, sent to the others once the room runs
     int text_lines_ = 10;
+    int unit_limit_setting_ = 250;
     const render::Palette* palette() const override { return LayoutScreen::palette(); }
+    void enter(FrontEnd& fe) override {
+        if (launched_) fe.pop();  // back from the game: the room is over
+    }
 
 protected:
     static constexpr const char* kTemplates[10] = {"PLAYERx", "READYx", "LOGOx", "SIDEx", "PINGx", "MEMx", "RESx", "ALLYx", "CDx", "TEAMICONSx"};
 
     void build_rows() {
         const int local = st_.local;
-        const std::size_t base = widgets_.size();
+        built_local_ = local;
         for (int row = 0; row < 10; ++row)
             for (int t = 0; t < 10; ++t) {
                 const int ti = index_of(kTemplates[t]);
@@ -1462,7 +1563,15 @@ protected:
                 widgets_.push_back(w);
                 kinds_[static_cast<int>(widgets_.size() - 1)] = t + 100;
             }
-        (void)base;
+    }
+    // The rows made again for another local slot (a joining player is seated by the host's slot
+    // table).
+    void rebuild_rows() {
+        widgets_.resize(rows_base_);
+        for (auto it = kinds_.begin(); it != kinds_.end();) it = it->first >= static_cast<int>(rows_base_) ? kinds_.erase(it) : std::next(it);
+        if (focus_gadget_ >= static_cast<int>(rows_base_)) focus_gadget_ = index_of("MESSAGE");
+        if (held_ >= static_cast<int>(rows_base_)) held_ = -1;
+        build_rows();
     }
     // A button turned into a label (0x445300): 2 pixels lower, its caption kept.
     static void to_label(Widget& w) {
@@ -1524,7 +1633,6 @@ protected:
         if (const Widget* w = widget("MAXUNITS"))
             if (Widget* t = widget("MAXUNITSTEXT")) t->text = std::to_string(host_ ? knob_value(*w) + 20 : st_.unit_limit);
     }
-    int unit_limit_setting_ = 250;
 
     // 0x445ED0, 0x446A50, 0x448C70: the rows and the options from the records.
     void refresh() {
@@ -1567,6 +1675,9 @@ protected:
                 map_red_ = !st_.have_map && ((clock_ / 30) & 1) != 0;
             }
         }
+        // A client without the host's map cannot view it (0x448C70: MAP grayed).
+        if (live_ && !host_)
+            if (Widget* m = widget("MAP")) m->grayed = !st_.have_map;
         // Team icons (0x446A50): a group of several players frame 2 x team, of one 2 x team + 1,
         // none 10.
         for (int s = 0; s < 10; ++s) {
@@ -1671,7 +1782,11 @@ protected:
             st->active = !host_ || synced;
             st->grayed = !all_ready();
             if (Widget* sy = widget("SYNCHING")) sy->active = host_ && !synced;
-            if (!host_) st->active = true;
+            if (!host_) {
+                // A joining player's START stays grayed (0x449BB0).
+                st->active = true;
+                if (live_) st->grayed = true;
+            }
         }
     }
     bool all_ready() const {
@@ -1737,6 +1852,7 @@ protected:
         draw_over_rows(fe, out);
         // (Each frame of the room also prints every player's version, "%i.%i", on its logo box
         // (0x44A680), but the interface pass draws the logos over it before the frame is shown.)
+        if (live_ && !live_->dump.empty()) dump_state(out);
     }
     const Widget* row_widget_c(const char* prefix, int row) const {
         const std::string n = std::string(prefix) + std::to_string(row);
@@ -1809,6 +1925,7 @@ protected:
         // (Tests: the clock held, moving on `clockstep` ticks a frame.)
         clock_ = fixed_clock_ ? fixed_clock_ + st_.clock_step * frames_seen_++ : now_ms * 30u / 1000u;
         ++room_frames_;
+        if (live_ && !live_frame(fe)) return;
         // The rows are made again only when something changed (GS+0x2BEE bit 0).
         if (dirty_) {
             dirty_ = false;
@@ -1848,34 +1965,537 @@ protected:
     std::uint32_t fixed_clock_ = 0, anim_tick_ = 0, frames_seen_ = 0;
     int start_level_ = 0;  // the start button's colour word (its art's light row; 0 plain)
 
+    // ---------------------------------------------------------------- live
+    // The room's state from the engine's room: each record as the room shows it.
+    LoungeState live_state() {
+        const net::BattleRoom& room = *live_->room;
+        LoungeState st;
+        st.chat = st_.chat;
+        st.clock = st_.clock;
+        st.clock_step = st_.clock_step;
+        const int local = room.local_slot() < 0 ? 0 : room.local_slot();
+        st.local = local;
+        const auto& ps = room.players();
+        int count = 0;
+        for (int s = 0; s < 10; ++s) {
+            LoungeSlot& q = st.slots[static_cast<std::size_t>(s)];
+            const net::RoomPlayer& p = ps[static_cast<std::size_t>(s)];
+            if (!p.net_id) {
+                q.controller = room.blocked(s) ? 4 : 0;
+                continue;
+            }
+            ++count;
+            const bool own = p.net_id == room.net_id();
+            const bool mine = own || (room.is_host() && p.kind == 2);
+            q.used = true;
+            q.controller = own ? 1 : mine ? 2 : 3;
+            // (A computer player's name is its session player's: "AI:" and its machine's player.)
+            q.name = p.name;
+            q.ping = p.latency_ms;
+            q.team = p.ally_team;
+            q.kind = p.kind;
+            q.side = p.side;
+            q.logo = p.logo;
+            q.flags = p.flags;
+            q.options = static_cast<std::uint16_t>((p.options & ~0x0700u) | ((p.map_flags & 7u) << 8));
+            q.memory = p.memory_mb;
+            q.cd = p.cd;
+            q.screen_w = p.screen_w;
+            q.screen_h = p.screen_h;
+            q.major = p.version_major;
+            q.minor = p.version_minor;
+            q.synching = room.synching(s);
+            q.ping_mark = room.is_host() && q.controller == 3 && p.kind == 1 && !q.synching;
+        }
+        if (room.local_slot() < 0) {
+            // Not seated yet: this machine's own record.
+            LoungeSlot& q = st.slots[0];
+            q = LoungeSlot{};
+            q.used = true;
+            q.controller = 1;
+            q.kind = 1;
+            q.name = part_->nickname;
+            q.options = 0;
+            count = std::max(count, 1);
+        }
+        LoungeSlot& me = st.slots[static_cast<std::size_t>(local)];
+        for (int s = 0; s < 10; ++s) {
+            me.allied[static_cast<std::size_t>(s)] = room.allied()[static_cast<std::size_t>(s)];
+            me.allied_by[static_cast<std::size_t>(s)] = room.allied_by()[static_cast<std::size_t>(s)];
+        }
+        // 0x446C70: players of one ally team are allied both ways.
+        if (me.team != 5)
+            for (int s = 0; s < 10; ++s) {
+                const LoungeSlot& q = st.slots[static_cast<std::size_t>(s)];
+                if (q.playing() && q.team == me.team) me.allied[static_cast<std::size_t>(s)] = me.allied_by[static_cast<std::size_t>(s)] = 1;
+            }
+        st.session_players = count;
+        const int h = st.host();
+        if (h != 10) {
+            const net::RoomPlayer& hp = ps[static_cast<std::size_t>(h)];
+            st.map = hp.map;
+            st.energy = hp.energy;
+            st.metal = hp.metal;
+            st.unit_limit = hp.unit_limit;
+        } else {
+            st.map = ps[static_cast<std::size_t>(local)].map;
+        }
+        st.have_map = room.is_host() || ps[static_cast<std::size_t>(local)].map_ready;
+        return st;
+    }
+    static bool same_slot(const LoungeSlot& a, const LoungeSlot& b) {
+        return a.used == b.used && a.controller == b.controller && a.name == b.name && a.ping == b.ping && a.team == b.team && a.allied == b.allied &&
+               a.allied_by == b.allied_by && a.kind == b.kind && a.side == b.side && a.logo == b.logo && a.flags == b.flags && a.options == b.options &&
+               a.memory == b.memory && a.cd == b.cd && a.screen_w == b.screen_w && a.screen_h == b.screen_h && a.synching == b.synching &&
+               a.ping_mark == b.ping_mark;
+    }
+    bool same_state(const LoungeState& a, const LoungeState& b) const {
+        if (a.local != b.local || a.session_players != b.session_players || a.map != b.map || a.have_map != b.have_map || a.energy != b.energy ||
+            a.metal != b.metal || a.unit_limit != b.unit_limit)
+            return false;
+        for (int s = 0; s < 10; ++s)
+            if (!same_slot(a.slots[static_cast<std::size_t>(s)], b.slots[static_cast<std::size_t>(s)])) return false;
+        return true;
+    }
+    // One frame of the room's network part (0x44A680 with 0x453D40 and 0x456310); false when the
+    // room is over (left, sent away, or handed to the game).
+    bool live_frame(FrontEnd& fe) {
+        net::BattleRoom& room = *live_->room;
+        if (launched_) return false;
+        room.frame(clock_, live_->crt_rand.get());
+        if (room.refused() || room.out_reason() >= 0) {
+            // Out of the room (the local record's out byte +0x22): back to the game list, which
+            // shows why (0x443CB0) — nothing for one's own leaving (2).
+            const int reason = room.out_reason() >= 0 ? room.out_reason() : 0;
+            MenuArt& art = art_;
+            launched_ = true;
+            fe.pop();
+            if (reason != 2) show_net_message(fe, art, out_text(reason), 320);
+            return false;
+        }
+        if (room.started()) {
+            // The host's start (0x08): the loading screen and the battle.
+            launched_ = true;
+            client::launch_network_battle(fe, live_->cfg, client::NetLaunch{std::move(live_->transport), live_->session, live_->room, live_->crt_rand});
+            return false;
+        }
+        if (host_) host_rules(fe);
+        LoungeState next = live_state();
+        if (next.local != built_local_) {
+            st_.local = next.local;
+            rebuild_rows();
+            dirty_ = true;
+        }
+        if (!same_state(next, st_)) {
+            const bool resources = next.energy != st_.energy || next.metal != st_.metal || next.unit_limit != st_.unit_limit;
+            const std::string map_before = st_.map;
+            next.chat = st_.chat;
+            st_ = next;
+            dirty_ = true;
+            if (!host_ && resources) set_sliders();
+            // 0x448C70: a new map this machine does not have: "<name> does not have this map"
+            // (sent to the others too) and its ready bit off.
+            if (!host_ && st_.map != shown_map_ && !st_.map.empty()) {
+                shown_map_ = st_.map;
+                if (!st_.have_map) {
+                    const std::string line = client::chat_line(part_->nickname, std::string(), "does not have this map");
+                    st_.chat.add(line, text_lines_);
+                    room.say(line);
+                    room.set_ready(false);
+                }
+            }
+            (void)map_before;
+        }
+        // The host's sliders: their amounts go into its records (0x445C70 / 0x445D60 / 0x445B70).
+        if (host_) {
+            const Widget* e = widget("ENERGY");
+            const Widget* m = widget("METAL");
+            const Widget* u = widget("MAXUNITS");
+            const auto ev = static_cast<std::uint16_t>(e ? knob_value(*e) / 100 : st_.energy);
+            const auto mv = static_cast<std::uint16_t>(m ? knob_value(*m) / 100 : st_.metal);
+            const auto uv = static_cast<std::uint16_t>(u ? knob_value(*u) + 20 : st_.unit_limit);
+            if (ev != st_.energy || mv != st_.metal || uv != st_.unit_limit) {
+                room.set_resources(ev, mv, uv);
+                slider_texts();
+            }
+        }
+        // The CD word, the periodic records and the definition exchange run in the room itself.
+        return true;
+    }
+    // 0x448C70 on the host: in the "deathmatch" commander mode no computer player stays (status
+    // 11); when the host forbids watching, its watchers play again (side 0).
+    void host_rules(FrontEnd&) {
+        net::BattleRoom& room = *live_->room;
+        const std::uint16_t opt = host_options();
+        for (int s = 0; s < 10; ++s) {
+            const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+            if ((opt & 0x1800) == 0x1000 && q.used && q.controller == 2) room.remove_computer(s, 11);
+            if (!(opt & 0x80) && q.used && (q.controller == 1 || q.controller == 2) && q.watching())
+                room.edit_own(s, [](net::RoomPlayer& p) {
+                    p.options = static_cast<std::uint16_t>(p.options & ~net::room::kWatch);
+                    p.side = 0;
+                });
+        }
+    }
+    void leave(FrontEnd& fe) {
+        if (live_ && !launched_) {
+            live_->room->leave();
+            launched_ = true;
+        }
+        fe.pop();
+    }
+
+    // Tests (TA_ROOM_DUMP): each changed room state as a room file and the room's frame.
+    void dump_state(const render::Image8& out) {
+        const std::string sig = signature();
+        if (sig == dumped_sig_) return;
+        dumped_sig_ = sig;
+        char name[32];
+        std::snprintf(name, sizeof name, "%04d", dump_n_++);
+        write_lounge(live_->dump + name + ".txt", st_);
+        write_frame(live_->dump + name + ".bmp", out);
+    }
+    std::string signature() const {
+        std::ostringstream o;
+        o << st_.local << '|' << st_.map << '|' << st_.have_map << '|' << st_.energy << ',' << st_.metal << ',' << st_.unit_limit << '|' << st_.chat.head
+          << ',' << st_.chat.tail;
+        for (const LoungeSlot& q : st_.slots)
+            o << '|' << q.used << q.controller << q.name << ',' << q.ping << ',' << q.team << ',' << q.side << ',' << q.logo << ',' << q.flags << ','
+              << q.options << ',' << q.synching;
+        if (const Widget* g = widget_c("battlestart")) o << "|g" << g->stage;
+        return o.str();
+    }
+    const Widget* widget_c(const std::string& n) const {
+        for (const Widget& w : widgets_)
+            if (upper(w.name) == upper(n)) return &w;
+        return nullptr;
+    }
+    void write_frame(const std::string& path, const render::Image8& out) {
+        const render::Palette* pal = palette();
+        const render::Palette& p = pal ? *pal : art_.content().palette;
+        const std::uint32_t stride = (static_cast<std::uint32_t>(out.width) + 3u) & ~3u, size = stride * static_cast<std::uint32_t>(out.height),
+                            off = 14 + 40 + 1024;
+        std::vector<std::uint8_t> b = {'B', 'M'};
+        auto put32 = [&](std::uint32_t v) {
+            for (int i = 0; i < 4; ++i) b.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        };
+        put32(off + size);
+        put32(0);
+        put32(off);
+        put32(40);
+        put32(static_cast<std::uint32_t>(out.width));
+        put32(static_cast<std::uint32_t>(out.height));
+        b.insert(b.end(), {1, 0, 8, 0});
+        put32(0);
+        put32(size);
+        put32(2835);
+        put32(2835);
+        put32(256);
+        put32(0);
+        for (int i = 0; i < 256; ++i) b.insert(b.end(), {p[static_cast<std::size_t>(i)].b, p[static_cast<std::size_t>(i)].g, p[static_cast<std::size_t>(i)].r, 0});
+        for (int y = out.height - 1; y >= 0; --y) {
+            const std::uint8_t* row = out.row(y);
+            b.insert(b.end(), row, row + out.width);
+            for (std::uint32_t k = static_cast<std::uint32_t>(out.width); k < stride; ++k) b.push_back(0);
+        }
+        std::ofstream f(path, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+    }
+    std::string dumped_sig_;
+    int dump_n_ = 0;
+
     void on_enter(FrontEnd& fe, int) override { send_line(fe); }
     void send_line(FrontEnd&) {
         EditState* e = edit("MESSAGE");
         if (!e || e->text.empty()) return;
-        // 0x463E50: "<name> text" on the console, sent to the others.
         const LoungeSlot& me = st_.slots[static_cast<std::size_t>(st_.local)];
-        const std::string line = "<" + me.name + "> " + e->text;
-        st_.chat.add(line, 10);
+        if (live_ && upper(e->text) == "+SYNCERR") {
+            // (0x447B10: the unit definition exchange's error list instead; the engine keeps none.)
+        } else {
+            // 0x463E50: "<name> text" on the console (colour 4), sent to the others.
+            const std::string line = client::chat_line(live_ ? part_->nickname : me.name, std::string(), e->text);
+            st_.chat.add(line, text_lines_);
+            if (live_) live_->room->say(line);
+        }
         e->text.clear();
         e->point = 0;
+        dirty_ = true;
+        // The chat line keeps the keys (0x4A7190).
+        focus_gadget_ = index_of("MESSAGE");
+        activate_field(focus_gadget_);
+    }
+    // Which row a gadget belongs to (its name's prefix and digit); -1 for others.
+    static int row_of(const std::string& n, const char* prefix) {
+        const std::size_t l = std::strlen(prefix);
+        if (n.size() != l + 1 || n.compare(0, l, prefix) != 0 || n[l] < '0' || n[l] > '9') return -1;
+        return n[l] - '0';
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         const std::string n = upper(w.name);
         if (n == "PREVMENU") {
             sfx(fe, art_, "Previous");
-            fe.pop();
+            leave(fe);
+            return;
+        }
+        if (!live_) {
+            if (n == "START") {
+                sfx(fe, art_, "BigButton");
+                return;
+            }
+            sfx(fe, art_, "Multi");
+            return;
+        }
+        live_press(fe, w, n);
+    }
+    void say_line(const std::string& text) {
+        const std::string line = client::chat_line(part_->nickname, std::string(), text);
+        st_.chat.add(line, text_lines_);
+        live_->room->say(line);
+        dirty_ = true;
+    }
+    // The room's handler (0x447B10) for this machine's controls.
+    void live_press(FrontEnd& fe, Widget& w, const std::string& n) {
+        net::BattleRoom& room = *live_->room;
+        const int local = st_.local;
+        LoungeSlot& me = st_.slots[static_cast<std::size_t>(local)];
+        std::uint16_t opt = host_options();
+        dirty_ = true;
+        if (int s = row_of(n, "LOGO"); s >= 0) {
+            // A logo of this machine's: the local player asks the host for that row's logo + 1.
+            const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+            if (q.used && (q.controller == 1 || q.controller == 2)) {
+                sfx(fe, art_, "Multi");
+                room.set_logo(static_cast<std::uint8_t>(q.logo + 1));
+            }
+            return;
+        }
+        if (int s = row_of(n, "PLAYER"); s >= 0) {
+            if (s == local) return;
+            sfx(fe, art_, "Multi");
+            LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+            if (q.controller == 0 && host_) {
+                room.set_blocked(s, true);  // open -> blocked
+                return;
+            }
+            if (q.controller == 2) {
+                // A computer player some time after it came (record +8, 31 ticks) leaves.
+                if (clock_ - computer_since_[static_cast<std::size_t>(s)] >= 0x1F) room.remove_computer(s, 1);
+                return;
+            }
+            if (q.controller == 3) {
+                if (host_) {
+                    const std::string name = q.name;
+                    auto live = live_;
+                    fe.push(std::make_unique<RejectQuestion>(art_, name, [live, s]() { live->room->kick(s, 1); }));
+                }
+                return;
+            }
+            if (q.controller == 4) room.set_blocked(s, false);  // blocked -> open, then a computer
+            if (opt & 0x8000) {
+                show_net_message(fe, art_, "Can't add another player when game is closed.", 500);
+                return;
+            }
+            int computers = 0;
+            for (const LoungeSlot& c : st_.slots) computers += c.used && (c.controller == 2 || (c.controller == 3 && c.kind == 2));
+            if ((opt & 0x1800) != 0x1000 && computers == 0 && host_) {
+                // 0x451220: a computer player in this slot, the first logo nobody plays.
+                if (room.add_computer_at(s, 0) >= 0) computer_since_[static_cast<std::size_t>(s)] = clock_;
+            }
+            // (A joining machine's computer player: not built.)
+            return;
+        }
+        if (int s = row_of(n, "SIDE"); s >= 0) {
+            sfx(fe, art_, "Multi");
+            const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+            const int sides = std::max(1, live_->sides);
+            const bool allow_watch = (opt & 0x80) != 0;
+            room.edit_own(s, [&](net::RoomPlayer& p) {
+                if (p.options & net::room::kWatch) {
+                    p.options = static_cast<std::uint16_t>(p.options & ~net::room::kWatch);
+                    p.side = 0;
+                    return;
+                }
+                if (++p.side >= sides) {
+                    p.side = 0;
+                    if (allow_watch && q.controller == 1) p.options = static_cast<std::uint16_t>(p.options | net::room::kWatch);
+                }
+            });
+            return;
+        }
+        if (int s = row_of(n, "ALLY"); s >= 0) {
+            // The local player's alliance with that player (0x23); leaving them allied by team
+            // leaves the team (0x446E90, team 5, 0x24). The sound and a line for everyone.
+            const bool now = me.allied[static_cast<std::size_t>(s)] == 0;
+            room.set_allied(s, now);
+            if (me.team != 5 && me.team == st_.slots[static_cast<std::size_t>(s)].team) leave_team(local);
+            sfx(fe, art_, now ? "Ally" : "Multi");
+            say_line(std::string(" ") + (now ? "allied with" : "broke alliance with") + " " + st_.slots[static_cast<std::size_t>(s)].name);
+            return;
+        }
+        if (int s = row_of(n, "TEAMICONS"); s >= 0) {
+            sfx(fe, art_, "Ally");
+            const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+            const int team = (q.team + 1) % 6;
+            leave_team(s);
+            room.set_ally_team_of(s, static_cast<std::uint8_t>(team));
+            return;
+        }
+        if (int s = row_of(n, "RES"); s >= 0) {
+            if (s != local) return;
+            // 0x446310: the next display mode (Shift: the one before) for the battle.
+            sfx(fe, art_, "Multi");
+            std::vector<std::array<int, 2>> modes;
+            fe.display_modes(modes);
+            if (modes.empty()) modes = {{640, 480}, {800, 600}, {1024, 768}, {1152, 864}, {1280, 1024}, {1600, 1200}};
+            int at = -1;
+            for (std::size_t k = 0; k < modes.size(); ++k)
+                if (modes[k][0] == me.screen_w && modes[k][1] == me.screen_h) at = static_cast<int>(k);
+            if (at < 0) return;
+            at = press_button_ == 3 ? (at + static_cast<int>(modes.size()) - 1) % static_cast<int>(modes.size()) : (at + 1) % static_cast<int>(modes.size());
+            const auto& m = modes[static_cast<std::size_t>(at)];
+            room.set_screen(static_cast<std::uint16_t>(m[0]), static_cast<std::uint16_t>(m[1]));
+            fe.settings().set_int("DisplaymodeWidth", m[0]);
+            fe.settings().set_int("DisplaymodeHeight", m[1]);
+            return;
+        }
+        if (int s = row_of(n, "READY"); s >= 0) {
+            if (s != local) return;
+            sfx(fe, art_, "Multi");
+            if (!st_.have_map) return;  // (0x4A1110: the button back to not ready)
+            const bool ready = !me.ready();
+            room.set_ready(ready);
+            for (LoungeSlot& q : st_.slots)
+                if (q.used && (q.controller == 1 || q.controller == 2)) q.options = static_cast<std::uint16_t>((q.options & ~0x20u) | (ready ? 0x20u : 0u));
+            if (host_) {
+                // The host's Enter now starts the game; the focus goes to START.
+                enter_default_ = "START";
+                focus_gadget_ = index_of("START");
+            }
             return;
         }
         if (n == "START") {
+            if (!host_) return;
             sfx(fe, art_, "BigButton");
+            start_game(fe);
+            return;
+        }
+        if (n == "RESTRICTIONS") {
+            sfx(fe, art_, "Options");
+            // (The restrictions dialog: see open_restrictions.)
+            open_restrictions(fe);
+            return;
+        }
+        if (n == "MAP" || n == "MAPNAME") {
+            sfx(fe, art_, "Multi");
+            open_map(fe);
+            return;
+        }
+        if (!host_) return;
+        // The host's switches (0x447B10): the option word, then the records and the session's
+        // description.
+        if (n == "COMMANDER") {
+            const std::uint16_t mode = static_cast<std::uint16_t>(((opt & 0x1800) + 0x800) & 0x1800);
+            opt = static_cast<std::uint16_t>((opt & ~0x1800) | (mode > 0x1000 ? 0 : mode));
+        } else if (n == "LOSTYPE") {
+            if (!(opt & 0x200)) opt = static_cast<std::uint16_t>(opt | 0x600);
+            else if (opt & 0x400) opt = static_cast<std::uint16_t>(opt & ~0x400);
+            else opt = static_cast<std::uint16_t>(opt & ~0x200);
+        } else if (n == "WATCHING") {
+            opt = static_cast<std::uint16_t>(opt ^ 0x80);
+            if (!(opt & 0x80) && me.watching()) room.set_watch(false);
+        } else if (n == "CHEATING") {
+            opt = static_cast<std::uint16_t>(opt ^ 0x2000);
+        } else if (n == "FIXEDLOC") {
+            opt = static_cast<std::uint16_t>(opt ^ 0x4000);
+        } else if (n == "MAPPING") {
+            opt = static_cast<std::uint16_t>(opt ^ 0x100);
+        } else if (n == "GAMEOPEN") {
+            opt = static_cast<std::uint16_t>(opt ^ 0x8000);
+        } else {
             return;
         }
         sfx(fe, art_, "Multi");
+        room.set_option_word(opt);
     }
+    // 0x446E90: a player leaving its ally team breaks the alliances with the team's members.
+    void leave_team(int s) {
+        const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+        if (q.team == 5 || s != st_.local) return;
+        for (int k = 0; k < 10; ++k)
+            if (k != s && st_.slots[static_cast<std::size_t>(k)].playing() && st_.slots[static_cast<std::size_t>(k)].team == q.team)
+                live_->room->set_allied(k, false);
+    }
+    // START on the host (0x447B10): enough game CDs, not everyone in one team, a map; watchers
+    // leave when watching is not allowed (status 9); then the game is marked playing (option bit
+    // 0x10, the session closes to newcomers) and the start goes out (0x08).
+    void start_game(FrontEnd& fe) {
+        net::BattleRoom& room = *live_->room;
+        int cds = 0, humans = 0, computers = 0;
+        for (const LoungeSlot& q : st_.slots) {
+            if (!q.used) continue;
+            const bool human = q.controller == 1 || (q.controller == 3 && q.kind == 1);
+            humans += human;
+            computers += q.controller == 2 || (q.controller == 3 && q.kind == 2);
+            cds += human && (q.cd & 4);
+        }
+        if (cds < 1 || (cds < 2 && humans > 3) || (cds < 3 && humans > 6)) {
+            show_net_message(fe, art_, "There are not enough game CDs present to play", 200);
+            return;
+        }
+        for (int t = 0; t < 5; ++t) {
+            int n = 0;
+            for (const LoungeSlot& q : st_.slots) n += q.playing() && q.team == t;
+            if (n == humans + computers) {
+                show_net_message(fe, art_, "Can not start game with all players on the same team.", 200);
+                return;
+            }
+        }
+        if (st_.map.empty()) {
+            open_map(fe);
+            return;
+        }
+        const std::uint16_t opt = host_options();
+        if (!(opt & 0x80))
+            for (int s = 0; s < 10; ++s) {
+                const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+                if (q.used && q.controller == 3 && q.watching()) room.kick(s, 9);
+            }
+        room.set_option_word(static_cast<std::uint16_t>(opt | 0x10));
+        if (!room.start()) {
+            room.set_option_word(opt);
+            return;
+        }
+        launched_ = true;
+        client::launch_network_battle(fe, live_->cfg, client::NetLaunch{std::move(live_->transport), live_->session, live_->room, live_->crt_rand});
+    }
+    // MAP / MAPNAME: the host chooses the map (0x444EA0), a joining player views the host's
+    // (0x444A20, VIEWMAP).
+    void open_map(FrontEnd& fe) {
+        if (host_) {
+            auto live = live_;
+            MenuArt* art = &art_;
+            fe.push(make_room_map_choice(art_, st_.map, [live, art](const std::string& map) {
+                // 0x444CB0: the host's records take the map and its checksum; the others count
+                // as not ready until their next records.
+                live->room->set_map(map, map_sync_checksum(art->vfs(), map));
+                live->room->unready_others();
+            }));
+        } else {
+            auto live = live_;
+            fe.push(make_room_map_view(art_, [live]() { return live->room->map(); }));
+        }
+    }
+    void open_restrictions(FrontEnd& fe);
 
     std::shared_ptr<NetPart> part_;
     bool host_ = false, test_ = false;
     LoungeState st_;
+    std::shared_ptr<LiveRoom> live_;
+    bool launched_ = false;
+    std::size_t rows_base_ = 0;
+    int built_local_ = -1;
+    std::string shown_map_;
+    std::array<std::uint32_t, 10> computer_since_{};
     const std::vector<render::Sprite8>* logos_ = nullptr;
     const std::vector<render::Sprite8>* start_art_ = nullptr;
     std::uint32_t clock_ = 0;
@@ -1883,6 +2503,34 @@ protected:
     bool map_red_ = false;
     std::array<bool, 10> mem_red_{};
 };
+
+void Lounge::open_restrictions(FrontEnd& fe) {
+    (void)fe;  // (built in its own part below)
+}
+
+void write_lounge(const std::string& path, const LoungeState& st) {
+    std::ofstream o(path);
+    o << "local " << st.local << "\n";
+    if (!st.map.empty()) o << "map " << st.map << "\n";
+    o << "players " << st.session_players << "\n";
+    o << "resources " << st.energy << " " << st.metal << " " << st.unit_limit << "\n";
+    for (int s = 0; s < 10; ++s) {
+        const LoungeSlot& q = st.slots[static_cast<std::size_t>(s)];
+        if (q.used || q.controller == 4) {
+            char buf[256];
+            std::snprintf(buf, sizeof buf, "player %d %d %d %d %d 0x%X 0x%X %u 0x%X %u %d %s\n", s, q.controller, q.kind, q.side, q.logo, q.flags, q.options,
+                          q.memory, q.cd, q.ping, q.team, q.name.c_str());
+            o << buf;
+        }
+        if (q.used && (q.screen_w || q.screen_h)) o << "res " << s << " " << q.screen_w << " " << q.screen_h << "\n";
+        if (q.synching) o << "synching " << s << "\n";
+        for (int k = 0; k < 10; ++k) {
+            if (q.allied[static_cast<std::size_t>(k)]) o << "allied " << s << " " << k << " " << int(q.allied[static_cast<std::size_t>(k)]) << "\n";
+            if (q.allied_by[static_cast<std::size_t>(k)]) o << "alliedby " << s << " " << k << " " << int(q.allied_by[static_cast<std::size_t>(k)]) << "\n";
+        }
+    }
+    for (int k = st.chat.tail; k != st.chat.head; k = (k + 1) % 30) o << "chat " << st.chat.text[static_cast<std::size_t>(k)] << "\n";
+}
 
 }  // namespace
 
@@ -1901,6 +2549,68 @@ std::unique_ptr<client::Screen> make_lounge(std::shared_ptr<void> p, bool host, 
     st.slots[0].flags = host ? 1 : 0;
     st.slots[0].name = part->nickname;
     return std::make_unique<Lounge>(part, host, std::move(st), false);
+}
+
+std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<void> p, bool host, std::unique_ptr<net::Transport> transport,
+                                                 std::int32_t id) {
+    auto part = std::static_pointer_cast<NetPart>(p);
+    auto live = std::make_shared<LiveRoom>();
+    live->cfg = part->cfg;
+    live->cfg.player_name = part->nickname;
+    live->transport = std::move(transport);
+    live->session = std::make_shared<net::NetSession>(*live->transport);
+    live->room = std::make_shared<net::BattleRoom>(*live->session, host, id, part->nickname);
+    live->crt_rand = std::make_shared<sim::Lcg15>();
+    // This machine's C runtime rand(): the host's start position shuffle draws it (an input).
+    live->crt_rand->set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    live->text_lines = fe.settings().get_int("textlines", 10);
+    if (const char* d = std::getenv("TA_ROOM_DUMP")) live->dump = d;
+    {  // the sides the side buttons step through (gamedata\sidedata.tdf)
+        std::vector<std::uint8_t> sd;
+        int n = 0;
+        if (part->art.vfs().read("gamedata\\sidedata.tdf", sd))
+            if (auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(sd.data()), sd.size())).root)
+                while (root->child("SIDE" + std::to_string(n))) ++n;
+        live->sides = n > 0 ? n : 2;
+    }
+    net::BattleRoom& room = *live->room;
+    MenuArt* art = &part->art;
+    room.map_checksum = [art](const std::string& map) { return map_sync_checksum(art->vfs(), map); };
+    if (live->cfg.unit_checks) room.set_unit_checks(live->cfg.unit_checks());
+    room.defer_loading_handshake(true);  // the handshake runs once this machine's data is loaded
+    // This machine's record (0x449BB0): its screen size, the CD.
+    room.set_screen(static_cast<std::uint16_t>(fe.settings().get_int("DisplaymodeWidth", 640)),
+                    static_cast<std::uint16_t>(fe.settings().get_int("DisplaymodeHeight", 480)));
+    const int limit = std::clamp(fe.settings().get_int("UnitLimit", 250), 20, 500);
+    if (host) {
+        room.set_game_name(part->game_name);
+        room.set_map_ready(true);
+        // The room opens on the first map of the multiplayer list (0x435D30); the host's sliders
+        // at 1000 metal and energy and the settings' unit limit; its switches from the game's
+        // settings (mapping, line of sight and its type, commander, fixed locations).
+        const std::string map = first_network_map(part->art);
+        room.set_map(map, map_sync_checksum(part->art.vfs(), map));
+        room.set_resources(10, 10, static_cast<std::uint16_t>(limit));
+        const client::Settings& s = fe.settings();
+        std::uint16_t opt = static_cast<std::uint16_t>(room.players()[0].options);
+        opt = static_cast<std::uint16_t>(opt & ~0x5F00u);
+        if (s.get_int("SkirmishMapping", 1)) opt |= 0x100;
+        if (s.get_int("SkirmishLineOfSight", 1)) opt |= 0x200;
+        if (s.get_int("SkirmishLOSType", 1) == 1) opt |= 0x400;
+        opt = static_cast<std::uint16_t>(opt | ((s.get_int("SkirmishCommanderDeath", 1) ? 1u : 0u) << 11));
+        if (s.get_int("SkirmishLocation", 1)) opt |= 0x4000;
+        room.set_option_word(opt);
+    }
+    LoungeState st = LoungeState{};
+    st.slots[0].used = true;
+    st.slots[0].controller = 1;
+    st.slots[0].kind = 1;
+    st.slots[0].flags = host ? 1 : 0;
+    st.slots[0].name = part->nickname;
+    st.unit_limit = static_cast<std::uint16_t>(limit);
+    st.map = room.map();
+    live->unit_limit = limit;
+    return std::make_unique<Lounge>(part, host, std::move(st), false, live);
 }
 }  // namespace net_screens_detail
 

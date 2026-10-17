@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <random>
+#include <thread>
 
 #include "client/canvas.h"
 #include "client/menu.h"
@@ -57,13 +58,15 @@ public:
     // `net_id`: the player's id in the transport's session (0: one of our own, chosen here).
     RoomScreen(const NetMenuConfig& cfg, std::unique_ptr<net::Transport> t, bool host, std::int32_t net_id = 0, const std::string& game_name = {})
         : cfg_(cfg), transport_(std::move(t)), session_(std::make_shared<net::NetSession>(*transport_)),
-          room_(std::make_unique<net::BattleRoom>(*session_, host, net_id ? net_id : make_net_id(), cfg.player_name)) {
+          room_(std::make_shared<net::BattleRoom>(*session_, host, net_id ? net_id : make_net_id(), cfg.player_name)),
+          crt_rand_(std::make_shared<sim::Lcg15>()) {
         if (host && !game_name.empty()) room_->set_game_name(game_name);
         // This machine's C runtime rand(): the host's start position shuffle draws it (an input
         // from the clock, as the menus leave it).
-        crt_rand_.set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+        crt_rand_->set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
         if (cfg_.unit_checks) room_->set_unit_checks(cfg_.unit_checks());
         room_->set_map_ready(true);
+        room_->defer_loading_handshake(true);  // the handshake runs once the data is loaded
         room_->on_chat = [this](const std::string& l) { push(l); };
         room_->on_player_left = [this](int s) { push("Player " + std::to_string(s + 1) + " left"); };
     }
@@ -71,7 +74,7 @@ public:
         if (launched_) fe.pop();  // back from the game
     }
     void handle(FrontEnd& fe, const InputEvent& e) override {
-        if (!room_) return;  // handed to the game
+        if (!room_ || launched_) return;  // handed to the game
         if (e.type == InputEvent::Type::KeyDown) {
             if (e.key == keys::kEscape) {
                 fe.pop();
@@ -103,10 +106,13 @@ public:
         }
     }
     void frame(FrontEnd& fe, std::uint32_t now_ms) override {
-        if (!room_) return;
-        room_->frame(now_clock(now_ms), &crt_rand_);
+        if (!room_ || launched_) return;
+        room_->frame(now_clock(now_ms), crt_rand_.get());
         if (room_->refused() && !launched_) push(room_->error());
-        if (room_->loaded() && !launched_) launch(fe);
+        if (room_->started() && !launched_) {
+            launched_ = true;
+            launch_network_battle(fe, cfg_, NetLaunch{std::move(transport_), session_, room_, crt_rand_});
+        }
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
         background(fe, out, "BATTLROOM");
@@ -148,77 +154,13 @@ private:
         lines_.push_back(l);
         if (lines_.size() > 4) lines_.erase(lines_.begin());
     }
-    void launch(FrontEnd& fe) {
-        launched_ = true;
-        auto req = std::make_shared<NetGameRequest>();
-        req->map = room_->map();
-        req->sides = room_->sides();
-        req->start = room_->battle_start();
-        // The original seeds its generators from its clocks (inputs).
-        const auto t = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-        req->start.battle_rng_seed = t;
-        req->start.loading_rand_seed = t ^ 0x5A5A5A5Au;
-        req->start.crt_rand_state = crt_rand_.state();
-        req->settings = &fe.settings();
-        {  // the host's record decides (the original reads the host's option word, bit 13)
-            const auto& ps = room_->players();
-            const net::RoomPlayer* host = &ps[0];
-            for (const auto& p : ps)
-                if (p.net_id && (p.flags & net::room::kHost)) host = &p;
-            req->cheats = (host->options & 0x2000u) != 0;
-        }
-        auto transport = std::make_shared<std::unique_ptr<net::Transport>>(std::move(transport_));
-        auto session = session_;
-        auto net = std::make_shared<std::unique_ptr<net::NetBattle>>();
-        const auto players = room_->players();
-        req->wrap_outside = [session, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
-            *net = std::make_unique<net::NetBattle>(client_outside, *session);
-            return **net;
-        };
-        req->attach = [net, players](sim::Battle& b) {
-            (*net)->attach(b);
-            (*net)->set_room(players);
-        };
-        const NetMenuConfig cfg = cfg_;
-        const bool host = room_->is_host();
-        room_.reset();  // the room's transport now belongs to the game
-        // The loading screen's network part: every player in the game (slot order) with a bar;
-        // this machine's players (its human, and the computer players a host runs) show this
-        // machine's progress. Other machines' progress is not reported to the client yet: their
-        // bars stay empty until a loading-progress feed fills LoadingState::players.
-        std::vector<LoadingPlayer> loading_players;
-        for (std::size_t k = 0; k < players.size(); ++k) {
-            const net::RoomPlayer& p = players[k];
-            if (!p.net_id) continue;
-            LoadingPlayer lp;
-            lp.name = p.name;
-            lp.local = static_cast<int>(k) == req->start.local_player || (p.kind == 2 && host);
-            lp.loaded = lp.local;
-            loading_players.push_back(lp);
-        }
-        FrontEnd* fep = &fe;
-        fe.start_battle([cfg, req, transport, session, net, fep, loading_players](const LoadProgress& progress,
-                                                                                  std::string& error) -> std::unique_ptr<BattleSession> {
-            if (LoadingState* ls = fep->loading()) {
-                ls->network = true;
-                ls->players = loading_players;
-            }
-            if (!cfg.load_network_game) {
-                error = "network games need the importer's loader";
-                return nullptr;
-            }
-            std::unique_ptr<BattleSession> inner = cfg.load_network_game(*req, progress, error);
-            if (!inner || !*net) return nullptr;
-            return std::make_unique<NetBattleSession>(std::move(*transport), session, std::move(*net), std::move(inner));
-        });
-    }
 
     NetMenuConfig cfg_;
     std::unique_ptr<net::Transport> transport_;
     std::shared_ptr<net::NetSession> session_;
-    std::unique_ptr<net::BattleRoom> room_;
+    std::shared_ptr<net::BattleRoom> room_;
+    std::shared_ptr<sim::Lcg15> crt_rand_;
     Box side_, colour_, team_, ready_, computer_, start_, back_;
-    sim::Lcg15 crt_rand_;
     int side_value_ = 0, colour_value_ = 0;
     bool ready_value_ = false, launched_ = false;
     std::string typed_;
@@ -293,6 +235,135 @@ void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config) {
     hooks.multiplayer_menu = [config](FrontEnd& fe) { return make_multiplayer_menu(fe, config); };
 }
 
+std::string chat_line(const std::string& name, const std::string& to, const std::string& text) {
+    return "<" + name + (to.empty() ? std::string() : "->" + to) + "> " + text;
+}
+
+void launch_network_battle(FrontEnd& fe, const NetMenuConfig& cfg, NetLaunch L) {
+    using clock = std::chrono::steady_clock;
+    std::shared_ptr<net::BattleRoom> room = L.room;
+    std::shared_ptr<sim::Lcg15> crt = L.crt_rand ? L.crt_rand : std::make_shared<sim::Lcg15>();
+    auto req = std::make_shared<NetGameRequest>();
+    req->map = room->map();
+    req->sides = room->sides();
+    req->start = room->battle_start();  // (the start positions come with the handshake)
+    // The original seeds its generators from its clocks (inputs).
+    const auto t = static_cast<std::uint32_t>(clock::now().time_since_epoch().count());
+    req->start.battle_rng_seed = t;
+    req->start.loading_rand_seed = t ^ 0x5A5A5A5Au;
+    req->start.crt_rand_state = crt->state();
+    req->settings = &fe.settings();
+    {  // the host's record decides (the original reads the host's option word, bit 13)
+        const auto& ps = room->players();
+        const net::RoomPlayer* host = &ps[0];
+        for (const auto& p : ps)
+            if (p.net_id && (p.flags & net::room::kHost)) host = &p;
+        req->cheats = (host->options & 0x2000u) != 0;
+    }
+    auto transport = std::make_shared<std::unique_ptr<net::Transport>>(std::move(L.transport));
+    std::shared_ptr<net::NetSession> session = L.session;
+    auto net = std::make_shared<std::unique_ptr<net::NetBattle>>();
+    req->wrap_outside = [session, net](sim::BattleOutside& client_outside) -> sim::BattleOutside& {
+        *net = std::make_unique<net::NetBattle>(client_outside, *session);
+        return **net;
+    };
+    req->attach = [net, room](sim::Battle& b) {
+        (*net)->attach(b);
+        (*net)->set_room(room->players());
+    };
+    const bool host = room->is_host();
+    const int local = room->local_slot();
+    FrontEnd* fep = &fe;
+    const auto t0 = clock::now();
+    const std::uint32_t base = room->clock();
+    auto now_ticks = [t0, base]() {
+        return base + 1u + static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - t0).count() * 30 / 1000);
+    };
+    // The loading screen's network part (0x497F40): every player in the game (slot order) with a
+    // bar; this machine's players (its human, and the computer players a host runs) show this
+    // machine's progress, the others what their packets report; "has loaded" is set at the
+    // start for this machine's players, by packets for the others.
+    auto show_players = [room, fep, host, local](bool synchronised) {
+        LoadingState* ls = fep->loading();
+        if (!ls) return;
+        ls->network = true;
+        ls->synchronised = synchronised;
+        ls->players.clear();
+        int sum = 0;
+        for (int r : ls->rows) sum += r;
+        const auto& ps = room->players();
+        for (std::size_t k = 0; k < ps.size(); ++k) {
+            const net::RoomPlayer& p = ps[k];
+            if (!p.net_id) continue;
+            LoadingPlayer lp;
+            lp.name = p.name;
+            lp.local = static_cast<int>(k) == local || (p.kind == 2 && host);
+            lp.percent = lp.local ? sum / kLoadRows : p.load_percent;
+            lp.loaded = lp.local || room->heard_loaded(static_cast<int>(k));
+            ls->players.push_back(lp);
+        }
+    };
+    // One frame of the loading screen's network part: this machine's progress goes out (0x2A,
+    // with a probe) and the network is read (other machines' progress, start positions, "loaded").
+    auto net_frame = [room, crt, fep, now_ticks]() {
+        int sum = 0;
+        if (LoadingState* ls = fep->loading())
+            for (int r : ls->rows) sum += r;
+        room->frame(now_ticks(), crt.get());
+        room->send_load_progress(static_cast<std::uint8_t>(std::clamp(sum / kLoadRows, 0, 255)));
+    };
+    std::array<std::string, 10> names{};
+    for (std::size_t k = 0; k < names.size(); ++k) names[k] = room->players()[k].name;
+    fe.start_battle([cfg, req, transport, session, net, room, crt, show_players, net_frame, now_ticks, names, local](
+                        const LoadProgress& progress, std::string& error) -> std::unique_ptr<BattleSession> {
+        show_players(false);
+        if (!cfg.load_network_game) {
+            error = "network games need the importer's loader";
+            return nullptr;
+        }
+        // Each redraw of the loading screen (at most every 200 ms) is a frame of its network part.
+        auto last = std::make_shared<clock::time_point>(clock::now() - std::chrono::seconds(1));
+        auto frame_due = [last]() {
+            if (clock::now() - *last < std::chrono::milliseconds(kLoadRedrawMs)) return false;
+            *last = clock::now();
+            return true;
+        };
+        const LoadProgress net_progress = [progress, net_frame, show_players, frame_due](float f, const std::string& stage) {
+            if (frame_due()) {
+                net_frame();
+                show_players(false);
+            }
+            progress(f, stage);
+        };
+        // Once the data is loaded: the handshake, each frame until everybody has loaded
+        // (0x4568C0; the loading screen goes on meanwhile).
+        req->before_start = [room, crt, progress, net_frame, show_players, frame_due, now_ticks](sim::BattleStart& start) {
+            room->data_loaded();
+            const auto limit = clock::now() + std::chrono::minutes(5);
+            while (!room->loaded() && !room->refused() && clock::now() < limit) {
+                if (frame_due()) {
+                    net_frame();
+                    show_players(false);
+                    progress(1.0f, "network");
+                } else {
+                    room->frame(now_ticks(), crt.get());
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            show_players(room->loaded());
+            progress(1.0f, "network");
+            const sim::BattleStart b = room->battle_start();
+            for (std::size_t k = 0; k < start.players.size(); ++k) start.players[k].start_position = b.players[k].start_position;
+            start.crt_rand_state = crt->state();  // the host's shuffle drew this machine's rand()
+        };
+        std::unique_ptr<BattleSession> inner = cfg.load_network_game(*req, net_progress, error);
+        if (!inner || !*net) return nullptr;
+        auto s = std::make_unique<NetBattleSession>(std::move(*transport), session, std::move(*net), std::move(inner));
+        s->set_names(names, local);
+        return s;
+    });
+}
+
 NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, std::shared_ptr<net::NetSession> session,
                                    std::unique_ptr<net::NetBattle> net, std::unique_ptr<BattleSession> inner)
     : transport_(std::move(transport)), session_(std::move(session)), net_(std::move(net)), inner_(std::move(inner)) {
@@ -305,8 +376,10 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     c.network.send_speed = [n](int s) { n->send_speed(s); };
     net_->on_pause = [this](bool p) { inner_->client().set_paused(p); };
     net_->on_speed = [this](int s) { inner_->client().set_game_speed(s); };
+    // A received line is shown as it came (its sender put its name in front), in colour 8 with
+    // the sender's record (0x453D40: the console line beeps MessageArrived).
     net_->on_chat = [this](int slot, const std::string& text) {
-        inner_->client().message("Player " + std::to_string(slot + 1) + ": " + text, GameClient::kChat, static_cast<std::uint8_t>(slot));
+        inner_->client().message(text, GameClient::kPlayerNote, static_cast<std::uint8_t>(slot));
     };
     net_->on_player_left = [this](int slot, int) {
         inner_->client().message("Player " + std::to_string(slot + 1) + " left", GameClient::kPlayerNote, static_cast<std::uint8_t>(slot));
@@ -324,9 +397,38 @@ int NetBattleSession::frame(std::uint32_t now_ms) {
     return inner_->frame(now_ms);
 }
 
-void NetBattleSession::send_chat(const std::string& text) {
-    net_->send_chat(text);
-    inner_->client().message(text, GameClient::kChat);
+void NetBattleSession::send_chat(const std::string& line) {
+    // The talk line (0x493BF0): a line whose second character is ',', ':' or ';' names its
+    // receivers by its first: a digit one player (an unused record, id -1: nobody gets it and its
+    // empty name shows; the original drops the line only for an id of 0, which no record of a
+    // network game has), 'a' / 'A' the allies, 'e' / 'E' the enemies; the two characters go. The line is
+    // then made "<name->to> text" (0x463E50), sent to those receivers and shown in colour 4
+    // without a sender.
+    std::string text = line, to;
+    int recipients = 0;
+    std::array<bool, 10> chosen{};
+    if (text.size() >= 2 && (text[1] == ',' || text[1] == ':' || text[1] == ';')) {
+        const char c = text[0];
+        if (c >= '0' && c <= '9') {
+            const int d = c - '0';
+            recipients = 3;
+            chosen[static_cast<std::size_t>(d)] = true;
+            to = names_[static_cast<std::size_t>(d)];
+            text = text.substr(2);
+        } else if (c == 'a' || c == 'A') {
+            recipients = 1;
+            to = "Allies";
+            text = text.substr(2);
+        } else if (c == 'e' || c == 'E') {
+            recipients = 2;
+            to = "Enemies";
+            text = text.substr(2);
+        }
+    }
+    const std::string out = chat_line(names_[static_cast<std::size_t>(local_ < 0 || local_ > 9 ? 0 : local_)], to, text);
+    // (0x453360 sends a line starting with '+' to everybody; a made line starts with '<'.)
+    net_->send_chat(out, recipients, chosen);
+    inner_->client().message(out, GameClient::kChat);
 }
 
 void NetBattleSession::surrender() {

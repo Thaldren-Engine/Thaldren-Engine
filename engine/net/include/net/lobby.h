@@ -80,6 +80,9 @@ struct RoomPlayer {
     std::uint16_t cd = 4;
     std::uint16_t best_ping = 0;
     std::string game_name;
+    // While loading: the player's progress (the record byte +0x20: the average of the loading
+    // screen's six rows, packet 0x2A).
+    std::uint8_t load_percent = 0;
     bool ready() const { return (options & room::kReady) != 0; }
     bool watching() const { return (options & room::kWatch) != 0; }
 };
@@ -127,7 +130,7 @@ public:
     // Host: a computer player in the given free slot (-1 when taken), its logo the first free one.
     int add_computer_at(int slot, std::uint8_t side);
     // Host: a computer player's slot freed (status 1, "left").
-    bool remove_computer(int slot);
+    bool remove_computer(int slot, std::uint8_t reason = room::kLeft);
     // Host: an empty slot closed to newcomers ("[BLOCKED]"; slot table id -1) or opened again.
     bool set_blocked(int slot, bool blocked);
     bool blocked(int slot) const { return slot >= 0 && slot < 10 && blocked_[static_cast<std::size_t>(slot)]; }
@@ -173,6 +176,31 @@ public:
     bool started() const { return started_; }
     // The loading handshake is over: battle_start() is final.
     bool loaded() const { return loaded_; }
+
+    // ---- the room screen and the loading screen (0x44A680, 0x497F40)
+    std::int32_t net_id() const { return net_id_; }
+    std::uint32_t clock() const { return clock_; }
+    // Changes one of this machine's records (its human or a computer player it runs); the change
+    // goes out with the next records. False when the slot is not this machine's.
+    bool edit_own(int slot, const std::function<void(RoomPlayer&)>& change);
+    // Host: the start resources (hundreds) and the unit limit of the game (the room's sliders).
+    void set_resources(std::uint16_t energy_hundreds, std::uint16_t metal_hundreds, std::uint16_t unit_limit);
+    // Host, after a new map: the other machines' players count as not ready until their next
+    // records say otherwise (0x444CB0 clears the ready bit of every record not of this machine).
+    void unready_others();
+    // Host: the unit definition exchange with this player still runs (the room shows "Synching").
+    bool synching(int slot) const;
+    // Loading: whether this machine heard "loaded" (0x15) from the player (GS+0x29A4).
+    bool heard_loaded(int slot) const { return slot >= 0 && slot < 10 && heard_loaded_[static_cast<std::size_t>(slot)]; }
+    // The original's order of a network start: the host's 0x08, then every machine loads its
+    // data and only then runs the loading handshake (start positions 0x1E / 0x1F, "loaded" 0x15;
+    // 0x4568C0 is called once the loading thread is done). With `defer` the handshake waits for
+    // data_loaded(); without (the default) it follows the start at once.
+    void defer_loading_handshake(bool defer) { defer_handshake_ = defer; }
+    void data_loaded() { defer_handshake_ = false; }
+    // One frame of the loading screen (0x497F40): this machine's players' progress (the average
+    // of the six rows) goes to everybody (0x2A) with a probe (0x06), then the network is read.
+    void send_load_progress(std::uint8_t percent);
 
     // The battle description for this machine (after loading): its players local, the others remote.
     sim::BattleStart battle_start() const;
@@ -249,6 +277,8 @@ private:
     std::uint16_t pending_screen_w_ = 0, pending_screen_h_ = 0;
     std::array<std::uint8_t, 10> allied_{}, allied_by_{};
     int out_reason_ = -1;
+    bool defer_handshake_ = false;
+    bool handshake_done() const;
 };
 
 } // namespace net

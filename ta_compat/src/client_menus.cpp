@@ -685,6 +685,11 @@ client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* fe) {
         req.map = r.map;
         req.sides = r.sides;
         req.start = r.start;
+        if (r.before_start) {
+            // The loading handshake runs once the data is loaded, before the battle starts.
+            auto before = r.before_start;
+            req.prepare_start = [before](LoadedBattle&, sim::BattleStart& start) { before(start); };
+        }
         const int human = r.start.local_player;
         client::Settings none;
         // The user's settings (screen size, speeds, interface type) as the front end passes them.
