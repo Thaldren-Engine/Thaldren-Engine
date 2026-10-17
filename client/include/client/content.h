@@ -44,10 +44,13 @@ struct Button {
     int attribs = 0;
     std::uint8_t colorf = 0;
     const Font* font = nullptr;
+    std::string name;     // the gadget's name (a build button's: the unit type's)
+    bool grayed = false;  // shown disabled whatever the selection (the description's flag, or an
+                          // unknown unit on a build page)
 };
 
 // Frame of a button's look: a staged button shows its stage (the last frame while
-// held down); a plain one frame 0, 1 while held, 2 (when present) when disabled.
+// held down); a plain one frame 0, 1 while held, min(2, last) when disabled.
 int button_frame(const Button& b, bool held, bool disabled, int stage);
 
 struct Panel {
@@ -56,6 +59,19 @@ struct Panel {
     int w = 0, h = 0;  // the description's box (header gadget)
     std::vector<Button> buttons;
 };
+
+// A disabled (grayed) button that is not staged is dimmed after it is drawn: its whole box goes
+// through the grey table, then through shade row 12 (indexed with the pixel as a signed byte),
+// unless its attribs have 0x80.
+bool button_dims(const Button& b, bool disabled);
+
+// A panel's picture and buttons drawn into img, whose top-left is the screen point (ox, oy):
+// `under` first (when given, at its offsets), the panel's picture, then each button in order with
+// frame_of(button) (-1: none), dimming the boxes of those dims(button) names right after the
+// button (grey: the grey table; shade: 32 rows of 256).
+void compose_panel(render::Image8& img, int ox, int oy, const Panel& p, const render::Sprite8* under,
+                   const std::function<int(const Button&)>& frame_of, const std::function<bool(const Button&)>& dims,
+                   const std::array<std::uint8_t, 256>& grey, const std::vector<std::uint8_t>& shade);
 
 // An inclusive screen rectangle as the side description gives it.
 struct Region {
@@ -157,7 +173,14 @@ struct UnitTypeLook {
     UnitSounds sounds{};                         // first sound of each notice
     std::array<std::vector<int>, 24> sound_lists{}; // every sound of each notice (one is picked)
     std::vector<std::string> categories;          // the type's categories (upper case)
-    std::vector<Panel> build_pages;  // empty: no build menu
+    // Build menu pages 1..N, made for each side the viewing player may play (a page without a
+    // description of its own takes the viewing player's side's stock page): [side][page - 1].
+    // Empty: no build menu.
+    std::vector<std::vector<Panel>> build_pages;
+    const std::vector<Panel>* pages_for(int side) const {
+        if (build_pages.empty()) return nullptr;
+        return &build_pages[side >= 0 && static_cast<std::size_t>(side) < build_pages.size() ? static_cast<std::size_t>(side) : 0];
+    }
     // Box around the model at rest (16.16, unit space): the selection outline.
     std::array<std::int32_t, 3> box_min{}, box_max{};
     bool commander = false;

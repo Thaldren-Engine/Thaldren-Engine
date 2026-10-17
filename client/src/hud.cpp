@@ -221,42 +221,26 @@ render::DrawList GameClient::draw() {
     // The panel and its buttons. While the chat line is open the panel's box is shown dimmed:
     // the chat line opens with flag 0x800, which puts the layout under it (the panel, with what
     // lay under it when it was drawn) through shade level 8 once; closing redraws it.
-    const Panel* dim_panel = chat_ && c_.shade_levels.size() >= 32 * 256 ? current_panel() : nullptr;
-    if (dim_panel) {
-        const Panel* p = dim_panel;
+    // The panel is composed in its box (the side art under it, its picture, the buttons — the
+    // disabled ones dimmed through the grey table and shade row 12 as the original draws them),
+    // and dimmed as a whole while the chat line is open.
+    if (const Panel* p = current_panel()) {
         const int pw = p->w > 0 ? p->w : 128, ph = p->h > 0 ? p->h : h - p->y;
         render::Image8 img(pw, ph, list.clear_index);
-        const render::ClipRect all = img.bounds();
-        auto put = [&](const render::Sprite8* s, int x, int y) {
-            if (s) render::blit(img, all, *s, x - p->x, y - p->y);
-        };
-        if (side_ && side_->panel_side) put(side_->panel_side, side_->panel_side->x_offset, side_->panel_side->y_offset);
-        if (p->background) put(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset);
-        for (const Button& btn : p->buttons) {
-            const int f = button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn));
-            if (f >= 0) {
-                const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
-                put(&s, btn.x + s.x_offset, btn.y + s.y_offset);
-            }
-        }
-        for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
+        // Pressed: only the button the pointer holds (while over it), the tab of the menu shown
+        // and the active order mode's button (see button_pressed_look).
+        compose_panel(
+            img, p->x, p->y, *p, side_ ? side_->panel_side : nullptr,
+            [&](const Button& btn) { return button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn)); },
+            [&](const Button& btn) { return button_dims(btn, !button_enabled(btn)); }, c_.minimap_grey, c_.shade_levels);
+        if (chat_ && c_.shade_levels.size() >= 32 * 256)
+            for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
         render::Sprite8 sp;
         sp.width = pw;
         sp.height = ph;
         sp.has_key = false;
         sp.pixels = std::move(img.pixels);
         list.blit(list.keep(std::move(sp)), p->x, p->y, screen, false);
-    } else if (const Panel* p = current_panel()) {
-        if (p->background) list.blit(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset, screen, true);
-        for (const Button& btn : p->buttons) {
-            // Pressed: only the button the pointer holds (while over it), the tab of the menu
-            // shown and the active order mode's button (see button_pressed_look).
-            const int f = button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn));
-            if (f >= 0) {
-                const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
-                list.blit(&s, btn.x + s.x_offset, btn.y + s.y_offset, screen, true);
-            }
-        }
     }
     // The minimap (without the battle's steps drawing it, drawn anew for every frame).
     if (!mm_hooked_) {

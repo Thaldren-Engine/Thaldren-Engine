@@ -47,9 +47,38 @@ int button_frame(const Button& b, bool held, bool disabled, int stage) {
         if (disabled) return std::max(0, n - 2);
         return std::clamp(stage, 0, std::max(0, n - 3));
     }
-    if (disabled) return n >= 3 ? 2 : 0;
+    if (disabled) return std::min(2, n - 1);
     if (held) return n >= 2 ? 1 : 0;
     return 0;
+}
+
+bool button_dims(const Button& b, bool disabled) { return disabled && !b.staged && !(b.attribs & 0x80); }
+
+void compose_panel(render::Image8& img, int ox, int oy, const Panel& p, const render::Sprite8* under,
+                   const std::function<int(const Button&)>& frame_of, const std::function<bool(const Button&)>& dims,
+                   const std::array<std::uint8_t, 256>& grey, const std::vector<std::uint8_t>& shade) {
+    const render::ClipRect all = img.bounds();
+    auto put = [&](const render::Sprite8* s, int x, int y) {
+        if (s) render::blit(img, all, *s, x - ox, y - oy);
+    };
+    if (under) put(under, under->x_offset, under->y_offset);
+    if (p.background) put(p.background, p.x + p.background->x_offset, p.y + p.background->y_offset);
+    for (const Button& btn : p.buttons) {
+        const int f = frame_of(btn);
+        if (f >= 0 && btn.frames) {
+            const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
+            put(&s, btn.x + s.x_offset, btn.y + s.y_offset);
+        }
+        if (!dims(btn) || shade.size() < 32 * 256) continue;
+        const int x0 = std::max(btn.x - ox, 0), y0 = std::max(btn.y - oy, 0);
+        const int x1 = std::min(btn.x + btn.w - 1 - ox, img.width - 1), y1 = std::min(btn.y + btn.h - 1 - oy, img.height - 1);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                std::uint8_t& px = img.row(y)[x];
+                px = grey[px];
+                px = shade[static_cast<std::size_t>(12 * 256 + static_cast<std::int8_t>(px))];
+            }
+    }
 }
 
 GameClient::GameClient(sim::Battle& battle, Content& content, const ClientOptions& options)
@@ -511,7 +540,7 @@ const Panel* GameClient::current_panel() const {
         const std::uint16_t t = b_.ticks[focus_].type_index;
         if (t < c_.types.size() && !c_.types[t].build_pages.empty() && (u.flags & kBuildMenuShown)) {
             const int page = static_cast<int>((u.flags & kBuildPageMask) >> kBuildPageShift);
-            const auto& pages = c_.types[t].build_pages;
+            const auto& pages = *c_.types[t].pages_for(opt_.side);
             return &pages[static_cast<std::size_t>(std::clamp(page - 1, 0, static_cast<int>(pages.size()) - 1))];
         }
     }
@@ -520,6 +549,7 @@ const Panel* GameClient::current_panel() const {
 }
 
 bool GameClient::button_enabled(const Button& btn) const {
+    if (btn.grayed) return false;  // grayed by its description or its build page
     // Order buttons are enabled when some selected unit can do the order.
     std::uint32_t any = 0;
     bool builder = false;
@@ -549,6 +579,7 @@ bool GameClient::button_enabled(const Button& btn) const {
     case Action::Stop: case Action::OrdersTab: return any != 0 || focus_ != 0;
     case Action::PrevPage: case Action::NextPage: return focus_ != 0;
     case Action::BuildUnit: return btn.unit_type != 0;
+    case Action::None: return true;  // drawn as its description says (not grayed: enabled)
     default: return false;
     }
 }
@@ -605,7 +636,7 @@ bool GameClient::press_button(const Button& btn, const InputEvent& e) {
         // Either mouse button: next / previous page, wrapping (the menu shown).
         if (focus) {
             const std::uint16_t t = b_.ticks[focus_].type_index;
-            const int pages = t < c_.types.size() ? static_cast<int>(c_.types[t].build_pages.size()) : 0;
+            const int pages = t < c_.types.size() ? build_page_count(t) : 0;
             if (pages > 0) {
                 int page = static_cast<int>((focus->flags & kBuildPageMask) >> kBuildPageShift);
                 page = btn.action == Action::NextPage ? (page == pages ? 1 : page + 1) : (page <= 1 ? pages : page - 1);
@@ -1158,7 +1189,7 @@ void GameClient::key_down(const InputEvent& e) {
             // With the group keys switched, the plain digit picks a build menu page instead.
             if (focus_) {
                 const std::uint16_t t = b_.ticks[focus_].type_index;
-                const int pages = t < c_.types.size() ? static_cast<int>(c_.types[t].build_pages.size()) : 0;
+                const int pages = t < c_.types.size() ? build_page_count(t) : 0;
                 const int page = k - '1';
                 if (page < pages) {
                     sim::Unit& u = b_.units[focus_];
@@ -1330,7 +1361,7 @@ void GameClient::step_build_page(bool forward) {
     if (focus_) {
         sim::Unit& u = b_.units[focus_];
         const std::uint16_t t = b_.ticks[focus_].type_index;
-        const int pages = t < c_.types.size() ? static_cast<int>(c_.types[t].build_pages.size()) : 0;
+        const int pages = t < c_.types.size() ? build_page_count(t) : 0;
         if (pages > 0) {
             const bool shown = (u.flags & kBuildMenuShown) != 0;
             int page = static_cast<int>((u.flags & kBuildPageMask) >> kBuildPageShift);

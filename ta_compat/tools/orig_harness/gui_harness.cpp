@@ -9,7 +9,7 @@
 // the GUI compositor, and writes the surface with the display palette as an 8-bit BMP. Sound,
 // CD audio, the pointer and the frame presentation are replaced by routines that do nothing.
 //
-// Usage: gui_harness <TotalA.exe> <out_prefix> [screen ...] [--res WxH] [--palettes PALETTE.PAL GUIPAL.PAL] [--type N]
+// Usage: gui_harness <TotalA.exe> <out_prefix> [screen ...] [--res WxH] [--palettes PALETTE.PAL GUIPAL.PAL] [--type N] [--grey]
 //   screens: main single options skirmish ingame (the in-game menu, F2) prefs (its options)
 //            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu; tabmenu
 //   Writes <out_prefix><screen>.bmp.
@@ -96,7 +96,7 @@ class Gui {
 public:
     explicit Gui(harness::DbgRemote& r) : r_(r) {}
 
-    bool init(int w, int h) {
+    bool init(int w, int h, bool grey = false) {
         w_ = w;
         h_ = h;
         // Routines that would reach sound, CD audio, the pointer, the screen or a notice do nothing.
@@ -142,7 +142,9 @@ public:
         r_.w32(kDisplay + kDcLight, r_.alloc(0x2000));
         r_.w32(kDisplay + 0xCC, r_.alloc(0x1000));  // grey remap
         r_.w32(kDisplay + 0xD0, r_.alloc(0x1000));  // dim remap
-        r_.w16(kDisplay + kDcFlags, static_cast<std::uint16_t>(r_.r32(kDisplay + kDcFlags) | 0x20 | 0x40 | 0x80 | 0x200));
+        // (--grey: flag 0x100 as the game sets it, so the front end's set-up builds the grey table
+        // from the game palette and grayed gadgets go through it.)
+        r_.w16(kDisplay + kDcFlags, static_cast<std::uint16_t>(r_.r32(kDisplay + kDcFlags) | 0x20 | 0x40 | 0x80 | 0x200 | (grey ? 0x100 : 0)));
         r_.w32(kDisplay + 0xF2, 30);  // the key queue's capacity
         r_.w32(kDisplay + 0x44, 1);   // "DIB" display: the windowed display-mode list, no DirectDraw
         r_.w32(kDisplay + 0xE8, 30);  // ticks per second
@@ -524,9 +526,12 @@ int main(int argc, char** argv) {
     int bw = 640, bh = 480;
     std::string battle_pal, battle_guipal, battle_shade;
     int game_type = -1;
+    bool grey = false;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--type" && i + 1 < argc) {
+        if (a == "--grey") {
+            grey = true;
+        } else if (a == "--type" && i + 1 < argc) {
             game_type = std::atoi(argv[++i]);
         } else if (a == "--palettes" && i + 2 < argc) {
             // palettes\PALETTE.PAL and palettes\GUIPAL.PAL as files (the battle's colours).
@@ -551,7 +556,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     Gui g(r);
-    if (!g.init(640, 480)) {
+    if (!g.init(640, 480, grey)) {
         std::fprintf(stderr, "front-end set-up failed\n");
         return 1;
     }
@@ -713,6 +718,167 @@ int main(int argc, char** argv) {
                 }
             }
             std::printf("battle screen %dx%d\n", bw, bh);
+            continue;
+        } else if (s.rfind("buildpages:", 0) == 0) {
+            // buildpages:DIR (after "battle"): every builder's build pages as the original makes
+            // them, for each viewing side. The unit definitions come from the original's own
+            // enumeration (0x42A8D0), each definition's page count byte from the battle loading's
+            // rule (consecutive guis\<unitname>1.. descriptions + 1; 1 with only a <unitname>0;
+            // asked with the original's path builder and file-size routine), the download table
+            // and the raised counts from the original's loader (0x42DCF0). Then for each side
+            // (the local player's side record +0x95) and each builder's page 1 .. count - 1: a
+            // unit (definition, page in its flags with the build menu bit, complete) and the
+            // original's page opening (0x41ACE0, which also sets the tabs and switches from the
+            // selection's abilities: all present here), the layout's buttons listed to
+            // DIR\orig_pages.txt and its box written as DIR\o_<UNIT>_s<side>_p<page>.bmp.
+            const std::string dir = s.substr(11);
+            r.w32(gs + 0x1439B, 0);
+            r.w32(gs + 0x1438F, 0);
+            if (!r.call(0x0042A8D0, 0, {}, nullptr, 120000)) {
+                std::printf("buildpages: unit enumeration failed\n");
+                continue;
+            }
+            const u32 ndefs = r.r32(gs + 0x1438F), defs = r.r32(gs + 0x1439B);
+            std::printf("buildpages: %u definitions\n", ndefs);
+            auto exists = [&](const std::string& name) {
+                const u32 path = r.alloc(0x100);
+                r.call(0x004290F0, 0, {path, r.str("guis"), r.str(name), r.str("GUI")});
+                u32 size = 0;
+                r.call(0x004BBC40, 0, {path}, &size);
+                return size != 0;
+            };
+            // The battle loading puts the definitions in name order (the type lookup by name is a
+            // binary search) and numbers them by place.
+            {
+                std::vector<std::vector<std::uint8_t>> recs(ndefs, std::vector<std::uint8_t>(0x249));
+                for (u32 k = 1; k < ndefs; ++k) r.read(defs + k * 0x249, recs[k].data(), 0x249);
+                std::stable_sort(recs.begin() + 1, recs.end(), [](const std::vector<std::uint8_t>& a, const std::vector<std::uint8_t>& b) {
+                    return _stricmp(reinterpret_cast<const char*>(&a[0x20]), reinterpret_cast<const char*>(&b[0x20])) < 0;
+                });
+                for (u32 k = 1; k < ndefs; ++k) r.write(defs + k * 0x249, recs[k].data(), 0x249);
+            }
+            std::vector<std::string> names(ndefs);
+            for (u32 k = 1; k < ndefs; ++k) {
+                char nm[33] = {};
+                r.read(defs + k * 0x249 + 0x20, nm, 32);
+                names[k] = nm;
+                const bool gui0 = exists(names[k] + "0");
+                u32 flags = r.r32(defs + k * 0x249 + 0x241);
+                flags = gui0 ? (flags | 0x80000000u) : (flags & 0x7FFFFFFFu);
+                r.w32(defs + k * 0x249 + 0x241, flags);
+                int n = 1;
+                bool any = false;
+                while (exists(names[k] + std::to_string(n))) {
+                    ++n;
+                    any = true;
+                }
+                r.w8(defs + k * 0x249 + 0x22E, static_cast<std::uint8_t>(any ? n : (gui0 ? 1 : 0)));
+                r.w16(defs + k * 0x249 + 0x21E, static_cast<std::uint16_t>(k));  // the type index (the battle loading's)
+                r.w32(defs + k * 0x249 + 0x152, 0);  // no build option list (the download step appends none)
+                r.w32(defs + k * 0x249 + 0x156, 0);
+            }
+            for (u32 k = 2; k < ndefs; ++k)
+                if (_stricmp(names[k - 1].c_str(), names[k].c_str()) >= 0)
+                    std::printf("buildpages: definitions not in name order at %u (%s, %s)\n", k, names[k - 1].c_str(), names[k].c_str());
+            if (!r.call(0x0042DCF0, 0, {}, nullptr, 60000)) {
+                std::printf("buildpages: download menus failed\n");
+                continue;
+            }
+            {
+                const u32 nfiles = r.r32(gs + 0x391C7), table = r.r32(gs + 0x391CB);
+                int entries = 0;
+                for (u32 f = 0; f < nfiles; ++f) entries += static_cast<int>(r.r32(table + f * 0xBD));
+                std::printf("buildpages: %u download files, %d entries\n", nfiles, entries);
+            }
+            for (const char* probe : {"ARMCV", "ARMACA", "CORAK", "ARMMLV"}) {
+                u32 id = 0;
+                const bool ok = r.call(0x00488B10, 0, {r.str(probe)}, &id);
+                u32 at = 0;
+                for (u32 k = 1; k < ndefs; ++k)
+                    if (_stricmp(names[k].c_str(), probe) == 0) at = k;
+                u32 cmp = 0;
+                r.call(0x004F8A70, 0, {defs + at * 0x249 + 0x20, r.str(probe)}, &cmp);
+                std::printf("buildpages: type of %s: %s %u; record %u has id %u, compare %d\n", probe, ok ? "ok" : "failed", id & 0xFFFF, at,
+                            r.r32(defs + at * 0x249 + 0x21E) & 0xFFFF, static_cast<int>(cmp));
+            }
+            // The selection's abilities: every order available (nothing grayed by them) except
+            // loading (its button and BLAST share a place: with loading, BLAST is hidden).
+            r.w8(gs + 0x37EC0, 0x80);
+            r.w8(gs + 0x37EC1, 0xEF);
+            r.w8(gs + 0x37EC2, 0x01);
+            {
+                std::uint16_t fl = 0;
+                r.read(gs + 0x37EBE, &fl, 2);
+                fl = static_cast<std::uint16_t>(fl & ~0x7000);
+                r.write(gs + 0x37EBE, &fl, 2);
+            }
+            const u32 local = r.r32(gs + 0x2A42) & 0xFF;
+            const u32 prec = gs + 0x1B63 + local * 0x14B;
+            u32 side_rec = r.r32(prec + 0x27);
+            if (!side_rec) {
+                side_rec = r.alloc(0x100);
+                r.w32(prec + 0x27, side_rec);
+            }
+            // No focus outlines in a battle (its loading switches them off, 0x49FA70).
+            r.call(0x0049FA70, 0, {g.gui()});
+            const u32 unit = r.alloc(0x200);
+            FILE* lst = std::fopen((dir + "/orig_pages.txt").c_str(), "wb");
+            int pages_done = 0;
+            for (u32 side = 0; side < 2; ++side) {
+                r.w8(side_rec + 0x95, static_cast<std::uint8_t>(side));
+                for (u32 k = 1; k < ndefs; ++k) {
+                    const int count = static_cast<int>(r.r32(defs + k * 0x249 + 0x22E) & 0xFF);
+                    for (int p = 1; p < count && p <= 7; ++p) {
+                        for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+                        std::vector<std::uint8_t> zero(0x200, 0);
+                        r.write(unit, zero.data(), zero.size());
+                        r.w32(unit + 0x92, defs + k * 0x249);
+                        r.w16(unit + 0xA6, static_cast<std::uint16_t>(k));
+                        r.w16(unit + 0xA8, 1);
+                        r.w32(unit + 0x110, 0x00400000u | (static_cast<u32>(p) << 23));
+                        r.w16(gs + 0x37E9C, 0);
+                        const std::string gui_name = names[k] + std::to_string(p) + ".GUI";
+                        if (!r.call(0x0041ACE0, 0, {unit, r.str(gui_name), static_cast<u32>(p)})) {
+                            std::printf("buildpages: %s page %d failed\n", names[k].c_str(), p);
+                            continue;
+                        }
+                        const u32 top = r.r32(g.gui() + 0x18);
+                        const u32 gadgets = top ? r.r32(top + 4) : 0;
+                        if (!gadgets) {
+                            std::printf("buildpages: %s page %d: no layout\n", names[k].c_str(), p);
+                            continue;
+                        }
+                        std::vector<std::uint8_t> rec(0x15B);
+                        r.read(gadgets, rec.data(), rec.size());
+                        auto s16 = [&](int o) { return static_cast<int>(static_cast<std::int16_t>(rec[o] | rec[o + 1] << 8)); };
+                        const int hx = s16(0x13), hy = s16(0x15), hw = s16(0x17), hh = s16(0x19);
+                        const int n = s16(0xB6);
+                        if (lst) std::fprintf(lst, "PAGE %s side %u page %d\n", names[k].c_str(), side, p);
+                        for (int i = 1; i <= n; ++i) {
+                            r.read(gadgets + static_cast<u32>(i) * 0x15B, rec.data(), rec.size());
+                            if (rec[0] != 1) continue;
+                            char nm[33] = {};
+                            std::memcpy(nm, &rec[2], 32);
+                            if (lst)
+                                std::fprintf(lst, "  %s %d %d %d %d %d\n", nm, hx + s16(0x13), hy + s16(0x15), s16(0x17), s16(0x19), rec[0x13C] & 1);
+                        }
+                        Frame f;
+                        if (g.grab(f) && hx >= 0 && hy >= 0 && hx + hw <= f.w && hy + hh <= f.h) {
+                            Frame box;
+                            box.w = hw;
+                            box.h = hh;
+                            std::memcpy(box.pal, f.pal, sizeof box.pal);
+                            box.px.resize(static_cast<std::size_t>(hw) * static_cast<std::size_t>(hh));
+                            for (int y = 0; y < hh; ++y)
+                                std::memcpy(&box.px[static_cast<std::size_t>(y) * hw], &f.px[static_cast<std::size_t>(hy + y) * f.w + hx], static_cast<std::size_t>(hw));
+                            write_bmp(dir + "/o_" + names[k] + "_s" + std::to_string(side) + "_p" + std::to_string(p) + ".bmp", box);
+                        }
+                        ++pages_done;
+                    }
+                }
+            }
+            if (lst) std::fclose(lst);
+            std::printf("buildpages: %d pages\n", pages_done);
             continue;
         } else if (s.rfind("missionname:", 0) == 0) {
             // The map's mission name (map info +0xA14; the restart dialog shows it).

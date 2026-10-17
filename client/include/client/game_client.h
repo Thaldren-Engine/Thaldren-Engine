@@ -256,6 +256,11 @@ private:
     void track_next(bool backward);
     void next_unit();
     void step_build_page(bool forward);
+    // The number of build pages the viewing player's interface shows for a unit type.
+    int build_page_count(std::uint16_t type) const {
+        const auto* p = type < c_.types.size() ? c_.types[type].pages_for(opt_.side) : nullptr;
+        return p ? static_cast<int>(p->size()) : 0;
+    }
     int feature_under(int sx, int sy) const;  // feature type index under a screen point (-1: none)
     void draw_chat(render::Image8& o);
     void chat_insert(int ch);  // a character typed into the chat line

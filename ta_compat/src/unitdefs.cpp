@@ -705,6 +705,20 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
                 }
             }
         }
+        // The entries as the build menus read them (only those whose slot was written: an entry
+        // whose UNITMENU names no unit keeps the allocator's bytes, see the note).
+        for (std::size_t fi = 0; fi < menu_files.size(); ++fi) {
+            const std::size_t base = fi * file_stride;
+            const std::uint32_t n = rd32(base);
+            for (std::uint32_t k = 0; k < n; ++k) {
+                const std::size_t so = base + 4 + k * slot_stride;
+                bool slot_clean = true;
+                const std::uint16_t ui = rd16(so, slot_clean);
+                if (!slot_clean || so + 4 + 32 > buf.size()) continue;
+                const char* nm = reinterpret_cast<const char*>(&buf[so + 4]);
+                table.download_menus.push_back({ui, buf[so + 2], buf[so + 3], std::string(nm, strnlen(nm, 32))});
+            }
+        }
         if (!clean) table.notes.push_back("download menus read uninitialised slot memory (game: heap garbage)");
     }
 
