@@ -124,6 +124,24 @@ struct MenuContent {
 // stops when `height` is used up. Returns the y after the last line.
 int draw_wrapped(render::Image8& out, const render::ClipRect& clip, const Font& font, const std::string& text, int x, int y, int width, int height);
 
+// The keyboard in the menus (spec: docs/RE_MEMORY.md, "Client", "Menu keys"). A platform key
+// event becomes the codes the original's key queue would get for it: typed characters as typed
+// (the Text event; without Text events, from the key and Shift), Enter 13, Escape 27, Tab 9,
+// Backspace 8, the arrows 0xF4 left, 0xF5 up, 0xF6 right, 0xF7 down, Home 0xF0, End 0xF1, Delete
+// 0xEF, Pause 0xF8, F1..F12 0xE2..0xED (with Ctrl 0xCE..0xD9); with Alt (and not Ctrl) a letter
+// gives its lower-case letter, a digit or sign key its own character and Enter, Escape, Tab,
+// Backspace and Space nothing; with Ctrl a letter gives 0xAA..0xC3 and then its control
+// character (1..26), a digit 0xC4..0xCD.
+std::vector<int> menu_key_codes(const InputEvent& e);
+
+// The original's editing of a text field's line by one key code (0x4AB720): a character
+// 0x20..0x7F goes in at the insertion point while the line is shorter than max_chars and its
+// width with the character is at most width_limit (attribute 2: letters, digits, '_', ' ', '\''
+// only); Backspace removes the character before the point, Delete (0xEF) the one at it, Home /
+// End / Left / Right move the point. Returns true for Enter (13) and Escape (27), which end the
+// editing (the caller empties the line for Escape).
+bool edit_line(std::string& text, int& cursor, int max_chars, int width_limit, int attribs, const Font* font, int code);
+
 // A screen run from a ScreenLayout: draws the background and widgets, handles
 // pointer/keyboard input (press and release on the same widget, quick keys,
 // Enter/Escape defaults, list and scroll bar clicks, typing into the focused text
@@ -161,7 +179,7 @@ public:
 
     // Tests: the screen's state (layout, focus, the field taking keys, every field's text and
     // switch's stage, as name / value pairs) and the gadgets pressed since the last call.
-    virtual std::vector<std::pair<std::string, std::string>> describe() const;
+    std::vector<std::pair<std::string, std::string>> describe() const;
     std::vector<std::string> take_presses();
 
 
@@ -181,6 +199,29 @@ protected:
     virtual void draw_under(FrontEnd&, render::Image8&) {}
     virtual void draw_over(FrontEnd&, render::Image8&) {}
     void press(FrontEnd& fe, Widget& w);
+
+    // ---- keys (the original's interface pass for one key code; docs/RE_MEMORY.md "Menu keys")
+    // The original's kind of gadget i: 1 button, 2 list, 3 text field, 4 slider, 5 label, 6 a
+    // screen-drawn area, 0 anything else. Screens that keep lists or fields of their own say so.
+    virtual int gadget_kind(int i) const;
+    // A text field's line and insertion point (null: none); a field becoming the one taking the
+    // keys puts its point at the end.
+    virtual std::string* field_text(int i);
+    virtual int* field_cursor(int i);
+    virtual int field_limit(int i) const;
+    // The Up / Down keys on the focused list (dir -1 / +1): the selection moves, the list's
+    // callback follows.
+    virtual void list_key(FrontEnd& fe, int i, int dir);
+    // A gadget pressed by a key (a button, a list acted on, a text field ended with Enter or
+    // Escape, a label or area): the screen's handler.
+    virtual void key_press(FrontEnd& fe, int i);
+    // Whether the focused gadget shows the focus ring (lists and fields of some screens do not).
+    virtual bool rings(int /*i*/) const { return true; }
+    void key_code(FrontEnd& fe, int code, bool shift, bool alt);
+    std::string enter_default_;  // the Enter default the screen's set-up names (empty: the description's)
+    void move_focus(int dir);
+    void activate_field(int i);  // the field taking the keys (-1 none), its point at the end
+    std::vector<std::string> presses_;  // tests: the gadgets pressed (take_presses)
     // Text of a widget for its current stage (staged captions are '|'-separated).
     static std::string caption(const Widget& w);
     // Draws one widget (derived screens may call it for widgets they add).
@@ -188,7 +229,6 @@ protected:
     std::uint8_t colour(int k) const;
 
     std::vector<Widget> widgets_;  // the screen's own copy (state)
-    std::vector<std::string> presses_;  // tests: the gadgets pressed (take_presses)
     int ox_ = 0, oy_ = 0;          // origin on the frame
     // Places the screen on a frame of the given size (done once, at the first draw): a header
     // at -1 is centred on the frame, at -2 centred in the area right of the 128-pixel side
@@ -209,7 +249,6 @@ protected:
     // made from the game palette); null: the layout's.
     const std::array<std::uint8_t, 256>* colours_ = nullptr;
     int focus_ = -1;               // index of the text field taking keys (-1: none)
-    bool field_escape_clears_ = false;  // Escape in the text field empties it and commits (the original's fields)
     bool key_press_ = false;            // the press being handled came from a key
     int lit_field_ = -2;                // the gadget whose focus marking is shown (-2: the focus's)
     // The focus ring held where it was while a screen opened by a press covers this one (until
@@ -236,9 +275,6 @@ protected:
     bool slider_drag_ = false;
     int slider_anchor_ = 0, slider_anchor_knob_ = 0;
     void draw_text_list(const MenuContent& mc, render::Image8& out, const render::ClipRect& clip, const Widget& w, int x, int y);
-    bool field_insert(FrontEnd& fe, Widget& f, char c);
-    int text_provisional_ = -1;  // a character typed by its key, replaced by the Text event that follows
-    bool text_events_ = false;
     void list_pointer(FrontEnd& fe, int index);
     void slider_pointer(FrontEnd& fe, int index);
     Widget* list_of(const Widget& w);

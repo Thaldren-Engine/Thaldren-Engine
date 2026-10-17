@@ -394,6 +394,8 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
                 // Shifted characters the original maps to their own codes.
                 if (e.shift && e.key == '=') e.key = '+';
                 if (e.shift && e.key == '-') e.key = '_';
+                // A character key without Ctrl or Alt: its character comes as a Text event too.
+                e.text_follows = e.type == InputEvent::Type::KeyDown && e.key >= 0x20 && e.key < 0x7F && !e.ctrl && !e.alt;
                 break;
             case SDL_EVENT_TEXT_INPUT:
                 // Typed characters as the keyboard layout makes them (the chat line's text).

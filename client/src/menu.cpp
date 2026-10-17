@@ -207,7 +207,6 @@ int slider_knob(const Widget& s, int value) {
 
 void LayoutScreen::press(FrontEnd& fe, Widget& w) {
     if (w.grayed) return;
-    presses_.push_back(w.name);
     if (w.slider_step != 0) {
         // A slider's arrow moves its knob one pixel; the value follows the knob.
         if (Widget* s = widget(w.link)) {
@@ -371,153 +370,381 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         if (was >= 0 && hit(e.x, e.y) == was) press(fe, widgets_[static_cast<std::size_t>(was)]);
         return;
     }
-    case InputEvent::Type::KeyDown: {
-        const int k = e.key;
+    case InputEvent::Type::KeyDown:
+    case InputEvent::Type::Text:
         lit_field_ = -2;
-        if (focus_gadget_ >= 0 && focus_gadget_ < static_cast<int>(widgets_.size()) && widgets_[static_cast<std::size_t>(focus_gadget_)].text_list &&
-            (k == keys::kUp || k == keys::kDown || k == ' ')) {
-            Widget& l = widgets_[static_cast<std::size_t>(focus_gadget_)];
-            if (k == ' ') {
-                if (l.active) {
-                    presses_.push_back(l.name);
-                    on_press(fe, l);
-                }
-                return;
-            }
-            // Up / Down (0x4A9830 / 0x4A99C0): a shown selection moves one row, the list scrolling
-            // with it; a selection out of view is first brought into view. The list's callback
-            // follows either way.
-            const int fh = layout_ ? layout_->font_height : 14;
-            const int rows = visible_rows(l, fh), count = static_cast<int>(l.items.size());
-            const int sel = l.selected, top = l.top;
-            auto marked = [&](int i) { return i >= 0 && i < count && l.items[static_cast<std::size_t>(i)].compare(0, 2, "&G") == 0; };
-            if (sel < top + rows && top <= sel) {
-                if (k == keys::kUp && count != 0 && sel != 0) {
-                    l.selected = sel - 1;
-                    if (l.selected < top) l.top = top - 1;
-                    if (marked(l.selected)) l.selected = sel;
-                    list_moved(l);
-                } else if (k == keys::kDown && count != 0 && sel != l.max_top - 1 + rows) {
-                    l.selected = sel + 1;
-                    if (top + rows - 1 < l.selected) l.top = top + 1;
-                    if (count - 1 <= l.selected) l.selected = count - 1;
-                    if (marked(l.selected)) l.selected = sel;
-                    list_moved(l);
-                }
-            } else if (count != 0) {
-                select_list_row(l, sel);
-            }
-            on_list_select(fe, l);
-            return;
-        }
-        if (focus_ >= 0) {
-            Widget& f = widgets_[static_cast<std::size_t>(focus_)];
-            f.cursor = std::clamp(f.cursor, 0, static_cast<int>(f.text.size()));
-            // The original's field editing (0x4AB720): Backspace removes the character before the
-            // insertion point, Delete the one at it, Home / End / Left / Right move it.
-            if (k == keys::kBackspace) {
-                if (f.cursor > 0) f.text.erase(static_cast<std::size_t>(--f.cursor), 1);
-                return;
-            }
-            if (k == keys::kDelete) {
-                if (f.cursor < static_cast<int>(f.text.size())) f.text.erase(static_cast<std::size_t>(f.cursor), 1);
-                return;
-            }
-            if (k == keys::kHome || k == keys::kEnd || k == keys::kLeft || k == keys::kRight) {
-                if (k == keys::kHome) f.cursor = 0;
-                else if (k == keys::kEnd) f.cursor = static_cast<int>(f.text.size());
-                else if (k == keys::kLeft) f.cursor = std::max(0, f.cursor - 1);
-                else f.cursor = std::min(static_cast<int>(f.text.size()), f.cursor + 1);
-                return;
-            }
-            if (k == keys::kEnter || (k == keys::kEscape && field_escape_clears_)) {
-                // Enter commits the line; Escape (screens that ask for it) empties it first.
-                if (k == keys::kEscape) {
-                    f.text.clear();
-                    f.cursor = 0;
-                }
-                text_provisional_ = -1;
-                presses_.push_back(f.name);
-                on_text(fe, f);
-                return;
-            }
-            if (k >= 32 && k < 127) {
-                char c = static_cast<char>(k);
-                if (e.shift) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                // A typed character comes again as a Text event when the platform makes them; the
-                // key's guess stays only until then.
-                if (!text_events_ && field_insert(fe, f, c)) text_provisional_ = f.cursor - 1;
-                return;
-            }
-        }
-        auto press_named = [&](const std::string& name) -> bool {
-            if (name.empty()) return false;
-            Widget* w = widget(name);
-            if (!w || !w->active) return false;
-            if (w->kind == WidgetKind::ListBox) {
-                presses_.push_back(w->name);
-                if (w->text_list) on_press(fe, *w);
-                else if (w->selected >= 0) on_pick(fe, *w, w->selected, true);
-                return true;
-            }
-            press_button_ = 1;
-            key_press_ = true;
-            press(fe, *w);
-            key_press_ = false;
-            return true;
-        };
-        if (k == keys::kEnter && layout_ && press_named(layout_->enter_default)) return;
-        if (k == keys::kEscape && layout_ && press_named(layout_->escape_default)) return;
-        if (k > 0 && k < 0x100 && !e.ctrl)
-            for (Widget& w : widgets_)
-                if (w.kind == WidgetKind::Button && w.active && w.quickkey && w.quickkey == std::tolower(k)) {
-                    // (a key's press leaves the focus where it is: gui_harness, the single player
-                    // screen's Load Game key)
-                    press_button_ = 1;
-                    key_press_ = true;
-                    press(fe, w);
-                    key_press_ = false;
-                    return;
-                } else if (w.kind == WidgetKind::Label && w.active && w.quickkey && w.quickkey == std::tolower(k) && !w.link.empty()) {
-                    // A linked label's key presses the gadget it names.
-                    if (Widget* t = widget(w.link); t && t->active && t->kind == WidgetKind::Button) {
-                        press_button_ = 1;
-                        key_press_ = true;
-                        press(fe, *t);
-                        key_press_ = false;
-                    }
-                    return;
-                }
+        for (const int code : menu_key_codes(e)) key_code(fe, code, e.shift, e.alt);
         return;
-    }
-    case InputEvent::Type::Text: {
-        text_events_ = true;
-        if (focus_ < 0) return;
-        Widget& f = widgets_[static_cast<std::size_t>(focus_)];
-        if (text_provisional_ >= 0 && text_provisional_ < static_cast<int>(f.text.size())) {
-            f.text.erase(static_cast<std::size_t>(text_provisional_), 1);
-            if (f.cursor > text_provisional_) --f.cursor;
-        }
-        text_provisional_ = -1;
-        if (e.key >= 32 && e.key < 127) field_insert(fe, f, static_cast<char>(e.key));
-        return;
-    }
     default: return;
     }
 }
 
-bool LayoutScreen::field_insert(FrontEnd& fe, Widget& f, char c) {
-    // A character goes in at the insertion point while the line is shorter than the field's
-    // maximum and its width with the character is at most the field's width less 4; fields with
-    // attribute 2 take letters, digits, '_', ' ' and '\'' only.
-    if ((f.attribs & 2) && !std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != ' ' && c != '\'') return false;
-    if (f.max_chars > 0 && static_cast<int>(f.text.size()) >= f.max_chars) return false;
-    const Font* font = fe.menu_content().font;
-    if (font && font->text_width(f.text) + font->glyphs[static_cast<unsigned char>(c)].width > f.w - 4) return false;
-    f.cursor = std::clamp(f.cursor, 0, static_cast<int>(f.text.size()));
-    f.text.insert(static_cast<std::size_t>(f.cursor), 1, c);
-    ++f.cursor;
-    return true;
+// ------------------------------------------------------------------ keys
+// (spec: docs/RE_MEMORY.md, "Client", "Menu keys": the window procedure's key path 0x4C1D50 /
+// WM_CHAR into the key queue 0x4C1B20, the interface pass 0x4A9FD0 with its special keys 0x4A9B90,
+// the focus moves 0x4A7960, the buttons' 0x4A6AE0, labels' 0x4A4440 and fields' 0x4A7290 /
+// 0x4AB720 key handling.)
+
+std::vector<int> menu_key_codes(const InputEvent& e) {
+    std::vector<int> c;
+    const int k = e.key;
+    if (e.type == InputEvent::Type::Text) {
+        if (k >= 0x20 && k < 0x80) c.push_back(k);
+        return c;
+    }
+    if (e.type != InputEvent::Type::KeyDown) return c;
+    // Keys the window procedure queues from the key itself, whatever the modifiers.
+    switch (k) {
+    case keys::kLeft: return {0xF4};
+    case keys::kUp: return {0xF5};
+    case keys::kRight: return {0xF6};
+    case keys::kDown: return {0xF7};
+    case keys::kHome: return {0xF0};
+    case keys::kEnd: return {0xF1};
+    case keys::kDelete: return {0xEF};
+    case keys::kPause: return {0xF8};
+    default: break;
+    }
+    if (k >= keys::kF1 && k < keys::kF1 + 12) return {k - keys::kF1 + (e.ctrl ? 0xCE : 0xE2)};
+    if (e.alt && !e.ctrl) {
+        // A system key (Alt held): letters lower case, digits and signs as they are; the typed
+        // character (a system character) never reaches the game.
+        if (k >= 'a' && k <= 'z') return {k};
+        if (k > 0x20 && k < 0x7F) return {k};
+        return c;
+    }
+    // The typed character (WM_CHAR).
+    switch (k) {
+    case keys::kEnter: return {e.ctrl ? 0x0A : 0x0D};
+    case keys::kEscape: return {0x1B};
+    case keys::kTab: return e.ctrl ? c : std::vector<int>{0x09};
+    case keys::kBackspace: return {e.ctrl ? 0x7F : 0x08};
+    default: break;
+    }
+    if (k < 0x20 || k >= 0x7F) return c;
+    if (e.ctrl) {
+        // The key itself (letters 0xAA.., digits 0xC4..), then a letter's control character.
+        if (k >= 'a' && k <= 'z') return {k - 'a' + 0xAA, k - 'a' + 1};
+        if (k >= '0' && k <= '9') return {k - '0' + 0xC4};
+        if (k == ' ') return {0x20};
+        if (k == '[') return {k, 0x1B};
+        if (k == '\\') return {k, 0x1C};
+        if (k == ']') return {k, 0x1D};
+        return {k};
+    }
+    if (e.text_follows) return c;  // the Text event brings the character
+    if (!e.shift) return {k};
+    if (k >= 'a' && k <= 'z') return {k - 'a' + 'A'};
+    static const char plain[] = "1234567890-=[]\\;',./`", shifted[] = "!@#$%^&*()_+{}|:\"<>?~";
+    for (int i = 0; plain[i]; ++i)
+        if (plain[i] == k) return {static_cast<unsigned char>(shifted[i])};
+    return {k};
+}
+
+bool edit_line(std::string& text, int& cursor, int max_chars, int width_limit, int attribs, const Font* font, int code) {
+    const int len = static_cast<int>(text.size());
+    cursor = std::clamp(cursor, 0, len);
+    switch (code) {
+    case 0x0D:
+    case 0x1B: return true;
+    case 0x08:
+        if (cursor != 0) text.erase(static_cast<std::size_t>(--cursor), 1);
+        return false;
+    case 0xEF:
+        if (len != 0 && cursor < len) text.erase(static_cast<std::size_t>(cursor), 1);
+        return false;
+    case 0xF0: cursor = 0; return false;
+    case 0xF1: cursor = len; return false;
+    case 0xF4:
+        if (cursor != 0) --cursor;
+        return false;
+    case 0xF6:
+        if (cursor < len) ++cursor;
+        return false;
+    default: break;
+    }
+    if (code < 0x20 || code >= 0x80 || len == max_chars) return false;
+    if ((attribs & 2) && !std::isalnum(code) && code != '_' && code != ' ' && code != '\'') return false;
+    if (font) {
+        const char ch = static_cast<char>(code);
+        if (font->text_width(text) + font->text_width(std::string_view(&ch, 1)) > width_limit) return false;
+    }
+    text.insert(static_cast<std::size_t>(cursor), 1, static_cast<char>(code));
+    ++cursor;
+    return false;
+}
+
+int LayoutScreen::gadget_kind(int i) const {
+    if (i < 0 || i >= static_cast<int>(widgets_.size())) return 0;
+    switch (widgets_[static_cast<std::size_t>(i)].kind) {
+    case WidgetKind::Button: return 1;
+    case WidgetKind::ListBox: return 2;
+    case WidgetKind::TextField: return 3;
+    case WidgetKind::ScrollBar: return 4;
+    case WidgetKind::Label: return 5;
+    case WidgetKind::Surface: return 6;
+    default: return 0;
+    }
+}
+std::string* LayoutScreen::field_text(int i) {
+    if (gadget_kind(i) != 3) return nullptr;
+    return &widgets_[static_cast<std::size_t>(i)].text;
+}
+int* LayoutScreen::field_cursor(int i) {
+    if (gadget_kind(i) != 3) return nullptr;
+    return &widgets_[static_cast<std::size_t>(i)].cursor;
+}
+int LayoutScreen::field_limit(int i) const {
+    const Widget& w = widgets_[static_cast<std::size_t>(i)];
+    return w.max_chars > 0 ? w.max_chars : 63;
+}
+
+void LayoutScreen::activate_field(int i) {
+    focus_ = gadget_kind(i) == 3 ? i : -1;
+    if (focus_ >= 0)
+        if (std::string* t = field_text(i))
+            if (int* c = field_cursor(i)) *c = static_cast<int>(t->size());
+}
+
+void LayoutScreen::list_key(FrontEnd& fe, int i, int dir) {
+    Widget& l = widgets_[static_cast<std::size_t>(i)];
+    if (!l.text_list) {
+        // A plain list box: the selection one row on, kept in the rows.
+        const int count = static_cast<int>(l.items.size());
+        if (count == 0) return;
+        const int row = std::clamp(l.selected + dir, 0, count - 1);
+        if (row != l.selected) {
+            l.selected = row;
+            on_pick(fe, l, row, false);
+        }
+        return;
+    }
+    // Up / Down (0x4A9830 / 0x4A99C0): a shown selection moves one row, the list scrolling with
+    // it; a selection out of view is first brought into view. The list's callback follows either
+    // way.
+    const int fh = layout_ ? layout_->font_height : 14;
+    const int rows = visible_rows(l, fh), count = static_cast<int>(l.items.size());
+    const int sel = l.selected, top = l.top;
+    auto marked = [&](int r) { return r >= 0 && r < count && l.items[static_cast<std::size_t>(r)].compare(0, 2, "&G") == 0; };
+    if (sel < top + rows && top <= sel) {
+        if (dir < 0 && count != 0 && sel != 0) {
+            l.selected = sel - 1;
+            if (l.selected < top) l.top = top - 1;
+            if (marked(l.selected)) l.selected = sel;
+            list_moved(l);
+        } else if (dir > 0 && count != 0 && sel != l.max_top - 1 + rows) {
+            l.selected = sel + 1;
+            if (top + rows - 1 < l.selected) l.top = top + 1;
+            if (count - 1 <= l.selected) l.selected = count - 1;
+            if (marked(l.selected)) l.selected = sel;
+            list_moved(l);
+        }
+    } else if (count != 0) {
+        select_list_row(l, sel);
+    }
+    on_list_select(fe, l);
+}
+
+void LayoutScreen::key_press(FrontEnd& fe, int i) {
+    Widget& w = widgets_[static_cast<std::size_t>(i)];
+    switch (gadget_kind(i)) {
+    case 2:
+        focus_gadget_ = i;
+        if (w.text_list) on_press(fe, w);
+        else if (w.selected >= 0) on_pick(fe, w, w.selected, true);
+        return;
+    case 3:
+        focus_gadget_ = i;
+        on_text(fe, w);
+        return;
+    default:
+        press_button_ = 1;
+        key_press_ = true;
+        press(fe, w);
+        key_press_ = false;
+        return;
+    }
+}
+
+void LayoutScreen::move_focus(int dir) {
+    // 0x4A7960. Gadgets are ordered by y * 5000 + x (left, right, Tab) or, for up and down, by
+    // column * 5000 + y, a gadget's column being the x of the first earlier gadget (in description
+    // order) within 9 pixels of its own, else its own x (the search stops at a column of 0). Left
+    // and up take the gadget before the focus in that order (from the first: the last), right,
+    // down and Tab the one after (from the last: the first); ties go to the first in description
+    // order. Candidates: shown gadgets without attribute 0x400 that are buttons (not grayed),
+    // lists (not attribute 0x100), text fields, screen-drawn areas and sliders at least as wide
+    // as tall (not disabled). Moving clears the field taking the keys; a text field
+    // given the focus takes them, its insertion point at the end.
+    const int focus = focus_gadget_;
+    if (focus < 0 || focus >= static_cast<int>(widgets_.size())) return;
+    const int n = static_cast<int>(widgets_.size());
+    std::vector<int> column(static_cast<std::size_t>(n) + 1, 0);
+    for (int k = 1; k < n; ++k) {
+        const int x = widgets_[static_cast<std::size_t>(k)].x;
+        int v = x;
+        for (int j = 1; j < k && column[static_cast<std::size_t>(j)] != 0; ++j)
+            if (column[static_cast<std::size_t>(j)] - x < 10 && column[static_cast<std::size_t>(j)] - x > -10) {
+                v = column[static_cast<std::size_t>(j)];
+                break;
+            }
+        column[static_cast<std::size_t>(k)] = v;
+    }
+    constexpr long long kWrap = 400000000LL;
+    const Widget& f = widgets_[static_cast<std::size_t>(focus)];
+    const bool rows = dir == 0 || dir == 1, back = dir == 0 || dir == 2;
+    const long long here = rows ? f.x + 5000LL * f.y : f.y + 5000LL * column[static_cast<std::size_t>(focus)];
+    long long best = back ? here - kWrap : here + kWrap;
+    int chosen = focus;
+    for (int k = 1; k < n; ++k) {
+        const Widget& w = widgets_[static_cast<std::size_t>(k)];
+        const int kind = gadget_kind(k);
+        if (!w.active || (w.attribs & 0x400)) continue;
+        if (kind == 1 && w.grayed) continue;
+        if (kind == 4 && (w.grayed || w.w < w.h)) continue;
+        if (kind != 1 && kind != 2 && kind != 3 && kind != 4 && kind != 6) continue;
+        if (kind == 2 && (w.attribs & 0x100)) continue;
+        long long v = rows ? w.x + 5000LL * w.y : w.y + 5000LL * column[static_cast<std::size_t>(k)];
+        if (back) {
+            if (here <= v) v -= kWrap;
+            if (best < v) {
+                best = v;
+                chosen = k;
+            }
+        } else {
+            if (v <= here) v += kWrap;
+            if (v < best) {
+                best = v;
+                chosen = k;
+            }
+        }
+    }
+    focus_gadget_ = chosen;
+    activate_field(chosen);
+}
+
+void LayoutScreen::key_code(FrontEnd& fe, int code, bool shift, bool alt) {
+    if (!layout_) return;
+    const int n = static_cast<int>(widgets_.size());
+    const int focus = focus_gadget_ >= 0 && focus_gadget_ < n ? focus_gadget_ : -1;
+    const int fkind = focus >= 0 ? gadget_kind(focus) : 0;
+    const bool field_keys = focus_ >= 0 && gadget_kind(focus_) == 3;
+    auto index_named = [&](const std::string& name) -> int {
+        if (name.empty()) return -1;
+        for (int i = 1; i < n; ++i)
+            if (same_name(widgets_[static_cast<std::size_t>(i)].name, name)) return i;
+        return -1;
+    };
+    // A gadget pressed by the key: it takes the focus (a text field also the keys, else no field
+    // has them), then the screen's handler.
+    auto pressed = [&](int i) {
+        activate_field(i);
+        presses_.push_back(widgets_[static_cast<std::size_t>(i)].name);
+        key_press(fe, i);
+    };
+    // The focused gadget pressed (Space; Enter without a default): buttons (not grayed), lists and
+    // screen-drawn areas; a switch steps on.
+    auto press_focused = [&]() -> bool {
+        if (focus < 0 || fkind == 3) return false;
+        const Widget& w = widgets_[static_cast<std::size_t>(focus)];
+        if ((fkind != 1 && fkind != 2 && fkind != 6) || !w.active || (fkind == 1 && w.grayed)) return false;
+        pressed(focus);
+        return true;
+    };
+    // ---- the special keys (0x4A9B90)
+    switch (code) {
+    case 0x09:
+        move_focus(shift ? 0 : 1);
+        return;
+    case 0x0D: {
+        if (field_keys) break;  // the field takes it
+        const int d = index_named(enter_default_.empty() ? layout_->enter_default : enter_default_);
+        if (d < 0 || !widgets_[static_cast<std::size_t>(d)].active || (gadget_kind(d) == 1 && widgets_[static_cast<std::size_t>(d)].grayed)) {
+            if (press_focused()) return;
+            break;
+        }
+        pressed(d);
+        return;
+    }
+    case 0x1B: {
+        const int d = index_named(layout_->escape_default);
+        if (d < 0 || !widgets_[static_cast<std::size_t>(d)].active) break;
+        pressed(d);
+        return;
+    }
+    case 0x20:
+        if (press_focused()) return;
+        break;
+    case 0xF4:
+    case 0xF6:
+        if (fkind == 3) break;
+        if (fkind == 4 && widgets_[static_cast<std::size_t>(focus)].w > widgets_[static_cast<std::size_t>(focus)].h) {
+            // A slider at least as wide as tall: its value one down / up (0x4A96D0 / 0x4A9780).
+            Widget& s = widgets_[static_cast<std::size_t>(focus)];
+            if (s.knob_value != s.position) s.knob_pos = slider_knob(s, s.position);
+            s.position = std::clamp(s.position + (code == 0xF4 ? -1 : 1), 0, std::max(0, s.range));
+            s.knob_pos = slider_knob(s, s.position);
+            s.knob_value = s.position;
+            on_press(fe, s);
+            return;
+        }
+        if (focus >= 0) move_focus(code == 0xF4 ? 0 : 1);
+        return;
+    case 0xF5:
+    case 0xF7:
+        if (fkind == 2) {
+            list_key(fe, focus, code == 0xF5 ? -1 : 1);
+            return;
+        }
+        if (focus >= 0) move_focus(code == 0xF5 ? 2 : 3);
+        return;
+    default: break;
+    }
+    // ---- the gadgets in description order; the first that takes the key is pressed
+    for (int i = 1; i < n; ++i) {
+        Widget& w = widgets_[static_cast<std::size_t>(i)];
+        if (!w.active) continue;
+        const int kind = gadget_kind(i);
+        if (kind == 1 || kind == 5) {
+            // A quick key (either case), not while a text field takes the keys unless Alt is held.
+            if (kind == 1 && w.grayed) continue;
+            if (field_keys && focus_ != i && !alt) continue;
+            if (!w.quickkey || (code != w.quickkey && code != std::toupper(w.quickkey))) continue;
+            if (kind == 1) {
+                pressed(i);
+                return;
+            }
+            // A label's key acts on the gadget it names: a button steps on and is pressed;
+            // another shown gadget takes the focus (a field the keys) and is pressed; no such
+            // gadget: the label itself is pressed.
+            const int t = index_named(w.link);
+            if (t < 0) {
+                pressed(i);
+                return;
+            }
+            Widget& tw = widgets_[static_cast<std::size_t>(t)];
+            const int tk = gadget_kind(t);
+            if (!tw.active || (tk == 1 && tw.grayed) || (tk == 4 && tw.grayed)) continue;
+            pressed(t);
+            return;
+        }
+        if (kind == 3 && focus_ == i) {
+            // The field taking the keys (nothing while Alt is held): Enter ends it, Escape empties
+            // and ends it; both press it.
+            std::string* t = field_text(i);
+            int* c = field_cursor(i);
+            if (!t || !c || alt || code == 0) continue;
+            const Font* font = fe.menu_content().font;
+            if (!edit_line(*t, *c, field_limit(i), w.w - 4, w.attribs, font, code)) continue;
+            if (code == 0x1B) {
+                t->clear();
+                *c = 0;
+            }
+            focus_ = -1;
+            pressed(i);
+            return;
+        }
+    }
 }
 
 void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& w, bool held) {
@@ -777,8 +1004,10 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
 std::vector<std::pair<std::string, std::string>> LayoutScreen::describe() const {
     auto name = [&](int i) { return i >= 0 && i < static_cast<int>(widgets_.size()) ? widgets_[static_cast<std::size_t>(i)].name : std::string("-"); };
     std::vector<std::pair<std::string, std::string>> d = {{"layout", layout_ ? layout_->name : std::string("?")}, {"focus", name(focus_gadget_)}, {"field", name(focus_)}};
-    for (const Widget& w : widgets_) {
-        if (w.kind == WidgetKind::TextField) d.push_back({"text:" + w.name, w.text});
+    LayoutScreen* self = const_cast<LayoutScreen*>(this);
+    for (int i = 1; i < static_cast<int>(widgets_.size()); ++i) {
+        const Widget& w = widgets_[static_cast<std::size_t>(i)];
+        if (const std::string* t = self->field_text(i)) d.push_back({"text:" + w.name, *t});
         if (w.stages > 0) d.push_back({"stage:" + w.name, std::to_string(w.stage)});
     }
     return d;

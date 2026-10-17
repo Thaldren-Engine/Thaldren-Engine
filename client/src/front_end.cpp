@@ -548,8 +548,8 @@ int sweep_key(const std::string& k) {
     if (k.size() > 1 && k[0] == 'f') return keys::kF1 + std::atoi(k.c_str() + 1) - 1;
     return 0;
 }
-// The key codes the menus take from the event (none: the menus take no codes).
-std::vector<int> sweep_codes(const InputEvent&) { return {}; }
+// The key codes the menus take from the event.
+std::vector<int> sweep_codes(const InputEvent& e) { return menu_key_codes(e); }
 // The character a US keyboard types for the key with Shift.
 int shifted_char(int k) {
     if (k >= 'a' && k <= 'z') return k - 'a' + 'A';
@@ -629,11 +629,11 @@ int run_key_sweep(FrontEndSetup& setup, const std::string& keys_arg, const std::
             e.ctrl = m.find("ctrl") != std::string::npos;
             e.alt = m.find("alt") != std::string::npos;
             e.time_ms = 66;
-            const bool typed = e.key >= 0x20 && e.key < 0x7F && !e.ctrl && !e.alt;
-            e.text_follows = typed;
+            const bool character = e.key >= 0x20 && e.key < 0x7F && !e.ctrl && !e.alt;
+            e.text_follows = character;
             std::vector<int> codes = sweep_codes(e);
             run.handle(e);
-            if (typed) {
+            if (character) {
                 // (the screen the key down left on top gets the character)
                 InputEvent t = e;
                 t.type = InputEvent::Type::Text;
@@ -851,6 +851,8 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
                 if (e.key == 0 || (ev.key.repeat && e.type == InputEvent::Type::KeyDown && e.key >= 0x100 && !key_repeats(e.key))) continue;
                 if (e.shift && e.key == '=') e.key = '+';
                 if (e.shift && e.key == '-') e.key = '_';
+                // A character key without Ctrl or Alt: its character comes as a Text event too.
+                e.text_follows = e.type == InputEvent::Type::KeyDown && e.key >= 0x20 && e.key < 0x7F && !e.ctrl && !e.alt;
                 break;
             case SDL_EVENT_TEXT_INPUT:
                 // Typed characters as the keyboard layout makes them (the chat line's text).

@@ -487,6 +487,14 @@ void gui_report(harness::DbgRemote& r, u32 gui, u32 gs, const char* tag) {
                 st.top, st.top ? r.r32(st.top + 0x18) : 0, r.r32(gui + 0xA2), r.r32(gui + 0xCC6), gname(st, st.focus).c_str(), gname(st, st.active).c_str(),
                 st.top ? r.r32(st.top + 0x36) & 0xFF : 0, st.mstate, st.sstate, st.rstate);
     const u32 gad = st.top ? r.r32(st.top + 4) : 0;
+    if (gad) {
+        // The header's Enter and Escape defaults and first focus (+0xCC, +0xDC, +0xEC).
+        char cr[17] = {}, esc[17] = {}, df[17] = {};
+        r.read(gad + 0xCC, cr, 16);
+        r.read(gad + 0xDC, esc, 16);
+        r.read(gad + 0xEC, df, 16);
+        std::printf("  crdefault \"%s\" escdefault \"%s\" defaultfocus \"%s\"\n", cr, esc, df);
+    }
     for (std::size_t k = 1; k < st.names.size(); ++k) {
         const u32 a = gad + static_cast<u32>(k) * 0x15B;
         const u32 qk = r.r32(a + (st.kinds[k] == 5 ? 0x147u : 0x13Au)) & 0xFF, active = r.r32(a + 0x29) & 0xFF, grey = r.r32(a + 0x13C) & 1;
