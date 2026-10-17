@@ -240,7 +240,7 @@ public:
         prologue(kPlayFileCall, false);
         epilogue(12);
 
-        if (std::getenv("SOUND_HARNESS_STUBS"))
+        if (GetEnvironmentVariableA("SOUND_HARNESS_STUBS", nullptr, 0) != 0)
             std::printf("stubs at %08X: dup %08X query %08X status %08X pos %08X play %08X stop %08X create %08X path %08X end %08X\n", L_.code, ds[5],
                         dsb[0], dsb[9], dsb[4], dsb[12], dsb[18], create, path, at());
         if (!r_.write(L_.code, e_.b.data(), e_.b.size())) return false;
@@ -791,11 +791,212 @@ int main(int argc, char** argv) {
                 }
             }
         }
+
+        // ---- part 3: the unit notices' queue
+        {
+            const u32 units = L.data + 0x90000, defs = L.data + 0x91000, cats = L.data + 0x92000, names = L.data + 0x93000,
+                      texts = L.data + 0x98000, fixed = L.data + 0x9C000;
+            constexpr int kUnits = 6, kCats = 2;
+            // Unit types (a name, a sound category) and units (alive or not).
+            const char* const type_names[kCats] = {"Commander", "Construction Kbot"};
+            std::vector<std::uint8_t> zero(0x249 * kCats, 0);
+            r.write(defs, zero.data(), zero.size());
+            for (int c = 0; c < kCats; ++c) {
+                r.write(defs + static_cast<u32>(c) * 0x249, type_names[c], std::strlen(type_names[c]) + 1);
+                const std::uint16_t cat = static_cast<std::uint16_t>(c);
+                r.write(defs + static_cast<u32>(c) * 0x249 + 0x20E, &cat, 2);
+            }
+            std::vector<int> unit_type(kUnits);
+            std::vector<bool> alive(kUnits);
+            for (int u = 0; u < kUnits; ++u) {
+                unit_type[static_cast<std::size_t>(u)] = static_cast<int>(w.pick(kCats));
+                alive[static_cast<std::size_t>(u)] = w.pick(6) != 0;
+                const u32 at = units + static_cast<u32>(u) * 0x118;
+                r.w32(at + 0x92, defs + static_cast<u32>(unit_type[static_cast<std::size_t>(u)]) * 0x249);
+                r.w32(at + 0x110, alive[static_cast<std::size_t>(u)] ? 0x10000000u : 0u);
+                const std::uint16_t id = static_cast<std::uint16_t>(u + 1);
+                r.write(at + 0xA8, &id, 2);
+            }
+            // Sound categories: per notice a few sounds (or none), named n<c>_<id>_<k>.
+            std::vector<std::uint8_t> cz(0x160 * kCats, 0);
+            r.write(cats, cz.data(), cz.size());
+            int count[kCats][24] = {};
+            std::map<u32, std::array<int, 3>> name_at;  // name address -> category, notice, pick
+            u32 next_name = names;
+            std::vector<std::uint8_t> blank(64 * 4, 0);
+            for (int c = 0; c < kCats; ++c)
+                for (int id = 1; id < 24; ++id) {
+                    const int n = w.pick(4) == 0 ? 0 : 1 + static_cast<int>(w.pick(3));
+                    count[c][id] = n;
+                    const u32 rec = cats + static_cast<u32>(c) * 0x160 + 0x40 + static_cast<u32>(id) * 12;
+                    r.w32(rec, static_cast<u32>(n));
+                    if (n == 0) continue;
+                    r.w32(rec + 4, next_name);
+                    const u32 text_list = texts + (next_name - names);
+                    r.w32(rec + 8, text_list);
+                    r.write(text_list, blank.data(), static_cast<std::size_t>(n) * 64);
+                    for (int k = 0; k < n; ++k) {
+                        char nm[64] = {};
+                        std::snprintf(nm, sizeof nm, "n%d_%d_%d", c, id, k);
+                        r.write(next_name + static_cast<u32>(k) * 64, nm, sizeof nm);
+                        name_at[next_name + static_cast<u32>(k) * 64] = {c, id, k};
+                    }
+                    next_name += static_cast<u32>(n) * 64;
+                }
+            r.w32(L.gs + gCategories, cats);
+            // The notices' fixed texts.
+            std::map<int, u32> text_at;
+            u32 tp = fixed;
+            for (int id = 1; id < 24; ++id)
+                if (const char* tx = client::notice_rule(static_cast<u32>(id)).text) {
+                    r.write(tp, tx, std::strlen(tx) + 1);
+                    text_at[id] = tp;
+                    tp += 64;
+                }
+            // The queue (as its set-up leaves it) and the notices' next-allowed steps.
+            std::vector<std::uint8_t> qz(0xB0, 0);
+            r.write(L.queue, qz.data(), qz.size());
+            r.w32(L.queue + 0xA1, 30);
+            r.w32(L.queue + 0xA5, 150);
+            r.w32(kNoticeQueuePtr, L.queue);
+            for (int id = 0; id < 24; ++id) r.w32(kNoticeNext + static_cast<u32>(id) * 0x18, 0);
+            sim::Lcg15 crt;
+            crt.set_state(g());
+            r.w32(L.rand_state, crt.state());
+            u32 tick = w.pick(100);
+
+            struct Host : client::NoticeQueue::Host {
+                u32* now = nullptr;
+                sim::Lcg15* crt = nullptr;
+                std::vector<int>* type;
+                std::vector<bool>* alive;
+                int (*count)[24];
+                int fx = 27, mode = 1;
+                std::vector<std::string> events;
+                std::uint32_t tick() override { return *now; }
+                std::uint32_t rand() override { return crt->next(); }
+                int sound_count(std::uint16_t unit, std::uint32_t id) override { return count[(*type)[unit - 1u]][id]; }
+                void speak(std::uint16_t unit, std::uint32_t id, int pick) override {
+                    char s[80];
+                    std::snprintf(s, sizeof s, "sound n%d_%u_%d%s", (*type)[unit - 1u], id, pick, fx != 0 && mode != 0 ? " played" : "");
+                    events.push_back(s);
+                }
+                bool unit_alive(std::uint16_t unit) override { return (*alive)[unit - 1u]; }
+                void show(std::uint16_t unit, const std::string& text) override {
+                    static const char* const names_[2] = {"Commander", "Construction Kbot"};
+                    events.push_back("text " + std::to_string(unit) + " " + names_[(*type)[unit - 1u]] + ": " + text);
+                }
+            } host;
+            host.now = &tick;
+            host.crt = &crt;
+            host.type = &unit_type;
+            host.alive = &alive;
+            host.count = count;
+            client::NoticeQueue nq;
+            client::NoticeQueue::Levels lv;
+            auto put_settings = [&] {
+                const std::uint8_t c1 = static_cast<std::uint8_t>(lv.unit_chat), c2 = static_cast<std::uint8_t>(lv.unit_chat_text);
+                r.write(L.gs + gChat, &c1, 1);
+                r.write(L.gs + gChatText, &c2, 1);
+                const std::uint16_t bits = static_cast<std::uint16_t>(host.mode | (lv.speech ? 0x40 : 0));
+                r.write(L.gs + gSoundBits, &bits, 2);
+                r.w32(L.gs + gFxVol, static_cast<u32>(host.fx));
+                r.w32(L.gs + gTick, tick);
+            };
+            put_settings();
+            w.log_seen = r.r32(L.cnt);
+            for (int op = 0; op < operations; ++op, ++ops_total) {
+                const u32 what = w.pick(100);
+                std::string desc;
+                bool ok_orig = true;
+                if (what < 8) {
+                    // Settings: speech levels, the speech switch, effect volume and sound mode.
+                    lv.unit_chat = static_cast<int>(w.pick(3)) * 5;
+                    lv.unit_chat_text = static_cast<int>(w.pick(3)) * 5;
+                    lv.speech = w.pick(5) != 0;
+                    host.fx = w.pick(6) == 0 ? 0 : 27;
+                    host.mode = static_cast<int>(w.pick(5) == 0 ? 0 : 1 + w.pick(2));
+                    put_settings();
+                    continue;
+                }
+                if (what < 30) {
+                    tick += w.pick(4) == 0 ? w.pick(400) : w.pick(20);
+                    r.w32(L.gs + gTick, tick);
+                    continue;
+                }
+                if (what < 70) {
+                    const int u = 1 + static_cast<int>(w.pick(kUnits));
+                    const u32 id = 1 + w.pick(23);
+                    const auto it = text_at.find(static_cast<int>(id));
+                    ok_orig = r.call(kQueue, L.queue, {units + static_cast<u32>(u - 1) * 0x118, id, it == text_at.end() ? 0u : it->second});
+                    nq.queue(host, lv, static_cast<std::uint16_t>(u), id);
+                    desc = "queue " + std::to_string(u) + "/" + std::to_string(id);
+                } else if (what < 95) {
+                    ok_orig = r.call(kNoticeFrame, 0, {});
+                    nq.frame(host, lv);
+                    desc = "frame";
+                } else {
+                    const int u = 1 + static_cast<int>(w.pick(kUnits));
+                    ok_orig = r.call(kForget, 0, {units + static_cast<u32>(u - 1) * 0x118});
+                    nq.forget(static_cast<std::uint16_t>(u));
+                    desc = "forget " + std::to_string(u);
+                }
+                if (!ok_orig) {
+                    const auto c = r.crash_info();
+                    std::printf("scenario %u notices op %d (%s): the original's call failed (code %08X at %08X)\n", seed, op, desc.c_str(), c.code, c.address);
+                    ++mismatches;
+                    break;
+                }
+                // The original's notices from the log: the sound's path (its name: which
+                // sound), the file sound (played), the console text.
+                std::vector<std::string> eo;
+                const u32 n = r.r32(L.cnt);
+                for (u32 i = w.log_seen; i < n; ++i) {
+                    LogRec rec{};
+                    r.read(L.log + (i & 4095) * 32, &rec, sizeof rec);
+                    if (rec.id == kPathCall) {
+                        const auto it = name_at.find(rec.a2);
+                        char s[80];
+                        if (it != name_at.end()) std::snprintf(s, sizeof s, "sound n%d_%d_%d", it->second[0], it->second[1], it->second[2]);
+                        else std::snprintf(s, sizeof s, "sound ?%08X", rec.a2);
+                        eo.push_back(s);
+                    } else if (rec.id == kPlayFileCall) {
+                        if (!eo.empty() && static_cast<i32>(rec.a1) == client::kSoundVolumeNormal && rec.a2 == 0) eo.back() += " played";
+                        else eo.push_back("file sound at volume " + std::to_string(static_cast<i32>(rec.a1)));
+                    } else if (rec.id == kPrintfCall) {
+                        char name[64] = {}, text[64] = {};
+                        r.read(rec.a2, name, 63);
+                        r.read(rec.a3, text, 63);
+                        eo.push_back(std::string("text ? ") + name + ": " + text);
+                    } else if (rec.id == kConsoleCall) {
+                        if (!eo.empty() && eo.back().compare(0, 7, "text ? ") == 0)
+                            eo.back() = "text " + std::to_string(rec.a2 & 0xFFFF) + eo.back().substr(6);
+                    }
+                }
+                w.log_seen = n;
+                const bool same_events = eo == host.events, same_rand = r.r32(L.rand_state) == crt.state(),
+                           same_size = static_cast<int>(r.r32(L.queue + 0x99)) == static_cast<int>(nq.size());
+                for (const std::string& e : eo) {
+                    notices_spoken += e.compare(0, 6, "sound ") == 0;
+                    notice_texts += e.compare(0, 5, "text ") == 0;
+                }
+                const bool bad = !same_events || !same_rand || !same_size;
+                if (bad || verbose) {
+                    std::printf("%s scenario %u notices op %d tick %u: %s queue %u/%zu rand %s\n", bad ? "MISMATCH" : "  ", seed, op, tick, desc.c_str(),
+                                r.r32(L.queue + 0x99), nq.size(), same_rand ? "same" : "differs");
+                    for (const std::string& e : eo) std::printf("    original: %s\n", e.c_str());
+                    for (const std::string& e : host.events) std::printf("    client  : %s\n", e.c_str());
+                }
+                host.events.clear();
+                if (bad) {
+                    ++mismatches;
+                    break;
+                }
+            }
+        }
     }
-    std::printf("scenarios %d, operations %zu: %zu starts (%zu restarts, %zu placed), %zu cut-offs; world %zu, interface %zu\n", scenarios,
-                ops_total, starts, restarts, placed, stops, world_calls, ui_calls);
-    (void)notices_spoken;
-    (void)notice_texts;
+    std::printf("scenarios %d, operations %zu: %zu starts (%zu restarts, %zu placed), %zu cut-offs; world %zu, interface %zu; notices: %zu sounds, %zu texts\n",
+                scenarios, ops_total, starts, restarts, placed, stops, world_calls, ui_calls, notices_spoken, notice_texts);
     std::printf("%zu mismatches\n", mismatches);
     r.stop();
     return mismatches ? 1 : 0;
