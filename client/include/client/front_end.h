@@ -312,5 +312,15 @@ struct FrontEndSetup {
 struct FrontOptions;  // client/front.h
 // Runs menus and battles until the program quits. Returns a process exit code.
 int run_front_end(FrontEndSetup& setup, const FrontOptions& options);
+// Tests: for each key of `keys` (comma list, or "all": a..z, 0..9, enter, esc, tab, space, bksp
+// and the arrows) and each modifier set of `mods` (comma list of none, shift, ctrl, alt joined
+// by '+'), a fresh front end opens its first screens (two frames and a drawing), gets the key as
+// the window front end delivers it (key down, the typed character's Text event, key up) and runs
+// one frame; prints "OUTCOME <layout> <key> <mods> [<codes>] <what happened>" (the format of
+// gui_harness's sweep: the gadgets pressed, a screen change, focus / field / text / stage changes).
+// click_x >= 0: a left click there (and a frame) before each key; `typed`: characters typed
+// (key down, Text, key up, a frame each) after it.
+int run_key_sweep(FrontEndSetup& setup, const std::string& keys, const std::string& mods, int click_x = -1, int click_y = -1,
+                  const std::string& typed = std::string());
 
 }  // namespace client

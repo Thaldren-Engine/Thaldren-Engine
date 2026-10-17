@@ -40,6 +40,9 @@ struct InputEvent {
     int key = 0;       // keys:: or a character
     bool shift = false, ctrl = false, alt = false;
     std::uint32_t time_ms = 0;  // when it happened (double clicks)
+    // KeyDown: a Text event with the typed character follows (the platform makes them; without
+    // them the character is taken from the key and Shift).
+    bool text_follows = false;
 };
 
 struct ClientOptions {

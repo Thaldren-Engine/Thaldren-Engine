@@ -226,8 +226,12 @@ protected:
             e->point = static_cast<int>(e->text.size());
         }
     }
-    // The edit field taking the keys (its index, -1 none).
-    void focus_edit(const std::string& name) { edit_focus_ = index_of(name); }
+    // The edit field taking the keys (its index, -1 none) and holding the focus (0x4A7830 with
+    // 0x49FC50: the screen gives it both).
+    void focus_edit(const std::string& name) {
+        focus_name_ = name;
+        activate_field(index_of(name));
+    }
 
     // A list row was picked (double: a second click on the same row soon after, or Enter).
     virtual void on_list(FrontEnd&, int /*index*/, int /*row*/, bool /*double_click*/) {}
@@ -241,9 +245,62 @@ protected:
             place(out.width, out.height);
             if (!focus_name_.empty()) focus_gadget_ = index_of(focus_name_);
         }
-        // List boxes and edit fields take no focus ring (the edit field's focus is its lit text).
-        if (lists_.count(focus_gadget_) || edits_.count(focus_gadget_)) focus_gadget_ = -1;
         LayoutScreen::draw(fe, out);
+    }
+    // List boxes and edit fields take no focus ring (the edit field's focus is its lit text).
+    bool rings(int i) const override { return !lists_.count(i) && !edits_.count(i); }
+    int gadget_kind(int i) const override {
+        if (auto k = kinds_.find(i); k != kinds_.end() && (k->second == 2 || k->second == 3)) return k->second;
+        return LayoutScreen::gadget_kind(i);
+    }
+    std::string* field_text(int i) override {
+        auto it = edits_.find(i);
+        return it == edits_.end() ? nullptr : &it->second.text;
+    }
+    int* field_cursor(int i) override {
+        auto it = edits_.find(i);
+        return it == edits_.end() ? nullptr : &it->second.point;
+    }
+    int field_limit(int i) const override {
+        auto it = edits_.find(i);
+        return it == edits_.end() ? 63 : it->second.max_chars;
+    }
+    // Up / Down on a focused list (0x4A9830 / 0x4A99C0): a shown selection moves one row (not past
+    // the last, the list scrolling with it), one out of view is brought into view; the list's
+    // callback follows.
+    void list_key(FrontEnd& fe, int i, int dir) override {
+        auto it = lists_.find(i);
+        if (it == lists_.end()) return;
+        ListState& L = it->second;
+        const Widget& w = widgets_[static_cast<std::size_t>(i)];
+        const int rows = font() ? (w.h - 2) / (font()->height + 1) : 1, count = static_cast<int>(L.items.size());
+        const int max_top = std::max(0, count - rows);
+        if (L.selected < L.top + rows && L.top <= L.selected) {
+            if (dir < 0 && count != 0 && L.selected != 0) {
+                if (--L.selected < L.top) --L.top;
+            } else if (dir > 0 && count != 0 && L.selected != max_top - 1 + rows) {
+                ++L.selected;
+                if (L.top + rows - 1 < L.selected) ++L.top;
+                if (count - 1 <= L.selected) L.selected = count - 1;
+            }
+        } else if (count != 0) {
+            L.top = std::min(L.selected, max_top);
+        }
+        on_list(fe, i, L.selected, false);
+    }
+    // A list acted on (Space) or a field ended (Enter, Escape) by a key: the screen's handler.
+    void key_press(FrontEnd& fe, int i) override {
+        if (auto it = lists_.find(i); it != lists_.end()) {
+            focus_gadget_ = i;
+            on_list(fe, i, it->second.selected, true);
+            return;
+        }
+        if (edits_.count(i)) {
+            focus_gadget_ = i;
+            on_enter(fe, i);
+            return;
+        }
+        LayoutScreen::key_press(fe, i);
     }
     std::string focus_name_;  // a gadget the screen gives the focus when it opens
     // No picture behind the screen's gadgets (a dialog over the stock panel): lists and edit
@@ -253,7 +310,7 @@ protected:
     void draw_surface(FrontEnd& fe, render::Image8& out, const Widget& w) override {
         const int i = static_cast<int>(&w - widgets_.data());
         if (auto it = lists_.find(i); it != lists_.end()) draw_list(fe, out, w, it->second);
-        else if (auto e = edits_.find(i); e != edits_.end()) draw_edit(fe, out, w, e->second, i == edit_focus_);
+        else if (auto e = edits_.find(i); e != edits_.end()) draw_edit(fe, out, w, e->second, i == focus_);
         else draw_other(fe, out, w);
     }
     virtual void draw_other(FrontEnd&, render::Image8&, const Widget&) {}
@@ -327,6 +384,9 @@ protected:
             for (auto& [i, L] : lists_) {
                 const Widget& w = widgets_[static_cast<std::size_t>(i)];
                 if (!w.active || e.x < ox_ + w.x || e.y < oy_ + w.y || e.x >= ox_ + w.x + w.w || e.y >= oy_ + w.y + w.h) continue;
+                // A pressed list holds the focus; no field takes the keys.
+                focus_gadget_ = i;
+                focus_ = -1;
                 const int rh = font() ? font()->height + 1 : 12;
                 const int row = (e.y - (oy_ + w.y) - 2) / rh + L.top;
                 if (row >= 0 && row < static_cast<int>(L.items.size())) {
@@ -342,69 +402,21 @@ protected:
             for (auto& [i, E] : edits_) {
                 const Widget& w = widgets_[static_cast<std::size_t>(i)];
                 if (!w.active || e.x < ox_ + w.x || e.y < oy_ + w.y || e.x >= ox_ + w.x + w.w || e.y >= oy_ + w.y + w.h) continue;
-                edit_focus_ = i;
+                focus_gadget_ = i;
+                focus_ = i;
                 return;
             }
         }
-        if (edit_focus_ >= 0 && (e.type == T::Text || e.type == T::KeyDown)) {
-            EditState& E = edits_[edit_focus_];
-            const Widget& w = widgets_[static_cast<std::size_t>(edit_focus_)];
-            if (e.type == T::Text) saw_text_ = true;
-            int k = e.key;
-            const bool character = (e.type == T::Text) || (e.type == T::KeyDown && !saw_text_ && k >= 0x20 && k < 0x7F);
-            if (e.type == T::KeyDown && !saw_text_ && e.shift && k >= 'a' && k <= 'z') k = std::toupper(k);
-            if (character) {
-                // In when shorter than the limit and its width fits the field's width - 4 (0x4AB720).
-                const client::Font* f = font();
-                const std::string c(1, static_cast<char>(k));
-                if (static_cast<int>(E.text.size()) < E.max_chars && (!f || f->text_width(E.text) + f->text_width(c) <= w.w - 4) &&
-                    (!(w.attribs & 2) || std::isalnum(k) || k == '_' || k == ' ' || k == '\'')) {
-                    E.text.insert(static_cast<std::size_t>(E.point), c);
-                    ++E.point;
-                }
-                return;
-            }
-            if (e.type == T::KeyDown) {
-                if (k == keys::kBackspace) {
-                    if (E.point > 0) E.text.erase(static_cast<std::size_t>(--E.point), 1);
-                    return;
-                }
-                if (k == keys::kDelete) {
-                    if (E.point < static_cast<int>(E.text.size())) E.text.erase(static_cast<std::size_t>(E.point), 1);
-                    return;
-                }
-                if (k == keys::kHome) {
-                    E.point = 0;
-                    return;
-                }
-                if (k == keys::kEnd) {
-                    E.point = static_cast<int>(E.text.size());
-                    return;
-                }
-                if (k == keys::kLeft) {
-                    E.point = std::max(0, E.point - 1);
-                    return;
-                }
-                if (k == keys::kRight) {
-                    E.point = std::min(static_cast<int>(E.text.size()), E.point + 1);
-                    return;
-                }
-                if (k == keys::kEnter) {
-                    on_enter(fe, edit_focus_);
-                    return;
-                }
-            }
-        }
-        if (e.type == T::Text) return;
+        // Keys: the layout screen's rules (the original's interface pass) with this screen's lists
+        // and fields.
         LayoutScreen::handle(fe, e);
     }
 
+protected:
     MenuArt& art_;
     std::map<int, ListState> lists_;
     std::map<int, EditState> edits_;
     std::map<int, int> kinds_;
-    int edit_focus_ = -1;
-    bool saw_text_ = false;
     std::uint32_t last_ms_ = 0;
     int last_row_ = -1, last_list_ = -1;
 };
@@ -561,6 +573,7 @@ class TcpAsk;
 class SelProv : public NetScreen {
 public:
     explicit SelProv(std::shared_ptr<NetPart> part) : NetScreen(part->art, net_layout(part->art, "SELPROV", "selconnect2", false)), part_(part) {
+        enter_default_ = "SELECT";  // 0x444580 names it (Enter = Select)
         if (ListState* L = list("DPLAY"))
             for (const Provider& p : providers()) L->items.push_back(p.name);
         fit_slider("DPLAY", "SLIDER");
@@ -713,7 +726,8 @@ public:
     explicit ModemAsk(std::shared_ptr<NetPart> part) : NetScreen(part->art, part->art.layout("MODEM")), part_(part) {
         if (ListState* L = list("MODEMS")) L->items = {"COM1", "COM2", "COM3", "COM4"};
         if (EditState* e = edit("NUMBER")) e->max_chars = 40;
-        focus_edit("NUMBER");
+        // (No field takes the keys until one is clicked or reached with the keys: 0x443100
+        // activates none.)
         boxed_ = true;
     }
     void enter(FrontEnd& fe) override {
@@ -1051,7 +1065,9 @@ void SelGame::join(FrontEnd& fe, bool watch) {
     const EditState* n = edit("NICKNAME");
     part_->nickname = n ? n->text : std::string();
     if (part_->nickname.empty()) {
-        edit_focus_ = index_of("NICKNAME");
+        // 0x4A7190: the name field takes the keys (the message box over it first).
+        focus_gadget_ = index_of("NICKNAME");
+        activate_field(focus_gadget_);
         show_net_message(fe, art_, "You must enter your name");
         return;
     }
@@ -1156,6 +1172,8 @@ public:
             const auto colon = s.find(':');
             const std::string kind = s.substr(0, colon), arg = colon == std::string::npos ? std::string() : s.substr(colon + 1);
             if (kind == "selprov") fe.push(std::make_unique<SelProv>(part_));
+            else if (kind == "serial") fe.push(std::make_unique<SerialAsk>(part_));
+            else if (kind == "modem") fe.push(std::make_unique<ModemAsk>(part_));
             else if (kind == "tcp") {
                 fe.settings().set_text("TCPADDR", arg);
                 fe.push(std::make_unique<TcpAsk>(part_));
@@ -1427,6 +1445,11 @@ protected:
                     if (row != local) {
                         w.grayed = true;
                         w.status = 0;
+                    } else {
+                        // 0x4455B0: the local player's ready button takes R (its name's first
+                        // letter) and Enter.
+                        w.quickkey = w.quickkey_char = 'r';
+                        enter_default_ = w.name;
                     }
                 } else if (t == 6) {
                     if (row != local && w.kind == WidgetKind::Button) to_label(w);

@@ -521,7 +521,6 @@ public:
             for (int k = 0; k < 256; ++k) battle_colours_[static_cast<std::size_t>(k)] = art_.gui_colour(art_.content().palette, k);
             colours_ = &battle_colours_;
         }
-        field_escape_clears_ = true;
         if (save_) {
             std::error_code ec;
             std::filesystem::create_directories(dir_, ec);
