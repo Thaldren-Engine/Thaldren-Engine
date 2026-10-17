@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "client/canvas.h"
@@ -158,6 +159,11 @@ public:
     // (lists with attribute 8).
     void list_moved(Widget& list);
 
+    // Tests: the screen's state (layout, focus, the field taking keys, every field's text and
+    // switch's stage, as name / value pairs) and the gadgets pressed since the last call.
+    virtual std::vector<std::pair<std::string, std::string>> describe() const;
+    std::vector<std::string> take_presses();
+
 
 protected:
     // A button was clicked (released over it) or its quick key pressed.
@@ -182,6 +188,7 @@ protected:
     std::uint8_t colour(int k) const;
 
     std::vector<Widget> widgets_;  // the screen's own copy (state)
+    std::vector<std::string> presses_;  // tests: the gadgets pressed (take_presses)
     int ox_ = 0, oy_ = 0;          // origin on the frame
     // Places the screen on a frame of the given size (done once, at the first draw): a header
     // at -1 is centred on the frame, at -2 centred in the area right of the 128-pixel side

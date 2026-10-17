@@ -844,6 +844,8 @@ int main(int argc, char** argv) {
     for (std::size_t si = 0; si < screens.size(); ++si) {
         const std::string s = screens[si];
         bool ok = true;
+        // (the commands before a sweep, its keys and frames included, open the swept screen)
+        if (!quiet && s[0] != '@' && s.rfind("sweep:", 0) != 0 && s != "report") setup_cmds.push_back(s);
         if (s.rfind("@trial:", 0) == 0) {
             // A sweep trial's start: every layout closed, the key queue empty, the screen opened anew.
             const std::string t = s.substr(7);
@@ -956,7 +958,6 @@ int main(int argc, char** argv) {
         else if (s.rfind("tcp", 0) == 0 || s == "serial" || s == "modem") set_frame_mode(false, 0), set_states(0x14);
         else if (s.rfind("selgame:", 0) == 0 || s == "newmulti") set_frame_mode(true, 0), set_states(0x10);
         else if (s.rfind("lounge:", 0) == 0) set_frame_mode(false, 0x0044A680), set_states(0x11);
-        if (!quiet && s.rfind("sweep", 0) != 0) setup_cmds.push_back(s);
         // Menus (640 x 480).
         if (s == "main") ok = r.call(kMainMenu, 0, {});
         else if (s == "single") ok = r.call(kSinglePlayer, 0, {});

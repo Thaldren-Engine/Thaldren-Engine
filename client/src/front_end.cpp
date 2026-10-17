@@ -3,6 +3,8 @@
 // run with scripted input and screenshots). See client/front_end.h.
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <chrono>
 #include <thread>
 #include <cstdio>
@@ -66,6 +68,7 @@ public:
         stack_.back()->enter(*this);
     }
     std::size_t depth() const override { return stack_.size(); }
+    Screen* top() { return stack_.empty() ? nullptr : stack_.back().get(); }
     void pop() override {
         if (!stack_.empty()) trim(stack_.size() - 1);
         if (session_ && ended_ && stack_.size() <= battle_base_) finish_battle();
@@ -515,6 +518,161 @@ int sdl_key(SDL_Keycode k) {
 #endif
 
 }  // namespace
+
+namespace {
+std::vector<std::string> split_list(const std::string& v) {
+    std::vector<std::string> o;
+    for (std::size_t a = 0; a <= v.size();) {
+        std::size_t e = v.find(',', a);
+        if (e == std::string::npos) e = v.size();
+        if (e > a) o.push_back(v.substr(a, e - a));
+        a = e + 1;
+    }
+    return o;
+}
+// A key's name (gui_harness's names) as the window front end's key: 0 unknown.
+int sweep_key(const std::string& k) {
+    if (k.size() == 1) return static_cast<unsigned char>(std::tolower(static_cast<unsigned char>(k[0])));
+    if (k == "enter") return keys::kEnter;
+    if (k == "esc") return keys::kEscape;
+    if (k == "tab") return keys::kTab;
+    if (k == "space") return ' ';
+    if (k == "bksp") return keys::kBackspace;
+    if (k == "left") return keys::kLeft;
+    if (k == "up") return keys::kUp;
+    if (k == "right") return keys::kRight;
+    if (k == "down") return keys::kDown;
+    if (k == "home") return keys::kHome;
+    if (k == "end") return keys::kEnd;
+    if (k == "del") return keys::kDelete;
+    if (k.size() > 1 && k[0] == 'f') return keys::kF1 + std::atoi(k.c_str() + 1) - 1;
+    return 0;
+}
+// The key codes the menus take from the event (none: the menus take no codes).
+std::vector<int> sweep_codes(const InputEvent&) { return {}; }
+// The character a US keyboard types for the key with Shift.
+int shifted_char(int k) {
+    if (k >= 'a' && k <= 'z') return k - 'a' + 'A';
+    static const char plain[] = "1234567890-=[]\\;',./`", shifted[] = "!@#$%^&*()_+{}|:\"<>?~";
+    for (int i = 0; plain[i]; ++i)
+        if (plain[i] == k) return static_cast<unsigned char>(shifted[i]);
+    return k;
+}
+}  // namespace
+
+int run_key_sweep(FrontEndSetup& setup, const std::string& keys_arg, const std::string& mods_arg, int click_x, int click_y, const std::string& typed) {
+    std::string keys_list = keys_arg;
+    if (keys_list == "all") {
+        keys_list.clear();
+        for (char c = 'a'; c <= 'z'; ++c) keys_list += std::string(1, c) + ",";
+        for (char c = '0'; c <= '9'; ++c) keys_list += std::string(1, c) + ",";
+        keys_list += "enter,esc,tab,space,bksp,left,up,right,down";
+    }
+    using Desc = std::vector<std::pair<std::string, std::string>>;
+    auto value = [](const Desc& d, const std::string& k) {
+        for (const auto& [a, b] : d)
+            if (a == k) return b;
+        return std::string();
+    };
+    for (const std::string& m : split_list(mods_arg))
+        for (const std::string& kn : split_list(keys_list)) {
+            FrontEndSetup fresh = setup;  // (no settings file: every trial starts alike)
+            fresh.settings_path.clear();
+            Runner run(fresh);
+            run.begin(nullptr);
+            const render::Palette* pal = nullptr;
+            for (int f = 0; f < 2; ++f) {
+                run.frame(static_cast<std::uint32_t>(f * 33));
+                run.draw(pal);
+            }
+            if (click_x >= 0) {
+                InputEvent c;
+                c.x = click_x;
+                c.y = click_y;
+                c.button = 1;
+                c.time_ms = 40;
+                c.type = InputEvent::Type::MouseMove;
+                run.handle(c);
+                c.type = InputEvent::Type::MouseDown;
+                run.handle(c);
+                c.type = InputEvent::Type::MouseUp;
+                run.handle(c);
+                run.frame(50);
+                run.draw(pal);
+            }
+            for (const char ch : typed) {
+                InputEvent d;
+                d.type = InputEvent::Type::KeyDown;
+                d.key = static_cast<unsigned char>(std::tolower(static_cast<unsigned char>(ch)));
+                d.shift = std::isupper(static_cast<unsigned char>(ch)) != 0;
+                d.text_follows = true;
+                run.handle(d);
+                InputEvent t = d;
+                t.type = InputEvent::Type::Text;
+                t.key = static_cast<unsigned char>(ch);
+                t.text_follows = false;
+                run.handle(t);
+                d.type = InputEvent::Type::KeyUp;
+                run.handle(d);
+                run.frame(60);
+                run.draw(pal);
+            }
+            auto top = [&]() -> LayoutScreen* { return run.depth() ? dynamic_cast<LayoutScreen*>(run.top()) : nullptr; };
+            LayoutScreen* before = top();
+            const Desc a = before ? before->describe() : Desc{};
+            if (before) before->take_presses();
+            const std::size_t depth = run.depth();
+            InputEvent e;
+            e.type = InputEvent::Type::KeyDown;
+            e.key = sweep_key(kn);
+            e.shift = m.find("shift") != std::string::npos;
+            e.ctrl = m.find("ctrl") != std::string::npos;
+            e.alt = m.find("alt") != std::string::npos;
+            e.time_ms = 66;
+            const bool typed = e.key >= 0x20 && e.key < 0x7F && !e.ctrl && !e.alt;
+            e.text_follows = typed;
+            std::vector<int> codes = sweep_codes(e);
+            run.handle(e);
+            if (typed) {
+                // (the screen the key down left on top gets the character)
+                InputEvent t = e;
+                t.type = InputEvent::Type::Text;
+                t.key = e.shift ? shifted_char(e.key) : e.key;
+                t.text_follows = false;
+                for (int c : sweep_codes(t)) codes.push_back(c);
+                run.handle(t);
+            }
+            InputEvent u = e;
+            u.type = InputEvent::Type::KeyUp;
+            run.handle(u);
+            // (a closed screen lives until the next frame)
+            std::string out;
+            if (before)
+                for (const std::string& p : before->take_presses()) out += " press:" + p;
+            run.frame(99);
+            run.draw(pal);
+            LayoutScreen* after = top();
+            const Desc b = after ? after->describe() : Desc{};
+            const bool same = after == before && run.depth() == depth;
+            if (!same) out += " screen:" + value(a, "layout") + "->" + (after ? value(b, "layout") : std::string("none"));
+            if (same) {
+                if (value(a, "focus") != value(b, "focus")) out += " focus:" + value(a, "focus") + "->" + value(b, "focus");
+                if (value(a, "field") != value(b, "field")) out += " active:" + value(a, "field") + "->" + value(b, "field");
+                for (const auto& [k, v] : b)
+                    if (k.rfind("text:", 0) == 0 && value(a, k) != v) out += " text:" + k.substr(5) + "=\"" + v + "\"";
+                for (const auto& [k, v] : b)
+                    if (k.rfind("stage:", 0) == 0 && value(a, k) != v) out += " stage:" + k.substr(6) + "=" + v;
+            }
+            std::string q;
+            for (int c : codes) {
+                char buf[8];
+                std::snprintf(buf, sizeof buf, "%s%02X", q.empty() ? "" : ",", c);
+                q += buf;
+            }
+            std::printf("OUTCOME %s %s %s [%s]%s\n", value(a, "layout").c_str(), kn.c_str(), m.c_str(), q.c_str(), out.empty() ? " nothing" : out.c_str());
+        }
+    return 0;
+}
 
 int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     Runner run(setup);

@@ -28,8 +28,12 @@
 //   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
 //                       (the format of gui_harness's endmsn:)
 //   --net-screen SPEC   tests: the menus start at a multiplayer screen (repeat to stack them):
-//                       selprov, tcp[:ADDRESS], selgame:FILE, newmulti, lounge:FILE,
+//                       selprov, tcp[:ADDRESS], serial, modem, selgame:FILE, newmulti, lounge:FILE,
 //                       message:WIDTH:TEXT (the inputs of gui_harness's commands of those names)
+//   --key-sweep KEYS:MODS[:X,Y[:TEXT]] tests: each key with each modifier set on the screens
+//                       --net-screen opens (a fresh front end per key; X,Y: a click there first,
+//                       TEXT: then typed),
+//                       one OUTCOME line each (compare: gui_harness sweep:KEYS:MODS)
 //   --loading-test FILE tests: writes loading screen frames for the states in FILE and exits
 //                       (the format is described where it is read; compare: gui_harness loadframe:)
 //   --loading-trace     tests (with a direct battle): prints the loader's loading-screen reports
@@ -201,6 +205,7 @@ int main(int argc, char** argv) {
     std::string end_screen_file, saves_dir, dump_pages_dir, loading_test_file;
     bool loading_trace = false;
     std::vector<std::string> net_screens;
+    std::string key_sweep;  // --key-sweep KEYS:MODS
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -228,6 +233,9 @@ int main(int argc, char** argv) {
             continue;
         } else if (a == "--net-screen") {
             net_screens.push_back(next());
+            continue;
+        } else if (a == "--key-sweep") {
+            key_sweep = next();
             continue;
         }
         if (a == "--map") setup.map = next();
@@ -456,6 +464,19 @@ int main(int argc, char** argv) {
             fes.height = opt.height;
         }
         std::printf("front end: %d music tracks, %zu skirmish maps\n", music.track_count(), art.skirmish_maps().size());
+        if (!key_sweep.empty()) {
+            // KEYS:MODS[:X,Y] (a click at X,Y before each key)
+            const auto c = key_sweep.find(':');
+            std::string mods = c == std::string::npos ? std::string("none") : key_sweep.substr(c + 1);
+            int cx = -1, cy = -1;
+            std::string typed;
+            if (const auto c2 = mods.find(':'); c2 != std::string::npos) {
+                std::sscanf(mods.c_str() + c2 + 1, "%d,%d", &cx, &cy);
+                if (const auto c3 = mods.find(':', c2 + 1); c3 != std::string::npos) typed = mods.substr(c3 + 1);
+                mods.resize(c2);
+            }
+            return client::run_key_sweep(fes, key_sweep.substr(0, c), mods, cx, cy, typed);
+        }
         return client::run_front_end(fes, front);
     }
 

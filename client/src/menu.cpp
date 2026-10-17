@@ -207,6 +207,7 @@ int slider_knob(const Widget& s, int value) {
 
 void LayoutScreen::press(FrontEnd& fe, Widget& w) {
     if (w.grayed) return;
+    presses_.push_back(w.name);
     if (w.slider_step != 0) {
         // A slider's arrow moves its knob one pixel; the value follows the knob.
         if (Widget* s = widget(w.link)) {
@@ -377,7 +378,10 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             (k == keys::kUp || k == keys::kDown || k == ' ')) {
             Widget& l = widgets_[static_cast<std::size_t>(focus_gadget_)];
             if (k == ' ') {
-                if (l.active) on_press(fe, l);
+                if (l.active) {
+                    presses_.push_back(l.name);
+                    on_press(fe, l);
+                }
                 return;
             }
             // Up / Down (0x4A9830 / 0x4A99C0): a shown selection moves one row, the list scrolling
@@ -433,6 +437,7 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
                     f.cursor = 0;
                 }
                 text_provisional_ = -1;
+                presses_.push_back(f.name);
                 on_text(fe, f);
                 return;
             }
@@ -450,6 +455,7 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             Widget* w = widget(name);
             if (!w || !w->active) return false;
             if (w->kind == WidgetKind::ListBox) {
+                presses_.push_back(w->name);
                 if (w->text_list) on_press(fe, *w);
                 else if (w->selected >= 0) on_pick(fe, *w, w->selected, true);
                 return true;
@@ -766,6 +772,22 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
     }
     default: break;
     }
+}
+
+std::vector<std::pair<std::string, std::string>> LayoutScreen::describe() const {
+    auto name = [&](int i) { return i >= 0 && i < static_cast<int>(widgets_.size()) ? widgets_[static_cast<std::size_t>(i)].name : std::string("-"); };
+    std::vector<std::pair<std::string, std::string>> d = {{"layout", layout_ ? layout_->name : std::string("?")}, {"focus", name(focus_gadget_)}, {"field", name(focus_)}};
+    for (const Widget& w : widgets_) {
+        if (w.kind == WidgetKind::TextField) d.push_back({"text:" + w.name, w.text});
+        if (w.stages > 0) d.push_back({"stage:" + w.name, std::to_string(w.stage)});
+    }
+    return d;
+}
+
+std::vector<std::string> LayoutScreen::take_presses() {
+    std::vector<std::string> p;
+    p.swap(presses_);
+    return p;
 }
 
 void LayoutScreen::place(int fw, int fh) {

@@ -390,6 +390,7 @@ protected:
                     return;
                 }
                 if (k == keys::kEnter) {
+                    presses_.push_back(widgets_[static_cast<std::size_t>(edit_focus_)].name);
                     on_enter(fe, edit_focus_);
                     return;
                 }
@@ -399,6 +400,17 @@ protected:
         LayoutScreen::handle(fe, e);
     }
 
+public:
+    // Tests: the edit fields' state in place of the layout screen's text fields.
+    std::vector<std::pair<std::string, std::string>> describe() const override {
+        auto d = LayoutScreen::describe();
+        for (auto& [k, v] : d)
+            if (k == "field") v = edit_focus_ >= 0 ? widgets_[static_cast<std::size_t>(edit_focus_)].name : std::string("-");
+        for (const auto& [i, E] : edits_) d.push_back({"text:" + widgets_[static_cast<std::size_t>(i)].name, E.text});
+        return d;
+    }
+
+protected:
     MenuArt& art_;
     std::map<int, ListState> lists_;
     std::map<int, EditState> edits_;
@@ -1156,6 +1168,8 @@ public:
             const auto colon = s.find(':');
             const std::string kind = s.substr(0, colon), arg = colon == std::string::npos ? std::string() : s.substr(colon + 1);
             if (kind == "selprov") fe.push(std::make_unique<SelProv>(part_));
+            else if (kind == "serial") fe.push(std::make_unique<SerialAsk>(part_));
+            else if (kind == "modem") fe.push(std::make_unique<ModemAsk>(part_));
             else if (kind == "tcp") {
                 fe.settings().set_text("TCPADDR", arg);
                 fe.push(std::make_unique<TcpAsk>(part_));
