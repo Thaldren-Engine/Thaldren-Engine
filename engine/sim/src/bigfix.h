@@ -6,6 +6,9 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
 
 #include "sim/x87_trig.h"
 
@@ -35,9 +38,52 @@ inline void fix_neg(Fix& a) {
 inline bool fix_is_neg(const Fix& a) { return (a[kLimbs - 1] >> 31) != 0; }
 
 // Unsigned (a * b) >> kFrac, both non-negative and small enough not to overflow.
+// (Bits kFrac.. of the exact product: any exact multiplication gives the same value; with a
+// 64 x 64 -> 128-bit multiply it runs on 64-bit limbs.)
+#if (defined(_MSC_VER) && defined(_M_X64)) || defined(__SIZEOF_INT128__)
+inline std::uint64_t fix_mul64(std::uint64_t a, std::uint64_t b, std::uint64_t& hi) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    return _umul128(a, b, &hi);
+#else
+    const unsigned __int128 p = static_cast<unsigned __int128>(a) * b;
+    hi = static_cast<std::uint64_t>(p >> 64);
+    return static_cast<std::uint64_t>(p);
+#endif
+}
 inline Fix fix_mul(const Fix& a, const Fix& b) {
-    std::vector<std::uint64_t> wide(2 * kLimbs + 1, 0);
+    constexpr int n = kLimbs / 2;
+    std::uint64_t a64[n], b64[n], wide[2 * n] = {};
+    for (int i = 0; i < n; ++i) {
+        a64[i] = a[2 * i] | static_cast<std::uint64_t>(a[2 * i + 1]) << 32;
+        b64[i] = b[2 * i] | static_cast<std::uint64_t>(b[2 * i + 1]) << 32;
+    }
+    for (int i = 0; i < n; ++i) {
+        if (a64[i] == 0) continue;
+        std::uint64_t carry = 0;
+        for (int j = 0; j < n; ++j) {
+            std::uint64_t hi;
+            const std::uint64_t lo = fix_mul64(a64[i], b64[j], hi);
+            const std::uint64_t s1 = wide[i + j] + lo;
+            const std::uint64_t s2 = s1 + carry;
+            carry = hi + (s1 < lo) + (s2 < s1);  // hi <= 2^64 - 2: no overflow
+            wide[i + j] = s2;
+        }
+        wide[i + n] = carry;  // not written by earlier rows
+    }
+    Fix r{};
+    constexpr int shift = kFrac / 64;
+    static_assert(kFrac % 64 == 0 && kLimbs % 2 == 0, "64-bit limbs");
+    for (int i = 0; i < n; ++i) {
+        r[2 * i] = static_cast<std::uint32_t>(wide[i + shift]);
+        r[2 * i + 1] = i + shift < 2 * n ? static_cast<std::uint32_t>(wide[i + shift] >> 32) : 0;
+    }
+    return r;
+}
+#else
+inline Fix fix_mul(const Fix& a, const Fix& b) {
+    std::array<std::uint64_t, 2 * kLimbs + 1> wide{};
     for (int i = 0; i < kLimbs; ++i) {
+        if (a[i] == 0) continue;  // adds nothing (series terms are mostly zero limbs)
         std::uint64_t carry = 0;
         for (int j = 0; j < kLimbs; ++j) {
             const std::uint64_t cur = wide[static_cast<std::size_t>(i + j)] + static_cast<std::uint64_t>(a[i]) * b[j] + carry;
@@ -51,16 +97,30 @@ inline Fix fix_mul(const Fix& a, const Fix& b) {
     for (int i = 0; i < kLimbs; ++i) r[i] = static_cast<std::uint32_t>(wide[static_cast<std::size_t>(i + shift)]);
     return r;
 }
+#endif
 
 // Unsigned a / d for a small divisor.
 inline Fix fix_div_small(const Fix& a, std::uint32_t d) {
     Fix r{};
     std::uint64_t rem = 0;
-    for (int i = kLimbs - 1; i >= 0; --i) {
+#if defined(_MSC_VER) && !defined(__clang__) && defined(_M_X64)
+    // The same long division on 64-bit limbs (128 / 64 bits per limb).
+    for (int i = kLimbs / 2 - 1; i >= 0; --i) {
+        const std::uint64_t limb = a[2 * i] | static_cast<std::uint64_t>(a[2 * i + 1]) << 32;
+        if (limb == 0 && rem == 0) continue;
+        const std::uint64_t q = _udiv128(rem, limb, d, &rem);
+        r[2 * i] = static_cast<std::uint32_t>(q);
+        r[2 * i + 1] = static_cast<std::uint32_t>(q >> 32);
+    }
+#else
+    int i = kLimbs - 1;
+    while (i >= 0 && a[i] == 0) --i;  // leading zero limbs: zero quotient limbs, no remainder
+    for (; i >= 0; --i) {
         const std::uint64_t cur = (rem << 32) | a[i];
         r[i] = static_cast<std::uint32_t>(cur / d);
         rem = cur % d;
     }
+#endif
     return r;
 }
 
@@ -159,8 +219,9 @@ inline void series(const Fix& x, Fix& s, Fix& c) {
     Fix term_s = x, term_c = c;
     for (std::uint32_t n = 1; n < 200; ++n) {
         // term_s_n = term_s_{n-1} * x^2 / ((2n)(2n+1)), term_c_n = term_c_{n-1} * x^2 / ((2n-1)(2n))
-        term_s = fix_div_small(fix_div_small(fix_mul(term_s, x2), 2 * n), 2 * n + 1);
-        term_c = fix_div_small(fix_div_small(fix_mul(term_c, x2), 2 * n - 1), 2 * n);
+        // (Two truncating divisions of a non-negative value equal one by the product.)
+        term_s = fix_div_small(fix_mul(term_s, x2), (2 * n) * (2 * n + 1));
+        term_c = fix_div_small(fix_mul(term_c, x2), (2 * n - 1) * (2 * n));
         if (fix_is_zero(term_s) && fix_is_zero(term_c)) break;
         Fix ts = term_s, tc = term_c;
         if (n % 2) {
