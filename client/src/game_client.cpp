@@ -209,7 +209,7 @@ int GameClient::frame(std::uint32_t now_ms) {
     // An order (or placement) given with Shift kept its mode: letting Shift go ends it.
     if (mode_kept_ && !shift_ && !keys_down_[keys::kShift]) end_order_mode();
     advance_pointer(dt);
-    speech_step();
+    notices_frame();
     if (panel_dirty_) refresh_panel();
     ++frame_counter_;
     return steps;
@@ -245,7 +245,12 @@ void GameClient::minimap_jump(int x, int y) {
 // ---- sounds and messages ---------------------------------------------------------------------
 
 void GameClient::play_ui(int sample) {
-    if (sample >= 0) sounds_.push_back({sample, 0});
+    // An interface sound (0x47F0C0): centred, 5.85 dB down; nothing while the effect volume or
+    // the sound mode is off.
+    if (sample < 0 || opt_.fx_volume == 0 || opt_.sound_mode == 0) return;
+    SoundEvent e;
+    e.sample = sample;
+    sounds_.push_back(e);
 }
 
 std::vector<SoundEvent> GameClient::take_sounds() {
@@ -255,26 +260,20 @@ std::vector<SoundEvent> GameClient::take_sounds() {
 }
 
 void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos) {
-    // World sounds play when the viewed player sees the spot (sight counts with the line of
-    // sight option, else the explored map; the block of x and z minus half the height).
-    // Mono mode plays them centred at full volume wherever they are; 3D mode places them
-    // around the view's centre, full volume within half the view's size and falling off
-    // with the distance beyond it, silent past the map's size.
-    if (sample == 0xFFFF || sample >= c_.samples.size() || opt_.sound_mode == 0) return;
-    if (!b_.point_seen_by(opt_.player, pos)) return;
-    if (opt_.sound_mode != 2) {
-        sounds_.push_back({sample, 0, 256});
-        return;
-    }
-    const int vw = (opt_.width - 128) / 16, vh = (opt_.height - 64) / 16;
-    const double rx = (pos[0] >> 16) - (vw / 2) * 16 - scroll_x_;
-    const double ry = scroll_y_ + (vh / 2) * 16 + ((pos[1] >> 16) >> 1) - (pos[2] >> 16);
-    const double dist = std::sqrt(rx * rx + ry * ry);
-    const double near_d = ((vw + vh) / 2) * 16.0, far_d = (b_.map.width + b_.map.height) * 16.0;
-    if (dist > far_d) return;
-    const int volume = dist <= near_d ? 256 : static_cast<int>(256.0 * near_d / dist);
-    const int pan = dist > 0 ? static_cast<int>(std::clamp(rx / dist * 100.0, -100.0, 100.0)) : 0;
-    sounds_.push_back({sample, pan, volume});
+    // A world sound (0x47F300; client/sound_rules.h): judged by the effect settings, the map,
+    // the viewed player's sight and the view.
+    if (sample == 0xFFFF || sample >= c_.samples.size()) return;
+    SoundView v;
+    v.fx_volume = opt_.fx_volume;
+    v.sound_mode = opt_.sound_mode;
+    v.scroll_x = scroll_x_;
+    v.scroll_y = scroll_y_;
+    v.view_w = (opt_.width - 128) / 16;
+    v.view_h = (opt_.height - 64) / 16;
+    v.map_w = static_cast<int>(b_.map.width);
+    v.map_h = static_cast<int>(b_.map.height);
+    SoundEvent e;
+    if (world_sound(v, pos, [&] { return b_.point_seen_by(viewed_player(), pos); }, sample, e)) sounds_.push_back(e);
 }
 void GameClient::speak(const sim::Unit& u, std::uint32_t id) {
     // The interface's own notices (selection) go through the notice queue like the
@@ -282,87 +281,66 @@ void GameClient::speak(const sim::Unit& u, std::uint32_t id) {
     on_speech(b_.units[u.id], id);
 }
 
-namespace {
-// The original's notice table: priority, minimum gap between two sounds of the notice (in
-// seconds of game time) and the console text (id = the simulation's speech id).
-struct SpeechRule {
-    int priority, gap;
-    const char* text;
+// The notices' host: the battle's step and rand(), the unit's type sounds, the console.
+struct GameClient::NoticeHost : NoticeQueue::Host {
+    GameClient& c;
+    explicit NoticeHost(GameClient& cl) : c(cl) {}
+    std::uint32_t tick() override { return c.b_.game_tick(); }
+    std::uint32_t rand() override { return c.b_.crt_rand.next(); }
+    const std::vector<int>* list(std::uint16_t unit, std::uint32_t id) const {
+        const std::uint16_t t = c.b_.ticks[unit].type_index;
+        return t < c.c_.types.size() && id < 24 ? &c.c_.types[t].sound_lists[id] : nullptr;
+    }
+    int sound_count(std::uint16_t unit, std::uint32_t id) override {
+        const std::vector<int>* l = list(unit, id);
+        return l ? static_cast<int>(l->size()) : 0;
+    }
+    void speak(std::uint16_t unit, std::uint32_t id, int pick) override {
+        // The sound file plays as a one-shot (5.85 dB down, centred) when there are effects;
+        // with the sing switch every notice sings instead (and honks in every eighth second).
+        const std::vector<int>* l = list(unit, id);
+        if (!l || pick < 0 || static_cast<std::size_t>(pick) >= l->size()) return;
+        int sample = (*l)[static_cast<std::size_t>(pick)];
+        if (c.opt_.sing) sample = ((c.b_.game_tick() / 30) & 7) == 0 ? c.c_.ui_sounds.honk : c.c_.ui_sounds.sing;
+        if (sample < 0 || c.opt_.fx_volume == 0 || c.opt_.sound_mode == 0) return;
+        SoundEvent e;
+        e.sample = sample;
+        e.one_shot = true;
+        c.sounds_.push_back(e);
+    }
+    bool unit_alive(std::uint16_t unit) override { return (c.b_.units[unit].flags & 0x10000000u) != 0; }
+    void show(std::uint16_t unit, const std::string& text) override {
+        const std::uint16_t t = c.b_.ticks[unit].type_index;
+        if (t < c.c_.types.size()) c.message(c.c_.types[t].name + ": " + text);
+    }
 };
-constexpr SpeechRule kSpeech[24] = {
-    {0, 0, nullptr},           {10, 0, nullptr},        {9, 20, "Under Attack"}, {4, 2, nullptr},
-    {4, 2, nullptr},           {5, 1, nullptr},         {3, 4, "Arrived"},       {8, 1, "Cannot Comply"},
-    {3, 3, "Nanolathe Complete"}, {4, 2, nullptr},      {3, 1, nullptr},         {2, 1, nullptr},
-    {7, 1, nullptr},           {7, 1, nullptr},         {7, 1, "Cloaked"},       {7, 1, "Visible"},
-    {4, 1, nullptr},           {10, 0, "five"},         {10, 0, "four"},         {10, 0, "three"},
-    {10, 0, "two"},            {10, 0, "one"},          {10, 0, "zero"},         {10, 0, "Self destruct terminated"},
-};
-constexpr int kSpeechVolume = 131;  // notices play 5.85 dB below full volume
-}  // namespace
+
+NoticeQueue::Levels GameClient::notice_levels() const {
+    NoticeQueue::Levels l;
+    l.unit_chat = opt_.unit_chat;
+    l.unit_chat_text = opt_.unit_chat_text;
+    l.speech = opt_.speech;
+    return l;
+}
+
+void GameClient::notices_frame() {
+    // One queued notice per frame.
+    NoticeHost h(*this);
+    notices_.frame(h, notice_levels());
+}
 
 void GameClient::on_speech(sim::Unit& u, std::uint32_t id) {
-    // Notices of the viewed player's own live units join the queue, unless the notice is
-    // still in its gap or already queued; a full queue (8) drops its last entry, which
-    // only shows its text.
-    if (id == 0 || id >= 24 || b_.ticks[u.id].type_index == 0 || !own(u) || u.hit_points <= 0) return;
-    const std::uint32_t tick = b_.game_tick();
-    if (speech_next_[id] > tick) return;
-    for (const Speech& s : speech_)
-        if (s.id == id) return;
-    if (speech_.size() == 8) {
-        speech_play(7, false, true);
-        speech_.pop_back();
-    }
-    Speech s;
-    s.id = id;
-    s.tick = tick;
-    s.unit = u.id;
-    s.priority = static_cast<std::uint8_t>(kSpeech[id].priority);
-    if (kSpeech[id].text) s.text = kSpeech[id].text;
-    std::size_t at = 0;
-    while (at < speech_.size() && kSpeech[speech_[at].id].priority >= kSpeech[id].priority) ++at;
-    speech_.insert(speech_.begin() + static_cast<std::ptrdiff_t>(at), std::move(s));
-}
-
-void GameClient::speech_play(std::size_t index, bool sound, bool text) {
-    const Speech& s = speech_[index];
-    const std::uint16_t t = b_.ticks[s.unit].type_index;
-    const std::vector<int>* list = t < c_.types.size() ? &c_.types[t].sound_lists[s.id] : nullptr;
-    const int count = list ? static_cast<int>(list->size()) : 0;
-    // One of the notice's sounds, by the simulation thread's rand() (drawn every time).
-    const std::uint32_t r = b_.crt_rand.next();
-    const int pick = static_cast<int>(static_cast<std::int64_t>(r) * count / 0x8000);
-    if (static_cast<int>(s.priority) > 10 - opt_.unit_chat && count > 0 && sound && opt_.speech) {
-        const int sample = (*list)[static_cast<std::size_t>(pick)];
-        if (sample >= 0) {
-            sounds_.push_back({sample, 0, kSpeechVolume});
-            const Sample& sm = c_.samples[static_cast<std::size_t>(sample)];
-            speech_length_ = sm.rate > 0 ? static_cast<std::uint32_t>(sm.pcm.size() / static_cast<std::size_t>(std::max(1, sm.channels)) * 30 /
-                                                                    static_cast<std::size_t>(sm.rate))
-                                         : 0;
-        }
-        speech_next_[s.id] = b_.game_tick() + static_cast<std::uint32_t>(kSpeech[s.id].gap) * 30u;
-    }
-    if (text && static_cast<int>(s.priority) > 10 - opt_.unit_chat_text && !s.text.empty() && t < c_.types.size())
-        message(c_.types[t].name + ": " + s.text);
-}
-
-void GameClient::speech_step() {
-    // One queued notice per frame: it speaks unless the last spoken one is still playing
-    // (then only its text shows).
-    if (speech_.empty()) return;
-    const std::uint32_t tick = b_.game_tick();
-    if (tick < speech_last_ + speech_length_) {
-        speech_play(0, false, true);
-    } else {
-        speech_play(0, true, true);
-        speech_last_ = tick;
-    }
-    speech_.erase(speech_.begin());
+    // Notices of the viewed player's units with the alive flag and without the dying flag
+    // (0x47F780) join the queue.
+    if (id == 0 || id >= 24 || b_.ticks[u.id].type_index == 0 || b_.ticks[u.id].owner != viewed_player() || !(u.flags & 0x10000000u) ||
+        (u.flags & 0x4000u))
+        return;
+    NoticeHost h(*this);
+    notices_.queue(h, notice_levels(), u.id, id);
 }
 
 void GameClient::forget_speech(sim::Unit& u) {
-    speech_.erase(std::remove_if(speech_.begin(), speech_.end(), [&](const Speech& s) { return s.unit == u.id; }), speech_.end());
+    notices_.forget(u.id);
     if (tracked_ == u.id) tracked_ = 0;
 }
 
@@ -372,8 +350,11 @@ void GameClient::on_under_attack(sim::Unit& u) {
         if (s.id == u.id) return;
     on_speech(u, 2);
 }
-void GameClient::message(const std::string& text, bool highlight) {
+void GameClient::message(const std::string& text, bool highlight, bool beep) {
     if (text.empty()) return;
+    // (0x463CA0: a message from another player beeps "MessageArrived" while the console shows
+    // lines at all.)
+    if (beep && opt_.text_lines != 0) play_ui(c_.ui_sounds.message);
     console_.push_back({text.substr(0, 64), b_.game_tick(), highlight});
     while (console_.size() > 30) console_.pop_front();
 }
@@ -486,7 +467,8 @@ void GameClient::select_group(int group, bool add) {
     }
     focus_ = 0;
     panel_dirty_ = true;
-    if (n > 0) play_ui(c_.ui_sounds.select_squad);
+    play_ui(c_.ui_sounds.select_squad);  // (the group key sounds whether or not the group has units)
+    (void)n;
     (void)last;
 }
 
@@ -652,13 +634,13 @@ bool GameClient::press_button(const Button& btn, const InputEvent& e) {
     case Action::OnOff: {
         const int cur = button_stage(btn);
         command_selected_kind(b_, player, cur == 1 ? sim::mission::kDeactivate : sim::mission::kActivate, 0, false);
-        play_ui(c_.ui_sounds.immediate);
+        play_ui(c_.ui_sounds.special);  // (the switches sound "specialorders", 0x41A490)
         return true;
     }
     case Action::Cloak: {
         const int cur = button_stage(btn);
         command_selected_kind(b_, player, cur == 1 ? sim::mission::kCloakOff : sim::mission::kCloakOn, 0, false);
-        play_ui(c_.ui_sounds.immediate);
+        play_ui(c_.ui_sounds.special);
         return true;
     }
     case Action::BuildUnit: {
@@ -689,7 +671,11 @@ bool GameClient::press_button(const Button& btn, const InputEvent& e) {
             mode_kept_ = false;
             pressed_order_ = btn.action;
         }
-        play_ui(c_.ui_sounds.special);
+        // (0x419BE0: repair, reclaim, capture and unload sound "specialorders"; move, patrol,
+        // attack, guard, load and the special attack "immediateorders"; either way round.)
+        play_ui(btn.action == Action::Repair || btn.action == Action::Reclaim || btn.action == Action::Capture || btn.action == Action::Unload
+                    ? c_.ui_sounds.special
+                    : c_.ui_sounds.immediate);
         return true;
     }
 }
@@ -1131,6 +1117,7 @@ void GameClient::key_down(const InputEvent& e) {
         chat_ = true;
         chat_text_.clear();
         chat_cursor_ = 0;
+        play_ui(c_.ui_sounds.small_button);
         return;
     }
     if (k == keys::kPause) {
@@ -1201,8 +1188,7 @@ void GameClient::key_down(const InputEvent& e) {
         case 'a':
             for (std::size_t i = 1; i < b_.units.size(); ++i)
                 if (selectable(b_.units[i])) b_.units[i].flags |= kSelected;
-            panel_dirty_ = true;
-            play_ui(c_.ui_sounds.select_multiple);
+            panel_dirty_ = true;  // (silent: the Ctrl selections play no sound)
             return;
         case 'c':
             // The commander: selected (its category), and the view follows it.

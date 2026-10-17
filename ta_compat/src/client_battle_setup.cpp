@@ -47,6 +47,10 @@ struct ClientWorld::Outside : sim::QuietBattleOutside {
             if (s >= 0) w->client_->on_sound(static_cast<std::uint16_t>(s), {x << 20, 0, z << 20});
         }
     }
+    // A mission goal met the first time: "Victory Condition" (0x47F1A0 from the goal objects).
+    void mission_goal_met() override {
+        if (w->client_) w->client_->interface_sound(w->content().ui_sounds.victory);
+    }
     // The minimap's work inside the step (players' stage).
     void player_stage_rest(int p) override {
         if (w->client_) w->client_->minimap_player_stage(p);

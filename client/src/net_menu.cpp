@@ -278,9 +278,9 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     net_->on_pause = [this](bool p) { inner_->client().set_paused(p); };
     net_->on_speed = [this](int s) { inner_->client().set_game_speed(s); };
     net_->on_chat = [this](int slot, const std::string& text) {
-        inner_->client().message("Player " + std::to_string(slot + 1) + ": " + text, true);
+        inner_->client().message("Player " + std::to_string(slot + 1) + ": " + text, true, true);
     };
-    net_->on_player_left = [this](int slot, int) { inner_->client().message("Player " + std::to_string(slot + 1) + " left", true); };
+    net_->on_player_left = [this](int slot, int) { inner_->client().message("Player " + std::to_string(slot + 1) + " left", true, true); };
 }
 
 int NetBattleSession::frame(std::uint32_t now_ms) {

@@ -15,6 +15,10 @@ add_library(client STATIC
     src/music.cpp
     src/queued_orders.cpp
     src/settings.cpp
+    src/sound_desk.cpp
+    src/sound_mixer.cpp
+    src/sound_rules.cpp
+    src/wave_file.cpp
 )
 if(WIN32)
     target_link_libraries(client PRIVATE mfplat mfreadwrite mfuuid ole32)

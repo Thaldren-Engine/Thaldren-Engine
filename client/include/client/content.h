@@ -146,6 +146,9 @@ struct InterfaceSounds {
     int ok_to_build = -1, not_ok_to_build = -1;  // placement
     int set_fire = -1, set_move = -1, special = -1;  // standing orders, order modes
     int select_squad = -1, create_squad = -1, select_multiple = -1, message = -1;
+    int small_button = -1;           // the chat line key
+    int honk = -1, sing = -1;        // the notices' sing switch
+    int victory = -1;                // a mission goal met
 };
 
 // Display data of a unit type (index = battle type index).

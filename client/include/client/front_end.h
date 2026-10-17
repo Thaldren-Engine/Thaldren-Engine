@@ -227,8 +227,19 @@ public:
     virtual const MenuContent& menu_content() const = 0;
     virtual int width() const = 0;
     virtual int height() const = 0;
-    // Plays an interface sound (index into menu_content().samples).
+    // Plays an interface sound (index into menu_content().samples): centred, 5.85 dB down,
+    // nothing while the effect volume or the sound mode is off.
     virtual void play_sound(int sample) = 0;
+    // The same sound looping until every sound stops (only one looping sound at a time).
+    virtual void play_sound_loop(int sample) { play_sound(sample); }
+    // A sound file with a buffer of its own (the sound options' test).
+    virtual void play_sound_file(int sample) { play_sound(sample); }
+    // Narration: its own channel at full volume, whatever the sound settings; a new one
+    // replaces the last; stop_narration() ends it.
+    virtual void play_narration(int sample) { play_sound(sample); }
+    virtual void stop_narration() {}
+    // Every playing sound stops (the sound mode switched off).
+    virtual void stop_sounds() {}
     // The music player (null when there is no music).
     virtual MusicPlayer* music() = 0;
     // Applies the settings (volumes, speeds, interface options) after an options screen.

@@ -177,7 +177,10 @@ void ConsoleCommands::Impl::build() {
     });
     add("Clock", [this](const Words&) { c.options_mut().clock = !c.options().clock; });
     add("NetStats", [](const Words&) {});  // resets the network statistics display
-    add("Sing", [this](const Words&) { st.sing = !st.sing; });
+    add("Sing", [this](const Words&) {
+        st.sing = !st.sing;
+        c.options_mut().sing = st.sing;
+    });
     add("NoMetal", [this](const Words& a) {
         const std::uint32_t p = a.count() == 1 ? static_cast<std::uint32_t>(local()) : static_cast<std::uint8_t>(a.number(1, 0));
         if (playing(p)) b().players[p & 0xFF].metal_stored = static_cast<float>(a.number(2, 0));

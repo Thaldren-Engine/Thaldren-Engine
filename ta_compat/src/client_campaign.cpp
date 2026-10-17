@@ -186,26 +186,38 @@ public:
         std::vector<std::uint8_t> wav;
         client::Sample s;
         if (!info_.narration.empty() && art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) && client::decode_wav(wav, s)) {
+            // The narration streams on its own channel at full volume (whatever the sound
+            // settings); leaving the briefing stops it.
             art_.content().samples.push_back(std::move(s));
-            fe.play_sound(static_cast<int>(art_.content().samples.size()) - 1);
+            fe.play_narration(static_cast<int>(art_.content().samples.size()) - 1);
         }
     }
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type != client::InputEvent::Type::KeyDown && e.type != client::InputEvent::Type::MouseDown) return;
         if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kEscape) {
+            // (the previous menu: the narration stops, "Previous")
+            fe.stop_narration();
+            fe.play_sound(art_.sound("Previous"));
             fe.pop();
             return;
         }
         const int per_page = std::max(1, (fe.height() - 120) / 14);
         if (e.type == client::InputEvent::Type::KeyDown && (e.key == client::keys::kRight || e.key == client::keys::kDown)) {
-            if ((page_ + 1) * per_page < static_cast<int>(lines_.size())) ++page_;
+            // (the text's "more" bar while there is more: "More")
+            if ((page_ + 1) * per_page < static_cast<int>(lines_.size())) {
+                ++page_;
+                fe.play_sound(art_.sound("More"));
+            }
             return;
         }
         if (e.type == client::InputEvent::Type::KeyDown && (e.key == client::keys::kLeft || e.key == client::keys::kUp)) {
             if (page_ > 0) --page_;
             return;
         }
+        // (Start: "BigButton", the narration stops)
+        fe.play_sound(art_.sound("BigButton"));
         if (!ok_) return;
+        fe.stop_narration();
         fe.start_battle(mission_launcher(art_, save_dir_, progress_, info_, fe));
     }
     void draw(client::FrontEnd& fe, render::Image8& out) override {
@@ -271,12 +283,16 @@ public:
             return;
         }
         switch (e.key) {
-        case client::keys::kEscape: fe.pop(); return;
+        case client::keys::kEscape: fe.play_sound(art_.sound("BigButton")); fe.pop(); return;  // (main menu)
         case client::keys::kUp: sel_ = std::max(0, sel_ - 1); return;
         case client::keys::kDown: sel_ = std::min(static_cast<int>(campaign_.missions.size()) - 1, sel_ + 1); return;
-        case 'd': progress_->difficulty = (progress_->difficulty + 1) % 3; return;  // Easy -> Medium -> Hard -> Easy
-        case 's': saving_ = true; message_.clear(); return;
+        case 'd':  // Easy -> Medium -> Hard -> Easy
+            fe.play_sound(art_.sound("Skirmish"));
+            progress_->difficulty = (progress_->difficulty + 1) % 3;
+            return;
+        case 's': fe.play_sound(art_.sound("BigButton")); saving_ = true; message_.clear(); return;
         case client::keys::kEnter:
+            fe.play_sound(art_.sound("BigButton"));
             if (sel_ >= 0 && sel_ < static_cast<int>(campaign_.missions.size())) {
                 progress_->mission = sel_;
                 fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress_));
@@ -353,23 +369,27 @@ public:
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type != client::InputEvent::Type::KeyDown) return;
         switch (e.key) {
-        case client::keys::kEscape: fe.pop(); return;
+        case client::keys::kEscape: fe.play_sound(art_.sound("Previous")); fe.pop(); return;
         case client::keys::kTab:
             if (any_mission_) focus_ = 1 - focus_;
             return;
         case client::keys::kUp:
-            if (focus_ == 0 && camp_ > 0) --camp_, load_missions();
+            // (the campaign choice: the first side's "SideSelect", the second's "SideSelect2")
+            if (focus_ == 0 && camp_ > 0) --camp_, load_missions(), fe.play_sound(art_.sound(camp_ == 0 ? "SideSelect" : "SideSelect2"));
             else if (focus_ == 1 && mission_ > 0) --mission_;
             return;
         case client::keys::kDown:
-            if (focus_ == 0 && camp_ + 1 < static_cast<int>(names_.size())) ++camp_, load_missions();
+            if (focus_ == 0 && camp_ + 1 < static_cast<int>(names_.size()))
+                ++camp_, load_missions(), fe.play_sound(art_.sound(camp_ == 0 ? "SideSelect" : "SideSelect2"));
             else if (focus_ == 1 && mission_ + 1 < static_cast<int>(campaign_.missions.size())) ++mission_;
             return;
         case 'd':
+            fe.play_sound(art_.sound("SmlButton"));
             difficulty_ = (difficulty_ + 1) % 3;
             fe.settings().set_int("Difficulty", difficulty_);
             return;
         case client::keys::kEnter: {
+            fe.play_sound(art_.sound("bigButton"));
             if (camp_ >= static_cast<int>(names_.size())) return;
             auto progress = std::make_shared<CampaignProgress>();
             progress->campaign = names_[static_cast<std::size_t>(camp_)];
@@ -443,12 +463,14 @@ public:
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type != client::InputEvent::Type::KeyDown) return;
         if (e.key == client::keys::kEscape) {
+            fe.play_sound(art_.sound("Previous"));
             fe.pop();
         } else if (e.key == client::keys::kUp && sel_ > 0) {
             --sel_;
         } else if (e.key == client::keys::kDown && sel_ + 1 < static_cast<int>(saves_.size())) {
             ++sel_;
         } else if (e.key == client::keys::kEnter && sel_ < static_cast<int>(saves_.size())) {
+            fe.play_sound(art_.sound("SMLBUTTON"));
             load(fe, saves_[static_cast<std::size_t>(sel_)]);
         }
     }
@@ -536,12 +558,14 @@ private:
 // --- The in-game save menu (0x493060 / 0x492DF0): the typed name, written at once.
 class SaveScreen : public client::Screen {
 public:
-    SaveScreen(std::string save_dir, client::BattleSession& session) : dir_(std::move(save_dir)), session_(session) {}
+    SaveScreen(MenuArt& art, std::string save_dir, client::BattleSession& session) : art_(art), dir_(std::move(save_dir)), session_(session) {}
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type != client::InputEvent::Type::KeyDown) return;
         if (e.key == client::keys::kEscape) {
+            fe.play_sound(art_.sound("Previous"));
             fe.pop();
         } else if (e.key == client::keys::kEnter) {
+            fe.play_sound(art_.sound("smlbutton"));
             save();
         } else {
             name_.key(e.key);
@@ -575,6 +599,7 @@ private:
         write_save_file(sk->world().loaded(), c, bytes);
         message_ = write_file(dir_, name_.name, bytes) ? "Saved." : "Could not write the file.";
     }
+    MenuArt& art_;
     std::string dir_, message_;
     client::BattleSession& session_;
     NameLine name_;
@@ -625,8 +650,8 @@ void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const st
     hooks.load_game_menu = [&art, save_dir](client::FrontEnd&, client::BattleSession*) -> std::unique_ptr<client::Screen> {
         return std::make_unique<LoadScreen>(art, save_dir);
     };
-    hooks.save_game_menu = [save_dir](client::FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
-        return std::make_unique<SaveScreen>(save_dir, s);
+    hooks.save_game_menu = [&art, save_dir](client::FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        return std::make_unique<SaveScreen>(art, save_dir, s);
     };
 }
 

@@ -68,7 +68,7 @@ struct Widget {
     int slider_step = 0;
     bool vertical = true;
     std::string link;   // label -> button it belongs to, scroll bar -> list box
-    int sound = -1;     // sample played when pressed (-1: the menu's click)
+    int sound = -1;     // sample played when pressed (-1: none; the screen plays its own)
 };
 
 // One screen's description.

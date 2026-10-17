@@ -14,6 +14,7 @@
 #include <SDL3/SDL.h>
 
 #include "client/audio.h"
+#include "client/sound_desk.h"
 #include "render/gpu_renderer.h"
 #endif
 
@@ -149,6 +150,8 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
     using clock = std::chrono::steady_clock;
     double t_sim = 0, t_list = 0, t_cpu = 0, t_lines = 0, t_gpu = 0;
     std::size_t cmds = 0, lines = 0;
+    SoundDesk desk;
+    desk.set_log(true);
     for (int f = 0; f < o.frames && !client.quit_requested(); ++f) {
         const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);
         for (; next < o.script.size() && o.script[next].frame <= f; ++next) {
@@ -159,21 +162,12 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
         const auto t0 = clock::now();
         total_steps += client.frame(now);
         const auto t1 = clock::now();
-        const auto sounds = client.take_sounds();
-        if (!sounds.empty()) {
-            // The sound log: every sound started this frame (name, volume), and the same sound
-            // started twice in one frame flagged.
-            std::printf("frame %d (step %u): %zu sound(s):", f, client.battle().game_tick(), sounds.size());
-            for (std::size_t i = 0; i < sounds.size(); ++i) {
-                const SoundEvent& s = sounds[i];
-                const bool known = s.sample >= 0 && static_cast<std::size_t>(s.sample) < content.samples.size();
-                bool twice = false;
-                for (std::size_t k = 0; k < i; ++k) twice |= sounds[k].sample == s.sample;
-                std::printf(" %s/%d%s", known ? content.samples[static_cast<std::size_t>(s.sample)].name.c_str() : "?", s.volume,
-                            twice ? "(again)" : "");
-            }
-            std::printf("\n");
-        }
+        // The sound log: every sound started this frame (name, volume, copy, placement) and
+        // every sound cut off to make room.
+        desk.tick(now);
+        for (const SoundEvent& e : client.take_sounds())
+            desk.play_event(content.samples, e.sample, e.volume, e.placed, e.pos, e.min_distance, e.max_distance, e.one_shot, now);
+        desk.flush("frame " + std::to_string(f) + " step " + std::to_string(client.battle().game_tick()));
         render::DrawList list = client.draw();
         if (profile) {
             const auto t2 = clock::now();
@@ -320,7 +314,10 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         if (tex) SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
     }
     AudioOut audio;
-    if (o.sound && !audio.open(&content.samples)) std::printf("no sound output: %s\n", SDL_GetError());
+    if (o.sound && !audio.open()) std::printf("no sound output: %s\n", SDL_GetError());
+    SoundDesk desk;
+    desk.attach(audio.ok() ? &audio : nullptr);
+    desk.set_fx_volume(client.options().fx_volume);
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     const std::uint64_t start = SDL_GetTicks();
     std::size_t next = 0;
@@ -383,9 +380,10 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             client.poll_modifiers((mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_ALT) != 0);
         }
         client.frame(now);
-        for (const SoundEvent& s : client.take_sounds())
-            if (s.sample >= 0 && static_cast<std::size_t>(s.sample) < content.samples.size())
-                audio.play_sample(&content.samples[static_cast<std::size_t>(s.sample)], s.pan, s.volume);
+        desk.tick(now);
+        for (const SoundEvent& e : client.take_sounds())
+            desk.play_event(content.samples, e.sample, e.volume, e.placed, e.pos, e.min_distance, e.max_distance, e.one_shot, now);
+        desk.flush(std::string());
         render::DrawList list = client.draw();
         if (std::find(o.screenshot_frames.begin(), o.screenshot_frames.end(), f) != o.screenshot_frames.end())
             save(render::execute(list, content.blend), content.palette, o.screenshot_prefix, f);

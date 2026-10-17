@@ -787,3 +787,13 @@ add_executable(console_harness console_harness.cpp
 )
 target_include_directories(console_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(console_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Sound: the sound manager, world / interface sounds and the unit notices vs client/sound_mixer.h
+# and client/sound_rules.h (the original's sound output replaced by a logging stand-in).
+add_executable(sound_harness sound_harness.cpp
+    ${ROOT}/client/src/sound_mixer.cpp
+    ${ROOT}/client/src/sound_rules.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+)
+target_include_directories(sound_harness PRIVATE ${ROOT}/client/include ${ROOT}/render/include ${ROOT}/engine/sim/include)
+target_compile_options(sound_harness PRIVATE /W4 /permissive- /fp:precise)
