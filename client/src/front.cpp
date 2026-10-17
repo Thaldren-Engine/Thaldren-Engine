@@ -253,6 +253,32 @@ void fit_window_to_frame(SDL_Window* window, int frame_w, int frame_h, int scale
     SDL_SyncWindow(window);
 }
 
+void confine_pointer(SDL_Window* window, const SDL_Event* ev) {
+    if (!window) return;
+    auto focused = [&] {
+        const SDL_WindowFlags f = SDL_GetWindowFlags(window);
+        return (f & SDL_WINDOW_INPUT_FOCUS) && !(f & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN));
+    };
+    if (!ev) {
+        SDL_SetWindowMouseGrab(window, focused());
+        return;
+    }
+    switch (ev->type) {
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+    case SDL_EVENT_WINDOW_RESTORED:
+    case SDL_EVENT_WINDOW_SHOWN:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (focused()) SDL_SetWindowMouseGrab(window, true);
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+    case SDL_EVENT_WINDOW_MINIMIZED:
+    case SDL_EVENT_WINDOW_HIDDEN:
+        SDL_SetWindowMouseGrab(window, false);
+        break;
+    default: break;
+    }
+}
+
 namespace {
 
 int run_window(GameClient& client, Content& content, const FrontOptions& o) {
@@ -268,6 +294,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     }
     fit_window_to_frame(win, w, h, scale);
     SDL_HideCursor();
+    confine_pointer(win, nullptr);
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
@@ -296,6 +323,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         }
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            confine_pointer(win, &ev);
             InputEvent e;
             const SDL_Keymod mod = SDL_GetModState();
             e.shift = (mod & SDL_KMOD_SHIFT) != 0;

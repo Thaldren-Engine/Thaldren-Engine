@@ -11,6 +11,7 @@
 
 #ifdef CLIENT_HAVE_SDL
 struct SDL_Window;
+union SDL_Event;
 #endif
 
 namespace client {
@@ -39,6 +40,13 @@ struct FrontOptions {
 // takes the whole display instead (borderless, still one window pixel per screen pixel), the
 // way the original's chosen display mode fills the screen.
 void fit_window_to_frame(SDL_Window* window, int frame_w, int frame_h, int scale);
+// Keeps the pointer inside the window while the window has the keyboard focus (the original
+// runs full screen, where the pointer cannot leave the picture), in the menus and in battles
+// alike. Called with every event: the pointer goes free when the focus goes (Alt+Tab, the
+// Windows key, Ctrl+Esc, Ctrl+Alt+Del, another window activated) or the window is minimised
+// or hidden, and is held again when the window gets the focus back, is restored or is clicked.
+// `ev` null: only the window's present state is applied (after creating the window).
+void confine_pointer(SDL_Window* window, const SDL_Event* ev);
 #endif
 
 // Runs the client until it quits (or for the given frames). Returns a process exit code.

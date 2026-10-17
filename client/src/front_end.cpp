@@ -503,6 +503,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         return 1;
     }
     SDL_HideCursor();
+    confine_pointer(win, nullptr);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
         gpu = render::GpuRenderer::create(run.blend());
@@ -542,6 +543,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             cur_w = list.width;
             cur_h = list.height;
             fit_window_to_frame(win, cur_w, cur_h, scale);
+            confine_pointer(win, nullptr);
             rgba.assign(static_cast<std::size_t>(cur_w) * static_cast<std::size_t>(cur_h) * 4, 0);
             if (tex) {
                 SDL_DestroyTexture(tex);
@@ -578,6 +580,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         feed_script(frame_no, now);
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            confine_pointer(win, &ev);
             InputEvent e;
             const SDL_Keymod mod = SDL_GetModState();
             e.shift = (mod & SDL_KMOD_SHIFT) != 0;
