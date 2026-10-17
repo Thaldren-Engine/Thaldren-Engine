@@ -12,7 +12,7 @@
 // here run (remote threads). Error boxes are suppressed; faults are reported with their address.
 //
 // Usage: frame_harness <TotalA.exe> <game_dir> [scenes] [seed] [out_dir] [--map NAME]
-//                      [--res WxH] [--steps N] [--no-fog] [--dither] [--players N] [--verbose]
+//                      [--res WxH] [--steps N] [--no-fog] [--no-mapping] [--dither] [--players N] [--verbose]
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -403,6 +403,7 @@ struct Options {
     int shots = 12;       // extra shots per scene (up to)
     bool fog = true;
     bool dither = false;  // --dither: the dithered fog option (visual option 0x40)
+    bool mapping = true;  // --no-mapping: line of sight without the mapping option (everything explored)
     bool verbose = false;
     // --hud: the interface drawn over the view too: the selection boxes of selected units
     // (compared within the view) and the bottom bar of the unit under the pointer (compared
@@ -434,6 +435,7 @@ int main(int argc, char** argv) {
         else if (a == "--players" && k + 1 < argc) opt.players = std::atoi(argv[++k]);
         else if (a == "--no-fog") opt.fog = false;
         else if (a == "--dither") opt.dither = true;
+        else if (a == "--no-mapping") opt.mapping = false;
         else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
@@ -452,7 +454,7 @@ int main(int argc, char** argv) {
     for (int p = 0; p < opt.players; ++p) setup.players.push_back({rnd(0, 1), true, -1});
     setup.human = 0;
     setup.line_of_sight = opt.fog;
-    setup.mapping = opt.fog;
+    setup.mapping = opt.fog && opt.mapping;
     setup.seed = static_cast<std::uint32_t>(g());
     ta::ClientWorld world;
     std::string err;
