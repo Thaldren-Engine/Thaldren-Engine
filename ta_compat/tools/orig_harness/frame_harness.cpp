@@ -963,6 +963,52 @@ int main(int argc, char** argv) {
             r.w32(rec + 0x67, units_at + static_cast<u32>(ps.first_unit) * kUnitSize);
             r.w32(rec + 0x6B, units_at + static_cast<u32>(std::min<int>(ps.last_unit, static_cast<int>(b.units.size()) - 1)) * kUnitSize);
         }
+        // The pointer's animation: for every look of anims\\CURSORS.GAF the client has, the
+        // original's frame step (0x4B8BF0, which its interface pass calls with the wall-clock
+        // ticks since the last pass) and the client's (GameClient::advance_pointer) are run side
+        // by side over random tick counts from the same start (0x4B8B30: frame 0 and its time).
+        {
+            static const std::pair<client::CursorKind, const char*> kLooks[] = {
+                {client::CursorKind::Normal, "cursornormal"},   {client::CursorKind::Select, "cursorselect"},
+                {client::CursorKind::Move, "cursormove"},       {client::CursorKind::Attack, "cursorattack"},
+                {client::CursorKind::Guard, "cursordefend"},    {client::CursorKind::Patrol, "cursorpatrol"},
+                {client::CursorKind::Repair, "cursorrepair"},   {client::CursorKind::Reclaim, "cursorreclamate"},
+                {client::CursorKind::Capture, "cursorcapture"}, {client::CursorKind::Load, "cursorload"},
+                {client::CursorKind::Unload, "cursorunload"},   {client::CursorKind::FindSite, "cursorfindsite"},
+                {client::CursorKind::TooFar, "cursortoofar"},   {client::CursorKind::Busy, "cursorhourglass"},
+                {client::CursorKind::Red, "cursorred"},
+            };
+            std::vector<u8> cf;
+            ta::GafDirectory dir;
+            if (vfs.read("anims\\CURSORS.GAF", cf) && ta::gaf_read_directory(cf, dir)) {
+                const u32 cur = o.alloc(16);
+                long long steps = 0, mismatches = 0;
+                int looks = 0;
+                for (const auto& [kind, name] : kLooks) {
+                    const int i = ta::gaf_find_sequence(dir, name);
+                    if (i < 0) continue;
+                    const u32 seq = o.gaf("anims\\CURSORS.GAF", cf) + Original::gaf_entry(cf, i);
+                    ++looks;
+                    o.call(0x004B8B30, 0, {cur, seq, 0});
+                    gc.set_pointer(kind == client::CursorKind::Normal ? client::CursorKind::Red : client::CursorKind::Normal);
+                    gc.set_pointer(kind);
+                    for (int k = 0; k < 300; ++k) {
+                        const u32 dt = static_cast<u32>(rnd(0, 9) ? rnd(0, 3) : rnd(4, 60));
+                        o.call(0x004B8BF0, 0, {cur, dt});
+                        gc.advance_pointer(dt);
+                        const u16 frame = static_cast<u16>(r.r32(cur) & 0xFFFF);
+                        const bool ended = r.r32(cur + 8) == 0;
+                        ++steps;
+                        if (ended != gc.pointer_ended() || (!ended && frame != gc.pointer_frame())) {
+                            if (++mismatches <= 5)
+                                std::printf("pointer %s step %d (dt %u): original frame %u%s, client %d%s\n", name, k, dt, frame, ended ? " (ended)" : "",
+                                            gc.pointer_frame(), gc.pointer_ended() ? " (ended)" : "");
+                        }
+                    }
+                }
+                std::printf("hud: pointer animation: %d looks, %lld steps, %lld differ\n", looks, steps, mismatches);
+            }
+        }
         gc.set_pointer_hidden(true);
     }
 

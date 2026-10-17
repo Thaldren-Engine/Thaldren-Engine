@@ -139,8 +139,11 @@ public:
         bar_timer_ = s.timer;
         bar_timer_set_ = s.timer_set;
     }
-    // The pointer's animation: the look shown and its frame (tests).
+    // The pointer's animation: the look shown and its frame (tests); a new look (not the one
+    // shown) starts at its first frame.
     CursorKind pointer_kind() const { return cursor_shown_; }
+    bool pointer_ended() const { return cursor_ended_; }
+    void set_pointer(CursorKind k);
     int pointer_frame() const { return cursor_frame_; }
     // One pass of the pointer's animation with `dt` ticks (1/30 s) of wall clock since the last
     // (frame() does this; tests drive it directly).
@@ -254,7 +257,6 @@ private:
     std::int16_t cursor_count_ = 0;
     bool cursor_ended_ = false;
     bool cursor_set_ = false;
-    void set_pointer(CursorKind k);
     // The top bar's rates as last refreshed (energy made, used, metal made, used) and the timer
     // of the refresh (every 30 steps, from the player's display timer).
     std::array<float, 4> bar_rates_{};

@@ -180,6 +180,7 @@ int main(int argc, char** argv) {
     world->attach(&game);
     const auto at = world->start_position(0);
     game.center_on({at[0] << 16, 0, at[1] << 16});
+    game.set_pointer_hidden(!front.draw_pointer);  // --no-pointer: frames as the original's screen surface has them
     const int rc = client::run_client(game, world->content(), front);
     std::printf("game tick %u, scroll (%d, %d), %d selected\n", world->battle().game_tick(), game.scroll_x(), game.scroll_y(),
                 game.selected_count());

@@ -13,6 +13,14 @@
 //   screens: main single options skirmish ingame (the in-game menu, F2) prefs (its options)
 //            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu; tabmenu
 //   Writes <out_prefix><screen>.bmp.
+//   In-battle panels (after "battle"): open:NAME opens a GUI layout with the build menu's
+//   handler (as the battle opens <unit><page>.GUI); text:GADGET=TEXT sets a gadget's caption
+//   (as the build menu sets its "+n" counts) and redraws it; mouse:X,Y,HELD,MESSAGE puts one
+//   pointer event (HELD 1 left / 2 right, MESSAGE 0x201 left down, 0x202 up, 0x204 right down,
+//   0x205 up) into the input queue and runs one pass of the GUI's input; state:GADGET=V sets a
+//   gadget's state as the battle does for the tabs and switches; each pass prints the
+//   battle's interface flags (GS+0x37EBE: 0x80 next page, 0x100 previous page) and the order
+//   mode (GS+0x2CC3); shot:NAME writes the composited screen.
 
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
@@ -136,6 +144,11 @@ public:
         r_.w32(kDisplay + 0xF2, 30);  // the key queue's capacity
         r_.w32(kDisplay + 0x44, 1);   // "DIB" display: the windowed display-mode list, no DirectDraw
         r_.w32(kDisplay + 0xE8, 30);  // ticks per second
+        // The pointer's event queue (32 events of 6 words: x, y, buttons held, -, message, -).
+        r_.w32(kDisplay + 0x186, 32);
+        r_.w32(kDisplay + 0x18A, r_.alloc(32 * 24));
+        r_.w32(kDisplay + 0x18E, 0);
+        r_.w32(kDisplay + 0x192, 0);
         set_screen(640, 480);
         if (!r_.call(0x004B62D0, 0, {30})) return false;  // the periodic timer table (30 ticks a second)
         if (!r_.call(kMountArchives, 0, {})) return false;
@@ -268,6 +281,59 @@ int main(int argc, char** argv) {
             else if (k.size() > 1 && k[0] == 'f') code = 0xE2 + static_cast<u32>(std::atoi(k.c_str() + 1)) - 1;
             r.call(0x004C1B20, 0, {code});
             continue;
+        } else if (s.rfind("open:", 0) == 0) {
+            // A layout opened as the battle opens a build menu page (handler: the build menu's).
+            u32 lay = 0;
+            ok = r.call(kGuiOpen, 0, {g.gui(), r.str(s.substr(5)), 0}, &lay);
+            if (lay) {
+                r.w32(lay + 8, 0x0041AA00);
+                r.w32(lay + 0xC, 0);
+                r.call(0x004A81E0, 0, {g.gui(), r.r32(lay + 0x10) | 0x40});
+            }
+            std::printf("%s: layout %08X\n", s.c_str(), lay);
+            continue;
+        } else if (s.rfind("text:", 0) == 0) {
+            const std::string t = s.substr(5);
+            const auto eq = t.find('=');
+            const u32 top = r.r32(g.gui() + 0x18);
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            u32 idx = 0xFFFFFFFFu;
+            if (gadgets && eq != std::string::npos) r.call(0x0049FE60, 0, {gadgets, r.str(t.substr(0, eq))}, &idx);
+            if (idx != 0xFFFFFFFFu) {
+                const std::string text = t.substr(eq + 1);
+                r.write(gadgets + idx * 0x15B + 0xB6, text.c_str(), text.size() + 1);
+                r.call(0x004A5F40, 0, {g.gui(), idx});
+            }
+            std::printf("%s: gadget %d\n", s.c_str(), static_cast<int>(idx));
+            continue;
+        } else if (s.rfind("state:", 0) == 0) {
+            // A gadget's state (pressed / stage), as the battle sets the tabs' and switches' (0x4A11C0).
+            const std::string t = s.substr(6);
+            const auto eq = t.find('=');
+            const u32 top = r.r32(g.gui() + 0x18);
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            u32 idx = 0xFFFFFFFFu;
+            if (gadgets && eq != std::string::npos) r.call(0x0049FE60, 0, {gadgets, r.str(t.substr(0, eq))}, &idx);
+            if (idx != 0xFFFFFFFFu) {
+                r.call(0x004A11C0, 0, {g.gui(), idx, static_cast<u32>(std::atoi(t.c_str() + eq + 1))});
+                r.call(0x004A5F40, 0, {g.gui(), idx});
+            }
+            std::printf("%s: gadget %d\n", s.c_str(), static_cast<int>(idx));
+            continue;
+        } else if (s.rfind("mouse:", 0) == 0) {
+            int x = 0, y = 0, held = 0, msg = 0;
+            std::sscanf(s.c_str() + 6, "%d,%d,%d,%i", &x, &y, &held, &msg);
+            const u32 cap = r.r32(0x0051F320 + 0x186), buf = r.r32(0x0051F320 + 0x18A), wr = r.r32(0x0051F320 + 0x18E);
+            const u32 ev[6] = {static_cast<u32>(x), static_cast<u32>(y), static_cast<u32>(held), 0, static_cast<u32>(msg), 0};
+            r.write(buf + wr * 24, ev, sizeof ev);
+            r.w32(0x0051F320 + 0x18E, (wr + 1) % cap);
+            ok = r.call(0x004A9FD0, 0, {g.gui()});
+            std::uint16_t flags = 0;
+            std::uint8_t mode = 0;
+            r.read(gs + 0x37EBE, &flags, 2);
+            r.read(gs + 0x2CC3, &mode, 1);
+            std::printf("%s: %s, interface flags %04X, order mode %d\n", s.c_str(), ok ? "ok" : "failed", flags, mode);
+            continue;
         } else if (s.rfind("shot:", 0) == 0) {
             Frame f;
             if (!g.grab(f)) {
@@ -290,6 +356,9 @@ int main(int argc, char** argv) {
             r.write(r.r32(surf + 0xC), pat.data(), pat.size());
             r.w8(gs + 0x2A44, static_cast<std::uint8_t>(r.r32(gs + 0x2A44) | 4));
             r.w8(gs + 0x38A51, static_cast<std::uint8_t>(r.r32(gs + 0x38A51) | 1));
+            // An empty unit type table (the build menu's handler looks gadget names up in it).
+            r.w32(gs + 0x1439B, r.alloc(0x1000));
+            r.w32(gs + 0x1438F, 1);
             // The game type (the first word behind GS+0x391E9; 2 and 3 show the menu's briefing
             // button as "Settings", 3 is a network game).
             if (game_type >= 0 && r.r32(gs + 0x391E9)) r.w32(r.r32(gs + 0x391E9), static_cast<u32>(game_type));

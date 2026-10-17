@@ -66,6 +66,38 @@ void model_box(const Model3doPiece* root, std::array<std::int32_t, 3>& lo, std::
         }
 }
 
+// A picture font (a GAF whose first sequence's frame n is character n): the glyphs keep their
+// own colours; the text height is the 'I' frame's height + 2 and a glyph's top row lies (that
+// height - its y offset) below the text's top (as the menus' captions, see "Front end").
+client::Font picture_font(const std::vector<std::uint8_t>* g) {
+    client::Font font;
+    std::vector<render::Sprite8> frames;
+    if (!g || !gaf_sequence_frames(*g, 0, frames) || frames.size() <= 'I') return font;
+    const int i_height = frames['I'].height;
+    font.height = i_height + 2;
+    font.raise = 0;
+    for (std::size_t c = 0x20; c < frames.size() && c < 256; ++c) {
+        const render::Sprite8& f = frames[c];
+        client::Glyph& gl = font.glyphs[c];
+        gl.width = f.width;
+        gl.present = f.width > 0;
+        gl.rows = std::max(1, f.height);
+        gl.top = i_height - f.y_offset;
+        gl.left = -f.x_offset;
+        gl.ink.assign(static_cast<std::size_t>(f.width) * static_cast<std::size_t>(gl.rows), 0);
+        gl.colours.assign(gl.ink.size(), 0);
+        if (c == ' ') continue;
+        for (int y = 0; y < f.height; ++y)
+            for (int x = 0; x < f.width; ++x) {
+                const std::uint8_t px = f.at(x, y);
+                if (f.has_key && px == f.key) continue;
+                gl.ink[static_cast<std::size_t>(y * f.width + x)] = 1;
+                gl.colours[static_cast<std::size_t>(y * f.width + x)] = px;
+            }
+    }
+    return font;
+}
+
 } // namespace
 
 bool parse_fnt(const std::vector<std::uint8_t>& f, client::Font& out) {
@@ -226,6 +258,10 @@ bool ClientWorld::build_content(std::string& error) {
             for (int i = 0; i < 256; ++i) c.hud[static_cast<std::size_t>(i)] = static_cast<std::uint8_t>(i);
     }
     const std::string common = "anims\\commongui.GAF";
+    // Panel captions (the build buttons' counts) are drawn in the interface's picture font
+    // (hattfont12) whenever it is loaded, whatever font gadget the description names.
+    fonts_.push_back(picture_font(gaf("anims\\hattfont12.GAF")));
+    const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
     // Buttons from a GUI file's gadgets: the gadget's name is the art's sequence name.
     auto unit_index = [&](const std::string& name) -> std::uint16_t {
         for (std::size_t k = 1; k < defs_.units.size(); ++k)
@@ -301,6 +337,7 @@ bool ClientWorld::build_content(std::string& error) {
             b.attribs = g.attribs;
             b.colorf = static_cast<std::uint8_t>(g.colorf);
             if (g.font_number >= 0 && static_cast<std::size_t>(g.font_number) < gui_fonts.size()) b.font = gui_fonts[static_cast<std::size_t>(g.font_number)];
+            if (caption_font) b.font = caption_font;
             b.frames = button_art(gui_gaf, g.name, unit != 0);
             if (b.frames || b.action != client::Action::None) out.buttons.push_back(b);
         }

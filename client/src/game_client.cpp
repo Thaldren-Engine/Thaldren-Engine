@@ -502,6 +502,8 @@ void GameClient::assign_group(int group) {
 
 void GameClient::refresh_panel() {
     panel_dirty_ = false;
+    const Panel* before = current_panel();
+    const std::uint16_t focus_before = focus_;
     // One selected unit with a build menu: its menu (or orders, as its flags say).
     std::uint16_t only = 0;
     int n = 0;
@@ -512,7 +514,9 @@ void GameClient::refresh_panel() {
         }
     focus_ = n == 1 ? only : 0;
     if (mode_ != Action::None && n == 0) end_order_mode();
-    pressed_order_ = Action::None;  // the panel is made afresh: no button of the group pressed
+    // Another panel (or the same menu for another unit) is made afresh: no button of the order
+    // group shows pressed. The same panel for the same unit keeps its buttons' states.
+    if (current_panel() != before || focus_ != focus_before) pressed_order_ = Action::None;
 }
 
 const Panel* GameClient::current_panel() const {
