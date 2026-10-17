@@ -272,6 +272,10 @@ bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& b
 }
 
 std::string lounge_map;  // the room file's map (the host chooses it after the room opens)
+// The room file's focus (a live room's last pressed gadget: "focus NAME") and whether the chat
+// line still takes the keys ("keys 0": no field does).
+std::string lounge_focus;
+bool lounge_keys = true;
 u32 g_rand_state = 0;     // srand: the shared rand() state word (0: rand() not replaced)
 
 // ---------------------------------------------------------------------------------------------
@@ -562,6 +566,8 @@ bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
         else if (k == "map") map = rest;
         else if (k == "chat") chat.push_back(rest);
         else if (k == "players") players = std::atoi(rest);
+        else if (k == "focus") lounge_focus = rest;
+        else if (k == "keys") lounge_keys = std::atoi(rest) != 0;
         else if (k == "res") {
             // res SLOT W H: a player's screen size (the local player's comes from its display mode).
             int sl = 0, w = 0, h = 0;
@@ -1657,7 +1663,27 @@ int main(int argc, char** argv) {
             // players' records and the chat from FILE (see lounge_setup); the network's sends and
             // the session description do nothing.
             ok = lounge_setup(r, g, s.substr(7));
+            // A joining machine's room opens before the host's record reaches it (the session's
+            // join, then the room; the records come with the room's first frames): its set-up
+            // finds no host record to compare the map checksum with. The host record's version
+            // is held at 0 meanwhile (no checksum compare, as without a host record).
+            u32 host_rec = 0, host_ver = 0;
+            {
+                const u32 local = r.r32(gs + 0x2A42) & 0xFF;
+                const u32 lrec = r.r32(gs + 0x1B63 + local * 0x14B + 0x27);
+                if (ok && lrec && !(r.r32(lrec + 0x97) & 1))
+                    for (u32 p = 0; p < 10; ++p) {
+                        const u32 sr = r.r32(gs + 0x1B63 + p * 0x14B + 0x27);
+                        if (sr && (r.r32(sr + 0x97) & 1) && (r.r32(gs + 0x1B63 + p * 0x14B) != 0)) {
+                            host_rec = sr;
+                            host_ver = r.r32(sr + 0xA7) & 0xFF;
+                            r.w8(sr + 0xA7, 0);
+                            break;
+                        }
+                    }
+            }
             if (ok) ok = r.call(0x00449BB0, 0, {});
+            if (host_rec) r.w8(host_rec + 0xA7, static_cast<std::uint8_t>(host_ver));
             {
                 // The room opens on the list's first map; a host then chooses the file's map (its
                 // record takes the name, as the map choice's handler does).
@@ -1673,6 +1699,17 @@ int main(int argc, char** argv) {
                     u32 sum = 0;
                     if (r.call(0x004373A0, schema, {}, &sum)) r.w32(rec + 0xA9, sum);
                 }
+            }
+            if (ok && (!lounge_focus.empty() || !lounge_keys)) {
+                // A live room's focus: the gadget last pressed holds it (layout +0x20) and, after a
+                // press of anything but the chat line, no field takes the keys (GUI +0x64).
+                const u32 top = r.r32(g.gui() + 0x18);
+                const u32 gadgets = top ? r.r32(top + 4) : 0;
+                u32 idx = 0xFFFFFFFFu;
+                if (gadgets && !lounge_focus.empty()) r.call(0x0049FDF0, 0, {gadgets, r.str(lounge_focus)}, &idx);
+                if (top && idx != 0xFFFFFFFFu) r.w32(top + 0x20, idx);
+                if (!lounge_keys) r.w32(g.gui() + 0x64, 0xFFFFFFFFu);
+                std::printf("lounge: focus %s (%d), keys %d\n", lounge_focus.c_str(), static_cast<int>(idx), lounge_keys ? 1 : 0);
             }
             if (ok) ok = r.call(0x0044A680, 0, {});
             std::printf("lounge: %s, start %s\n", ok ? "set up" : "failed", "");

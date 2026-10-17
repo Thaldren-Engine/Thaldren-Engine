@@ -1034,9 +1034,14 @@ void ModemAsk::on_press(FrontEnd& fe, Widget& w) {
 void SelGame::on_press(FrontEnd& fe, Widget& w) {
     if (is(w, "UPDATE")) {
         sfx(fe, art_, "Multi");
-        if (!part_->test && part_->session) {
-            find_games(*part_);
-            games_ = found_entries(*part_);
+        if (!part_->test) {
+            // (Back from a room the session went with it: the provider is opened anew.)
+            std::string err;
+            if (!part_->session) open_provider(*part_, err);
+            if (part_->session) {
+                find_games(*part_);
+                games_ = found_entries(*part_);
+            }
         }
         fill();
     } else if (is(w, "PREVMENU")) {
@@ -1055,7 +1060,7 @@ void SelGame::on_press(FrontEnd& fe, Widget& w) {
 
 void SelGame::join(FrontEnd& fe, bool watch) {
     ListState* L = list("GAMENAME");
-    const int row = L ? L->selected : -1;
+    int row = L ? L->selected : -1;
     if (row < 0 || row >= static_cast<int>(games_.size())) return;
     const GameEntry& g = games_[static_cast<std::size_t>(row)];
     if (g.major != 3) {
@@ -1078,6 +1083,21 @@ void SelGame::join(FrontEnd& fe, bool watch) {
     if (const EditState* p = edit("PASSWORD")) part_->password = p->text;
     sfx(fe, art_, watch ? "Multi" : "BigButton");
     fe.settings().set_text("Nickname", part_->nickname);
+    if (!part_->test && !part_->session) {
+        // Back from a room (the session went with it): the provider anew and the games found
+        // there; the game is the one of the same name.
+        std::string err;
+        const std::string want = g.name;
+        if (open_provider(*part_, err)) find_games(*part_);
+        int found = -1;
+        for (std::size_t k = 0; k < part_->found.size(); ++k)
+            if (entry_of(part_->found[k]).name == want) found = static_cast<int>(k);
+        if (found < 0) {
+            show_net_message(fe, art_, "Unable to join the game");
+            return;
+        }
+        row = found;
+    }
     if (!part_->test && part_->session && row < static_cast<int>(part_->found.size())) {
         // 0x4517B0: open the session (join), then this machine's player.
         net::dplay::Session& s = *part_->session;
@@ -1964,7 +1984,9 @@ protected:
             start_level_ = static_cast<int>(clock_ & 0x1F);
         }
         if (Widget* st = widget("START")) st->grayed = !ready;
+        if (grill->stage > 0) grill_clocks_.push_back(clock_);  // (tests: the room dumps)
     }
+    std::vector<std::uint32_t> grill_clocks_;  // the clock of each room frame since the grill began to open
     bool dirty_ = true;
     std::uint32_t fixed_clock_ = 0, anim_tick_ = 0, frames_seen_ = 0;
     int start_level_ = 0;  // the start button's colour word (its art's light row; 0 plain)
@@ -2042,7 +2064,9 @@ protected:
             st.metal = hp.metal;
             st.unit_limit = hp.unit_limit;
         } else {
-            st.map = ps[static_cast<std::size_t>(local)].map;
+            // No host record yet: the map chosen in this machine's own list (the first one,
+            // 0x449BB0).
+            st.map = room.is_host() ? ps[static_cast<std::size_t>(local)].map : first_network_map(art_);
         }
         st.have_map = room.is_host() || ps[static_cast<std::size_t>(local)].map_ready;
         return st;
@@ -2160,6 +2184,17 @@ protected:
             LoungeState s = st_;
             s.clock = clock_;  // the room clock of this frame (gui_harness: clock:T)
             write_lounge(live_->dump + name + ".txt", s);
+            // The focus (the gadget last pressed) and whether the chat line takes the keys.
+            std::ofstream o(live_->dump + name + ".txt", std::ios::app);
+            if (focus_gadget_ > 0 && focus_gadget_ < static_cast<int>(widgets_.size())) o << "focus " << widgets_[static_cast<std::size_t>(focus_gadget_)].name << "\n";
+            o << "keys " << (focus_ >= 0 ? 1 : 0) << "\n";
+            // The start grill's opening began at this clock (gui_harness: the room's frames from
+            // there, one a tick).
+            if (const Widget* g = widget_c("battlestart"); g && g->stage > 0 && !grill_clocks_.empty()) {
+                o << "grill";
+                for (std::uint32_t c : grill_clocks_) o << ' ' << c;
+                o << "\n";
+            }
         }
         write_frame(live_->dump + name + ".bmp", out);
     }
@@ -2171,6 +2206,7 @@ protected:
             o << '|' << q.used << q.controller << q.name << ',' << q.ping << ',' << q.team << ',' << q.side << ',' << q.logo << ',' << q.flags << ','
               << q.options << ',' << q.synching;
         if (const Widget* g = widget_c("battlestart")) o << "|g" << g->stage;
+        o << "|f" << focus_gadget_ << ',' << focus_;
         return o.str();
     }
     const Widget* widget_c(const std::string& n) const {
@@ -2210,7 +2246,7 @@ protected:
         f.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
     }
     std::string dumped_sig_;
-    int dump_n_ = 0;
+    static inline int dump_n_ = 0;  // (numbered across rooms: a player may leave and join again)
 
     void on_enter(FrontEnd& fe, int) override { send_line(fe); }
     void send_line(FrontEnd&) {
@@ -2246,14 +2282,92 @@ protected:
             return;
         }
         if (!live_) {
-            if (n == "START") {
-                sfx(fe, art_, "BigButton");
-                return;
-            }
-            sfx(fe, art_, "Multi");
+            test_press(fe, w, n);
             return;
         }
         live_press(fe, w, n);
+    }
+    // Tests (a room from a file, no session): the handler's effects on this screen alone — the
+    // ready button (the host's Enter and focus go to START), the slot question, the map choice
+    // and view, the restrictions; the rest only sounds.
+    void test_press(FrontEnd& fe, Widget&, const std::string& n) {
+        const int local = st_.local;
+        LoungeSlot& me = st_.slots[static_cast<std::size_t>(local)];
+        if (n == "START") {
+            sfx(fe, art_, "BigButton");
+            return;
+        }
+        if (int s = row_of(n, "READY"); s >= 0) {
+            sfx(fe, art_, "Multi");
+            if (s != local || !st_.have_map) return;
+            me.options = static_cast<std::uint16_t>(me.options ^ 0x20u);
+            dirty_ = true;
+            if (host_) {
+                enter_default_ = "START";
+                focus_gadget_ = index_of("START");
+            }
+            return;
+        }
+        if (int s = row_of(n, "PLAYER"); s >= 0) {
+            if (s == local) return;
+            sfx(fe, art_, "Multi");
+            LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
+            dirty_ = true;
+            const std::uint16_t opt = host_options();
+            if (q.controller == 3) {
+                if (host_) fe.push(std::make_unique<RejectQuestion>(art_, q.name, []() {}));
+                return;
+            }
+            if (q.controller == 0 && host_) {
+                q.controller = 4;  // open -> blocked
+                return;
+            }
+            if (q.controller == 2) {
+                if (clock_ - computer_since_[static_cast<std::size_t>(s)] >= 0x1F) q = LoungeSlot{};
+                return;
+            }
+            if (q.controller == 4) q.controller = 0;
+            if (opt & 0x8000) {
+                show_net_message(fe, art_, "Can't add another player when game is closed.", 500);
+                return;
+            }
+            int computers = 0;
+            std::array<bool, 10> logos{};
+            for (const LoungeSlot& c : st_.slots) {
+                computers += c.used && (c.controller == 2 || (c.controller == 3 && c.kind == 2));
+                if (c.playing()) logos[static_cast<std::size_t>(std::min(c.logo, 9))] = true;
+            }
+            if ((opt & 0x1800) != 0x1000 && computers == 0) {
+                q = LoungeSlot{};
+                q.used = true;
+                q.controller = 2;
+                q.kind = 2;
+                q.name = ("AI:" + me.name).substr(0, 16);
+                q.logo = 0;
+                for (int k = 0; k < 10; ++k)
+                    if (!logos[static_cast<std::size_t>(k)]) {
+                        q.logo = k;
+                        break;
+                    }
+                q.options = static_cast<std::uint16_t>(me.options & 0x20u);
+                computer_since_[static_cast<std::size_t>(s)] = clock_;
+                ++st_.session_players;
+            }
+            return;
+        }
+        if (n == "RESTRICTIONS") {
+            sfx(fe, art_, "Options");
+            open_restrictions(fe);
+            return;
+        }
+        if (n == "MAP" || n == "MAPNAME") {
+            sfx(fe, art_, "Multi");
+            const std::string map = st_.map;
+            if (host_) fe.push(make_room_map_choice(art_, map, [](const std::string&) {}));
+            else fe.push(make_room_map_view(art_, [map]() { return map; }));
+            return;
+        }
+        sfx(fe, art_, "Multi");
     }
     void say_line(const std::string& text) {
         const std::string line = client::chat_line(part_->nickname, std::string(), text);
