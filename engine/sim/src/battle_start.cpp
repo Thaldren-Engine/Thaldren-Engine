@@ -124,11 +124,28 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
     }
     // Player records and the unit table: ten ranges of `unit_limit` entries.
     b.init_unit_table(static_cast<std::size_t>(start.unit_limit) * 10 + 1);
+    // 0x4854A0: the ten ranges go to the player records in order; in a network game (provider 3)
+    // the records are first sorted by their session ids (unsigned, ascending; an insertion sort,
+    // so equal ids keep their record order; an unused record's id is -1, 0x4644D0, so it sorts
+    // last), which numbers every player's units alike on every machine whatever slot each machine
+    // seated the players in (seen with the original program: its own player first in its table).
+    std::array<int, 10> range_of{};
+    {
+        std::array<int, 10> order{};
+        for (int s = 0; s < 10; ++s) order[static_cast<std::size_t>(s)] = s;
+        auto key = [&](int s) {
+            const StartPlayer& sp = start.players[static_cast<std::size_t>(s)];
+            return sp.kind == PlayerKind::Empty ? 0xFFFFFFFFu : static_cast<std::uint32_t>(sp.net_id);
+        };
+        if (start.provider == 3) std::stable_sort(order.begin(), order.end(), [&](int a, int c) { return key(a) < key(c); });
+        for (int r = 0; r < 10; ++r) range_of[static_cast<std::size_t>(order[static_cast<std::size_t>(r)])] = r;
+    }
     int last_player = 0;
     for (int s = 0; s < 10; ++s) {
         const StartPlayer& sp = start.players[static_cast<std::size_t>(s)];
         PlayerSlot& slot = b.players[static_cast<std::size_t>(s)];
-        b.assign_unit_range(s, 1 + s * start.unit_limit, (s + 1) * start.unit_limit);
+        const int r = range_of[static_cast<std::size_t>(s)];
+        b.assign_unit_range(s, 1 + r * start.unit_limit, (r + 1) * start.unit_limit);
         slot.state = static_cast<std::uint8_t>(s);
         slot.net_id = sp.net_id;
         if (sp.kind == PlayerKind::Empty) continue;

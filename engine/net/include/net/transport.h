@@ -18,6 +18,18 @@ struct Message {
     std::vector<std::uint8_t> bytes;
 };
 
+// What a session with its own player directory reports (the original's session service gave
+// the game "system messages": a player was created or destroyed, its name or data changed, the
+// session description changed, the session was lost).
+struct SessionEvent {
+    enum class Kind : std::uint8_t { PlayerCreated, PlayerDestroyed, PlayerName, PlayerData, SessionDesc, Lost };
+    Kind kind = Kind::PlayerCreated;
+    std::int32_t id = 0;
+    bool local = false;  // the player is this machine's
+    std::string short_name, long_name;
+    std::vector<std::uint8_t> data;  // the player's data (created, data changed)
+};
+
 class Transport {
 public:
     virtual ~Transport() = default;
@@ -32,6 +44,20 @@ public:
     virtual void pump() {}
     virtual bool connected() const { return true; }
     virtual std::string error() const { return {}; }
+
+    // ---- sessions with their own player directory (net/dplay_session.h); the defaults are
+    // those of the transports above, whose players' ids are chosen by the room.
+    // The next directory event, if any.
+    virtual bool next_event(SessionEvent&) { return false; }
+    // Creates a player of this machine with the session's next id: the id when known at once
+    // (the host), 0 when it follows as a local PlayerCreated event, -1 when not supported.
+    virtual std::int32_t create_player(const std::string& /*name*/, const std::vector<std::uint8_t>& /*data*/) { return -1; }
+    virtual void destroy_player(std::int32_t /*id*/) {}
+    // A player's name in the session's directory ("" when unknown or not supported).
+    virtual std::string player_name(std::int32_t /*id*/) const { return {}; }
+    // The host's description of its game for the game lists (the session's name and its four
+    // application words); `closed` refuses newcomers.
+    virtual void set_session_info(const std::string& /*name*/, const std::uint32_t /*user*/[4], bool /*closed*/) {}
 };
 
 // In-process machines; messages arrive in send order.
