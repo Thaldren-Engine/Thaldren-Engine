@@ -1016,14 +1016,30 @@ public:
         // loads; a second start does nothing while it plays).
         fe.play_sound_loop(art_.sound("BGM"));
     }
-    void frame(FrontEnd&, std::uint32_t now) override {
-        // The sparks run along the circuit lines of the picture, one move per 1/30 s.
-        const std::uint32_t t = now * 30 / 1000;
-        if (!started_) {
-            last_ = t;
-            started_ = true;
+    void frame(FrontEnd&, std::uint32_t) override {
+        // The sparks run along the circuit lines of the picture: one move per pass of the
+        // program's loop (0x425B80 is the screen's per-pass routine, called by the interface
+        // pass; no clock), so as often as frames are shown. The original's loop is held only by
+        // the presentation, which waits for the display's vertical blank: the display's refresh
+        // rate (the window front end presents with vsync).
+        ++pending_;
+    }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        // Each pass the interface first draws the whole screen anew (the focus outline it draws
+        // asks for the next full redraw, so with the focus shown that is every pass): the picture,
+        // the gadgets, the focus outline. The sparks then move on that surface: the marks of the
+        // last pass are gone, the trace test sees this pass's marks and the gadgets, a spark's
+        // old place gets the picture's pixel back (also over a gadget) and its mark lies over
+        // everything.
+        if (pending_ == 0 && shown_.width == out.width && shown_.height == out.height) {
+            out.pixels = shown_.pixels;
+            return;
         }
-        for (; last_ < t; ++last_) step_sparks();
+        do {
+            LayoutScreen::draw(fe, out);
+            if (pending_ > 0) step_sparks(out);
+        } while (pending_ > 0 && --pending_ > 0);
+        shown_ = out;
     }
 
 protected:
@@ -1038,17 +1054,13 @@ protected:
         std::uint8_t life = 0, turn = 0;
         int pos = 0;
     };
-    void step_sparks() {
+    void step_sparks(render::Image8& surface) {
         const client::ScreenLayout* L = layout();
         if (!L || !L->background || L->background->width != 640 || L->background->height < 480) return;
+        if (surface.width != 640 || surface.height < 480) return;
         const render::Sprite8& bg = *L->background;
-        if (surface_.pixels.empty()) {
-            surface_ = render::Image8(640, 480, 0);
-            for (int y = 0; y < 480; ++y)
-                for (int x = 0; x < 640; ++x) surface_.row(y)[x] = bg.at(x, y);
-        }
         sim::Lcg15& rnd = menu_rand();
-        std::uint8_t* scr = surface_.pixels.data();
+        std::uint8_t* scr = surface.pixels.data();
         for (Spark& s : sparks_) {
             if (!s.on) {
                 s.x = static_cast<std::int16_t>(static_cast<int>(rnd.next()) % 640);
@@ -1097,11 +1109,6 @@ protected:
             }
         }
     }
-    void draw_under(FrontEnd&, render::Image8& out) override {
-        if (surface_.pixels.empty()) return;
-        for (int y = 0; y < std::min(out.height, 480); ++y)
-            std::copy(surface_.row(y), surface_.row(y) + std::min(out.width, 640), out.row(y));
-    }
     void on_press(FrontEnd& fe, Widget& w) override {
         if (is(w, "SINGLE") || is(w, "MULTI")) sfx(fe, art_, "BigButton");
         else if (is(w, "EXIT")) sfx(fe, art_, "Exit");
@@ -1119,9 +1126,8 @@ protected:
 private:
     MenuArt& art_;
     std::array<Spark, 100> sparks_{};
-    render::Image8 surface_;
-    std::uint32_t last_ = 0;
-    bool started_ = false;
+    int pending_ = 0;        // passes whose spark move is still to be drawn
+    render::Image8 shown_;  // the screen as the last pass left it
 };
 
 // ------------------------------------------------------------------ in-game menus

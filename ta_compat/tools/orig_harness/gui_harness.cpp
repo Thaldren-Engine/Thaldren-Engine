@@ -249,6 +249,7 @@ bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& b
 }
 
 std::string lounge_map;  // the room file's map (the host chooses it after the room opens)
+u32 g_rand_state = 0;     // srand: the shared rand() state word (0: rand() not replaced)
 
 // The battle room's inputs, one item per line (# comments); the same file drives the client's
 // battle room (ta_play --lounge FILE):
@@ -719,6 +720,62 @@ int main(int argc, char** argv) {
             }
             std::printf("battle screen %dx%d\n", bw, bh);
             continue;
+        } else if (s.rfind("srand:", 0) == 0) {
+            // The menus' rand() stream: the C runtime keeps its state per thread and every call
+            // here runs on a new thread, so rand() (0x4E4870) is replaced by the same generator on
+            // one state word (state = state * 214013 + 2531011, result bits 16..30), set here.
+            u32& rand_state = g_rand_state;
+            if (!rand_state) {
+                rand_state = r.alloc(16);
+                std::vector<std::uint8_t> c = {0xA1};
+                auto put = [&](u32 v) {
+                    for (int i = 0; i < 4; ++i) c.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+                };
+                put(rand_state);
+                c.insert(c.end(), {0x69, 0xC0});
+                put(214013u);
+                c.push_back(0x05);
+                put(2531011u);
+                c.push_back(0xA3);
+                put(rand_state);
+                c.insert(c.end(), {0xC1, 0xE8, 0x10, 0x25});
+                put(0x7FFF);
+                c.push_back(0xC3);
+                const u32 code = r.alloc(64, PAGE_EXECUTE_READWRITE);
+                r.write(code, c.data(), c.size());
+                std::uint8_t j[5] = {0xE9};
+                const u32 rel = code - (0x004E4870 + 5);
+                std::memcpy(j + 1, &rel, 4);
+                r.write(0x004E4870, j, 5);
+            }
+            r.w32(rand_state, static_cast<u32>(std::strtoul(s.c_str() + 6, nullptr, 0)));
+            continue;
+        } else if (s.rfind("passes:", 0) == 0) {
+            // passes:N:PREFIX — N passes of the interface (0x4A9FD0: input, pointer, the top
+            // screen's per-pass routine such as the main menu's sparks), each composited and
+            // written as PREFIX<pass>.bmp (pass 1 .. N).
+            const std::string t = s.substr(7);
+            const auto c = t.find(':');
+            const int n = std::atoi(t.c_str());
+            const std::string prefix = c == std::string::npos ? out + "pass" : t.substr(c + 1);
+            int done = 0;
+            const u32 per_pass = std::getenv("GH_SCREEN_ROUTINE_ONLY") ? r.r32(r.r32(g.gui() + 0x18) + 0x1C) : 0;
+            const bool trace = std::getenv("GH_TRACE_PASSES") != nullptr;
+            for (int k = 1; k <= n; ++k) {
+                const u32 r0 = g_rand_state ? r.r32(g_rand_state) : 0, flags0 = r.r32(g.gui() + 0xCCA);
+                if (!r.call(per_pass ? per_pass : 0x004A9FD0, 0, per_pass ? std::vector<u32>{} : std::vector<u32>{g.gui()})) break;
+                if (trace)
+                    std::printf("pass %d: rand %08X -> %08X, layout flag %u -> %u\n", k, r0, g_rand_state ? r.r32(g_rand_state) : 0, flags0,
+                                r.r32(g.gui() + 0xCCA));
+                Frame f;
+                if (!g.grab(f)) break;
+                char num[16];
+                std::snprintf(num, sizeof num, "%04d", k);
+                write_bmp(prefix + num + ".bmp", f);
+                ++done;
+            }
+            std::printf("passes: %d of %d written to %s*.bmp\n", done, n, prefix.c_str());
+            continue;
         } else if (s.rfind("buildpages:", 0) == 0) {
             // buildpages:DIR (after "battle"): every builder's build pages as the original makes
             // them, for each viewing side. The unit definitions come from the original's own
@@ -789,17 +846,6 @@ int main(int argc, char** argv) {
                 int entries = 0;
                 for (u32 f = 0; f < nfiles; ++f) entries += static_cast<int>(r.r32(table + f * 0xBD));
                 std::printf("buildpages: %u download files, %d entries\n", nfiles, entries);
-            }
-            for (const char* probe : {"ARMCV", "ARMACA", "CORAK", "ARMMLV"}) {
-                u32 id = 0;
-                const bool ok = r.call(0x00488B10, 0, {r.str(probe)}, &id);
-                u32 at = 0;
-                for (u32 k = 1; k < ndefs; ++k)
-                    if (_stricmp(names[k].c_str(), probe) == 0) at = k;
-                u32 cmp = 0;
-                r.call(0x004F8A70, 0, {defs + at * 0x249 + 0x20, r.str(probe)}, &cmp);
-                std::printf("buildpages: type of %s: %s %u; record %u has id %u, compare %d\n", probe, ok ? "ok" : "failed", id & 0xFFFF, at,
-                            r.r32(defs + at * 0x249 + 0x21E) & 0xFFFF, static_cast<int>(cmp));
             }
             // The selection's abilities: every order available (nothing grayed by them) except
             // loading (its button and BLAST share a place: with loading, BLAST is hidden).
