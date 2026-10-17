@@ -120,6 +120,24 @@ void give_orders(sim::Battle& b, const ta::LoadedBattle& lb, int slot, std::mt19
     c.player = static_cast<std::uint8_t>(slot);
     const std::uint16_t type = b.ticks[sel.units[0]].type_index;
     const ta::UnitDefRecord* d = type < lb.type_defs.size() ? lb.type_defs[type] : nullptr;
+    if (rng() % 3 == 0) {
+        // Attack a unit of another player (as this machine sees it): shots, damage and kills
+        // cross the network.
+        std::vector<std::uint16_t> theirs;
+        for (std::size_t id = 1; id < b.units.size(); ++id)
+            if (b.ticks[id].type_index && b.ticks[id].owner != slot && (b.units[id].flags & sim::unit_flags::kAlive))
+                theirs.push_back(static_cast<std::uint16_t>(id));
+        if (!theirs.empty()) {
+            const std::uint16_t t = theirs[rng() % theirs.size()];
+            c.kind = sim::command::Kind::IssueIntent;
+            c.intent = sim::intent::kAttack;
+            c.target = t;
+            c.has_pos = true;
+            c.pos = b.units[t].pos;
+            sim::command::apply(b, c);
+            return;
+        }
+    }
     if (rng() % 2 == 0 && d && d->build_options_count > 0 && b.ticks[sel.units[0]].has_motion) {
         c.kind = sim::command::Kind::MobileBuild;
         c.units = {sel.units[0]};

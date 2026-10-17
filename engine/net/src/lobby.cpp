@@ -1004,6 +1004,11 @@ void BattleRoom::publish_session_info() {
     for (std::size_t i = 0; i < 15 && i < h.map.size() && h.map[i]; ++i) name[16 + i] = h.map[i];
     std::uint32_t user[4];
     for (int i = 0; i < 4; ++i) user[i] = get32(r.data() + 0x99 + 4 * i);
+    // 0x451090: the option word's low four bits carry the number of players (GS+0x2A3C).
+    std::uint32_t count = 0;
+    for (const RoomPlayer& q : players_)
+        if (q.net_id) ++count;
+    user[0] = (user[0] & ~0x000F0000u) | ((count & 0xFu) << 16);
     if (name == published_name_ && std::equal(user, user + 4, published_user_)) return;
     published_name_ = name;
     std::copy(user, user + 4, published_user_);

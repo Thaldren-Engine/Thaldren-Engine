@@ -47,6 +47,11 @@ struct NetMenuConfig {
 
 // The connection and battle room screens (the main menu's multiplayer button).
 std::unique_ptr<Screen> make_multiplayer_menu(FrontEnd& fe, const NetMenuConfig& config);
+// The battle room over a connected transport: `net_id` is this machine's player in it (from the
+// transport's own session for the original's session protocol; 0 picks one), `game_name` the
+// host's game name.
+std::unique_ptr<Screen> make_room_screen(const NetMenuConfig& config, std::unique_ptr<net::Transport> transport, bool host, std::int32_t net_id,
+                                         const std::string& game_name = {});
 void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config);
 
 // The session of a network game: the inner session runs the battle; this one keeps the
