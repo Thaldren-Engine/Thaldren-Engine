@@ -313,7 +313,10 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         }
         switch (w.kind) {
         case WidgetKind::Button:
-            if (!w.grayed) held_ = i;
+            if (!w.grayed) {
+                held_ = i;
+                focus_ = -1;  // the button is the active gadget now: a text field stops taking the keys
+            }
             break;
         case WidgetKind::ListBox: {
             const int row = (e.y - (oy_ + w.y)) / row_height(fe.menu_content()) + w.top;
