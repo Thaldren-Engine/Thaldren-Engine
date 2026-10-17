@@ -220,11 +220,16 @@ void GameClient::scroll_step(std::uint32_t dt_ticks) {
     else if (keys_down_[keys::kRight] || mouse_x_ == opt_.width - 1) x += step;
     if (keys_down_[keys::kUp] || (mouse_y_ == 0 && mouse_x_ < opt_.width)) y -= step;
     else if (keys_down_[keys::kDown] || mouse_y_ == opt_.height - 1) y += step;
-    if (x != scroll_x_ || y != scroll_y_) set_scroll(x, y);
+    if (x != scroll_x_ || y != scroll_y_) {
+        // A scroll that moves the view ends unit tracking (the original's 0x41CE90).
+        set_scroll(x, y);
+        tracked_ = 0;
+    }
 }
 
 void GameClient::minimap_jump(int x, int y) {
-    // The minimap point becomes the view's centre.
+    // The minimap point becomes the view's centre, which ends unit tracking (0x41D0F0).
+    tracked_ = 0;
     const int mw = map_width_px(), mh = map_height_px();
     if (mw <= 0 || mh <= 0) return;
     const int size = 126;
