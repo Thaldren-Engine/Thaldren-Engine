@@ -100,6 +100,7 @@ public:
     client::BattleOutcome outcome() override;
     void surrender() override;
     std::vector<client::PlayerStats> stats() override;
+    bool end_table(client::EndTable& t) override;
     ClientWorld& world() { return *world_; }
 
 private:
@@ -119,5 +120,9 @@ client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* settings_fr
 
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);
+
+// The statistics screen on its own for a given table (tests: ta_play --end-screen), with the
+// battle's interface colours made from the game palette.
+std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table);
 
 }  // namespace ta

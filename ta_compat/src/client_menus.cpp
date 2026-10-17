@@ -649,6 +649,49 @@ client::BattleOutcome SkirmishSession::outcome() {
 
 void SkirmishSession::surrender() { surrendered_ = true; }
 
+bool SkirmishSession::end_table(client::EndTable& t) {
+    // The players' records at the end (the original's statistics pass, 0x41DC20) and the map's
+    // score factors: [GlobalHeader] killmul and timemul of its OTA (map info +0xD54 / +0xD58).
+    sim::Battle& b = world_->battle();
+    const auto& req = world_->request();
+    std::array<client::EndPlayer, 10> in{};
+    for (int p = 0; p < 10; ++p) {
+        const sim::PlayerSlot& s = b.players[static_cast<std::size_t>(p)];
+        const sim::PlayerEconomy& e = b.player_economy[static_cast<std::size_t>(p)];
+        client::EndPlayer& o = in[static_cast<std::size_t>(p)];
+        o.active = s.active;
+        o.controller = s.controller;
+        o.state = s.state;
+        o.units_created = s.units_created;
+        o.watching = b.settings.player_sight[static_cast<std::size_t>(p)].watching;
+        o.colour = req.start.players[static_cast<std::size_t>(p)].colour;
+        o.kills = static_cast<std::int16_t>(s.units_killed);
+        o.losses = static_cast<std::int16_t>(s.units_lost);
+        o.energy_produced = e.energy_produced;
+        o.metal_produced = e.metal_produced;
+        o.energy_wasted = e.energy_wasted;
+        o.metal_wasted = e.metal_wasted;
+        o.name = req.start.players[static_cast<std::size_t>(p)].name;
+        if (o.name.empty()) o.name = (req.start.players[static_cast<std::size_t>(p)].kind == sim::PlayerKind::Computer ? "Computer " : "Player ") + std::to_string(p + 1);
+    }
+    float kill_mul = 0.0f, time_mul = 0.0f;
+    {
+        std::vector<std::uint8_t> ota;
+        if (world_->vfs_.read("maps\\" + req.map + ".ota", ota)) {
+            const TdfParseResult parsed = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
+            if (const TdfSection* h = parsed.root ? parsed.root->child("GlobalHeader") : nullptr) {
+                kill_mul = static_cast<float>(h->get_float("killmul", 0.0));
+                time_mul = static_cast<float>(h->get_float("timemul", 0.0));
+            }
+        }
+    }
+    t = client::end_table(in, b.game_tick(), kill_mul, time_mul);
+    const int me = b.settings.local_player;
+    t.won = (b.end_game.flags & sim::end_game_flags::kWon) != 0;
+    t.watching = me >= 0 && me < 10 && b.players[static_cast<std::size_t>(me)].active && b.settings.player_sight[static_cast<std::size_t>(me)].watching;
+    return true;
+}
+
 std::vector<client::PlayerStats> SkirmishSession::stats() {
     std::vector<client::PlayerStats> out;
     sim::Battle& b = world_->battle();

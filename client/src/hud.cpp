@@ -80,19 +80,6 @@ void bar_text(render::Image8& o, const Font& f, const std::string& s, int x, int
     draw_text(o, o.bounds(), f, s, x, y, colour);
 }
 
-// Nearest-neighbour scaling of a picture into w x h.
-render::Sprite8 scaled(const render::Sprite8& src, int w, int h) {
-    render::Sprite8 s;
-    s.width = w;
-    s.height = h;
-    s.has_key = false;
-    s.pixels.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(h));
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x)
-            s.pixels[static_cast<std::size_t>(y * w + x)] = src.at(x * src.width / std::max(w, 1), y * src.height / std::max(h, 1));
-    return s;
-}
-
 // A player's colour logo stretched into a bar's logo box (the box's corners, rows moved by dy):
 // the frame's corners (0, 0), (w, 0), (w, h), (0, h) mapped onto the box's, the texels copied
 // (the key too), clipped to the frame.
@@ -112,20 +99,17 @@ void draw_logo(render::Image8& o, const std::vector<render::Sprite8>* logos, int
 
 void GameClient::prepare_drawing() {
     prepared_ = true;
-    // The minimap keeps the map's aspect inside a 126 x 126 square, centred.
-    const int mw = std::max(1, map_width_px()), mh = std::max(1, map_height_px());
-    if (mw < mh) {
-        mm_w_ = mw * 126 / mh;
-        mm_h_ = 126;
-        mm_x_ = (126 - mm_w_) / 2;
-        mm_y_ = 0;
-    } else {
-        mm_w_ = 126;
-        mm_h_ = mh * 126 / mw;
-        mm_x_ = 0;
-        mm_y_ = (126 - mm_h_) / 2;
-    }
-    if (c_.minimap_picture && c_.minimap_picture->width > 0) minimap_ = scaled(*c_.minimap_picture, mm_w_, mm_h_);
+    // The minimap: the map's scroll extent fitted into the 126 x 126 square, its picture and
+    // the viewed player's fog picture (as the battle's loading and its first sight pass make
+    // them), and the marks.
+    const MinimapBox box = minimap_box(scroll_width(), scroll_height());
+    mm_x_ = box.x;
+    mm_y_ = box.y;
+    mm_w_ = box.w;
+    mm_h_ = box.h;
+    minimap_build_picture();
+    minimap_composite();
+    minimap_redraw();
     // The interface layer's transparent index: one no interface drawing uses.
     std::set<int> used;
     for (int k : {0, 4, 10, 12, 14, 15}) used.insert(c_.hud[static_cast<std::size_t>(k)]);
@@ -227,7 +211,19 @@ render::DrawList GameClient::draw() {
             }
         }
     }
-    if (!minimap_.pixels.empty()) list.blit(&minimap_, mm_x_, mm_y_, screen, true);
+    // The minimap (without the battle's steps drawing it, drawn anew for every frame).
+    if (!mm_hooked_) {
+        minimap_composite();
+        minimap_redraw();
+    }
+    if (mm_final_.width > 0 && mm_final_.height > 0) {
+        render::Sprite8 mm;
+        mm.width = mm_final_.width;
+        mm.height = mm_final_.height;
+        mm.has_key = false;
+        mm.pixels = mm_final_.pixels;
+        list.blit(list.keep(std::move(mm)), mm_x_, mm_y_, screen, true);
+    }
 
     // The interface layer.
     render::Sprite8 layer;
@@ -631,56 +627,6 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
         centred("Weapon", side_->unit_name2);
         bar(side_->damage_bar2, std::min(building, 100), 100);
     }
-}
-
-void GameClient::draw_minimap(render::Image8& o) {
-    const render::ClipRect mm{mm_x_, mm_y_, mm_x_ + mm_w_ - 1, mm_y_ + mm_h_ - 1};
-    const int mw = std::max(1, map_width_px()), mh = std::max(1, map_height_px());
-    // The radar cheat (interface option 0x200) shows every unit.
-    const bool sensors = (b_.settings.fog_of_war || b_.settings.explore) && !opt_.radar_everything;
-    mm_dots_.clear();
-    // Radar dots: shown units without the line of sight options, units marked by radar or
-    // sonar, and own units; in the owner's colour.
-    for (std::size_t i = 1; i < b_.units.size(); ++i) {
-        const sim::UnitTickState& t = b_.ticks[i];
-        if (t.type_index == 0) continue;
-        const sim::Unit& u = b_.units[i];
-        if (sensors && !(u.flags & (sim::sight_unit_flags::kRadar | sim::sight_unit_flags::kSonar)) && t.owner != opt_.player) continue;
-        const int x = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[0]) >> 16) * mm_w_ / mw + mm_x_;
-        const int y = (static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[2]) >> 16) -
-                       (static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[1]) >> 16) >> 1)) *
-                          mm_h_ / mh +
-                      mm_y_;
-        mm_dots_.push_back({static_cast<std::uint16_t>(i), x, y});
-        if (c_.radar_dots && !c_.radar_dots->empty()) {
-            const auto& dots = *c_.radar_dots;
-            render::blit(o, mm, dots[static_cast<std::size_t>(t.owner) % dots.size()], x, y);
-        } else {
-            put_pixel(o, mm, x, y, c_.hud[t.owner == opt_.player ? 10 : 12]);
-        }
-        if (i == hover_ && c_.radar_dot_hover) render::blit(o, mm, *c_.radar_dot_hover, x, y);
-        // Selected units show their radar and sonar reach, and their jammers'.
-        if ((u.flags & kSelected) && t.owner == opt_.player && t.type_index < b_.types.size()) {
-            const sim::SightType& st = b_.types[t.type_index].sight;
-            if (st.radar) circle(o, mm, x, y, mm_w_ * st.radar / mw, c_.hud[10]);
-            if (st.sonar) circle(o, mm, x, y, mm_w_ * st.sonar / mw, c_.hud[10]);
-            if (st.radar_jam) circle(o, mm, x, y, mm_w_ * st.radar_jam / mw, c_.hud[12]);
-            if (st.sonar_jam) circle(o, mm, x, y, mm_w_ * st.sonar_jam / mw, c_.hud[12]);
-        }
-    }
-    // Shots the viewed player sees, as single pixels.
-    for (std::int32_t k = 0; k < b_.projectiles.count; ++k) {
-        const sim::Projectile& p = b_.projectiles.slots[static_cast<std::size_t>(k)];
-        if (p.flags & sim::projectile_flags::kDeleted) continue;
-        if (b_.settings.fog_of_war && !b_.point_seen_by(opt_.player, p.pos)) continue;
-        const int x = (p.pos[0] >> 16) * mm_w_ / mw + mm_x_;
-        const int y = ((p.pos[2] >> 16) - (p.pos[1] >> 17)) * mm_h_ / mh + mm_y_;
-        put_pixel(o, mm, x, y, c_.hud[14]);
-    }
-    // The view's rectangle.
-    const int x0 = mm_w_ * scroll_x_ / mw + mm_x_, y0 = mm_h_ * scroll_y_ / mh + mm_y_;
-    const int x1 = mm_w_ * (opt_.width - 128) / mw - 1 + x0, y1 = mm_h_ * (opt_.height - 64) / mh - 1 + y0;
-    outline_rect(o, o.bounds(), x0, y0, x1, y1, c_.hud[14]);
 }
 
 } // namespace client

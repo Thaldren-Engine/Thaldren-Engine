@@ -98,6 +98,38 @@ struct PlayerStats {
     float energy_excess = 0, metal_excess = 0, energy_received = 0, metal_received = 0, energy_sent = 0, metal_sent = 0;
 };
 
+// The end-of-battle statistics as the statistics screen shows them (spec: docs/RE_MEMORY.md,
+// "Client", "End of a battle"). Inputs: each player slot's record at the end.
+struct EndPlayer {
+    bool active = false;          // the slot is in use
+    int controller = 0;           // 1 local, 2 computer / simulated here, 3 remote
+    int state = 0;                // 10: out of the game
+    std::uint32_t units_created = 0;
+    bool present = true;          // still in the (network) game
+    bool watching = false;        // a watcher (side record option bit 6)
+    int colour = 0;               // its logo colour
+    std::int16_t kills = 0, losses = 0;
+    double energy_produced = 0, metal_produced = 0, energy_wasted = 0, metal_wasted = 0;
+    std::string name;
+};
+struct EndRow {
+    int slot = 0;
+    std::string name;  // (at most 29 characters)
+    int colour = 0;
+    // Kills, losses, energy and metal produced, excess energy and metal, score.
+    std::array<std::int32_t, 7> values{};
+};
+struct EndTable {
+    std::vector<EndRow> rows;              // in slot order
+    std::array<std::int32_t, 7> maxima{};  // each column's largest value (at least 10, 10, 100, ...)
+    bool won = false, watching = false;    // the local player's outcome (the title)
+};
+// The table from the players' records, the step the battle ended at and the map's score
+// factors (kill and time multipliers): a slot shows when it is present and either playing
+// (in use, controller 1-3, not out, not watching) or it ever made a unit; amounts are
+// truncated; score = trunc((step / 60) x time factor) + trunc(kills x kill factor), at least 0.
+EndTable end_table(const std::array<EndPlayer, 10>& players, std::uint32_t end_step, float kill_mul, float time_mul);
+
 // A running battle with its client: owns the battle, its content and the
 // GameClient over it. Skirmish, campaign missions, multiplayer games and loaded
 // games are all BattleSessions.
@@ -120,6 +152,8 @@ public:
     virtual bool network() const { return false; }
     // Totals for the statistics screen.
     virtual std::vector<PlayerStats> stats() { return {}; }
+    // The statistics screen's table (false: the session has none).
+    virtual bool end_table(EndTable&) { return false; }
     // Called once the battle and its end screens are over; may push the next
     // screen (campaign debriefing / next mission). Return false to go back to
     // the screen the battle was started from (the default).

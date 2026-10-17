@@ -133,6 +133,7 @@ public:
     void send_chat(const std::string& t) override { inner_->send_chat(t); }
     void surrender() override { inner_->surrender(); }
     std::vector<client::PlayerStats> stats() override { return inner_->stats(); }
+    bool end_table(client::EndTable& t) override { return inner_->end_table(t); }
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
     SkirmishSession& inner() { return *inner_; }
     CampaignProgress& progress() { return *progress_; }

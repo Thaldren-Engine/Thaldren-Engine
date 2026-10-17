@@ -443,13 +443,18 @@ bool ClientWorld::build_content(std::string& error) {
             c.cursors.by_number_timing[n] = timing(kByNumber[n]);
         }
         c.radar_dots = sequence("anims\\FX.GAF", "radlogo");
+        c.nuke_dots = sequence("anims\\FX.GAF", "nuclogo");
         c.team_logos = sequence("textures\\logos.GAF", "32xlogos");
         for (std::size_t p = 0; p < c.player_colour.size(); ++p) c.player_colour[p] = request_.start.players[p].colour;
         if (const auto* q = sequence("anims\\FX.GAF", "radlogohigh")) c.radar_dot_hover = &q->front();
         if (const auto* q = sequence("anims\\IGTITLES.GAF", "igpaused")) c.paused_sign = &q->front();
     }
 
-    // The minimap picture stored in the map file (header word 10), cut to the map's shape.
+    // The minimap's source picture: the one stored in the map file when its header says so
+    // (word 10 its offset: u32 width, u32 height, pixels; word 11 bit 0 present), taken as
+    // stored; otherwise one sampled from the tiles at twice the minimap's size (pixel (x, y)
+    // stands for the point x * scroll width / its width, y * scroll height / its height; tile
+    // numbers past the tile count read tile 0).
     {
         auto rd32 = [&](std::size_t o) -> std::uint32_t {
             if (o + 4 > tnt_.size()) return 0;
@@ -459,18 +464,30 @@ bool ClientWorld::build_content(std::string& error) {
         };
         const std::uint32_t at = rd32(40);
         const int w = static_cast<int>(rd32(at)), h = static_cast<int>(rd32(at + 4));
-        if (at && w > 0 && h > 0 && w <= 1024 && h <= 1024 && at + 8 + static_cast<std::size_t>(w) * h <= tnt_.size()) {
-            const int mw = hm_.width(), mh = hm_.height();
-            int cw = w, ch = h;
-            if (mw > mh) ch = std::max(1, h * mh / mw);
-            else if (mh > mw) cw = std::max(1, w * mw / mh);
-            render::Sprite8 pic;
-            pic.width = cw;
-            pic.height = ch;
-            pic.has_key = false;
-            pic.pixels.resize(static_cast<std::size_t>(cw) * ch);
-            for (int y = 0; y < ch; ++y)
-                std::memcpy(&pic.pixels[static_cast<std::size_t>(y) * cw], &tnt_[at + 8 + static_cast<std::size_t>(y) * w], static_cast<std::size_t>(cw));
+        render::Sprite8 pic;
+        pic.has_key = false;
+        if ((rd32(44) & 1) && at && w > 0 && h > 0 && w <= 4096 && h <= 4096 && at + 8 + static_cast<std::size_t>(w) * h <= tnt_.size()) {
+            pic.width = w;
+            pic.height = h;
+            pic.pixels.assign(tnt_.begin() + static_cast<std::ptrdiff_t>(at + 8), tnt_.begin() + static_cast<std::ptrdiff_t>(at + 8 + static_cast<std::size_t>(w) * h));
+        } else {
+            const int sw = hm_.width() * 16 - 32, sh = hm_.height() * 16 - 128;
+            const client::MinimapBox box = client::minimap_box(sw, sh);
+            pic.width = box.w * 2;
+            pic.height = box.h * 2;
+            pic.pixels.assign(static_cast<std::size_t>(pic.width) * static_cast<std::size_t>(pic.height), 0);
+            const int tiles_per_row = hm_.width() / 2;
+            for (int y = 0; y < pic.height; ++y)
+                for (int x = 0; x < pic.width; ++x) {
+                    const int px = sw * x / pic.width, py = sh * y / pic.height;
+                    const std::size_t cell = static_cast<std::size_t>((py / 32) * tiles_per_row + px / 32);
+                    std::size_t tile = cell < tiles_.map.size() ? tiles_.map[cell] : 0;
+                    if (tile >= tiles_.tiles.size()) tile = 0;
+                    if (tile < tiles_.tiles.size() && tiles_.tiles[tile].pixels.size() >= 1024)
+                        pic.pixels[static_cast<std::size_t>(y) * pic.width + x] = tiles_.tiles[tile].pixels[static_cast<std::size_t>((py & 31) * 32 + (px & 31))];
+                }
+        }
+        if (pic.width > 0 && pic.height > 0) {
             sprites_.push_back(std::move(pic));
             c.minimap_picture = &sprites_.back();
         }
@@ -761,6 +778,7 @@ bool ClientWorld::build_content(std::string& error) {
             }
         gray_table_ = render::gray_remap_table(palette_);
         fog_.gray_table = &gray_table_;
+        for (std::size_t k = 0; k < 256; ++k) c.minimap_grey[k] = gray_table_[k];
     }
     // Features' names and reclaim values (hover info), the victory and defeat signs.
     // The bottom bar shows a feature's description (the original's +0x80 text, also when empty).

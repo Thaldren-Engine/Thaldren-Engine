@@ -24,7 +24,10 @@
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
 //   --no-pointer        frames without the pointer (as the original's screen surface has them)
 //   --realtime          headless: run the frames at wall-clock speed (network games)
+//   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
+//                       (the format of gui_harness's endmsn:)
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -61,6 +64,7 @@ int main(int argc, char** argv) {
     int side = 0;
     bool direct = false;
     std::string settings_path = "settings.txt";
+    std::string end_screen_file;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -68,6 +72,10 @@ int main(int argc, char** argv) {
         if (a == "--direct") continue;
         if (a == "--settings") {
             settings_path = next();
+            continue;
+        }
+        if (a == "--end-screen") {
+            end_screen_file = next();
             continue;
         }
         if (a == "--map") setup.map = next();
@@ -166,6 +174,62 @@ int main(int argc, char** argv) {
             for (int t = 1; t <= music.track_count(); ++t)
                 music.types()[static_cast<std::size_t>(t)] = t - 1 < static_cast<int>(types.size()) ? static_cast<std::uint8_t>(types[static_cast<std::size_t>(t - 1)] - '0')
                                                                  : static_cast<std::uint8_t>(music.track_count() >= 16 && t <= 7 ? 1 : 0);
+        }
+        if (!end_screen_file.empty()) {
+            // Tests: the statistics screen on its own, from a table file (the format gui_harness's
+            // endmsn: reads: tick, killmul, timemul, won, local, type and player lines).
+            std::ifstream in(end_screen_file);
+            std::array<client::EndPlayer, 10> end_players{};
+            std::uint32_t tick = 0;
+            float km = 0.0f, tm = 0.0f;
+            int won = 0, local = 0;
+            for (std::string line; std::getline(in, line);) {
+                if (const auto c = line.find('#'); c != std::string::npos) line.resize(c);
+                std::istringstream ls(line);
+                std::string key;
+                if (!(ls >> key)) continue;
+                if (key == "tick") ls >> tick;
+                else if (key == "killmul") ls >> km;
+                else if (key == "timemul") ls >> tm;
+                else if (key == "won") ls >> won;
+                else if (key == "local") ls >> local;
+                else if (key == "player") {
+                    int slot = 0, colour = 0, controller = 0, state = 0, present = 1, watch = 0, kills = 0, losses = 0;
+                    std::uint32_t created = 0;
+                    double ep = 0, mp = 0, ew = 0, mw = 0;
+                    ls >> slot >> colour >> controller >> state >> created >> present >> watch >> kills >> losses >> ep >> mp >> ew >> mw;
+                    if (slot < 0 || slot > 9) continue;
+                    std::string name;
+                    std::getline(ls >> std::ws, name);
+                    while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+                    client::EndPlayer& p = end_players[static_cast<std::size_t>(slot)];
+                    p.active = controller != 0;
+                    p.controller = controller;
+                    p.state = state;
+                    p.units_created = created;
+                    p.present = present != 0;
+                    p.watching = watch != 0;
+                    p.colour = colour;
+                    p.kills = static_cast<std::int16_t>(kills);
+                    p.losses = static_cast<std::int16_t>(losses);
+                    p.energy_produced = ep;
+                    p.metal_produced = mp;
+                    p.energy_wasted = ew;
+                    p.metal_wasted = mw;
+                    p.name = name;
+                }
+            }
+            client::EndTable table = client::end_table(end_players, tick, km, tm);
+            table.won = won != 0;
+            table.watching = local >= 0 && local < 10 && end_players[static_cast<std::size_t>(local)].watching;
+            for (const client::EndRow& r : table.rows)
+                std::printf("end row %d: %s: %d %d %d %d %d %d %d\n", r.slot, r.name.c_str(), r.values[0], r.values[1], r.values[2], r.values[3],
+                            r.values[4], r.values[5], r.values[6]);
+            std::printf("end maxima: %d %d %d %d %d %d %d\n", table.maxima[0], table.maxima[1], table.maxima[2], table.maxima[3], table.maxima[4],
+                        table.maxima[5], table.maxima[6]);
+            fes.main_menu = [&art, table](client::FrontEnd&) { return ta::make_end_screen(art, table); };
+            fes.width = opt.width;  // (--res: the screen size the battle had)
+            fes.height = opt.height;
         }
         std::printf("front end: %d music tracks, %zu skirmish maps\n", music.track_count(), art.skirmish_maps().size());
         return client::run_front_end(fes, front);
