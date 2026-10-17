@@ -197,9 +197,14 @@ protected:
     std::size_t focus_limit_ = 0;  // gadgets the first focus is chosen from (those of the description)
     bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
     bool background_in_box_ = false;  // the picture drawn only inside the screen's box, from its top-left
+    const render::Sprite8* background_ = nullptr;  // another picture than the layout's (null: the layout's)
+    // Interface colours other than the layout's (screens opened in a battle take the battle's,
+    // made from the game palette); null: the layout's.
+    const std::array<std::uint8_t, 256>* colours_ = nullptr;
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     bool field_escape_clears_ = false;  // Escape in the text field empties it and commits (the original's fields)
     bool key_press_ = false;            // the press being handled came from a key
+    int lit_field_ = -2;                // the gadget whose focus marking is shown (-2: the focus's)
     // The focus ring held where it was while a screen opened by a press covers this one (until
     // the stack is back to hold_depth_; 0: not held). A press handler that redraws this screen
     // before covering it sets ring_follow_.
@@ -213,6 +218,7 @@ protected:
     int focus_before_press_ = -1;  // the focus before the last press (a press that opens a dialog keeps it)
     std::uint32_t last_click_ms_ = 0;
     int last_click_row_ = -1;
+    int last_click_x_ = 0, last_click_y_ = 0;
     // A text list held by the pointer (its index, -1: none), the pointer, the next auto-scroll time.
     int list_held_ = -1;
     int pointer_x_ = 0, pointer_y_ = 0;

@@ -514,7 +514,13 @@ public:
     SaveGamesScreen(MenuArt& art, std::string save_dir, client::BattleSession* session, bool save, render::ClipRect under)
         : client::LayoutScreen(art.layout("LOADGAME")), art_(art), dir_(std::move(save_dir)), session_(session), save_(save), under_(under) {
         background_in_box_ = true;
-        if (!save_) open_centred_ = -1;
+        if (save_) background_ = art_.picture("DSAVEGAME2");
+        else open_centred_ = -1;
+        if (session_) {
+            // In a battle the interface colours are the battle's (from the game palette).
+            for (int k = 0; k < 256; ++k) battle_colours_[static_cast<std::size_t>(k)] = art_.gui_colour(art_.content().palette, k);
+            colours_ = &battle_colours_;
+        }
         field_escape_clears_ = true;
         if (save_) {
             std::error_code ec;
@@ -525,6 +531,7 @@ public:
             if (save_) w->attribs |= 2;
             else w->active = false;
         }
+        if (!save_) focus_ = -1;  // no field takes the keys in the load menu
         if (client::Widget* w = widget("DELETE")) w->active = save_ && !files_.empty();
         if (client::Widget* w = widget("SaveGame")) w->active = save_;
         show();
@@ -534,12 +541,14 @@ public:
     }
     bool see_through() const override { return true; }
     const render::Palette* palette() const override { return nullptr; }
-    void enter(client::FrontEnd& fe) override {
-        if (session_ && !paused_ && !session_->network()) {
+    void frame(client::FrontEnd& fe, std::uint32_t now) override {
+        // The battle holds while the menu is open (GS+0x38A51 bit 0, set by both menus; the game
+        // menu that opened it lets go when it closes, after this screen came up).
+        if (session_ && !session_->network()) {
             session_->client().set_paused(true);
             paused_ = true;
         }
-        (void)fe;
+        client::LayoutScreen::frame(fe, now);
     }
     void draw(client::FrontEnd& fe, render::Image8& out) override {
         if (!placed_) {
@@ -749,6 +758,7 @@ private:
     bool paused_ = false;
     std::vector<SaveFile> files_;
     std::unique_ptr<render::Sprite8> radar_;
+    std::array<std::uint8_t, 256> battle_colours_{};
 };
 
 // The screen under the load / save menu, dimmed when it opens (open flag 0x800): in a battle the
@@ -771,6 +781,11 @@ SaveContext battle_save_context(SkirmishSession& s, const CampaignProgress* camp
     c.players = b.settings.player_count;
     c.camera_x = s.client().scroll_x();
     c.camera_z = s.client().scroll_y();
+    // The radar image: the minimap with its marks (GS+0x142DB, written by 0x4C6F10: width, height, rows).
+    const render::Image8& mm = s.client().minimap_image();
+    c.radar_width = mm.width;
+    c.radar_height = mm.height;
+    c.radar_pixels = mm.pixels;
     Vfs& vfs = s.world().vfs_;
     for (int k = 0; k < 10; ++k) {
         c.player_side[static_cast<std::size_t>(k)] = static_cast<std::uint8_t>(side_index(vfs, req.sides[static_cast<std::size_t>(k)]));

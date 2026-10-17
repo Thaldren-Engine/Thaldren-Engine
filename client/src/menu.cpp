@@ -173,6 +173,7 @@ std::string LayoutScreen::caption(const Widget& w) {
 }
 
 std::uint8_t LayoutScreen::colour(int k) const {
+    if (colours_) return (*colours_)[static_cast<std::size_t>(k & 0xFF)];
     if (!layout_) return static_cast<std::uint8_t>(k);
     return layout_->colours[static_cast<std::size_t>(k & 0xFF)];
 }
@@ -273,6 +274,9 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         press_button_ = e.button;
         pointer_x_ = e.x;
         pointer_y_ = e.y;
+        // A text field shows the focus marking (lit glyphs) it had at the last full redraw: the
+        // marking of a focus that moved away goes with the redraw after the next press.
+        lit_field_ = focus_gadget_;
         const int i = hit(e.x, e.y);
         if (i < 0) return;
         Widget& w = widgets_[static_cast<std::size_t>(i)];
@@ -281,14 +285,19 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             // left press within the double-click time acts on it (the screen's handler).
             const int y0 = oy_ + w.y + 2, y1 = oy_ + w.y + w.h - 4;
             if (e.y < y0 || e.y > y1) return;
-            const bool dbl = e.button == 1 && last_click_row_ == i && e.time_ms - last_click_ms_ < 500;
+            // (the platform's double click: within 500 ms and 2 pixels of the first press)
+            const bool dbl = e.button == 1 && last_click_row_ == i && e.time_ms - last_click_ms_ < 500 && std::abs(e.x - last_click_x_) <= 2 &&
+                             std::abs(e.y - last_click_y_) <= 2;
             last_click_ms_ = e.time_ms;
             last_click_row_ = dbl ? -1 : i;
+            last_click_x_ = e.x;
+            last_click_y_ = e.y;
             if (dbl) {
                 if (!w.items.empty()) on_press(fe, w);
                 return;
             }
             focus_gadget_ = i;
+            focus_ = -1;  // a text field stops taking the keys (the list is the active gadget now)
             list_held_ = i;
             list_pointer(fe, i);
             return;
@@ -322,7 +331,10 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             scroll_to(w, e.x, e.y);
             on_press(fe, w);
             break;
-        case WidgetKind::TextField: focus_ = i; break;
+        case WidgetKind::TextField:
+            focus_ = i;
+            focus_gadget_ = i;
+            break;
         default: on_press(fe, w); break;
         }
         return;
@@ -357,6 +369,7 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
     }
     case InputEvent::Type::KeyDown: {
         const int k = e.key;
+        lit_field_ = -2;
         if (focus_gadget_ >= 0 && focus_gadget_ < static_cast<int>(widgets_.size()) && widgets_[static_cast<std::size_t>(focus_gadget_)].text_list &&
             (k == keys::kUp || k == keys::kDown || k == ' ')) {
             Widget& l = widgets_[static_cast<std::size_t>(focus_gadget_)];
@@ -706,7 +719,7 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         if (!font) break;
         if (w.attribs & 1) fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, colour(0));
         const int index = static_cast<int>(&w - widgets_.data());
-        const bool lit = focus_gadget_ == index && mc.light.size() >= 0x2000;
+        const bool lit = (lit_field_ == -2 ? focus_gadget_ : lit_field_) == index && mc.light.size() >= 0x2000;
         int cx = x, left = w.w - 1;
         for (const char ch : w.text) {
             const auto c = static_cast<unsigned char>(ch);
@@ -1014,8 +1027,8 @@ void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
 
 void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
     if (!placed_) place(out.width, out.height);
-    if (layout_ && layout_->background) {
-        const render::Sprite8& bg = *layout_->background;
+    if (layout_ && (background_ || layout_->background)) {
+        const render::Sprite8& bg = background_ ? *background_ : *layout_->background;
         if (background_in_box_) {
             // The picture's top-left part the size of the screen's box, at the box.
             const Widget& h = widgets_.front();

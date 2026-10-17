@@ -326,6 +326,7 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
         w.text = g.text;
         w.link = g.link;
         w.assoc = g.assoc;
+        w.max_chars = g.max_chars;
         w.vertical = g.h > g.w;
         if (w.kind == WidgetKind::ListBox && content_.font) {
             // A list's height is cut to whole steps of the font's height + 2 when its screen opens.

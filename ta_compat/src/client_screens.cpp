@@ -1353,6 +1353,8 @@ protected:
         else if ((is(w, "SAVEGAME") && s && fe.hooks().save_game_menu) || (is(w, "LOADGAME") && fe.hooks().load_game_menu)) {
             // The game menu closes and the save / load menu opens over the battle (0x4609B0).
             std::unique_ptr<client::Screen> next = is(w, "SAVEGAME") ? fe.hooks().save_game_menu(fe, *s) : fe.hooks().load_game_menu(fe, s);
+            // (the battle stays held: the menu that opens holds it, and lets go when it closes)
+            if (next) session_ = nullptr;
             fe.pop();
             if (next) fe.push(std::move(next));
         }
