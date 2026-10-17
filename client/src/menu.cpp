@@ -241,7 +241,8 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         if (clip.x0 > clip.x1 || clip.y0 > clip.y1) return;
     }
     const int x = ox_ + w.x, y = oy_ + w.y;
-    const Font* font = mc.font;
+    // Buttons with attribute 0x8000 caption in the small font (0x4A5D50).
+    const Font* font = w.kind == WidgetKind::Button && (w.attribs & 0x8000) && mc.small_font ? mc.small_font : mc.font;
     // mark: the quick key to mark in the caption (0: none; only buttons that are not grayed).
     auto text_at = [&](const std::string& s, int align, int pressed, std::uint8_t fg, int mark = 0) {
         if (!font || s.empty()) return;
@@ -249,7 +250,8 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         std::string t = s;
         while (!t.empty() && font->text_width(t) > w.w - 6) t.pop_back();
         const int tw = font->text_width(t);
-        const int top = y + ((w.h - 1) - font->height) / 2 + pressed;  // the text's top row
+        // The text's top row (centred by the caption font's height, also for small-font captions).
+        const int top = y + ((w.h - 1) - (mc.font ? mc.font->height : font->height)) / 2 + pressed;
         const int ty = top + font->raise;
         int tx = x + 3 + pressed;
         if (align & 1) {
@@ -290,11 +292,18 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
     case WidgetKind::Button: {
         // Pressed while held, and while its status is set (a selected page's button).
         const bool pressed = (held || w.status != 0) && !w.grayed;
+        bool dim = false;  // a grayed button goes through shade row 12 (-20) after its caption
         if (w.frames && !w.frames->empty()) {
             const int n = static_cast<int>(w.frames->size());
             int f = 0;
-            if (w.grayed) f = w.stages > 0 ? std::min(w.stage, n - 1) : std::min(2, n - 1);
-            else if (pressed) f = w.stages > 0 ? std::max(0, n - 2) : std::min(1, n - 1);
+            if (w.grayed) {
+                // 0x4A5F40: attribute 0x100 the last frame; a switch its stage, dimmed; a plain
+                // button frame min(state + 2, last), dimmed unless attribute 0x80 (0x1800: frame 0).
+                if (w.attribs & 0x100) f = n - 1;
+                else if (w.stages > 0) f = std::min(w.stage, n - 1), dim = true;
+                else if (w.attribs & 0x1800) f = 0, dim = true;
+                else f = std::min(std::max(w.status, 0) + 2, n - 1), dim = !(w.attribs & 0x80);
+            } else if (pressed) f = w.stages > 0 ? std::max(0, n - 2) : std::min(1, n - 1);
             else f = w.stages > 0 ? std::min(w.stage, n - 1) : 0;
             const render::Sprite8& s = (*w.frames)[static_cast<std::size_t>(f)];
             render::blit(out, clip, s, x + s.x_offset, y + s.y_offset);
@@ -318,6 +327,12 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         }
         const std::uint8_t fg = w.grayed ? mc.text_dim : (w.fg ? colour(w.fg) : mc.text_colour);
         text_at(caption(w), w.attribs, pressed ? 1 : 0, fg, w.grayed ? 0 : w.quickkey_char);
+        if (dim && mc.shade.size() >= 0x2000)
+            for (int yy = std::max({y, clip.y0, 0}); yy <= std::min({y + w.h - 1, clip.y1, out.height - 1}); ++yy)
+                for (int xx = std::max({x, clip.x0, 0}); xx <= std::min({x + w.w - 1, clip.x1, out.width - 1}); ++xx) {
+                    std::uint8_t& p = out.row(yy)[xx];
+                    p = mc.shade[static_cast<std::size_t>(12 * 256 + static_cast<std::int8_t>(p))];
+                }
         break;
     }
     case WidgetKind::Label: {

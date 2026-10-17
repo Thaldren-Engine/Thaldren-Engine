@@ -246,6 +246,8 @@ bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& b
     return r.write(at, j, 5);
 }
 
+std::string lounge_map;  // the room file's map (the host chooses it after the room opens)
+
 // The battle room's inputs, one item per line (# comments); the same file drives the client's
 // battle room (ta_play --lounge FILE):
 //   local SLOT                  this machine's player slot
@@ -289,6 +291,10 @@ bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
     std::string map;
     int humans = 0, players = -1;
     std::vector<std::string> chat;
+    struct Res {
+        int slot, w, h;
+    };
+    std::vector<Res> res;
     for (const std::string& l : lines) {
         char key[32] = {};
         if (std::sscanf(l.c_str(), "%31s", key) != 1) continue;
@@ -299,6 +305,13 @@ bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
         else if (k == "map") map = rest;
         else if (k == "chat") chat.push_back(rest);
         else if (k == "players") players = std::atoi(rest);
+        else if (k == "res") {
+            // res SLOT W H: a player's screen size (the local player's comes from its display mode).
+            int sl = 0, w = 0, h = 0;
+            if (std::sscanf(rest, "%d %d %d", &sl, &w, &h) == 3 && sl >= 0 && sl < 10) {
+                res.push_back({sl, w, h});
+            }
+        }
         else if (k == "resources") {
             unsigned e = 10, m = 10, lim = 250;
             std::sscanf(rest, "%u %u %u", &e, &m, &lim);
@@ -320,7 +333,7 @@ bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
                 continue;
             const std::string name = rest + used;
             const u32 rec = gs + 0x1B63 + static_cast<u32>(slot) * 0x14B, sr = side[slot];
-            r.w32(rec, 1);
+            r.w32(rec, controller == 4 ? 0u : 1u);  // a blocked slot (state 4) holds no player
             r.w8(rec + 0x73, static_cast<std::uint8_t>(controller));
             r.w32(rec + 0x14, static_cast<u32>(ping));
             r.w8(rec + 0x13F, static_cast<std::uint8_t>(team));
@@ -337,10 +350,41 @@ bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
     }
     for (u32 p = 0; p < 10; ++p) r.write(side[p], map.c_str(), map.size() + 1);
     r.w16(gs + 0x2A3C, static_cast<std::uint16_t>(players >= 0 ? players : humans));
+    const u32 local = r.r32(gs + 0x2A42) & 0xFF;
+    for (const Res& x : res) {
+        if (static_cast<u32>(x.slot) == local) {
+            // The room copies the display mode's size into the local record (0x449BB0).
+            r.w32(gs + 0x37F1B, static_cast<u32>(x.w));
+            r.w32(gs + 0x37F1F, static_cast<u32>(x.h));
+        } else {
+            r.w16(side[x.slot] + 0x8B, static_cast<std::uint16_t>(x.w));
+            r.w16(side[x.slot] + 0x8D, static_cast<std::uint16_t>(x.h));
+        }
+    }
+    lounge_map = map;
+    // A host's room takes the game's options from the game state (0x449BB0): mapping, line of
+    // sight, its type, the commander rule and fixed locations; set them from the host's word.
+    {
+        const u32 sr = r.r32(gs + 0x1B63 + local * 0x14B + 0x27);
+        if (sr && (r.r32(sr + 0x97) & 1)) {
+            const u32 opt = r.r32(sr + 0x9B) & 0xFFFF;
+            r.w32(gs + 0x3922D, (opt >> 8) & 1);
+            r.w32(gs + 0x39231, (opt >> 9) & 1);
+            r.w32(gs + 0x39235, (opt >> 10) & 1);
+            r.w32(gs + 0x39229, (opt >> 11) & 3);
+            if (const u32 t = r.r32(gs + 0x29A0)) r.w32(t + 0x118, (opt >> 14) & 1);
+        }
+    }
     // The map chosen in the game's map list (the multiplayer list).
     const u32 schema = r.r32(gs + 0x391E9);
     if (schema) r.w32(schema, 3);  // a network game
-    if (schema && !map.empty()) r.call(0x00435A20, schema, {r.str(map)});
+    if (schema && !map.empty()) {
+        r.call(0x00435A20, schema, {r.str(map)});
+        // Every record carries the map's checksum (the machines have the same map).
+        u32 sum = 0;
+        if (r.call(0x004373A0, schema, {}, &sum))
+            for (u32 p = 0; p < 10; ++p) r.w32(side[p] + 0xA9, sum);
+    }
     if (schema) {
         char sel[64] = {};
         r.read(schema + 0xA14, sel, 63);
@@ -902,6 +946,22 @@ int main(int argc, char** argv) {
             // the session description do nothing.
             ok = lounge_setup(r, g, s.substr(7));
             if (ok) ok = r.call(0x00449BB0, 0, {});
+            {
+                // The room opens on the list's first map; a host then chooses the file's map (its
+                // record takes the name, as the map choice's handler does).
+                const u32 local = r.r32(gs + 0x2A42) & 0xFF;
+                const u32 rec = r.r32(gs + 0x1B63 + local * 0x14B + 0x27);
+                const u32 schema = r.r32(gs + 0x391E9);
+                if (ok && schema && rec && (r.r32(rec + 0x97) & 1) && !lounge_map.empty()) {
+                    r.call(0x00435A20, schema, {r.str(lounge_map)});
+                    char sel[0x8F] = {};
+                    r.read(schema + 0xA14, sel, sizeof sel - 1);
+                    r.write(rec, sel, std::strlen(sel) + 1);
+                    r.w32(rec + 0xA9, 0);
+                    u32 sum = 0;
+                    if (r.call(0x004373A0, schema, {}, &sum)) r.w32(rec + 0xA9, sum);
+                }
+            }
             if (ok) ok = r.call(0x0044A680, 0, {});
             std::printf("lounge: %s, start %s\n", ok ? "set up" : "failed", "");
         } else if (s.rfind("nick:", 0) == 0 || s.rfind("gamename:", 0) == 0 || s.rfind("password:", 0) == 0) {
@@ -920,6 +980,36 @@ int main(int argc, char** argv) {
             const std::string t = s.substr(7);
             const auto c = t.find(':');
             ok = r.call(0x004ABD90, 0, {g.gui(), r.str(t.substr(c + 1)), static_cast<u32>(std::atoi(t.c_str())), 1, 1});
+        } else if (s.rfind("stub:", 0) == 0) {
+            // stub:ADDR:VALUE:POP replaces a routine by one returning VALUE (e.g. the unit definition
+            // exchange's "all compared" 0x46E000 answering 1).
+            unsigned a = 0, v = 0, pop = 0;
+            std::sscanf(s.c_str() + 5, "%x:%u:%u", &a, &v, &pop);
+            r.stub(a, v, static_cast<std::uint16_t>(pop));
+            continue;
+        } else if (s.rfind("gword:", 0) == 0) {
+            // Debugging: gword:NAME:OFF prints the 32-bit word at the top layout's gadget NAME + OFF.
+            const std::string t = s.substr(6);
+            const auto c = t.find(':');
+            const u32 top = r.r32(g.gui() + 0x18);
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            u32 idx = 0xFFFFFFFFu;
+            if (gadgets) r.call(0x0049FDF0, 0, {gadgets, r.str(t.substr(0, c))}, &idx);
+            const u32 off = static_cast<u32>(std::strtoul(t.c_str() + c + 1, nullptr, 16));
+            if (idx != 0xFFFFFFFFu) std::printf("%s: %08X\n", s.c_str(), r.r32(gadgets + idx * 0x15B + off));
+            continue;
+        } else if (s.rfind("gsptr:", 0) == 0) {
+            // Debugging: gsptr:OFF prints the pointer at GS+OFF and the first 48 bytes it points at.
+            const u32 off = static_cast<u32>(std::strtoul(s.c_str() + 6, nullptr, 16));
+            const u32 p = r.r32(gs + off);
+            std::uint8_t b[48] = {};
+            if (p) r.read(p, b, sizeof b);
+            std::printf("GS+%X -> %08X:", off, p);
+            for (std::uint8_t c : b) std::printf(" %02X", c);
+            std::printf("  \"");
+            for (std::uint8_t c : b) std::printf("%c", c >= 0x20 && c < 0x7F ? c : '.');
+            std::printf("\"\n");
+            continue;
         } else if (s == "colours") {
             // Debugging: the interface colour table (gui +0x8B2) and the start of the palette
             // GS+0x143A7 and of the GUI's palette copy (gui +0xB2).

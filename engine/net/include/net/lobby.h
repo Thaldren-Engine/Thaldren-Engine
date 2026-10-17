@@ -72,6 +72,14 @@ struct RoomPlayer {
     std::int8_t start_position = -1;         // +0x147 (0x1E during loading)
     std::uint32_t last_heard = 0;
     std::uint32_t latency_ms = 0;
+    // Shown by the battle room: the player's screen size (+0x8B / +0x8D, the RES column), its CD
+    // word (+0x9D, bit 2 the game CD), the host's best ping (+0x9F, the game list's ping column)
+    // and the game's name (the session's name in the original; carried at +0x60, a place the
+    // original was not seen to read).
+    std::uint16_t screen_w = 0, screen_h = 0;
+    std::uint16_t cd = 4;
+    std::uint16_t best_ping = 0;
+    std::string game_name;
     bool ready() const { return (options & room::kReady) != 0; }
     bool watching() const { return (options & room::kWatch) != 0; }
 };
@@ -107,6 +115,38 @@ public:
     // Host: a computer player in a free slot (its records are the host's to send); returns the slot or -1.
     int add_computer(std::uint8_t side);
     void say(const std::string& text);
+
+    // ---- the battle room screen's controls (0x447B10)
+    // Host: the whole option word of the game (commander 0x1800, cheat codes 0x2000, fixed
+    // locations 0x4000, closed 0x8000, watching allowed 0x80; bits 8-10 the map flags).
+    void set_option_word(std::uint16_t options);
+    // This machine's screen size (the RES column).
+    void set_screen(std::uint16_t w, std::uint16_t h);
+    // The game's name (the session's name: the game list shows it).
+    void set_game_name(const std::string& name);
+    // Host: a computer player in the given free slot (-1 when taken), its logo the first free one.
+    int add_computer_at(int slot, std::uint8_t side);
+    // Host: a computer player's slot freed (status 1, "left").
+    bool remove_computer(int slot);
+    // Host: an empty slot closed to newcomers ("[BLOCKED]"; slot table id -1) or opened again.
+    bool set_blocked(int slot, bool blocked);
+    bool blocked(int slot) const { return slot >= 0 && slot < 10 && blocked_[static_cast<std::size_t>(slot)]; }
+    // Host: a player sent away (status with the reason; 0 "rejected").
+    bool kick(int slot, std::uint8_t reason = 0);
+    // This machine leaves the room (status 2 for each of its players).
+    void leave();
+    // The local player's alliance with another slot (packet 0x23; a computer player answers at once).
+    void set_allied(int slot, bool allied);
+    // The local player's alliance bytes (+0x108) and the others' (+0x113, "allied by").
+    const std::array<std::uint8_t, 10>& allied() const { return allied_; }
+    const std::array<std::uint8_t, 10>& allied_by() const { return allied_by_; }
+    // The ally team of any of this machine's players (the host for its computer players).
+    void set_ally_team_of(int slot, std::uint8_t team);
+    // A chat line as it came (the original's room shows the text a player sent as it is).
+    std::function<void(int slot, const std::string& line)> on_chat_line;
+    // Why this machine is out of the room (the status reason; -1 still in): 0 rejected, 3 closed,
+    // 10 the creator left, ...
+    int out_reason() const { return out_reason_; }
     // Whether this machine has the map (the original's map-ready byte).
     void set_map_ready(bool ready) {
         if (local_slot_ >= 0) me().map_ready = ready;
@@ -198,6 +238,10 @@ private:
     };
     std::vector<PeerChecks> peers_;
     std::map<std::uint32_t, bool> verdicts_;
+    std::array<bool, 10> blocked_{};
+    std::uint16_t pending_screen_w_ = 0, pending_screen_h_ = 0;
+    std::array<std::uint8_t, 10> allied_{}, allied_by_{};
+    int out_reason_ = -1;
 };
 
 } // namespace net

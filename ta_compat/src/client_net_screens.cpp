@@ -911,8 +911,679 @@ std::unique_ptr<client::Screen> make_net_test_screens(MenuArt& art, const client
     return std::make_unique<TestBase>(part, specs);
 }
 
+namespace {
+
+// ------------------------------------------------------------------ the battle room (LOUNGE2.GUI)
+// A slot of the room as the original's player record and side record hold it.
+struct LoungeSlot {
+    bool used = false;
+    int controller = 0;  // 1 this machine's human, 2 a computer player run here, 3 another machine's, 4 blocked
+    int state = 0;       // 10: out of the game
+    std::string name;
+    std::uint32_t ping = 0;  // the record's latency (+0x14)
+    int team = 5;            // ally team (+0x13F), 5 none
+    std::array<std::uint8_t, 10> allied{}, allied_by{};  // +0x108 / +0x113
+    int kind = 0, side = 0, logo = 0xFF, flags = 0;      // side record +0x94 .. +0x97
+    std::uint16_t options = 0, memory = 0, cd = 0, screen_w = 0, screen_h = 0;
+    std::uint8_t major = 3, minor = 1;
+    bool synching = false;  // (host) the unit definition exchange with this player still runs
+    bool ping_mark = false; // (host) the sync object's mark for the player (0x46E0B0): ":s" after the ping
+    bool playing() const { return used && controller >= 1 && controller <= 3 && state != 10; }
+    bool watching() const { return used && (options & 0x40) != 0; }
+    bool ready() const { return (options & 0x20) != 0; }
+};
+
+// The console's ring as the room shows it (0x463CA0): 30 places; a new line drops the oldest when
+// (head + 1) mod the text lines setting meets the tail.
+struct ChatRing {
+    std::array<std::string, 30> text;
+    int head = 0, tail = 0;
+    void add(const std::string& line, int lines) {
+        if (line.empty() || lines <= 0) return;
+        if ((head + 1) % lines == tail && ++tail == 30) tail = 0;
+        text[static_cast<std::size_t>(head)] = line.substr(0, 0x3F);
+        if (++head == 30) head = 0;
+    }
+};
+
+// Everything the room screen shows.
+struct LoungeState {
+    int local = 0;
+    std::array<LoungeSlot, 10> slots;
+    int session_players = 1;  // the session's player count (GS+0x2A3C)
+    std::string map;          // the map chosen in this machine's map list
+    bool have_map = true;     // this machine has the map (and its checksum agrees with the host's)
+    std::uint16_t energy = 10, metal = 10, unit_limit = 250;  // the sliders (hundreds)
+    ChatRing chat;
+    std::uint32_t clock = 0, clock_step = 0;  // tests: the clock held (ticks of 1/30 s) and its step a frame
+    int host() const {
+        for (int s = 0; s < 10; ++s)
+            if (slots[static_cast<std::size_t>(s)].controller && (slots[static_cast<std::size_t>(s)].flags & 1)) return s;
+        return 10;
+    }
+};
+
+// The first map of the multiplayer map list in the order the archives give the files (0x434BF0,
+// unsorted): the map a room starts on (0x435D30 picks it whenever the room opens).
+std::string first_network_map(MenuArt& art) {
+    static std::string first;
+    static bool done = false;
+    if (done) return first;
+    done = true;
+    for (const std::string& file : art.vfs().enumerate("maps\\*.ota")) {
+        std::vector<std::uint8_t> f;
+        if (!art.vfs().read("maps\\" + file, f)) continue;
+        auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root;
+        const TdfSection* gh = root ? root->child("GlobalHeader") : nullptr;
+        if (!gh) continue;
+        bool network = false;
+        for (const auto& c : gh->children())
+            if (upper(c->get_string("Type", 64, "")).find("NETWORK") != std::string::npos) network = true;
+        const std::string name = file.substr(0, file.size() - 4);
+        if (!network || art.vfs().size_or_zero("maps\\" + name + ".tnt") == 0) continue;
+        first = name;
+        break;
+    }
+    return first;
+}
+
+// The room file of the tests (the gui_harness lounge: format).
+LoungeState read_lounge(const std::string& path) {
+    LoungeState st;
+    std::ifstream in(path);
+    int players = -1, humans = 0;
+    for (std::string l; std::getline(in, l);) {
+        if (const auto c = l.find('#'); c != std::string::npos) l.resize(c);
+        while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        std::istringstream ls(l);
+        std::string k;
+        if (!(ls >> k)) continue;
+        if (k == "local") ls >> st.local;
+        else if (k == "map") {
+            std::getline(ls >> std::ws, st.map);
+        } else if (k == "players") ls >> players;
+        else if (k == "clock") ls >> st.clock;
+        else if (k == "clockstep") ls >> st.clock_step;
+        else if (k == "synching") {
+            int sl = 0;
+            ls >> sl;
+            if (sl >= 0 && sl < 10) st.slots[static_cast<std::size_t>(sl)].synching = true;
+        }
+        else if (k == "resources") ls >> st.energy >> st.metal >> st.unit_limit;
+        else if (k == "chat") {
+            std::string t;
+            std::getline(ls >> std::ws, t);
+            st.chat.add(t, 10);
+        } else if (k == "res") {
+            int s = 0, w = 0, h = 0;
+            ls >> s >> w >> h;
+            if (s >= 0 && s < 10) {
+                st.slots[static_cast<std::size_t>(s)].screen_w = static_cast<std::uint16_t>(w);
+                st.slots[static_cast<std::size_t>(s)].screen_h = static_cast<std::uint16_t>(h);
+            }
+        } else if (k == "allied" || k == "alliedby") {
+            int a = 0, b = 0, v = 0;
+            ls >> a >> b >> v;
+            if (a >= 0 && a < 10 && b >= 0 && b < 10) (k == "allied" ? st.slots[static_cast<std::size_t>(a)].allied : st.slots[static_cast<std::size_t>(a)].allied_by)[static_cast<std::size_t>(b)] = static_cast<std::uint8_t>(v);
+        } else if (k == "player") {
+            int s = 0, controller = 0, kind = 0, side = 0, logo = 0, flags = 0, mem = 0, cd = 0, ping = 0, team = 5;
+            std::string opt, fl, cds;
+            ls >> s >> controller >> kind >> side >> logo >> fl >> opt >> mem >> cds >> ping >> team;
+            if (s < 0 || s > 9) continue;
+            LoungeSlot& p = st.slots[static_cast<std::size_t>(s)];
+            flags = static_cast<int>(std::strtol(fl.c_str(), nullptr, 0));
+            cd = static_cast<int>(std::strtol(cds.c_str(), nullptr, 0));
+            std::getline(ls >> std::ws, p.name);
+            p.used = controller != 4;  // a blocked slot has no player (state 4 only)
+            p.controller = controller;
+            p.kind = kind;
+            p.side = side;
+            p.logo = logo;
+            p.flags = flags;
+            p.options = static_cast<std::uint16_t>(std::strtoul(opt.c_str(), nullptr, 0));
+            p.memory = static_cast<std::uint16_t>(mem);
+            p.cd = static_cast<std::uint16_t>(cd);
+            p.ping = static_cast<std::uint32_t>(ping);
+            p.team = team;
+            if (kind == 1) ++humans;
+        }
+    }
+    st.session_players = players >= 0 ? players : humans;
+    return st;
+}
+
+// The room screen. The rows are made from the description's templates (0x4455B0): each template
+// (PLAYERx, READYx, LOGOx, SIDEx, PINGx, MEMx, RESx, ALLYx, CDx, TEAMICONSx) is copied for rows 0-9,
+// named with the row's digit, 20 pixels a row down; the local player's PLAYER button becomes a
+// label (2 pixels lower, left-aligned) and so do the other rows' RES buttons (centred).
+class Lounge : public NetScreen {
+public:
+    Lounge(std::shared_ptr<NetPart> part, bool host, LoungeState st, bool test)
+        : NetScreen(part->art, net_layout(part->art, "LOUNGE2", "battleroom", true)), part_(part), host_(host), test_(test), st_(std::move(st)) {
+        build_rows();
+        if (EditState* e = edit("MESSAGE")) e->max_chars = 0x7F;
+        focus_edit("MESSAGE");
+        focus_name_ = "MESSAGE";
+        if (Widget* w = widget("OUTPUT")) w->attribs |= 0x100;  // no picked row
+        logos_ = art_.sequence("textures\\logos.gaf", "32xlogos");
+        start_art_ = art_.sequence("anims\\LOUNGE2.GAF", "battlestart");
+        // The start grill over the start button (0x449BB0: frame 0, shown).
+        if (Widget* b = widget("battlestart")) {
+            b->active = true;
+            b->stage = 0;
+            kinds_[index_of("battlestart")] = 200;
+        }
+        // A client's map button views the map (0x449BB0).
+        if (!host_)
+            if (Widget* m = widget("MAP")) {
+                m->attribs = 2;
+                set_caption(*m, "View Map");
+            }
+        // The host's game options are its to change; the others see them grayed... (0x449BB0: the
+        // switches of a client are grayed).
+        if (!host_)
+            for (const char* n : {"COMMANDER", "MAPPING", "LOSTYPE", "WATCHING", "CHEATING", "FIXEDLOC", "GAMEOPEN"})
+                if (Widget* w = widget(n)) w->grayed = true;
+        if (!host_)
+            for (const char* n : {"MAXUNITS", "ENERGY", "METAL"})
+                if (Widget* w = widget(n)) w->grayed = true;
+        fixed_clock_ = st_.clock;
+        clock_ = fixed_clock_;
+        set_sliders();
+        // A joining machine's room opens on the first map of its list (0x449BB0); unless the host
+        // plays that map, the first making of the rows finds the host's map missing (0x448C70):
+        // "<name> does not have this map" on the chat (also sent to the others) and the ready
+        // bit off. The name is the session's player name (tests: none, as gui_harness has no
+        // session).
+        if (!host_ && !st_.map.empty() && upper(st_.map) != upper(first_network_map(art_))) {
+            const std::string line = "<" + (test ? std::string() : part_->nickname) + "> does not have this map";
+            st_.chat.add(line, text_lines_);
+            st_.slots[static_cast<std::size_t>(st_.local)].options &= static_cast<std::uint16_t>(~0x20u);
+            join_line_ = line;
+        }
+        refresh();
+    }
+    std::string join_line_;  // the line above, sent to the others once the room runs
+    int text_lines_ = 10;
+    const render::Palette* palette() const override { return LayoutScreen::palette(); }
+
+protected:
+    static constexpr const char* kTemplates[10] = {"PLAYERx", "READYx", "LOGOx", "SIDEx", "PINGx", "MEMx", "RESx", "ALLYx", "CDx", "TEAMICONSx"};
+
+    void build_rows() {
+        const int local = st_.local;
+        const std::size_t base = widgets_.size();
+        for (int row = 0; row < 10; ++row)
+            for (int t = 0; t < 10; ++t) {
+                const int ti = index_of(kTemplates[t]);
+                if (ti < 0) continue;
+                Widget w = widgets_[static_cast<std::size_t>(ti)];
+                w.name = std::string(kTemplates[t]).substr(0, std::strlen(kTemplates[t]) - 1) + std::to_string(row);
+                w.y += 20 * row;
+                w.active = true;
+                if (t == 0) {
+                    if (row == local) {
+                        if (w.kind == WidgetKind::Button) to_label(w);
+                        w.attribs = 1;
+                    } else {
+                        w.attribs |= 0x8000;
+                    }
+                } else if (t == 1) {
+                    if (row != local) {
+                        w.grayed = true;
+                        w.status = 0;
+                    }
+                } else if (t == 6) {
+                    if (row != local && w.kind == WidgetKind::Button) to_label(w);
+                } else if (t == 7) {
+                    if (row == local) w.active = false;
+                } else if (t == 9) {
+                    w.active = false;
+                    w.stage = 10;
+                }
+                widgets_.push_back(w);
+                kinds_[static_cast<int>(widgets_.size() - 1)] = t + 100;
+            }
+        (void)base;
+    }
+    // A button turned into a label (0x445300): 2 pixels lower, its caption kept.
+    static void to_label(Widget& w) {
+        w.kind = WidgetKind::Label;
+        w.y += 2;
+        w.attribs |= 0x10;
+        w.frames = nullptr;
+        w.quickkey = w.quickkey_char = 0;  // (no underlined key)
+    }
+    Widget* row_widget(const char* prefix, int row) { return widget(std::string(prefix) + std::to_string(row)); }
+
+    // The host's option word (or this machine's own when there is no host).
+    std::uint16_t host_options() const {
+        const int h = st_.host();
+        return st_.slots[static_cast<std::size_t>(h == 10 ? st_.local : h)].options;
+    }
+
+    // The sliders (0x449BB0): metal and energy 0..10000 at the host's amounts, the unit limit
+    // 20 + its position.
+    void set_sliders() {
+        if (Widget* w = widget("METAL")) {
+            w->range = 10001;
+            set_knob(*w, st_.metal * 100);
+        }
+        if (Widget* w = widget("ENERGY")) {
+            w->range = 10001;
+            set_knob(*w, st_.energy * 100);
+        }
+        if (Widget* w = widget("MAXUNITS")) {
+            // The settings' unit limit is the most (0x449BB0: range = limit - 20).
+            w->range = std::max(0, unit_limit_setting_ - 20);
+            set_knob(*w, std::clamp(st_.unit_limit - 20, 0, w->range));
+        }
+        slider_texts();
+    }
+    // The room's sliders keep a knob position (0x45B9B0 sets it from a value: value (at most the
+    // maximum) / maximum x (travel - 1), whole pixels, one more when not whole; 0x45BA20 reads the
+    // value back: knob / (travel - 1) x maximum, truncated), so a value read back can differ.
+    static void set_knob(Widget& w, int value) {
+        if (w.span < 2 || w.range <= 0) return;
+        const double t = static_cast<double>(std::min(value, w.range)) / w.range * (w.span - 1);
+        const int k = static_cast<int>(t);
+        w.knob_pos = t - k != 0.0 ? static_cast<int>(t + 1.0) : k;
+        w.position = value;
+        w.knob_value = value;
+    }
+    static int knob_value(const Widget& w) {
+        if (w.span < 2) return 0;
+        return static_cast<int>(static_cast<double>(w.knob_pos) / (w.span - 1) * w.range);
+    }
+    // 0x445C70 / 0x445D60 / 0x445B70: the amounts beside the sliders as read back from the knobs,
+    // metal and energy rounded down to hundreds; the unit limit 20 + the slider (the host's own),
+    // else the host's record's.
+    void slider_texts() {
+        if (const Widget* w = widget("METAL"))
+            if (Widget* t = widget("METALTEXT")) t->text = std::to_string(knob_value(*w) / 100 * 100);
+        if (const Widget* w = widget("ENERGY"))
+            if (Widget* t = widget("ENERGYTEXT")) t->text = std::to_string(knob_value(*w) / 100 * 100);
+        if (const Widget* w = widget("MAXUNITS"))
+            if (Widget* t = widget("MAXUNITSTEXT")) t->text = std::to_string(host_ ? knob_value(*w) + 20 : st_.unit_limit);
+    }
+    int unit_limit_setting_ = 250;
+
+    // 0x445ED0, 0x446A50, 0x448C70: the rows and the options from the records.
+    void refresh() {
+        // This machine's players (its human and computer players) take the local player's ready bit.
+        for (LoungeSlot& q : st_.slots)
+            if (q.used && (q.controller == 1 || q.controller == 2))
+                q.options = static_cast<std::uint16_t>((q.options & ~0x20u) | (st_.slots[static_cast<std::size_t>(st_.local)].options & 0x20u));
+        const LoungeSlot& me = st_.slots[static_cast<std::size_t>(st_.local)];
+        const bool me_ready = me.ready();
+        const std::uint16_t opt = host_options();
+        auto stage = [&](const char* n, int v) {
+            if (Widget* w = widget(n)) w->stage = v;
+        };
+        stage("COMMANDER", (opt & 0x1800) >> 11);
+        stage("MAPPING", (~opt >> 8) & 1);
+        stage("LOSTYPE", !(opt & 0x200) ? 2 : ((~opt >> 10) & 1));
+        stage("WATCHING", (opt >> 7) & 1);
+        stage("CHEATING", (opt & 0x2000) >> 13);
+        stage("FIXEDLOC", (opt & 0x4000) >> 14);
+        stage("GAMEOPEN", (~opt >> 15) & 1);
+        // Chat: the lines from the ring's tail to its head; when more lines wait than the list
+        // shows, the tail moves on one line a frame.
+        if (ListState* L = list("OUTPUT")) {
+            const Widget* ow = widget("OUTPUT");
+            ChatRing& c = st_.chat;
+            const int waiting = c.head >= c.tail ? c.head - c.tail : c.head + 30 - c.tail;
+            const int rows = font() && ow ? ow->h / (font()->height + 2) : 1;
+            if (rows < waiting && ++c.tail > 29) c.tail = 0;
+            L->items.clear();
+            for (int k = c.tail; k != c.head; k = (k + 1) % 30) L->items.push_back(c.text[static_cast<std::size_t>(k)]);
+        }
+        // The map's name; red ("NOT SELECTED") without one, blinking red each second when this
+        // machine does not have it.
+        if (Widget* m = widget("MAPNAME")) {
+            if (st_.map.empty()) {
+                m->text = "NOT SELECTED";
+                map_red_ = true;
+            } else {
+                m->text = st_.map;
+                map_red_ = !st_.have_map && ((clock_ / 30) & 1) != 0;
+            }
+        }
+        // Team icons (0x446A50): a group of several players frame 2 x team, of one 2 x team + 1,
+        // none 10.
+        for (int s = 0; s < 10; ++s) {
+            const LoungeSlot& p = st_.slots[static_cast<std::size_t>(s)];
+            Widget* w = row_widget("TEAMICONS", s);
+            if (!w || !p.playing() || p.controller == 4) continue;
+            int members = 0;
+            if (p.team != 5)
+                for (const LoungeSlot& q : st_.slots) members += q.playing() && q.team == p.team;
+            w->stage = members == 0 ? 10 : members == 1 ? p.team * 2 + 1 : p.team * 2;
+        }
+        for (int s = 0; s < 10; ++s) {
+            const LoungeSlot& p = st_.slots[static_cast<std::size_t>(s)];
+            Widget* player = row_widget("PLAYER", s);
+            Widget* cd = row_widget("CD", s);
+            Widget* logo = row_widget("LOGO", s);
+            Widget* side = row_widget("SIDE", s);
+            Widget* ally = row_widget("ALLY", s);
+            Widget* team = row_widget("TEAMICONS", s);
+            Widget* res = row_widget("RES", s);
+            Widget* ping = row_widget("PING", s);
+            Widget* mem = row_widget("MEM", s);
+            Widget* ready = row_widget("READY", s);
+            if (!p.playing() && !p.watching()) {
+                if (cd) cd->active = false;
+                if (player) {
+                    std::string t = p.controller == 4 ? "[BLOCKED]" : "UNUSED";
+                    caption_fit(*player, t.substr(0, 0x1E));
+                    player->grayed = me_ready;
+                }
+                for (Widget* w : {logo, side, team, res, ping, mem})
+                    if (w) w->active = false;
+                if (ally && s != st_.local) ally->active = false;
+                if (ready) {
+                    ready->grayed = true;
+                    ready->status = 0;
+                    ready->active = false;
+                }
+                continue;
+            }
+            const bool human_here = p.controller == 1 || (p.controller == 3 && p.kind == 1);
+            if (cd) {
+                cd->active = human_here && (p.cd & 4);
+                cd->grayed = false;
+            }
+            if (logo) {
+                logo->active = p.logo != 0xFF || me_ready;
+                logo->stage = p.logo;
+            }
+            if (player) {
+                caption_fit(*player, p.name.substr(0, 0x1E));
+                player->grayed = me_ready;
+            }
+            if (side) {
+                side->stage = p.watching() ? 2 : p.side;
+                side->active = true;
+                side->grayed = !(p.controller == 1 || p.controller == 2) || me_ready;
+            }
+            if (ally) {
+                ally->stage = (me.allied_by[static_cast<std::size_t>(s)] << 1) | me.allied[static_cast<std::size_t>(s)];
+                const bool other_human = !(p.controller == 1 || p.watching() || p.controller == 2 || (p.controller == 3 && p.kind == 2));
+                ally->active = other_human && !me.watching();
+                ally->grayed = me_ready;
+            }
+            if (team) {
+                team->active = !p.watching();
+                team->grayed = !(p.controller == 1 || p.controller == 2) || me_ready;
+            }
+            if (res) {
+                // (For others the original prints "%s" without an argument: the stale stack word
+                // there points at "n/a", the text the ping column was given before.)
+                const std::string t = human_here ? std::to_string(p.screen_w) + "x" + std::to_string(p.screen_h) : std::string("n/a");
+                if (res->kind == WidgetKind::Button) {
+                    if (res->text != t) set_caption(*res, t);
+                } else {
+                    res->text = t;
+                }
+                if (p.controller != 1) res->active = true;
+                else res->grayed = me_ready;
+            }
+            if (ping) {
+                if (!(p.controller == 3 && p.kind == 1)) ping->text = "n/a";
+                else ping->text = std::to_string(p.ping) + (host_ && p.ping_mark ? ":s" : "");
+                ping->active = true;
+            }
+            if (mem) {
+                mem->text = human_here ? std::to_string(p.memory) : std::string("n/a");  // (the same stale word)
+                mem->active = true;
+                // Too little memory for the map: the label's background in interface colour 12.
+                mem->bg = p.memory < memory_needed() ? 12 : 0;
+            }
+            if (ready) {
+                ready->active = true;
+                ready->status = p.ready() ? 1 : 0;
+                ready->grayed = p.controller != 1;
+            }
+        }
+        // Start (the host): grayed until everyone is ready (0x456760); "Synching" instead while
+        // the unit definitions are compared.
+        if (Widget* st = widget("START")) {
+            const bool synced = std::none_of(st_.slots.begin(), st_.slots.end(), [](const LoungeSlot& q) { return q.synching; });
+            st->active = !host_ || synced;
+            st->grayed = !all_ready();
+            if (Widget* sy = widget("SYNCHING")) sy->active = host_ && !synced;
+            if (!host_) st->active = true;
+        }
+    }
+    bool all_ready() const {
+        int remote = 0;
+        for (const LoungeSlot& p : st_.slots) remote += p.used && p.controller == 3;
+        if (remote == 0) return false;
+        bool all_watching = true;
+        for (const LoungeSlot& p : st_.slots) {
+            if (!p.used) {
+                all_watching = false;
+                continue;
+            }
+            if ((p.controller >= 1 && p.controller <= 3) && !p.ready()) return false;
+            if (!p.watching()) all_watching = false;
+        }
+        if (st_.session_players == 1) return false;
+        return !all_watching;
+    }
+    // The memory a map needs (0x435920) from its TNT file's size (map info +0xA04): below
+    // 0x3E6666 bytes 16 MB, 0x600000 24, 0x800000 32, 0xA00000 48, 0xC00000 64, else 128.
+    int memory_needed() {
+        if (st_.map != size_map_) {
+            size_map_ = st_.map;
+            map_size_ = static_cast<std::int64_t>(art_.vfs().size_or_zero("maps\\" + st_.map + ".tnt"));
+        }
+        const std::int64_t s = map_size_;
+        return s < 0x3E6666 ? 16 : s < 0x600000 ? 24 : s < 0x800000 ? 32 : s < 0xA00000 ? 48 : s < 0xC00000 ? 64 : 128;
+    }
+    std::string size_map_;
+    std::int64_t map_size_ = 0;
+    void caption_fit(Widget& w, const std::string& t) {
+        // 0x4A5D50: characters drop from the end until the caption fits the width - 6.
+        std::string c = t;
+        const client::Font* f = (w.attribs & 0x8000) || w.kind == WidgetKind::Label ? art_.content().small_font : font();
+        while (f && !c.empty() && f->text_width(c) > w.w - 6) c.pop_back();
+        if (w.kind == WidgetKind::Label) w.text = c;
+        else if (w.text != c) set_caption(w, c);
+    }
+
+    void draw_other(FrontEnd&, render::Image8& out, const Widget& w) override {
+        const int i = static_cast<int>(&w - widgets_.data());
+        const auto k = kinds_.find(i);
+        const render::ClipRect clip = screen_clip(out);
+        if (k != kinds_.end() && k->second == 200 && start_art_ && !start_art_->empty()) {
+            const render::Sprite8& s = (*start_art_)[static_cast<std::size_t>(std::clamp(w.stage, 0, static_cast<int>(start_art_->size()) - 1))];
+            render::blit(out, clip, s, ox_ + w.x + s.x_offset, oy_ + w.y + s.y_offset);  // its top-left at the gadget
+            return;
+        }
+        if (k != kinds_.end() && k->second == 102 && logos_ && w.stage >= 0 && w.stage < static_cast<int>(logos_->size())) {
+            // The player's 32xlogos frame mapped onto the box as a textured quad (texels 1 .. size - 1).
+            const render::Sprite8& s = (*logos_)[static_cast<std::size_t>(w.stage)];
+            const int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+            const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+            const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+            render::RasterTarget t;
+            t.pixels = out.pixels.data();
+            t.pitch = out.width;
+            t.clip = clip;
+            render::textured_quad_uv(t, v, uv, s);
+        }
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override {
+        draw_over_rows(fe, out);
+        // (Each frame of the room also prints every player's version, "%i.%i", on its logo box
+        // (0x44A680), but the interface pass draws the logos over it before the frame is shown.)
+    }
+    const Widget* row_widget_c(const char* prefix, int row) const {
+        const std::string n = std::string(prefix) + std::to_string(row);
+        for (const Widget& w : widgets_)
+            if (upper(w.name) == n) return &w;
+        return nullptr;
+    }
+    int room_frames_ = 0;
+    void draw_over_rows(FrontEnd& fe, render::Image8& out) {
+        // The start button's art through its light row (0x4B8310), then the grill again over it.
+        if (Widget* st = widget("START"); st && st->active && start_level_ > 0 && st->frames && fe.menu_content().light.size() >= 0x2000) {
+            const auto& light = fe.menu_content().light;
+            lit_frames_.assign(st->frames->begin(), st->frames->end());
+            for (render::Sprite8& s : lit_frames_)
+                for (std::uint8_t& p : s.pixels)
+                    if (!s.has_key || p != s.key) p = light[static_cast<std::size_t>(start_level_) * 256 + p];
+            Widget lit = *st;
+            lit.frames = &lit_frames_;
+            draw_widget(fe, out, lit, held_ == index_of("START"));
+            if (const Widget* g = widget("battlestart"); g && g->active) draw_other(fe, out, *g);
+        }
+        // Grayed sliders (a client's metal, energy and unit limit) and their arrows go through
+        // shade row 12 (-20).
+        for (std::size_t i = 0; i < widgets_.size(); ++i) {
+            const Widget& w = widgets_[i];
+            const bool slider = w.kind == WidgetKind::ScrollBar && w.grayed && w.active;
+            bool arrow = false;
+            if (w.slider_step != 0 && w.active)
+                if (const Widget* s = widget(w.link)) arrow = s->grayed;
+            if (!slider && !arrow) continue;
+            shade_rect(fe, out, screen_clip(out), ox_ + w.x, oy_ + w.y, ox_ + w.x + w.w - 1, oy_ + w.y + w.h - 1, -20);
+            // Labels drawn after it (in gadget order) that reach into it go on top again.
+            for (std::size_t j = i + 1; j < widgets_.size(); ++j) {
+                const Widget& l = widgets_[j];
+                if (l.kind != WidgetKind::Label || !l.active) continue;
+                if (l.x < w.x + w.w && w.x < l.x + l.w && l.y < w.y + w.h && w.y < l.y + l.h) draw_widget(fe, out, l, false);
+            }
+        }
+        // PLAYER0's colour word is 24 (0x44A680): a button's art goes through light row 24; as a
+        // label (the local player's row) its text does.
+        if (Widget* p = widget("PLAYER0"); p && p->active && p->kind == WidgetKind::Button && p->frames && fe.menu_content().light.size() >= 0x2000) {
+            const auto& light = fe.menu_content().light;
+            lit_player_.assign(p->frames->begin(), p->frames->end());
+            for (render::Sprite8& s : lit_player_)
+                for (std::uint8_t& px : s.pixels)
+                    if (!s.has_key || px != s.key) px = light[24 * 256 + px];
+            Widget lit = *p;
+            lit.frames = &lit_player_;
+            draw_widget(fe, out, lit, held_ == index_of("PLAYER0"));
+        }
+        if (Widget* p = widget("PLAYER0"); p && p->active && p->kind == WidgetKind::Label && fe.menu_content().small_font) {
+            const client::Font& f = *fe.menu_content().small_font;
+            line_text(out, screen_clip(out), f, p->text, ox_ + p->x, oy_ + p->y + f.raise, p->w, 24, fe.menu_content().light);
+        }
+        // Grayed labels (the local player's name while ready) go through shade row 12 (0x4A56B0).
+        for (std::size_t i = 0; i < widgets_.size(); ++i) {
+            const Widget& w = widgets_[i];
+            if (w.kind != WidgetKind::Label || !w.active || !w.grayed) continue;
+            shade_rect(fe, out, screen_clip(out), ox_ + w.x, oy_ + w.y, ox_ + w.x + w.w - 1, oy_ + w.y + w.h - 1, -20);
+            // Gadgets after it in gadget order that reach into its box are drawn over it again.
+            for (std::size_t j = i + 1; j < widgets_.size(); ++j) {
+                const Widget& l = widgets_[j];
+                if (!l.active || (l.kind != WidgetKind::Label && l.kind != WidgetKind::Button)) continue;
+                if (l.x < w.x + w.w && w.x < l.x + l.w && l.y < w.y + w.h && w.y < l.y + l.h) draw_widget(fe, out, l, static_cast<int>(j) == held_);
+            }
+        }
+    }
+
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        // (Tests: the clock held, moving on `clockstep` ticks a frame.)
+        clock_ = fixed_clock_ ? fixed_clock_ + st_.clock_step * frames_seen_++ : now_ms * 30u / 1000u;
+        ++room_frames_;
+        // The rows are made again only when something changed (GS+0x2BEE bit 0).
+        if (dirty_) {
+            dirty_ = false;
+            refresh();
+            if (host_) animate(fe);
+        }
+    }
+    // 0x44A680, the host: once everybody is ready the start grill opens (frame 1 at once with
+    // "Options", then one frame each 4 ticks up to 8, "Panel" at 4) and the start button's art
+    // glows (its colour word = the clock's low five bits: the light row it is drawn through).
+    void animate(FrontEnd& fe) {
+        Widget* grill = widget("battlestart");
+        if (!grill) return;
+        const int frames = start_art_ ? static_cast<int>(start_art_->size()) : 9;
+        if (grill->stage > 0 && clock_ > anim_tick_) {
+            if (grill->stage < 8) {
+                ++grill->stage;
+                dirty_ = true;
+            }
+            anim_tick_ += 4;
+            if (grill->stage == 4) sfx(fe, art_, "Panel");
+        }
+        if (grill->stage != 0 && grill->stage < frames - 1) dirty_ = true;
+        const bool ready = all_ready();
+        if (ready) {
+            dirty_ = true;
+            if (grill->stage == 0) {
+                grill->stage = 1;
+                anim_tick_ = clock_;
+                sfx(fe, art_, "Options");
+            }
+            start_level_ = static_cast<int>(clock_ & 0x1F);
+        }
+        if (Widget* st = widget("START")) st->grayed = !ready;
+    }
+    bool dirty_ = true;
+    std::uint32_t fixed_clock_ = 0, anim_tick_ = 0, frames_seen_ = 0;
+    int start_level_ = 0;  // the start button's colour word (its art's light row; 0 plain)
+
+    void on_enter(FrontEnd& fe, int) override { send_line(fe); }
+    void send_line(FrontEnd&) {
+        EditState* e = edit("MESSAGE");
+        if (!e || e->text.empty()) return;
+        // 0x463E50: "<name> text" on the console, sent to the others.
+        const LoungeSlot& me = st_.slots[static_cast<std::size_t>(st_.local)];
+        const std::string line = "<" + me.name + "> " + e->text;
+        st_.chat.add(line, 10);
+        e->text.clear();
+        e->point = 0;
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        const std::string n = upper(w.name);
+        if (n == "PREVMENU") {
+            sfx(fe, art_, "Previous");
+            fe.pop();
+            return;
+        }
+        if (n == "START") {
+            sfx(fe, art_, "BigButton");
+            return;
+        }
+        sfx(fe, art_, "Multi");
+    }
+
+    std::shared_ptr<NetPart> part_;
+    bool host_ = false, test_ = false;
+    LoungeState st_;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+    const std::vector<render::Sprite8>* start_art_ = nullptr;
+    std::uint32_t clock_ = 0;
+    std::vector<render::Sprite8> lit_frames_, lit_player_;
+    bool map_red_ = false;
+    std::array<bool, 10> mem_red_{};
+};
+
+}  // namespace
+
 namespace net_screens_detail {
-std::unique_ptr<client::Screen> make_lounge(std::shared_ptr<void>, bool, const std::string&) { return nullptr; }
+std::unique_ptr<client::Screen> make_lounge(std::shared_ptr<void> p, bool host, const std::string& room_file) {
+    auto part = std::static_pointer_cast<NetPart>(p);
+    if (!room_file.empty()) {
+        LoungeState st = read_lounge(room_file);
+        const bool h = (st.slots[static_cast<std::size_t>(st.local)].flags & 1) != 0;
+        return std::make_unique<Lounge>(part, h, std::move(st), true);
+    }
+    LoungeState st;
+    st.slots[0].used = true;
+    st.slots[0].controller = 1;
+    st.slots[0].kind = 1;
+    st.slots[0].flags = host ? 1 : 0;
+    st.slots[0].name = part->nickname;
+    return std::make_unique<Lounge>(part, host, std::move(st), false);
+}
 }  // namespace net_screens_detail
 
 }  // namespace ta
