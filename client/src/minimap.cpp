@@ -185,15 +185,26 @@ void GameClient::minimap_player_stage(int player) {
     mm_hooked_ = true;
     if (!prepared_) prepare_drawing();
     if (player == viewed_player()) minimap_redraw();
+    if (minimap_probe) minimap_probe(0, player);
 }
 
 void GameClient::minimap_sensor_turn(int player) {
     mm_hooked_ = true;
     if (!prepared_) prepare_drawing();
     if (player == viewed_player()) minimap_composite();
+    if (minimap_probe) minimap_probe(1, player);
 }
 
-void GameClient::minimap_step_end() { ++mm_blink_calls_; }
+void GameClient::minimap_step_end() {
+    ++mm_blink_calls_;
+    if (minimap_probe) minimap_probe(2, -1);
+}
+
+void GameClient::minimap_sight_rebuilt() {
+    if (!prepared_) return;  // (the first drawing composes it)
+    minimap_composite();
+    minimap_redraw();
+}
 
 void GameClient::draw_minimap_onto(render::Image8& o) {
     if (!prepared_) prepare_drawing();

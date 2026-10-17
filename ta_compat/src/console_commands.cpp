@@ -45,6 +45,12 @@ struct ConsoleCommands::Impl {
     void say(const std::string& text) { c.message(text); }
     void not_built(const char* name) { st.not_built.push_back(name); }
     void sight_view_changed() { c.options_mut().fog = b().settings.fog_of_war || b().settings.explore; }
+    // A whole sight rebuild (0x4816A0) ends by composing the minimap's fog picture and drawing
+    // its marks at once.
+    void rebuild_sight(bool clear_explored) {
+        b().rebuild_sight(clear_explored);
+        c.minimap_sight_rebuilt();
+    }
 
     // The share switches of the local player's side record (network games): flip, announce.
     void toggle_share(std::uint8_t bit, const char* what) {
@@ -137,7 +143,7 @@ void ConsoleCommands::Impl::build() {
     add("FShadow", [this](const Words&) { c.options_mut().feature_shadows = !c.options().feature_shadows; });
     add("LOSType", [this](const Words&) {
         b().settings.true_sight = !b().settings.true_sight;
-        b().rebuild_sight(false);
+        rebuild_sight(false);
     });
     add("Light", [this](const Words& a) {
         st.light[0] = a.number(1, 0);
@@ -238,19 +244,19 @@ void ConsoleCommands::Impl::build() {
     add("LOS", [this](const Words&) {
         b().settings.fog_of_war = !b().settings.fog_of_war;
         sight_view_changed();
-        b().rebuild_sight(false);
+        rebuild_sight(false);
     });
     add("Mapping", [this](const Words&) {
         b().settings.explore = !b().settings.explore;
         sight_view_changed();
-        b().rebuild_sight(true);
+        rebuild_sight(true);
     });
     add("DoubleShot", [this](const Words&) { b().settings.damage_options ^= 0x80; });
     add("HalfShot", [this](const Words&) { b().settings.damage_options ^= 0x100; });
     add("NowISee", [this](const Words&) {
         b().settings.explore = false;
         b().settings.fog_of_war = false;
-        b().rebuild_sight(true);
+        rebuild_sight(true);
     });
     add("Meteor", [this](const Words& a) {
         // No argument: a shower starts now; otherwise the map's shower switch.

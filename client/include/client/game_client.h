@@ -143,6 +143,12 @@ public:
     void minimap_player_stage(int player);
     void minimap_sensor_turn(int player);
     void minimap_step_end();
+    // A whole sight rebuild (an option switched): the fog picture and the marks at once.
+    void minimap_sight_rebuilt();
+    // Tests: called with (0 marks, 1 fog picture, 2 blink count) and the player at each of the
+    // hooks above, after the client's own work (a harness repeats the original's routine there).
+    std::function<void(int, int)> minimap_probe;
+    int minimap_blink_count() const { return mm_blink_calls_; }
     // The minimap as the frame shows it (its picture at its place, the view's rectangle over
     // it), onto `o` (draw() does this; tests compare it).
     void draw_minimap_onto(render::Image8& o);

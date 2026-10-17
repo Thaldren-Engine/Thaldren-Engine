@@ -418,6 +418,11 @@ struct Options {
     // 0x4669B0, fog picture 0x466C20, marks 0x466DC0, the view's rectangle 0x41C3C0 and the
     // blit 0x466B00) onto a pattern, against the client's (compared over the whole screen).
     bool minimap = false;
+    // --minimap-steps N: after each scene's minimap check, N battle steps more with 0-2 frames
+    // after each (the view moved now and then): the original's marks / fog picture / blink
+    // routines run at the client's own hooks inside each step, its blit onto a screen kept from
+    // frame to frame, compared with the client's frame after frame.
+    int minimap_steps = 0;
 };
 
 struct Stats {
@@ -449,6 +454,7 @@ int main(int argc, char** argv) {
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
         else if (a == "--minimap") opt.minimap = true;
+        else if (a == "--minimap-steps" && k + 1 < argc) opt.minimap = true, opt.minimap_steps = std::atoi(argv[++k]);
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
         else if (positional == 2) opt.out_dir = argv[k], ++positional;
@@ -1109,6 +1115,7 @@ int main(int argc, char** argv) {
         }
     }
     long long mm_scenes = 0, mm_same = 0, mm_pixels = 0;
+    long long mm_seq_frames = 0, mm_seq_same = 0, mm_seq_pixels = 0;
     Stats st;
     int written = 0;
     for (int sc = 0; sc < opt.scenes; ++sc) {
@@ -2082,6 +2089,174 @@ int main(int argc, char** argv) {
                 }
             }
             b.projectiles = kept_shots;
+            if (mm_ok && opt.minimap_steps > 0) {
+                // ---- The minimap over time ----
+                // Some units of every owner selected (their reach circles), kept selected.
+                int seq_selected = 0;
+                for (std::size_t i = 1; i < b.units.size(); ++i)
+                    if (b.ticks[i].type_index && rnd(0, 2) == 0) b.units[i].flags |= 0x10u;
+                for (std::size_t i = 1; i < b.units.size(); ++i) seq_selected += b.ticks[i].type_index && (b.units[i].flags & 0x10u);
+                std::vector<u8> ut(b.units.size() * kUnitSize);
+                r.read(units_at, ut.data(), ut.size());
+                // What the marks read of the units and shots, and the viewed player's sight.
+                auto put_units = [&]() {
+                    for (std::size_t i = 1; i < b.units.size(); ++i) {
+                        u8* d = &ut[i * kUnitSize];
+                        const sim::UnitTickState& t = b.ticks[i];
+                        const sim::Unit& u = b.units[i];
+                        const u16 ti = t.type_index < world.types_.size() ? t.type_index : 0;
+                        std::memcpy(d + 0xA6, &ti, 2);
+                        if (!ti) continue;
+                        std::memcpy(d + 0x6A, u.pos.data(), 12);
+                        const u32 def = udefs + static_cast<u32>(ti) * kDefSize;
+                        std::memcpy(d + 0x92, &def, 4);
+                        const u32 owner = gs + gPlayers + static_cast<u32>(t.owner) * kPlayerSize;
+                        std::memcpy(d + 0x96, &owner, 4);
+                        std::memcpy(d + 0xA8, &u.id, 2);
+                        d[0xFA] = t.damaged_timer;
+                        d[0xFF] = static_cast<u8>(t.owner);
+                        d[0x10E] = u.activate_flags;
+                        std::memcpy(d + 0x110, &u.flags, 4);
+                        for (u32 k = 0; k < 3; ++k) {
+                            const sim::WeaponSlot& s = u.weapons[k];
+                            const u32 wp = s.type ? wdefs + static_cast<u32>(s.type->index) * 0x115 : 0u;
+                            std::memcpy(d + 0x10 + 0x1C * k, &wp, 4);
+                            d[0x1E + 0x1C * k] = s.stockpile;
+                        }
+                    }
+                    r.write(units_at, ut.data(), ut.size());
+                };
+                bool ownerless_nuke = false;
+                auto put_shots = [&]() {
+                    std::vector<u8> pt(300 * 0x6B, 0);
+                    const i32 n = std::min<i32>(b.projectiles.count, 300);
+                    for (i32 s = 0; s < n; ++s) {
+                        const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(s)];
+                        const std::size_t o0 = static_cast<std::size_t>(s) * 0x6B;
+                        put_at<u32>(pt, o0, p.weapon ? wdefs + static_cast<u32>(p.weapon->index) * 0x115 : 0u);
+                        for (int k = 0; k < 3; ++k) put_at<i32>(pt, o0 + 4 + 4 * static_cast<std::size_t>(k), p.pos[static_cast<std::size_t>(k)]);
+                        put_at<u32>(pt, o0 + 0x52, p.owner ? units_at + static_cast<u32>(p.owner->id) * kUnitSize : 0u);
+                        pt[o0 + 0x66] = p.owner_slot;
+                        if (p.weapon && (p.weapon->flags & 0x60000000u) && !p.owner) ownerless_nuke = true;
+                    }
+                    r.write(proj_at, pt.data(), pt.size());
+                    r.w32(gs + 0x141F3, static_cast<u32>(n));
+                };
+                const std::size_t nblocks = static_cast<std::size_t>(bw * bh);
+                auto put_sight = [&]() {
+                    const auto& c = b.sight.players[view].counts;
+                    if (!c.empty()) r.write(counts_at[view], c.data(), std::min(c.size(), nblocks));
+                    if (!b.explored.empty()) r.write(explored_at, b.explored.data(), std::min(b.explored.size(), nblocks) * 2);
+                };
+                // The fog picture is composed only when the sight changed since the last one (the
+                // sight routines set its flag); kept here as the copy of what it was made from.
+                auto fog_counts = b.sight.players[view].counts;
+                auto fog_explored = b.explored;
+                u16 cnt = static_cast<u16>(7 - gc.minimap_blink_count() % 8);
+                r.write(gs + 0x142EF, &cnt, 2);
+                bool seq_fault = false;
+                long long marks = 0, composed = 0, unchanged = 0, blinks = 0;
+                gc.minimap_probe = [&](int what, int player) {
+                    if (seq_fault) return;
+                    if (what == 0 && player == view) {
+                        put_units();
+                        put_shots();
+                        put_sight();
+                        const u16 hv2 = gc.hover_unit();
+                        r.write(gs + 0x2CBA, &hv2, 2);
+                        if (ownerless_nuke) {
+                            seq_fault = true;  // (the original's marks fault on it)
+                            return;
+                        }
+                        seq_fault = !o.call(0x00466DC0, 0, {});
+                        ++marks;
+                    } else if (what == 1 && player == view) {
+                        put_sight();
+                        u16 f = 0;
+                        r.read(gs + 0x142F1, &f, 2);
+                        if (fog_counts != b.sight.players[view].counts || fog_explored != b.explored) {
+                            f = static_cast<u16>(f | 4u);
+                            fog_counts = b.sight.players[view].counts;
+                            fog_explored = b.explored;
+                            ++composed;
+                        } else {
+                            ++unchanged;
+                        }
+                        r.write(gs + 0x142F1, &f, 2);
+                        seq_fault = !o.call(0x00466C20, 0, {});
+                    } else if (what == 2) {
+                        seq_fault = !o.call(0x00466580, 0, {});
+                        ++blinks;
+                    }
+                };
+                // Both screens start as the scene left them and are kept from frame to frame.
+                std::vector<u8> oscr(static_cast<std::size_t>(W * H));
+                r.read(mm_px, oscr.data(), oscr.size());
+                render::Image8 cscr(W, H);
+                cscr.pixels = oscr;
+                long long frames = 0, same = 0, fpix = 0, blits = 0, scrolls = 0;
+                int dumped = 0;
+                for (int k = 0; k < opt.minimap_steps && !seq_fault; ++k) {
+                    b.step();
+                    b.end_frame();
+                    if (seq_fault) break;
+                    for (int f = rnd(0, 2); f > 0 && !seq_fault; --f) {
+                        if (rnd(0, 2) == 0) {
+                            // The view moves (as the scrolling routines: the clamp, then the
+                            // minimap's redraw flag).
+                            const int nx = gc.scroll_x() + rnd(-300, 300), ny = gc.scroll_y() + rnd(-300, 300);
+                            gc.set_scroll(nx, ny);
+                            r.w32(gs + gScrollX, static_cast<u32>(nx));
+                            r.w32(gs + gScrollY, static_cast<u32>(ny));
+                            seq_fault = !o.call(0x0041C3C0, 0, {});
+                            u16 f2 = 0;
+                            r.read(gs + 0x142F1, &f2, 2);
+                            f2 = static_cast<u16>(f2 | 2u);
+                            r.write(gs + 0x142F1, &f2, 2);
+                            ++scrolls;
+                        }
+                        u16 f3 = 0;
+                        r.read(gs + 0x142F1, &f3, 2);
+                        blits += (f3 & 2) != 0;
+                        if (seq_fault || !o.call(0x00466B00, 0, {mm_ctx})) {
+                            seq_fault = true;
+                            break;
+                        }
+                        r.read(mm_px, oscr.data(), oscr.size());
+                        gc.draw_minimap_onto(cscr);
+                        long long d = 0;
+                        render::Image8 di(W, H, 0);
+                        for (std::size_t q = 0; q < oscr.size(); ++q)
+                            if (oscr[q] != cscr.pixels[q]) {
+                                ++d;
+                                di.pixels[q] = 0xFF;
+                            }
+                        const int osx = static_cast<int>(r.r32(gs + gScrollX)), osy = static_cast<int>(r.r32(gs + gScrollY));
+                        ++frames;
+                        fpix += d;
+                        if (!d && osx == gc.scroll_x() && osy == gc.scroll_y()) ++same;
+                        if ((d || opt.verbose) && !opt.out_dir.empty() && dumped < 4) {
+                            ++dumped;
+                            render::Image8 a(W, H);
+                            a.pixels = oscr;
+                            const std::string base = opt.out_dir + "/mmseq_" + std::to_string(opt.seed) + "_" + std::to_string(sc) + "_" + std::to_string(k);
+                            render::write_bmp(base + "_orig.bmp", a, world.palette_);
+                            render::write_bmp(base + "_client.bmp", cscr, world.palette_);
+                            render::write_bmp(base + "_diff.bmp", di, world.palette_);
+                        }
+                    }
+                }
+                gc.minimap_probe = nullptr;
+                std::printf("  minimap over time: %d steps, %lld frames (%lld identical, %lld pixels differ), %d selected, %lld marks, %lld fog pictures "
+                            "(%lld turns without a sight change), %lld blink steps, %lld blits, %lld view moves%s\n",
+                            opt.minimap_steps, frames, same, fpix, seq_selected, marks, composed, unchanged, blinks, blits, scrolls,
+                            seq_fault ? (ownerless_nuke ? "; stopped: a shot without an owner (the original faults)" : "; stopped: the original faulted") : "");
+                mm_seq_frames += frames;
+                mm_seq_same += same;
+                mm_seq_pixels += fpix;
+                differs(fpix);
+                if (seq_fault && !ownerless_nuke) return 1;
+            }
         }
         if (opt.verbose) {
             std::uint16_t w[4];
@@ -2119,5 +2294,7 @@ int main(int argc, char** argv) {
     std::printf("scenes %d: identical %d, different %d (%lld pixels), failures %d\n", st.scenes, st.identical, st.scenes - st.identical, st.pixels,
                 st.failures);
     if (opt.minimap) std::printf("minimap: %lld scenes, %lld identical (pixels and scroll), %lld pixels differ\n", mm_scenes, mm_same, mm_pixels);
+    if (opt.minimap_steps > 0)
+        std::printf("minimap over time: %lld frames, %lld identical (pixels and scroll), %lld pixels differ\n", mm_seq_frames, mm_seq_same, mm_seq_pixels);
     return st.scenes == st.identical && !st.failures ? 0 : 1;
 }
