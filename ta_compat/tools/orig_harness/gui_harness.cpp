@@ -21,6 +21,13 @@
 //   gadget's state as the battle does for the tabs and switches; each pass prints the
 //   battle's interface flags (GS+0x37EBE: 0x80 next page, 0x100 previous page) and the order
 //   mode (GS+0x2CC3); shot:NAME writes the composited screen.
+//   srand:S puts rand() on one shared state S (every call here runs on a new thread, and the C
+//   runtime keeps rand() per thread); passes:N:PREFIX runs N interface passes (a screen's
+//   per-pass routine, such as the main menu's sparks, included), writing each composited
+//   screen as PREFIX<pass>.bmp (compare: ta_play --headless --no-pointer --shots 0..N-1).
+//   buildpages:DIR (after "battle", with --grey and the battle palettes) writes every
+//   builder's build pages for both viewing sides (compare: ta_play --dump-build-pages DIR).
+//   --grey sets display flag 0x100 as the game does (grayed gadgets through the grey table).
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
