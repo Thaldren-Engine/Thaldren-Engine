@@ -463,6 +463,20 @@ void BattleRoom::frame(std::uint32_t clock, sim::Lcg15* crt_rand) {
         // (its first packets can come right behind the host's "loaded").
         if (started_ && !loaded_ && !defer_handshake_ && (!host_ || positions_made_) && handshake_done()) break;
     }
+    // 0x44A680 (each room frame that makes the rows): the players are kept together — a player
+    // after a free slot (neither used nor blocked) moves into it, its record with it.
+    if (host_ && !started_)
+        for (int s = 0; s < 10; ++s) {
+            if (players_[static_cast<std::size_t>(s)].net_id || blocked_[static_cast<std::size_t>(s)]) continue;
+            int t = s + 1;
+            while (t < 10 && !players_[static_cast<std::size_t>(t)].net_id) ++t;
+            if (t >= 10) break;
+            std::swap(players_[static_cast<std::size_t>(s)], players_[static_cast<std::size_t>(t)]);
+            std::swap(allied_[static_cast<std::size_t>(s)], allied_[static_cast<std::size_t>(t)]);
+            std::swap(allied_by_[static_cast<std::size_t>(s)], allied_by_[static_cast<std::size_t>(t)]);
+            if (local_slot_ == t) local_slot_ = s;
+            dirty_ = true;
+        }
     if (!started_ && (clock_ >= next_periodic_ || dirty_)) {
         if (clock_ >= next_periodic_) {
             next_periodic_ = clock_ + 60;  // every two seconds (0x456310)

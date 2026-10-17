@@ -2647,7 +2647,7 @@ protected:
                 return;
             }
             if (q.controller == 2) {
-                if (clock_ - computer_since_[static_cast<std::size_t>(s)] >= 0x1F) q = LoungeSlot{};
+                if (clock_ - computer_since_[s] >= 0x1F) q = LoungeSlot{};
                 return;
             }
             if (q.controller == 4) q.controller = 0;
@@ -2674,7 +2674,7 @@ protected:
                         break;
                     }
                 q.options = static_cast<std::uint16_t>(me.options & 0x20u);
-                computer_since_[static_cast<std::size_t>(s)] = clock_;
+                computer_since_[s] = clock_;
                 ++st_.session_players;
             }
             return;
@@ -2725,7 +2725,7 @@ protected:
             }
             if (q.controller == 2) {
                 // A computer player some time after it came (record +8, 31 ticks) leaves.
-                if (clock_ - computer_since_[static_cast<std::size_t>(s)] >= 0x1F) room.remove_computer(s, 1);
+                if (clock_ - computer_since_[room.players()[static_cast<std::size_t>(s)].net_id] >= 0x1F) room.remove_computer(s, 1);
                 return;
             }
             if (q.controller == 3) {
@@ -2745,7 +2745,7 @@ protected:
             for (const LoungeSlot& c : st_.slots) computers += c.used && (c.controller == 2 || (c.controller == 3 && c.kind == 2));
             if ((opt & 0x1800) != 0x1000 && computers == 0 && host_) {
                 // 0x451220: a computer player in this slot, the first logo nobody plays.
-                if (room.add_computer_at(s, 0) >= 0) computer_since_[static_cast<std::size_t>(s)] = clock_;
+                if (room.add_computer_at(s, 0) >= 0) computer_since_[room.players()[static_cast<std::size_t>(s)].net_id] = clock_;
             }
             // (A joining machine's computer player: not built.)
             return;
@@ -2941,7 +2941,7 @@ protected:
     std::size_t rows_base_ = 0;
     int built_local_ = -1;
     std::string shown_map_;
-    std::array<std::uint32_t, 10> computer_since_{};
+    std::map<std::int32_t, std::uint32_t> computer_since_;  // by player id (tests: by slot): when the computer player came
     const std::vector<render::Sprite8>* logos_ = nullptr;
     const std::vector<render::Sprite8>* start_art_ = nullptr;
     std::uint32_t clock_ = 0;
