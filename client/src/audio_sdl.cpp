@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 
@@ -10,14 +11,35 @@ namespace client {
 
 namespace {
 // The output rate. The original asks for an 11025 Hz, 16-bit stereo primary buffer, which only
-// the old platform mixers honoured; today's mix at the device rate, as this one does (22050 Hz,
-// every sample resampled to it, nearest frame).
-constexpr int kRate = 22050;
+// the old platform mixers honoured. Today's systems ignore it: every sound buffer is converted
+// to the output device's own rate, interpolating between neighbouring samples, and mixed
+// there. This mixer does the same: it runs at the device's rate (48000 Hz when the device
+// doesn't say) and reads each sound with linear interpolation.
+constexpr int kFallbackRate = 48000;
+
+// The frame at a 32.32 position, linearly interpolated with the next one (the last frame
+// holds; a looping sound wraps to its start).
+inline void read_frame(const Sample& s, std::size_t frames, std::uint64_t pos, bool loop, float& a, float& b) {
+    const std::size_t at = static_cast<std::size_t>(pos >> 32);
+    std::size_t next = at + 1;
+    if (next >= frames) next = loop ? 0 : at;
+    const float t = static_cast<float>(pos & 0xFFFFFFFFu) * (1.0f / 4294967296.0f);
+    const std::size_t ch = static_cast<std::size_t>(s.channels);
+    const float a0 = s.pcm[at * ch], a1 = s.pcm[next * ch];
+    a = a0 + (a1 - a0) * t;
+    if (ch > 1) {
+        const float b0 = s.pcm[at * ch + 1], b1 = s.pcm[next * ch + 1];
+        b = b0 + (b1 - b0) * t;
+    } else {
+        b = a;
+    }
+}
 }
 
 struct AudioOut::Impl {
     SDL_AudioStream* stream = nullptr;
-    std::mutex lock;
+    int rate = kFallbackRate;  // the output device's own rate
+    mutable std::mutex lock;
     struct Voice {
         int id = 0;
         const Sample* s = nullptr;
@@ -56,9 +78,8 @@ struct AudioOut::Impl {
                         v.pos %= static_cast<std::uint64_t>(n) << 32;
                         at = static_cast<std::size_t>(v.pos >> 32);
                     }
-                    const std::size_t i = at * static_cast<std::size_t>(v.s->channels);
-                    const float a = v.s->pcm[i];
-                    const float b = v.s->channels > 1 ? v.s->pcm[i + 1] : a;
+                    float a = 0, b = 0;
+                    read_frame(*v.s, n, v.pos, v.loop, a, b);
                     m.mix[static_cast<std::size_t>(f) * 2] += a * lv;
                     m.mix[static_cast<std::size_t>(f) * 2 + 1] += b * rv;
                     v.pos += v.step;
@@ -74,9 +95,8 @@ struct AudioOut::Impl {
                         m.music.reset();
                         break;
                     }
-                    const std::size_t i = at * static_cast<std::size_t>(s.channels);
-                    const float a = s.pcm[i];
-                    const float b = s.channels > 1 ? s.pcm[i + 1] : a;
+                    float a = 0, b = 0;
+                    read_frame(s, n, m.music_pos, false, a, b);
                     m.mix[static_cast<std::size_t>(f) * 2] += a * mv;
                     m.mix[static_cast<std::size_t>(f) * 2 + 1] += b * mv;
                     m.music_pos += m.music_step;
@@ -94,10 +114,13 @@ struct AudioOut::Impl {
 bool AudioOut::open() {
     if (!SDL_WasInit(SDL_INIT_AUDIO) && !SDL_InitSubSystem(SDL_INIT_AUDIO)) return false;
     auto m = std::make_unique<Impl>();
-    SDL_AudioSpec spec{SDL_AUDIO_S16, 2, kRate};
+    SDL_AudioSpec device{};
+    if (SDL_GetAudioDeviceFormat(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &device, nullptr) && device.freq > 0) m->rate = device.freq;
+    SDL_AudioSpec spec{SDL_AUDIO_S16, 2, m->rate};
     m->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &Impl::feed, m.get());
     if (!m->stream) return false;
     SDL_ResumeAudioStreamDevice(m->stream);
+    std::printf("sound output: %d Hz\n", m->rate);
     impl_ = std::move(m);
     return true;
 }
@@ -133,7 +156,7 @@ void AudioOut::run(const SoundCommand& c) {
     v->id = c.voice;
     v->s = c.sample;
     v->pos = 0;
-    v->step = (static_cast<std::uint64_t>(std::max(1, c.sample->rate)) << 32) / kRate;
+    v->step = (static_cast<std::uint64_t>(std::max(1, c.sample->rate)) << 32) / static_cast<std::uint64_t>(impl_->rate);
     v->left = c.gain_left;
     v->right = c.gain_right;
     v->loop = c.loop;
@@ -163,7 +186,7 @@ void AudioOut::play_music(std::shared_ptr<const Sample> track) {
     std::lock_guard<std::mutex> g(impl_->lock);
     impl_->music = std::move(track);
     impl_->music_pos = 0;
-    impl_->music_step = impl_->music ? (static_cast<std::uint64_t>(impl_->music->rate) << 32) / kRate : 0;
+    impl_->music_step = impl_->music ? (static_cast<std::uint64_t>(impl_->music->rate) << 32) / static_cast<std::uint64_t>(impl_->rate) : 0;
 }
 
 void AudioOut::stop_music() { play_music(nullptr); }
