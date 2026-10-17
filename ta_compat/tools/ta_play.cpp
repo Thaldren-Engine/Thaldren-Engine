@@ -30,6 +30,8 @@
 //   --net-screen SPEC   tests: the menus start at a multiplayer screen (repeat to stack them):
 //                       selprov, tcp[:ADDRESS], selgame:FILE, newmulti, lounge:FILE,
 //                       message:WIDTH:TEXT (the inputs of gui_harness's commands of those names)
+//   --dump-build-pages DIR  tests: writes every builder's build pages (listing and pictures, for
+//                       each viewing side) to DIR and exits (compare: gui_harness buildpages:)
 
 #include <array>
 #include <cstdint>
@@ -48,6 +50,7 @@
 #include "client/front.h"
 #include "client/game_client.h"
 #include "client/music.h"
+#include "render/presenter.h"
 #include "ta/client_campaign.h"
 #include "ta/client_menus.h"
 #include "ta/client_net_screens.h"
@@ -69,7 +72,7 @@ int main(int argc, char** argv) {
     int side = 0;
     bool direct = false;
     std::string settings_path = "settings.txt";
-    std::string end_screen_file, saves_dir;
+    std::string end_screen_file, saves_dir, dump_pages_dir;
     std::vector<std::string> net_screens;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
@@ -129,6 +132,10 @@ int main(int argc, char** argv) {
         else if (a == "--gpu-check") front.gpu_check = true;
         else if (a == "--no-pointer") front.draw_pointer = false;
         else if (a == "--realtime") front.realtime = true;
+        else if (a == "--dump-build-pages") {
+            dump_pages_dir = next();
+            direct = true;
+        }
         else if (a == "--shots") {
             std::stringstream ss(next());
             for (std::string t; std::getline(ss, t, ',');) front.screenshot_frames.push_back(std::atoi(t.c_str()));
@@ -258,6 +265,36 @@ int main(int argc, char** argv) {
     if (!world->load(argv[1], setup, err)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
+    }
+    if (!dump_pages_dir.empty()) {
+        // Tests: every builder's build pages for each viewing side, as the client lays them out
+        // and draws them (no selection abilities missing, the BUILD tab pressed, no counts):
+        // a listing of their buttons and a picture of each page's box.
+        const client::Content& c = world->content();
+        std::ofstream out(dump_pages_dir + "/client_pages.txt");
+        int written = 0;
+        for (std::size_t t = 1; t < c.types.size(); ++t) {
+            const client::UnitTypeLook& look = c.types[t];
+            const std::string& uname = world->defs().units[t].unit_name;
+            for (std::size_t s = 0; s < look.build_pages.size(); ++s)
+                for (std::size_t p = 0; p < look.build_pages[s].size(); ++p) {
+                    const client::Panel& pg = look.build_pages[s][p];
+                    out << "PAGE " << uname << " side " << s << " page " << (p + 1) << "\n";
+                    for (const client::Button& b : pg.buttons)
+                        out << "  " << b.name << " " << b.x << " " << b.y << " " << b.w << " " << b.h << " " << (b.grayed ? 1 : 0) << "\n";
+                    const int pw = pg.w > 0 ? pg.w : 128, ph = pg.h > 0 ? pg.h : 352;
+                    render::Image8 img(pw, ph, 0);
+                    auto disabled = [&](const client::Button& b) { return b.grayed; };
+                    client::compose_panel(
+                        img, pg.x, pg.y, pg, nullptr,
+                        [&](const client::Button& b) { return client::button_frame(b, b.action == client::Action::BuildTab, disabled(b), 0); },
+                        [&](const client::Button& b) { return client::button_dims(b, disabled(b)); }, c.minimap_grey, c.shade_levels);
+                    render::write_bmp(dump_pages_dir + "/c_" + uname + "_s" + std::to_string(s) + "_p" + std::to_string(p + 1) + ".bmp", img, c.palette);
+                    ++written;
+                }
+        }
+        std::printf("build pages: %d written to %s\n", written, dump_pages_dir.c_str());
+        return 0;
     }
     opt.cheats = true;  // a skirmish: cheat commands allowed
     client::GameClient game(world->battle(), world->content(), opt);

@@ -286,6 +286,8 @@ bool ClientWorld::build_content(std::string& error) {
     // (hattfont12) whenever it is loaded, whatever font gadget the description names.
     fonts_.push_back(picture_font(gaf("anims\\hattfont12.GAF")));
     const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
+    c.picture_font = caption_font;
+    c.console_font = font("COMIX");
     // Buttons from a GUI file's gadgets: the gadget's name is the art's sequence name.
     auto unit_index = [&](const std::string& name) -> std::uint16_t {
         for (std::size_t k = 1; k < defs_.units.size(); ++k)
@@ -315,10 +317,29 @@ bool ClientWorld::build_content(std::string& error) {
         }
         return nullptr;
     };
-    auto make_panel = [&](const std::string& gui_name, const std::string& prefix, client::Panel& out) -> bool {
+    // A build page's changes to its description (0x41ACE0): gadget records taken by download
+    // entries (record index -> unit name: the record takes the name, unit-button attributes and
+    // loses its grayed flag), and on pages from 1 on every gadget with common attribute 4 is
+    // grayed exactly when its name is no unit type.
+    struct PageEdits {
+        std::vector<std::pair<std::size_t, std::string>> renames;
+        bool gray_unknown_units = false;
+    };
+    auto make_panel = [&](const std::string& gui_name, const std::string& prefix, client::Panel& out, const PageEdits* edits = nullptr) -> bool {
         std::vector<std::uint8_t> f;
         std::vector<GuiGadget> gs;
         if (!vfs_.read("guis\\" + gui_name + ".GUI", f) || !parse_gui(f, gs) || gs.empty()) return false;
+        if (edits) {
+            for (const auto& [index, unit_name] : edits->renames) {
+                if (index >= gs.size()) continue;
+                gs[index].name = unit_name;
+                gs[index].common_attribs = 4;
+                gs[index].grayed = false;
+            }
+            if (edits->gray_unknown_units)
+                for (std::size_t i = 1; i < gs.size(); ++i)
+                    if (gs[i].common_attribs & 4) gs[i].grayed = unit_index(gs[i].name) == 0;
+        }
         const GuiGadget& head = gs[0];
         out.x = head.x;
         out.y = head.y;
@@ -351,20 +372,28 @@ bool ClientWorld::build_content(std::string& error) {
                 {"LOAD", client::Action::Load},        {"UNLOAD", client::Action::Unload},    {"CLOAK", client::Action::Cloak},
                 {"BLAST", client::Action::Special},
             };
+            // The interface's own buttons first (the tabs are found by name whatever else the
+            // name means: CORE's "CORBUILD" tab is also a unit type's name), then unit types.
             const std::uint16_t unit = unit_index(g.name);
-            if (unit && n != "IGPATCH") {
+            for (const auto& [name, act] : roles)
+                if (tail == name) b.action = act;
+            if (b.action == client::Action::None && unit && n != "IGPATCH") {
                 b.action = client::Action::BuildUnit;
                 b.unit_type = unit;
-            } else {
-                for (const auto& [name, act] : roles)
-                    if (tail == name) b.action = act;
             }
             b.staged = (g.attribs & 0x100) != 0;
             b.attribs = g.attribs;
             b.colorf = static_cast<std::uint8_t>(g.colorf);
+            b.name = g.name;
+            b.grayed = g.grayed;
             if (g.font_number >= 0 && static_cast<std::size_t>(g.font_number) < gui_fonts.size()) b.font = gui_fonts[static_cast<std::size_t>(g.font_number)];
             if (caption_font) b.font = caption_font;
             b.frames = button_art(gui_gaf, g.name, unit != 0);
+            // A gadget with art takes the size of its art's first frame (0x4A81E0).
+            if (b.frames && !b.frames->empty()) {
+                b.w = b.frames->front().width;
+                b.h = b.frames->front().height;
+            }
             if (b.frames || b.action != client::Action::None) out.buttons.push_back(b);
         }
         return true;
@@ -624,25 +653,15 @@ bool ClientWorld::build_content(std::string& error) {
         if (!s) break;
         commanders.push_back(s->get_string("commander", 32, ""));
     }
-    // Download menus: (unit menu, page, slot, unit).
-    struct Entry {
-        std::uint16_t menu;
-        int page, slot;
-        std::uint16_t unit;
-    };
-    std::vector<Entry> downloads;
-    for (const std::string& file : vfs_.enumerate("download\\*.tdf")) {
-        std::vector<std::uint8_t> f;
-        if (!vfs_.read("download\\" + file, f)) continue;
-        const TdfParseResult d = parse(f);
-        if (!d.root) continue;
-        for (const auto& e : d.root->children()) {
-            const std::uint16_t menu = unit_index(e->get_string("UNITMENU", 32, ""));
-            const std::uint16_t unit = unit_index(e->get_string("UNITNAME", 32, ""));
-            if (menu && unit) downloads.push_back({menu, e->get_int("MENU", 1), e->get_int("BUTTON", 0), unit});
-        }
+    // The sides' name prefixes: a build page without a description of its own opens the
+    // viewing player's side's "<prefix>DL" page.
+    std::vector<std::string> side_prefixes;
+    for (int k = 0;; ++k) {
+        const TdfSection* s = sr.root ? sr.root->child("SIDE" + std::to_string(k)) : nullptr;
+        if (!s) break;
+        side_prefixes.push_back(s->get_string("nameprefix", 4, ""));
     }
-    static const int slot_xy[6][2] = {{0, 27}, {64, 27}, {0, 91}, {64, 91}, {0, 155}, {64, 155}};
+    if (side_prefixes.empty()) side_prefixes.push_back("");
     c.types.resize(types_.size());
     for (std::size_t k = 1; k < types_.size() && k < defs_.units.size(); ++k) {
         const UnitDefRecord& d = defs_.units[k];
@@ -693,52 +712,34 @@ bool ClientWorld::build_content(std::string& error) {
         if (types_[k] && types_[k]->ok) {
             model_box(types_[k]->root.get(), look.box_min, look.box_max);
         }
-        // Build menu pages: <unitname>1..N.GUI, then the download entries' pages and slots.
-        std::vector<client::Panel>& pages = look.build_pages;
-        const std::string prefix = upper(d.unit_name.substr(0, 3));
-        for (int p = 1; p <= 9; ++p) {
-            client::Panel panel;
-            if (!make_panel(d.unit_name + std::to_string(p), prefix, panel)) break;
-            pages.push_back(std::move(panel));
-        }
-        for (const Entry& e : downloads) {
-            if (e.menu != k || e.page < 1 || e.slot < 0 || e.slot > 5) continue;
-            while (static_cast<int>(pages.size()) < e.page) {
-                // A page only downloads fill: the first page's other buttons and empty slots.
-                client::Panel np;
-                if (!pages.empty()) {
-                    np.x = pages.front().x;
-                    np.y = pages.front().y;
-                    np.background = pages.front().background;
-                    for (const client::Button& b : pages.front().buttons)
-                        if (b.action != client::Action::BuildUnit) np.buttons.push_back(b);
-                } else {
-                    np.x = 0;
-                    np.y = 128;
-                    if (const auto* bg = sequence(common, prefix + "PAN")) np.background = &bg->front();
+        // Build menu pages (0x41B2E0 / 0x41ACE0): the definition's page count byte (the
+        // importer's build_menu_page_count: consecutive <unitname>1.. descriptions + 1, raised to
+        // every download entry's MENU) gives pages 1 .. count - 1. Page p shows <unitname><p>.GUI,
+        // or the viewing side's <prefix>DL.GUI when that description does not exist; download
+        // entries of the builder with MENU - 1 = p put their unit into the page's gadget record
+        // BUTTON + 4 (in table order: a later entry for the same record wins); then gadgets with
+        // common attribute 4 are grayed when their name is no unit type. (Page 0, shown with
+        // the build menu flag clear, needs a <unitname>0.GUI; the game data has none.)
+        const int count = d.build_menu_page_count;
+        if (count >= 2) {
+            const std::string prefix = upper(d.unit_name.substr(0, 3));
+            look.build_pages.resize(side_prefixes.size());
+            for (std::size_t side = 0; side < side_prefixes.size(); ++side) {
+                std::vector<client::Panel>& pages = look.build_pages[side];
+                for (int p = 1; p < count && p <= 7; ++p) {
+                    PageEdits edits;
+                    edits.gray_unknown_units = true;
+                    for (const DownloadMenuEntry& e : defs_.download_menus)
+                        if (e.builder == k && e.menu - 1 == p) edits.renames.push_back({static_cast<std::size_t>(e.button) + 4, e.unit_name});
+                    client::Panel panel;
+                    const std::string own = d.unit_name + std::to_string(p);
+                    if (!make_panel(own, prefix, panel, &edits)) {
+                        const std::string dl = upper(side_prefixes[side]) + "DL";
+                        make_panel(dl, upper(side_prefixes[side]), panel, &edits);
+                    }
+                    pages.push_back(std::move(panel));
                 }
-                pages.push_back(std::move(np));
             }
-            client::Panel& pg = pages[static_cast<std::size_t>(e.page - 1)];
-            client::Button b;
-            b.action = client::Action::BuildUnit;
-            b.unit_type = e.unit;
-            b.x = pg.x + slot_xy[e.slot][0];
-            b.y = pg.y + slot_xy[e.slot][1];
-            b.w = b.h = 64;
-            b.frames = button_art("", defs_.units[e.unit].unit_name, true);
-            // It takes over the slot's gadget (its caption layout, colour and font) ...
-            for (const client::Button& o : pg.buttons)
-                if (o.x == b.x && o.y == b.y && o.w == 64 && o.h == 64) {
-                    b.attribs = o.attribs;
-                    b.colorf = o.colorf;
-                    b.font = o.font;
-                }
-            // ... and its place (an empty slot's filler goes).
-            pg.buttons.erase(std::remove_if(pg.buttons.begin(), pg.buttons.end(),
-                                            [&](const client::Button& o) { return o.x == b.x && o.y == b.y && o.w == 64 && o.h == 64; }),
-                             pg.buttons.end());
-            pg.buttons.push_back(b);
         }
     }
 
@@ -852,7 +853,6 @@ bool ClientWorld::build_content(std::string& error) {
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };
-    c.start_messages.push_back("Skirmish on " + setup_.map);
     return true;
 }
 

@@ -108,10 +108,21 @@ struct UnitDefContext {
     std::uint8_t game_version_major = 3, game_version_minor = 1;
 };
 
+// One download menu entry (download\*.TDF [MENUENTRYn]) as the game keeps it: the builder's
+// unit index, MENU (the build page is MENU - 1), BUTTON (the page's gadget record BUTTON + 4
+// takes the unit) and the unit's name as written (not checked). In table order: files in
+// enumeration order, then their sections.
+struct DownloadMenuEntry {
+    std::uint16_t builder = 0;
+    std::uint8_t menu = 0, button = 0;
+    std::string unit_name;
+};
+
 struct UnitDefTable {
     std::vector<UnitDefRecord> units;  // [0] is the "None" record
     CategoryRegistry categories;
     std::vector<std::string> notes;    // diagnostics (e.g. duplicate unit names)
+    std::vector<DownloadMenuEntry> download_menus;
 };
 
 // Loads weapon slot names, movement classes and sound categories into ctx

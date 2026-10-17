@@ -221,42 +221,26 @@ render::DrawList GameClient::draw() {
     // The panel and its buttons. While the chat line is open the panel's box is shown dimmed:
     // the chat line opens with flag 0x800, which puts the layout under it (the panel, with what
     // lay under it when it was drawn) through shade level 8 once; closing redraws it.
-    const Panel* dim_panel = chat_ && c_.shade_levels.size() >= 32 * 256 ? current_panel() : nullptr;
-    if (dim_panel) {
-        const Panel* p = dim_panel;
+    // The panel is composed in its box (the side art under it, its picture, the buttons — the
+    // disabled ones dimmed through the grey table and shade row 12 as the original draws them),
+    // and dimmed as a whole while the chat line is open.
+    if (const Panel* p = current_panel()) {
         const int pw = p->w > 0 ? p->w : 128, ph = p->h > 0 ? p->h : h - p->y;
         render::Image8 img(pw, ph, list.clear_index);
-        const render::ClipRect all = img.bounds();
-        auto put = [&](const render::Sprite8* s, int x, int y) {
-            if (s) render::blit(img, all, *s, x - p->x, y - p->y);
-        };
-        if (side_ && side_->panel_side) put(side_->panel_side, side_->panel_side->x_offset, side_->panel_side->y_offset);
-        if (p->background) put(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset);
-        for (const Button& btn : p->buttons) {
-            const int f = button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn));
-            if (f >= 0) {
-                const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
-                put(&s, btn.x + s.x_offset, btn.y + s.y_offset);
-            }
-        }
-        for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
+        // Pressed: only the button the pointer holds (while over it), the tab of the menu shown
+        // and the active order mode's button (see button_pressed_look).
+        compose_panel(
+            img, p->x, p->y, *p, side_ ? side_->panel_side : nullptr,
+            [&](const Button& btn) { return button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn)); },
+            [&](const Button& btn) { return button_dims(btn, !button_enabled(btn)); }, c_.minimap_grey, c_.shade_levels);
+        if (chat_ && c_.shade_levels.size() >= 32 * 256)
+            for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
         render::Sprite8 sp;
         sp.width = pw;
         sp.height = ph;
         sp.has_key = false;
         sp.pixels = std::move(img.pixels);
         list.blit(list.keep(std::move(sp)), p->x, p->y, screen, false);
-    } else if (const Panel* p = current_panel()) {
-        if (p->background) list.blit(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset, screen, true);
-        for (const Button& btn : p->buttons) {
-            // Pressed: only the button the pointer holds (while over it), the tab of the menu
-            // shown and the active order mode's button (see button_pressed_look).
-            const int f = button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn));
-            if (f >= 0) {
-                const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
-                list.blit(&s, btn.x + s.x_offset, btn.y + s.y_offset, screen, true);
-            }
-        }
     }
     // The minimap (without the battle's steps drawing it, drawn anew for every frame).
     if (!mm_hooked_) {
@@ -480,13 +464,50 @@ void GameClient::draw_unit_bars(render::Image8& o) {
 }
 
 void GameClient::draw_console(render::Image8& o) {
-    if (!side_ || !side_->font) return;
-    const int lines = std::min<int>(opt_.text_lines, static_cast<int>(console_.size()));
+    // 0x464060. The lines shown: from the next line to write, back by at most text_lines - 1
+    // lines (stopping at the oldest), up to the newest. Each from (138, 52), one console font
+    // height apart (only drawn lines move the row on); with screen chat off only unit notices,
+    // chat and other players' notes show. A line with a sender first gets the sender's colour
+    // logo stretched over a square of 0.8 font heights at (138, y) and its text starts 1.5 squares
+    // right of 138. The text: the picture font's glyphs (characters from 0x20 that have one;
+    // a space only moves on), else the console font in interface colour 15 (10 when marked).
+    const Font* fnt = c_.console_font ? c_.console_font : (side_ ? side_->font : nullptr);
+    if (opt_.text_lines == 0 || !fnt) return;
+    int first = console_.next;
+    for (int k = 1; k < opt_.text_lines; ++k) {
+        if (first == console_.oldest) break;
+        if (--first < 0) first = 29;
+    }
+    const int h = fnt->height & 0xFF;
     int y = 52;
-    for (int k = static_cast<int>(console_.size()) - lines; k < static_cast<int>(console_.size()); ++k) {
-        const Line& l = console_[static_cast<std::size_t>(k)];
-        draw_text(o, view_rect(), *side_->font, l.text, 138, y + side_->font->raise, l.highlight ? c_.hud[10] : c_.hud[15]);
-        y += side_->font->height;
+    for (int i = first; i != console_.next; i = i == 29 ? 0 : i + 1) {
+        const ConsoleLine& l = console_.lines[static_cast<std::size_t>(i)];
+        const int kind = l.kind & 0x0F;
+        if (!opt_.screen_chat && kind != kUnitNotice && kind != kChat && kind != kPlayerNote) continue;
+        int x = 138;
+        if (l.player != kNoPlayer) {
+            const int s = static_cast<int>(static_cast<double>(h) * 0.8);
+            draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(l.player) % c_.player_colour.size()], Region{138, y, 138 + s, y + s}, 0);
+            x = static_cast<int>(138.0 - static_cast<double>(s) * -1.5);
+        }
+        const std::string_view text(l.text.data(), strnlen(l.text.data(), l.text.size()));
+        if (c_.picture_font) {
+            const Font& f = *c_.picture_font;
+            for (unsigned char ch : text) {
+                const Glyph& g = f.glyphs[ch];
+                if (ch < 0x20 || !g.present) continue;
+                if (ch != ' ')
+                    for (int r = 0; r < g.rows; ++r)
+                        for (int k = 0; k < g.width; ++k) {
+                            const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                            if (g.ink[at]) put_pixel(o, o.bounds(), x + g.left + k, y + g.top + r, g.colours[at]);
+                        }
+                x += g.width;
+            }
+        } else {
+            bar_text(o, *fnt, std::string(text), x, y, (l.kind & 0x20) ? c_.hud[10] : c_.hud[15]);
+        }
+        y += h;
     }
 }
 

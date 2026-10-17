@@ -170,7 +170,10 @@ void ConsoleCommands::Impl::build() {
         }
         say("Invalid logo setting");
     });
-    add("ScreenChat", [this](const Words&) { st.screen_chat = !st.screen_chat; });
+    add("ScreenChat", [this](const Words&) {
+        st.screen_chat = !st.screen_chat;
+        c.options_mut().screen_chat = st.screen_chat;
+    });
     add("Gamma", [this](const Words& a) {
         st.gamma = a.number(1, 0);
         not_built("Gamma");

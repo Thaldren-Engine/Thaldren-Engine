@@ -573,6 +573,9 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     SDL_Texture* tex = nullptr;
     if (!gpu) {
         sr = SDL_CreateRenderer(win, nullptr);
+        // Frames are shown at the display's vertical blank (as the original's page flips wait
+        // for it): the loop, and what runs once per pass, keeps the display's pace.
+        if (sr) SDL_SetRenderVSync(sr, 1);
         tex = sr ? SDL_CreateTexture(sr, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, w, h) : nullptr;
         if (tex) SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
     }
