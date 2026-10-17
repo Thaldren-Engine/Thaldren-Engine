@@ -1006,7 +1006,8 @@ public:
         // "Settings" outside campaigns.
         if (Widget* w = widget("SAVEGAME")) w->grayed = net || !fe.hooks().save_game_menu;
         if (Widget* w = widget("LOADGAME")) w->grayed = net || !fe.hooks().load_game_menu;
-        if (Widget* w = widget("MISSION")) w->text = "Settings";
+        // (a new caption takes a new quick key: its first letter no other button uses, the "t")
+        if (Widget* w = widget("MISSION")) set_caption(*w, "Settings");
         if (!opened_) {
             opened_ = true;
             // Opening it pauses the battle outside network games and holds the music.

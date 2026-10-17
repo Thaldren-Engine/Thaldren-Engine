@@ -224,7 +224,18 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
 
 void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& w, bool held) {
     const MenuContent& mc = fe.menu_content();
-    const render::ClipRect clip = out.bounds();
+    // Gadgets draw into the screen's own surface (the header gadget's rectangle), which is then
+    // put on the frame: whatever lies outside it is cut off (the in-battle game menu's
+    // "GAME OPTIONS" label right of its panel never shows).
+    render::ClipRect clip = out.bounds();
+    if (!widgets_.empty()) {
+        const Widget& hd = widgets_.front();
+        clip.x0 = std::max(clip.x0, ox_);
+        clip.y0 = std::max(clip.y0, oy_);
+        clip.x1 = std::min(clip.x1, ox_ + hd.w - 1);
+        clip.y1 = std::min(clip.y1, oy_ + hd.h - 1);
+        if (clip.x0 > clip.x1 || clip.y0 > clip.y1) return;
+    }
     const int x = ox_ + w.x, y = oy_ + w.y;
     const Font* font = mc.font;
     // mark: the quick key to mark in the caption (0: none; only buttons that are not grayed).
