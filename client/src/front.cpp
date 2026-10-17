@@ -7,14 +7,14 @@
 #include <cstdio>
 #include <sstream>
 
+#include "client/audio.h"
+#include "client/sound_desk.h"
 #include "render/draw_list.h"
 #include "render/presenter.h"
 
 #ifdef CLIENT_HAVE_SDL
 #include <SDL3/SDL.h>
 
-#include "client/audio.h"
-#include "client/sound_desk.h"
 #include "render/gpu_renderer.h"
 #endif
 
