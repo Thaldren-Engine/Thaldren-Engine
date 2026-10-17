@@ -50,6 +50,14 @@ struct GpuRenderer::Impl {
     // textures every frame is what made busy scenes (nano spray) slow.
     std::unordered_map<std::uint64_t, std::vector<SDL_GPUTexture*>> pool;
     std::unordered_map<SDL_GPUTexture*, std::uint64_t> pool_size_of;
+    // One-frame sprites go into textures of the next power-of-two size (the sprite in the
+    // top-left corner; the blit reads only its own texels), so the pool keeps a few sizes
+    // instead of creating a texture for every new sprite size (units turning, outlines).
+    static int bucket(int n) {
+        int b = 1;
+        while (b < n) b <<= 1;
+        return b;
+    }
     static std::uint64_t size_key(int w, int h) { return static_cast<std::uint64_t>(static_cast<std::uint32_t>(w)) << 32 | static_cast<std::uint32_t>(h); }
     SDL_GPUTexture* transient_texture(int w, int h) {
         const std::uint64_t k = size_key(w, h);
@@ -236,7 +244,7 @@ struct GpuRenderer::Impl {
                 }
             }
             t = c.persistent ? texture(c.sprite->width, c.sprite->height, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER)
-                             : transient_texture(c.sprite->width, c.sprite->height);
+                             : transient_texture(bucket(c.sprite->width), bucket(c.sprite->height));
             if (!t) return fail("SDL_CreateGPUTexture (sprite)");
             ups.push_back({t, c.sprite->width, c.sprite->height, 1, c.sprite->pixels.data()});
             frame_tex[c.sprite] = t;

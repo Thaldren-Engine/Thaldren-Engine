@@ -93,4 +93,21 @@ void draw_model_piece(RasterTarget& t, const ModelPiece& piece, const std::vecto
 sim::PoseState pose_for_drawing(const sim::PoseState& pose, std::int16_t pitch, std::uint16_t heading,
                                 std::int16_t bank);
 
+// Drawn poses kept from frame to frame (presentation only), by unit id. A unit whose whole
+// pose state and attitude equal those of its last drawing gets the same drawn pose without
+// turning every vertex again (idle units: their pose never changes).
+struct PoseDrawCache {
+    struct Entry {
+        bool valid = false;
+        sim::PoseState in, out;
+        std::int16_t pitch = 0, bank = 0;
+        std::uint16_t heading = 0;
+        std::uint32_t version = 0;  // + 1 each time `out` is made again
+    };
+    std::vector<Entry> entries;
+};
+// pose_for_drawing through the cache; the result stays valid until the next call for `id`.
+const sim::PoseState& pose_for_drawing(PoseDrawCache& cache, std::size_t id, const sim::PoseState& pose, std::int16_t pitch,
+                                       std::uint16_t heading, std::int16_t bank);
+
 } // namespace render

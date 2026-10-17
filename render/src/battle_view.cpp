@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 #include "sim/x87.h"
 #include "sim/x87_trig.h"
@@ -132,7 +133,8 @@ LookUnit look_unit(const BattleScene& s, const UnitInstance& ui) {
     const sim::Unit& u = *ui.unit;
     LookUnit lu;
     lu.model = ui.model;
-    lu.pose = pose_for_drawing(u.pose, u.pitch, u.heading, u.bank);
+    lu.pose = s.pose_cache ? pose_for_drawing(*s.pose_cache, u.id, u.pose, u.pitch, u.heading, u.bank)
+                           : pose_for_drawing(u.pose, u.pitch, u.heading, u.bank);
     lu.pos = u.pos;
     lu.team_colour = ui.params.team_colour;
     lu.texture_frame = ui.params.animation_frame;
@@ -143,6 +145,37 @@ LookUnit look_unit(const BattleScene& s, const UnitInstance& ui) {
     lu.id = u.id;
     (void)s;
     return lu;
+}
+
+// The unit's plain sprite through the sprite cache: made again when the drawn pose (by its
+// version in the pose cache) or any other input of build_unit_sprite changed. (The texture
+// cursor is not an input: the cached pieces are drawn without it.)
+const LookFrame& cached_unit_sprite(const BattleScene& s, const LookUnit& lu, std::uint32_t pose_version) {
+    auto& list = s.sprite_cache->entries;
+    if (list.size() <= lu.id) list.resize(static_cast<std::size_t>(lu.id) + 1);
+    UnitSpriteCache::Entry& e = list[lu.id];
+    std::uint32_t build_bits;
+    std::memcpy(&build_bits, &lu.build_left, 4);
+    const ViewOptions& o = s.options;
+    const bool same = e.valid && e.pose_version == pose_version && e.model == lu.model && e.team_colour == lu.team_colour &&
+                      e.type_flags == lu.type_flags && e.structure == lu.structure && e.zbuffer == lu.zbuffer &&
+                      e.build_left_bits == build_bits && e.options.shadows == o.shadows && e.options.unit_shadows == o.unit_shadows &&
+                      e.options.feature_shadows == o.feature_shadows && e.options.antialias == o.antialias &&
+                      e.options.shading == o.shading && e.tables.mix == s.tables.mix && e.tables.shade == s.tables.shade &&
+                      e.tables.water == s.tables.water;
+    if (same) return e.sprite;
+    e.sprite = build_unit_sprite(lu, false, 1, s.options, s.tables);
+    e.valid = true;
+    e.pose_version = pose_version;
+    e.model = lu.model;
+    e.team_colour = lu.team_colour;
+    e.type_flags = lu.type_flags;
+    e.structure = lu.structure;
+    e.zbuffer = lu.zbuffer;
+    e.build_left_bits = build_bits;
+    e.options = o;
+    e.tables = s.tables;
+    return e.sprite;
 }
 
 // One unit (the original's 0x45AC20 / 0x458810 / 0x459200): shadow, then either the
@@ -164,6 +197,9 @@ void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
     const Camera& c = s.camera;
     const ClipRect clip = c.view_clip();
     const LookUnit lu = look_unit(s, ui);
+    // The drawn pose's version in the pose cache (taken before the units on board are looked at).
+    const bool cached_pose = s.pose_cache && s.sprite_cache && u.id < s.pose_cache->entries.size();
+    const std::uint32_t pose_version = cached_pose ? s.pose_cache->entries[u.id].version : 0;
     std::vector<LookUnit> cargo;
     std::vector<const UnitInstance*> cargo_ui;
     for (const sim::Unit* cu = u.cargo_head; cu; cu = cu->cargo_next) {
@@ -174,7 +210,9 @@ void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
                 cargo_ui.push_back(&other);
             }
     }
-    const LookFrame sprite = build_unit_sprite(lu, false, 1, s.options, s.tables);
+    LookFrame own_sprite;
+    const LookFrame& sprite = cached_pose ? cached_unit_sprite(s, lu, pose_version)
+                                          : (own_sprite = build_unit_sprite(lu, false, 1, s.options, s.tables));
     const bool depth_path = !sprite.depth.empty();
     const int ux = screen_x(c, u.pos[0]);
     const int uy = screen_y(c, u.pos[1], u.pos[2]);

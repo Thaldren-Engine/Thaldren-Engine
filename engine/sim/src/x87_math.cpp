@@ -233,9 +233,31 @@ Ext80 sqrt64(double a) {
         n = shl(n, 1);
         e -= 1;
     }
+    const std::uint64_t m2 = n.w[0];  // below 2^55
     n = shl(n, 80);
     bool inexact = false;
-    const U256 root = isqrt(n, inexact);
+    // The root (below 2^68) from a double estimate (off by far less than 2^18), finished bit
+    // by bit from 2^18 below it; checked, with the plain digit-by-digit root as the fallback.
+    auto square = [](const U256& c) {  // c < 2^68
+        const std::uint64_t w0 = c.w[0], w1 = c.w[1];
+        return add(add(mul64x64(w0, w0), shl(mul64x64(w0, 2 * w1), 64)), shl(from64(w1 * w1), 128));
+    };
+    std::uint64_t em;
+    int ee;
+    split(std::sqrt(static_cast<double>(m2)) * 1099511627776.0, em, ee);  // n = m2 2^80: sqrt(m2) 2^40
+    U256 root = ee >= 0 ? shl(from64(em), ee) : from64(em >> -ee);
+    const U256 margin = from64(1ull << 18);
+    root = cmp(root, margin) > 0 ? sub(root, margin) : U256{};
+    for (int b = 19; b >= 0; --b) {
+        const U256 c = add(root, shl(from64(1), b));
+        if (cmp(square(c), n) <= 0) root = c;
+    }
+    const U256 sq = square(root);
+    if (bitlen(root) <= 68 && cmp(sq, n) <= 0 && cmp(square(add(root, from64(1))), n) > 0) {
+        inexact = cmp(sq, n) != 0;
+    } else {
+        root = isqrt(n, inexact);
+    }
     return make_ext(root, (e - 80) / 2, false, inexact);
 }
 
@@ -331,10 +353,27 @@ Ext80 fpatan(std::int32_t y, std::int32_t x) { return fpatan(static_cast<double>
 Ext80 fpatan(double y, double x, int bits) {
     using namespace detail;
     if (y == 0 && x >= 0) return Ext80{};
+    // The multi-precision evaluation is slow and the same arguments recur (ballistic aims
+    // at targets that keep still): the last results are kept, by argument bits.
+    struct Memo {
+        std::uint64_t y = 0, x = 0;
+        int bits = 0;
+        Ext80 r;
+    };
+    thread_local std::array<Memo, 1024> memo{};
+    std::uint64_t yb, xb;
+    std::memcpy(&yb, &y, 8);
+    std::memcpy(&xb, &x, 8);
+    std::uint64_t h = (yb * 0x9E3779B97F4A7C15ull) ^ (xb + 0x632BE59BD9B4E019ull + static_cast<std::uint64_t>(bits));
+    h ^= h >> 29;
+    h *= 0xBF58476D1CE4E5B9ull;
+    Memo& m = memo[static_cast<std::size_t>(h >> 54)];
+    if (m.bits == bits && m.y == yb && m.x == xb) return m.r;
     const Fix theta = fpatan_fix(y, x);
-    if (bits == 64) return fix_to_ext(theta, 64);
-    // Precision control: the 64-bit result is rounded again to `bits` (double rounding).
-    return fix_to_ext(fix_round_bits(theta, 64), bits);
+    // With bits < 64 (precision control): the 64-bit result is rounded again (double rounding).
+    const Ext80 r = bits == 64 ? fix_to_ext(theta, 64) : fix_to_ext(fix_round_bits(theta, 64), bits);
+    m = {yb, xb, bits, r};
+    return r;
 }
 
 std::optional<Ext80> crt_acos(double c) {

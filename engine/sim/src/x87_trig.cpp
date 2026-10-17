@@ -3,6 +3,7 @@
 #include "bigfix.h"
 
 #include <array>
+#include <bit>
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -194,24 +195,19 @@ double mul_pc53(std::int32_t x, const Ext80& v) {
     const std::uint64_t p_lo = ax * m_lo, p_hi = ax * m_hi;
     std::uint64_t lo = p_lo + (p_hi << 32);
     std::uint64_t hi = (p_hi >> 32) + (lo < p_lo ? 1 : 0);
-    // Keep the top 53 bits, round to nearest even on the rest.
-    int width = 0;  // number of significant bits
-    for (std::uint64_t t = hi; t; t >>= 1) ++width;
-    width = hi ? width + 64 : 0;
-    if (!hi)
-        for (std::uint64_t t = lo; t; t >>= 1) ++width;
+    // Keep the top 53 bits, round to nearest even on the rest. The product is below 2^96
+    // (|x| <= 2^31, mantissa < 2^64), so at most 43 low bits are dropped: every bit that
+    // goes lies in the low word, and the shifts below stay in range.
+    const int width = hi ? 128 - std::countl_zero(hi) : 64 - std::countl_zero(lo);  // significant bits
     const int drop = width > 53 ? width - 53 : 0;
     std::uint64_t keep;
     bool half = false, sticky = false;
     if (drop == 0) {
         keep = lo;
     } else {
-        auto bit = [&](int i) -> bool { return i >= 64 ? ((hi >> (i - 64)) & 1) != 0 : ((lo >> i) & 1) != 0; };
-        keep = 0;
-        for (int i = 0; i < 53; ++i)
-            if (bit(drop + i)) keep |= 1ull << i;
-        half = bit(drop - 1);
-        for (int i = drop - 2; i >= 0 && !sticky; --i) sticky = bit(i);
+        keep = (lo >> drop) | (hi << (64 - drop));
+        half = ((lo >> (drop - 1)) & 1u) != 0;
+        sticky = (lo & ((1ull << (drop - 1)) - 1u)) != 0;
     }
     int exponent = v.exponent + drop;
     if (half && (sticky || (keep & 1))) {
@@ -227,10 +223,11 @@ double mul_pc53(std::int32_t x, const Ext80& v) {
 
 std::int32_t fist_nearest(double v) {
     if (!(v > -2147483649.0 && v < 2147483648.0)) return INT32_MIN;  // also NaN
-    double r = std::floor(v);
-    const double diff = v - r;  // exact for these magnitudes
-    if (diff > 0.5 || (diff == 0.5 && std::fmod(r, 2.0) != 0.0)) r += 1.0;
-    if (r > 2147483647.0) return INT32_MIN;
+    const double f = std::floor(v);
+    const double diff = v - f;  // exact for these magnitudes
+    std::int64_t r = static_cast<std::int64_t>(f);  // exact: |f| < 2^32
+    if (diff > 0.5 || (diff == 0.5 && (r & 1) != 0)) ++r;
+    if (r > INT32_MAX || r < INT32_MIN) return INT32_MIN;  // the integer indefinite
     return static_cast<std::int32_t>(r);
 }
 

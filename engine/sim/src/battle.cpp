@@ -339,8 +339,19 @@ void Battle::players_stage() {
             weapon_target_pass(targeting_, slot, ai);
         }
         refresh_unit_table(targeting_, slot);
+        // The player's sight updates. With the sight system they share one sync (before the
+        // first): a sight update changes nothing the sync copies (types, settings, the step).
+        bool synced = false;
         for (int id = p.first_unit; id <= p.last_unit && id < static_cast<int>(units.size()); ++id)
-            if (id > 0 && (units[static_cast<std::size_t>(id)].flags & unit_flags::kAlive)) update_sight(units[static_cast<std::size_t>(id)]);
+            if (id > 0 && (units[static_cast<std::size_t>(id)].flags & unit_flags::kAlive)) {
+                if (!sight_ready_) {
+                    update_sight(units[static_cast<std::size_t>(id)]);
+                    continue;
+                }
+                if (!synced) sync_sight();
+                synced = true;
+                update_unit_sight(sight_world_, units[static_cast<std::size_t>(id)]);
+            }
         outside_.player_stage_rest(slot);
         // The player's 30-step turn: victory checks, the economy settlement, sensors.
         PlayerEconomy& account = player_economy[static_cast<std::size_t>(slot)];
