@@ -166,6 +166,13 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     }
     if (ota_root && schema >= 0 && !req.saved_game) lb->feature_defs.load_schema_features(*ota_root, "Schema " + std::to_string(schema));
     load_unit_context(vfs, lb->unit_context);
+    if (!vfs.game_dir().empty()) {
+        // The unit files as the original enumerated them: once, after its start-up scan only.
+        Vfs first;
+        first.mount_game_dir(vfs.game_dir());
+        lb->unit_context.enumerated_unit_files = first.enumerate("units\\*.FBI");
+        lb->unit_context.enumerated_weapon_files = first.enumerate("Weapons\\*.tdf");
+    }
     lb->unit_defs = load_unit_defs(vfs, lb->unit_context, &lb->feature_defs);
     lb->feature_defs.resolve_chains();
 

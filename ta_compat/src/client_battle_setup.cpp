@@ -175,6 +175,7 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
 bool ClientWorld::load(const std::string& game_dir, const SkirmishSetup& setup, std::string& error) {
     Vfs v;
     v.mount_game_dir(game_dir);
+    v.scan();  // every battle start follows a rescan in the original (see ClientWorld::load below)
     BattleRequest req = to_battle_request(v, setup);
     setup_ = setup;
     return load(game_dir, req, setup.human, error);
@@ -186,7 +187,11 @@ bool ClientWorld::load(const std::string& game_dir, const BattleRequest& request
     human_ = human;
     setup_.map = request.map;
     setup_.human = human;
+    // The start-up scan, then the rescan the original runs on every path into a battle
+    // (skirmish Start, MULTI, New Campaign / briefing Start, load, restart): on the Steam
+    // install that adds totala3.hpi, totala4.hpi and worlds.hpi.
     vfs_.mount_game_dir(game_dir);
+    vfs_.scan();
     if (!load_palette(vfs_, palette_) || !load_blend_table(vfs_, blend_)) {
         error = "cannot load the palette / blend table";
         return false;

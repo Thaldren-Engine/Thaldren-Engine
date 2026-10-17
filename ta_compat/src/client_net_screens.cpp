@@ -899,6 +899,7 @@ private:
 
 void install_net_screens(client::FrontEndHooks& hooks, MenuArt& art, const client::NetMenuConfig& config) {
     hooks.multiplayer_menu = [&art, config](FrontEnd& fe) -> std::unique_ptr<client::Screen> {
+        art.vfs().scan();  // the original rescans the archives when MULTI is pressed (0x425E0B)
         auto part = std::make_shared<NetPart>(art, config);
         part->nickname = fe.settings().get_text("Nickname", "");
         return std::make_unique<SelProv>(part);

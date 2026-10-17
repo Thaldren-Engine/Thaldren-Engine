@@ -118,7 +118,7 @@ struct WeaponFiles {
 
 WeaponFiles load_weapon_files(Vfs& vfs, const UnitDefContext& ctx) {
     WeaponFiles w;
-    for (const auto& name : vfs.enumerate("Weapons\\*.tdf")) {
+    for (const auto& name : ctx.enumerated_weapon_files ? *ctx.enumerated_weapon_files : vfs.enumerate("Weapons\\*.tdf")) {
         bool loose = false;
         auto root = load_tdf(vfs, vfs.virtual_path("Weapons", name, "TDF"), &loose);
         if (root && (!loose || !ctx.cd_check_enabled)) w.roots.push_back(std::move(root));
@@ -491,7 +491,7 @@ void load_unit_context(Vfs& vfs, UnitDefContext& ctx) {
 UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable* features) {
     UnitDefTable table;
     const WeaponFiles weapons = load_weapon_files(vfs, ctx);
-    const auto files = vfs.enumerate("units\\*.FBI");
+    const auto files = ctx.enumerated_unit_files ? *ctx.enumerated_unit_files : vfs.enumerate("units\\*.FBI");
 
     // Record 0 is zero-filled apart from its unit name and the compatible flag.
     UnitDefRecord none;

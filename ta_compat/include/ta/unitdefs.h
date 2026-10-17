@@ -5,6 +5,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,11 @@ struct UnitDefContext {
     // The game's mission table sorted by lookup name (verified against a live dump).
     static std::vector<std::string> default_mission_names();
     bool cd_check_enabled = true;                      // loose (non-archive) FBIs/weapons rejected
+    // The game enumerates the unit files (and the weapon files it checksums with them) once,
+    // at its first main menu, when only the start-up scan has run; battles are loaded after
+    // later rescans. When set, these lists ("units\*.FBI", "Weapons\*.tdf" names from a Vfs
+    // after mount_game_dir only) are used instead of enumerating `vfs` again.
+    std::optional<std::vector<std::string>> enumerated_unit_files, enumerated_weapon_files;
     std::uint8_t game_version_major = 3, game_version_minor = 1;
 };
 
