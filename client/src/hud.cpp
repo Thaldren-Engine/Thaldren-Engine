@@ -381,15 +381,13 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     auto whole = [](float v) { return static_cast<int>(v); };  // the original's float -> int (truncation)
 
     // A build button under the pointer comes first: "<name>  M:<metal cost> E:<energy cost>" on
-    // the NAME line and the type's description on the DESCRIPTION line (not for a CORBUILD).
+    // the NAME line and the type's description on the DESCRIPTION line (not for types the content excludes).
     if (const Panel* p = current_panel())
         for (const Button& btn : p->buttons) {
             if (mouse_x_ < btn.x || mouse_x_ >= btn.x + btn.w || mouse_y_ < btn.y || mouse_y_ >= btn.y + btn.h) continue;
             if (btn.action != Action::BuildUnit || !btn.unit_type || btn.unit_type >= c_.types.size()) return;
             const UnitTypeLook& look = c_.types[btn.unit_type];
-            std::string un = look.unit_name;
-            for (char& ch : un) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
-            if (un == "CORBUILD") return;
+            if (look.no_build_line) return;
             char buf[160];
             std::snprintf(buf, sizeof buf, "%s  M:%d E:%d", look.name.c_str(), whole(look.cost_metal), whole(look.cost_energy));
             draw_text(o, all, f, buf, side_->name.x1, side_->name.y1 + dy, 0x53);
@@ -446,7 +444,7 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
             const std::string k = std::to_string(t.kill_count) + (t.kill_count == 1 ? " kill" : " kills") + (t.kill_count >= 5 ? " - Veteran" : "");
             draw_text(o, all, f, k, side_->damage_bar.x1, side_->damage_bar.y2 + 2 + dy, c_.hud[15]);
         }
-        // The unit's status: what its head order does ("Standby", "Moving", "Nanolathing", ...;
+        // The unit's status: what its head order does (the mission table's text of the kind;
         // the text of mission kind 0 without orders), centred on the status line's x1.
         if (!c_.mission_status.empty()) {
             const std::size_t kind = u.orders ? u.orders->kind : 0u;

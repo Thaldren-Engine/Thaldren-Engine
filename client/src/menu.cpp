@@ -225,8 +225,8 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
 void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& w, bool held) {
     const MenuContent& mc = fe.menu_content();
     // Gadgets draw into the screen's own surface (the header gadget's rectangle), which is then
-    // put on the frame: whatever lies outside it is cut off (the in-battle game menu's
-    // "GAME OPTIONS" label right of its panel never shows).
+    // put on the frame: whatever lies outside it is cut off (a label placed right of a side
+    // panel never shows).
     render::ClipRect clip = out.bounds();
     if (!widgets_.empty()) {
         const Widget& hd = widgets_.front();

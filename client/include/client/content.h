@@ -112,9 +112,10 @@ struct UnitTypeLook {
     // wins: (size y / 2 + size z) * size x >> 16 of the type definition's model sizes).
     std::array<std::int32_t, 3> pick_min{}, pick_max{};  // the definition's bounds (footprint x, z)
     std::int64_t pick_rank = 0;
-    // The bottom bar's build-button line: the type's file name and its build costs.
-    std::string unit_name;
+    // The bottom bar's build-button line: the type's build costs (no line for types the
+    // importer marks).
     float cost_metal = 0.0f, cost_energy = 0.0f;
+    bool no_build_line = false;
 };
 
 // A decoded sound: signed 16-bit samples.

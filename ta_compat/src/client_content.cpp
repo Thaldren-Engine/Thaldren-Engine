@@ -499,7 +499,8 @@ bool ClientWorld::build_content(std::string& error) {
         look.pick_max = {d.model_max_x, d.model_max_y, d.model_max_z};
         look.pick_rank = ((static_cast<std::int64_t>(d.model_size_y) * 0x8000 >> 16) + d.model_size_z) * static_cast<std::int64_t>(d.model_size_x) >> 16;
         look.description = d.description;
-        look.unit_name = d.unit_name;
+        // The original's bottom bar skips its build-button line for a type named CORBUILD.
+        look.no_build_line = stricmp_c(d.unit_name, "CORBUILD") == 0;
         look.cost_metal = d.build_cost_metal;
         look.cost_energy = d.build_cost_energy;
         for (const std::string& cm : commanders)
