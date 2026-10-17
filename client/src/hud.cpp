@@ -222,7 +222,10 @@ render::DrawList GameClient::draw() {
         mm.height = mm_final_.height;
         mm.has_key = false;
         mm.pixels = mm_final_.pixels;
-        list.blit(list.keep(std::move(mm)), mm_x_, mm_y_, screen, true);
+        // A sprite of this frame only: the GPU backend must upload it anew (marked as lasting,
+        // it kept the texture of an earlier frame's minimap whose memory the new one reused,
+        // so old marks showed in turns — the flickering circles).
+        list.blit(list.keep(std::move(mm)), mm_x_, mm_y_, screen, false);
     }
 
     // The interface layer.
