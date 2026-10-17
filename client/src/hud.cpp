@@ -116,8 +116,14 @@ render::DrawList GameClient::draw() {
     scene.camera.view_height = h - 64;
     scene.camera.scroll_x = scroll_x_;
     scene.camera.scroll_y = scroll_y_;
-    if (c_.fill_scene) c_.fill_scene(scene, opt_.player, frame_counter_);
+    if (c_.fill_scene) c_.fill_scene(scene, viewed_player(), frame_counter_);
     if (!opt_.fog) scene.fog = nullptr;
+    scene.dithered_fog = opt_.dithered_fog;
+    scene.options.shading = opt_.shading;
+    scene.options.antialias = opt_.antialias;
+    scene.options.shadows = opt_.shadows;
+    scene.options.unit_shadows = opt_.unit_shadows;
+    scene.options.feature_shadows = opt_.feature_shadows;
     add_selection_outlines(scene);
     // The units drawn this frame (picking, double clicks, notices).
     on_screen_.clear();
@@ -479,7 +485,8 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
 void GameClient::draw_minimap(render::Image8& o) {
     const render::ClipRect mm{mm_x_, mm_y_, mm_x_ + mm_w_ - 1, mm_y_ + mm_h_ - 1};
     const int mw = std::max(1, map_width_px()), mh = std::max(1, map_height_px());
-    const bool sensors = b_.settings.fog_of_war || b_.settings.explore;
+    // The radar cheat (interface option 0x200) shows every unit.
+    const bool sensors = (b_.settings.fog_of_war || b_.settings.explore) && !opt_.radar_everything;
     mm_dots_.clear();
     // Radar dots: shown units without the line of sight options, units marked by radar or
     // sonar, and own units; in the owner's colour.

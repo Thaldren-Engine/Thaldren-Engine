@@ -1,6 +1,7 @@
 #include "client/front.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
@@ -56,10 +57,10 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
         for (std::string t; ls >> t;) w.push_back(t);
         if (w.empty()) continue;
         InputEvent e;
-        while (!w.empty() && w.back()[0] == '+') {
+        while (!w.empty() && (w.back() == "+shift" || w.back() == "+ctrl" || w.back() == "+alt")) {
             if (w.back() == "+shift") e.shift = true;
             else if (w.back() == "+ctrl") e.ctrl = true;
-            else if (w.back() == "+alt") e.alt = true;
+            else e.alt = true;
             w.pop_back();
         }
         if (w.size() < 2) {
@@ -94,6 +95,21 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
                 InputEvent u = e;
                 u.type = InputEvent::Type::KeyUp;
                 out.push_back({frame, u});
+            }
+        } else if (ev == "type") {
+            // Types the rest of the line (words joined by single spaces) key by key; capitals
+            // are typed with shift.
+            std::string typed;
+            for (std::size_t i = 2; i < w.size(); ++i) typed += (i > 2 ? " " : "") + w[i];
+            for (char ch : typed) {
+                InputEvent k = e;
+                k.type = InputEvent::Type::KeyDown;
+                k.key = static_cast<unsigned char>(std::tolower(static_cast<unsigned char>(ch)));
+                k.shift = std::isupper(static_cast<unsigned char>(ch)) != 0;
+                if (ch == '+') k.key = '+';
+                out.push_back({frame, k});
+                k.type = InputEvent::Type::KeyUp;
+                out.push_back({frame, k});
             }
         } else if (ev == "quit") {
             e.type = InputEvent::Type::Quit;

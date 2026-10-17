@@ -478,7 +478,7 @@ private:
     // The shared effect-object pool (0x51E610: 1000 objects for the effect lists and the nano
     // streams) has an object left and is not blocked: a nano stream spawn needs one.
     bool effect_pool_free() const {
-        return !fx_lists.blocked && fx_lists.live() + static_cast<int>(nano.streams.size()) < EffectLists::kPool;
+        return !fx_lists.spawning_off && !fx_lists.blocked && fx_lists.live() + static_cast<int>(nano.streams.size()) < EffectLists::kPool;
     }
     void init_unit_fields(Unit& u, UnitTickState& t, const BattleUnitType& type, std::int32_t x, std::int32_t y,
                           std::int32_t z, bool fully_built);

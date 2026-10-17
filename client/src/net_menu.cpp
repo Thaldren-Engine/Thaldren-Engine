@@ -158,6 +158,13 @@ private:
         req->start.loading_rand_seed = t ^ 0x5A5A5A5Au;
         req->start.crt_rand_state = crt_rand_.state();
         req->settings = &fe.settings();
+        {  // the host's record decides (the original reads the host's option word, bit 13)
+            const auto& ps = room_->players();
+            const net::RoomPlayer* host = &ps[0];
+            for (const auto& p : ps)
+                if (p.net_id && (p.flags & net::room::kHost)) host = &p;
+            req->cheats = (host->options & 0x2000u) != 0;
+        }
         auto transport = std::make_shared<std::unique_ptr<net::Transport>>(std::move(transport_));
         auto session = session_;
         auto net = std::make_shared<std::unique_ptr<net::NetBattle>>();

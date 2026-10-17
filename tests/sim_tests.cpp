@@ -13,6 +13,7 @@
 #include "sim/ai.h"
 #include "sim/battle_start.h"
 #include "sim/commands.h"
+#include "sim/console.h"
 #include "sim/lockstep.h"
 #include "sim/sky.h"
 #include "sim/battle.h"
@@ -1781,6 +1782,54 @@ void test_release_referrers() {
     CHECK_EQ(a.target.unit == nullptr && b.target.unit == nullptr && goal_link.unit == nullptr, true);
 }
 
+// Typed commands (sim/console.h): words, the registry's permission bits and default command,
+// the wildcard match and the default command's unit row.
+void test_console() {
+    using namespace sim::console;
+    const Words w = split("  Give\t1  250 metal # ignored");
+    CHECK_EQ(w.count(), 4);
+    CHECK_EQ(w.text(3) == "metal", true);
+    CHECK_EQ(w.number(2, 0), 250);
+    CHECK_EQ(w.number(7, -3), -3);
+    CHECK_EQ(split("ab#cd").count(), 1);
+    CHECK_EQ(split(std::string(130, 'x')).endless, true);
+    std::string many;
+    for (int k = 0; k < 25; ++k) many += "w ";
+    CHECK_EQ(split(many).count(), 20);
+    CHECK_EQ(c_atol(" -12x"), -12);
+    CHECK_EQ(wildcard_match("ARMCOM", "arm*"), true);
+    CHECK_EQ(wildcard_match("ARMCOM", "*COM"), true);
+    CHECK_EQ(wildcard_match("ARMCOM", "ARM?OM"), true);
+    CHECK_EQ(wildcard_match("ARMCOM", "ARM?"), false);
+    CHECK_EQ(wildcard_match("CORAK", "*"), true);
+    Registry reg;
+    int ran = 0, defaulted = 0;
+    reg.add("ShootAll", [&](const Words&) { ++ran; }, 1);
+    reg.add("LOS", [&](const Words&) { ran += 10; }, 2);
+    reg.set_default([&](const Words&) { ++defaulted; }, 4);
+    CHECK_EQ(reg.dispatch(split("shootall"), 1), 1u);
+    CHECK_EQ(reg.dispatch(split("los"), 1), 0u);  // a cheat without permission: nothing
+    CHECK_EQ(reg.dispatch(split("los"), 3), 2u);
+    CHECK_EQ(reg.dispatch(split("los"), 5), 4u);  // not allowed, so the default command takes it
+    CHECK_EQ(reg.dispatch(split("armcom"), 7), 4u);
+    CHECK_EQ(ran, 11);
+    CHECK_EQ(defaulted, 2);
+    // Two matching types: the second moves by its left extent, both by 32 units plus the right
+    // extent; the row wraps at the end.
+    std::array<std::int32_t, 3> pos = {0x100000, 0, 0x200000};
+    std::vector<std::array<std::int32_t, 4>> made;
+    UnitRowHooks h;
+    h.matches = [](std::uint16_t t) { return t == 2 || t == 3; };
+    h.extents_x = [](std::uint16_t) { return std::array<std::int32_t, 2>{-0x80000, 0x80000}; };
+    h.snap = [](std::uint16_t, std::array<std::int32_t, 3>&) {};
+    h.create = [&](std::uint16_t t, const std::array<std::int32_t, 3>& p) { made.push_back({t, p[0], p[1], p[2]}); };
+    CHECK_EQ(place_unit_row(pos, 0x400000, 5, h), 2);
+    CHECK_EQ(made.size(), std::size_t{2});
+    CHECK_EQ(made[1][1], 0x100000 + 0x200000 + 0x80000 + 0x80000);
+    CHECK_EQ(pos[0], 0xA00000);
+    CHECK_EQ(pos[2], 0x200000 + 0xA00000);
+}
+
 int main() {
     test_sin_table_matches_fixture();
     test_sin_table_formula();
@@ -1811,6 +1860,7 @@ int main() {
     test_ai();
     test_game_flow();
     test_release_referrers();
+    test_console();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
