@@ -28,6 +28,10 @@
 //   buildpages:DIR (after "battle", with --grey and the battle palettes) writes every
 //   builder's build pages for both viewing sides (compare: ta_play --dump-build-pages DIR).
 //   --grey sets display flag 0x100 as the game does (grayed gadgets through the grey table).
+//   The battle loading screen (0x497F40): [maptype:N] [loadmap:NAME] | lounge:FILE, clock:T,
+//   loadscreen (its set-up and first frame), loadframe:T,TE,U,A,D,E[:READY[:BITS]],
+//   loadplayer:SLOT,PERCENT,READY; frames written as <out>load_<n>.bmp (compare: ta_play
+//   --loading-test FILE).
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
