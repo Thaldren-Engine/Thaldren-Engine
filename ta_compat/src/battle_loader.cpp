@@ -119,14 +119,16 @@ void read_meteors(Vfs& vfs, const TdfSection* schema, sim::MeteorShower& m, std:
 
 std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, sim::BattleOutside& outside, std::string& error,
                                           const std::function<void(sim::Battle&)>& before_start) {
+    bool added = false;
     for (const std::filesystem::path& a : req.extra_archives) {
         bool mounted = false;
         std::error_code ec;
         for (const auto& m : vfs.archives())
             if (std::filesystem::equivalent(m->path(), a, ec)) mounted = true;
         HpiError err;
-        if (!mounted) vfs.mount(a, err);
+        if (!mounted) added |= vfs.mount(a, err);
     }
+    if (added) vfs.refresh_shadows();
     auto lb = std::make_unique<LoadedBattle>();
     if (!vfs.read("maps\\" + req.map + ".tnt", lb->tnt)) {
         error = "map not found: " + req.map;

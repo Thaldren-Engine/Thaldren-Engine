@@ -28,23 +28,10 @@ std::string strip_ext(const std::string& s) {
 }  // namespace
 
 void mount_cd_archives(Vfs& vfs, const std::filesystem::path& game_dir) {
-    std::vector<std::filesystem::path> found;
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(game_dir, ec)) {
-        if (!e.is_regular_file()) continue;
-        std::string ext = e.path().extension().string();
-        for (char& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        if (ext != ".HPI") continue;
-        bool mounted = false;
-        for (const auto& a : vfs.archives())
-            if (std::filesystem::equivalent(a->path(), e.path(), ec)) mounted = true;
-        if (!mounted) found.push_back(e.path());
-    }
-    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return stricmp_c(a.filename().string(), b.filename().string()) < 0; });
-    for (const auto& p : found) {
-        HpiError err;
-        vfs.mount(p, err);
-    }
+    // The original's rescan (New Campaign, the briefing's Start, ...): the next ten
+    // not yet mounted *.hpi of the game directory, then the CD drives.
+    if (vfs.game_dir().empty()) vfs.mount_game_dir(game_dir);
+    vfs.scan();
 }
 
 std::vector<std::string> list_campaigns(Vfs& vfs) {

@@ -10,14 +10,6 @@ namespace {
 
 std::string upto(const std::string& s, std::size_t n) { return s.size() > n ? s.substr(0, n) : s; }
 
-// base + "\" + name with the extension (after the last '.') replaced.
-std::string virtual_path(const std::string& base, const std::string& name, const std::string& ext) {
-    std::string p = base + "\\" + name;
-    const auto dot = p.rfind('.');
-    if (dot != std::string::npos) p.resize(dot);
-    return p + "." + ext;
-}
-
 // strncpy(dst, src, 16) followed by strncmp(dst, other, 16) == 0.
 bool same_16(const std::string& stored, const std::string& other) { return stored == upto(other, 16); }
 
@@ -79,7 +71,7 @@ int FeatureDefTable::load(const std::string& name) {
     if (is_3d) {
         f.object = object;
         std::vector<std::uint8_t> data;
-        if (!vfs_->read(virtual_path("objects3d", object, "3DO"), data) || data.empty())
+        if (!vfs_->read(vfs_->virtual_path("objects3d", object, "3DO"), data) || data.empty())
             notes_.push_back("missing model (fatal in game): objects3d\\" + object);
         // The GAF fields stay uninitialised for 3D features.
     } else {
@@ -104,7 +96,7 @@ int FeatureDefTable::load(const std::string& name) {
             f.gaf_file = upto(file, 16);
             std::vector<std::uint8_t> data;
             auto dir = std::make_unique<GafDirectory>();
-            if (vfs_->read(virtual_path("anims", file, "GAF"), data) && !data.empty() && gaf_read_directory(data, *dir)) {
+            if (vfs_->read(vfs_->virtual_path("anims", file, "GAF"), data) && !data.empty() && gaf_read_directory(data, *dir)) {
                 gafs_.back() = std::move(dir);
                 gaf = gafs_.back().get();
                 f.gaf_owner = index;
