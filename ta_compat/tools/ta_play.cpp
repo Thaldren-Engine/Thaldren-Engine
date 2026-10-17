@@ -188,6 +188,23 @@ int main(int argc, char** argv) {
                 game.selected_count());
     // A summary of the players' units at the end (smoke tests).
     sim::Battle& b = world->battle();
+    {
+        const client::ClientOptions& o = game.options();
+        std::printf("options: line of sight %d, mapping %d, true sight %d, target everything %d, damage options %04x, no shake %d, "
+                    "effects off %d, view %d, dithered fog %d, radar %d, clock %d, debug commands %d\n",
+                    b.settings.fog_of_war, b.settings.explore, b.settings.true_sight, b.settings.target_everything, b.settings.damage_options,
+                    b.settings.shake_disabled, b.fx_lists.spawning_off, game.viewed_player(), o.dithered_fog, o.radar_everything, o.clock,
+                    o.debug_commands);
+        for (std::size_t p = 0; p < b.players.size() && p < 4; ++p)
+            if (b.players[p].active)
+                std::printf("player %zu: energy %.1f metal %.1f\n", p, static_cast<double>(b.players[p].energy_stored),
+                            static_cast<double>(b.players[p].metal_stored));
+        if (!commands->state().not_built.empty()) {
+            std::printf("commands without an effect here:");
+            for (const std::string& n : commands->state().not_built) std::printf(" %s", n.c_str());
+            std::printf("\n");
+        }
+    }
     if (const std::string fault = b.first_fault(); !fault.empty()) std::printf("ENGINE FAULT: %s\n", fault.c_str());
     for (std::size_t i = 1; i < b.units.size(); ++i) {
         if (b.ticks[i].type_index == 0) continue;

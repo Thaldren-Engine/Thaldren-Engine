@@ -12,7 +12,7 @@
 // here run (remote threads). Error boxes are suppressed; faults are reported with their address.
 //
 // Usage: frame_harness <TotalA.exe> <game_dir> [scenes] [seed] [out_dir] [--map NAME]
-//                      [--res WxH] [--steps N] [--no-fog] [--players N] [--verbose]
+//                      [--res WxH] [--steps N] [--no-fog] [--dither] [--players N] [--verbose]
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -402,6 +402,7 @@ struct Options {
     int players = 4;
     int shots = 12;       // extra shots per scene (up to)
     bool fog = true;
+    bool dither = false;  // --dither: the dithered fog option (visual option 0x40)
     bool verbose = false;
     // --hud: the interface drawn over the view too: the selection boxes of selected units
     // (compared within the view) and the bottom bar of the unit under the pointer (compared
@@ -432,6 +433,7 @@ int main(int argc, char** argv) {
         else if (a == "--steps" && k + 1 < argc) opt.steps = std::atoi(argv[++k]);
         else if (a == "--players" && k + 1 < argc) opt.players = std::atoi(argv[++k]);
         else if (a == "--no-fog") opt.fog = false;
+        else if (a == "--dither") opt.dither = true;
         else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
@@ -946,6 +948,7 @@ int main(int argc, char** argv) {
         }
         const u8 view = 0;
         u16 visual = 0x02 | 0x04 | 0x08 | 0x10 | 0x20;  // anti-aliasing, shadows, unit and feature shadows, shading
+        if (opt.dither) visual |= 0x40;
 
         // Engine frame.
         // Extra shots of random weapons around the view (coverage of every render type); the
@@ -985,6 +988,7 @@ int main(int argc, char** argv) {
         scene.camera.scroll_y = sy;
         world.fill_scene(scene, view, 0);
         if (!opt.fog) scene.fog = nullptr;
+        scene.dithered_fog = opt.dither;
         if (opt.hud) gc.add_selection_outlines(scene);
         render::DrawList list = render::build_draw_list(scene);
         {

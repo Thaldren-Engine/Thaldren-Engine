@@ -144,7 +144,7 @@ void dispatch(const TokenLine& t, Vfs& vfs, const UnitDefTable& defs, sim::Ai& a
         return;
     }
     // Anything else goes to the default handler: unit names matching the word are created at
-    // the cursor (not carried out here), else ai\..\debugdat_<word>.txt is run when it exists.
+    // the cursor (not carried out here), else debugdat\<word>.txt is run when it exists.
     ++r.other;
     for (std::size_t i = 1; i < defs.units.size(); ++i)
         if (wildcard_match(defs.units[i].unit_name, cmd)) {
@@ -152,7 +152,7 @@ void dispatch(const TokenLine& t, Vfs& vfs, const UnitDefTable& defs, sim::Ai& a
             return;
         }
     std::vector<std::uint8_t> inc;
-    if (depth < 8 && vfs.read("debugdat_" + cmd + ".txt", inc)) {
+    if (depth < 8 && vfs.read("debugdat\\" + cmd + ".txt", inc)) {
         ++r.includes;
         run_ai_commands(std::string(inc.begin(), inc.end()), vfs, defs, ai, r);
     }
