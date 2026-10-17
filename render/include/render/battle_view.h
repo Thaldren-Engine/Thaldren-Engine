@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include "render/draw_list.h"
@@ -164,6 +165,9 @@ struct BattleScene {
     LookTables tables;                            // mixing, shade and water tables for unit looks
     int sea_level = 0;
     const FogOfWar* fog = nullptr;                // drawn over everything (none: no fog)
+    // Interface marks the frame draws after the units and effects but before the fog (the
+    // queued orders); appended to the list at that point when set.
+    std::function<void(DrawList&)> before_fog;
     // The C runtime random state when the frame is drawn: lightning shots draw from a copy of
     // it (the original's draw calls rand(); the renderer never advances the simulation's).
     std::uint32_t crt_rand_state = 0;

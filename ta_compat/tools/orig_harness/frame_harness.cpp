@@ -12,7 +12,11 @@
 // here run (remote threads). Error boxes are suppressed; faults are reported with their address.
 //
 // Usage: frame_harness <TotalA.exe> <game_dir> [scenes] [seed] [out_dir] [--map NAME]
-//                      [--res WxH] [--steps N] [--no-fog] [--players N] [--verbose]
+//                      [--res WxH] [--steps N] [--no-fog] [--players N] [--verbose] [--hud]
+//   --hud also compares the interface the frame draws: the top bar (with random resource
+//   values covering every number format), the bottom bar, the selection outlines, the
+//   placement outline of a random structure at a random view point, and the queued-order view
+//   (Shift held; the pixels the placement / Shift change in either frame are compared).
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -34,6 +38,7 @@
 #include "render/draw_list.h"
 #include "render/presenter.h"
 #include "sim/battle.h"
+#include "sim/targeting.h"
 #include "ta/client_world.h"
 #include "ta/model3do.h"
 #include "ta/render_assets.h"
@@ -648,6 +653,7 @@ int main(int argc, char** argv) {
             }
             put_at<u32>(w, 0x74, model);
             put_at<i16>(w, 0xE6, d.weapon_timer);
+            put_at<i16>(w, 0xD6, d.area_of_effect);
             w[0x10A] = static_cast<u8>(slot);
             w[0x10C] = d.render_type;
             w[0x10D] = d.color;
@@ -806,21 +812,21 @@ int main(int argc, char** argv) {
             const std::vector<std::string> kinds = ta::UnitDefContext::default_mission_names();
             std::vector<u8> img(0x6000);
             r.read(0x004FB000, img.data(), img.size());
-            std::map<std::string, u32> text_of;
+            std::map<std::string, std::size_t> entry_of;  // lookup name -> the entry's offset in img
             for (std::size_t off = 0; off + 0x19 <= img.size(); ++off) {
                 const u32 text = get_at<u32>(img, off), look = get_at<u32>(img, off + 0x15), fn = get_at<u32>(img, off + 4);
                 if (text < 0x00500000 || text >= 0x00520000 || look < 0x00500000 || look >= 0x00520000 || fn < 0x00401000 || fn >= 0x004E0000) continue;
                 char name[40] = {};
                 r.read(look, name, sizeof name - 1);
-                if (name[0]) text_of.emplace(name, text);
+                if (name[0]) entry_of.emplace(name, off);
             }
             const u32 table = o.alloc(static_cast<u32>(kinds.size()) * 0x19 + 16);
             std::vector<u8> tb(kinds.size() * 0x19, 0);
             put_at<u32>(tb, 0, r.r32(0x004FD288));  // the first entry (Ready, no lookup name)
             int found = 0;
             for (std::size_t k = 1; k < kinds.size(); ++k)
-                if (auto it = text_of.find(kinds[k]); it != text_of.end()) {
-                    put_at<u32>(tb, k * 0x19, it->second);
+                if (auto it = entry_of.find(kinds[k]); it != entry_of.end()) {
+                    std::memcpy(&tb[k * 0x19], &img[it->second], 0x19);
                     ++found;
                 }
             r.write(table, tb.data(), tb.size());
@@ -851,6 +857,27 @@ int main(int argc, char** argv) {
             region(0x5E, L.damage_bar2);
             region(0x62, L.name);
             region(0x66, L.description);
+            // The top bar (offsets from the side record's base 0x37F3D).
+            const u32 top_base = gs + static_cast<u32>(side) * 0x232 + 0x37F3D;
+            auto top_region = [&](u32 off, const client::Region& g) {
+                const i32 v[4] = {g.x1, g.y1, g.x2, g.y2};
+                r.write(top_base + off, v, sizeof v);
+            };
+            top_region(0x42, L.logo);
+            top_region(0x52, L.energy_bar);
+            top_region(0x62, L.energy_num);
+            top_region(0x72, L.metal_bar);
+            top_region(0x82, L.metal_num);
+            top_region(0xB2, L.energy_max);
+            top_region(0xC2, L.metal_max);
+            top_region(0xD2, L.energy_zero);
+            top_region(0xE2, L.metal_zero);
+            top_region(0xF2, L.energy_produced);
+            top_region(0x102, L.energy_consumed);
+            top_region(0x112, L.metal_produced);
+            top_region(0x122, L.metal_consumed);
+            r.w32(top_base + 0x222, L.energy_colour);
+            r.w32(top_base + 0x226, L.metal_colour);
             const ta::TdfSection* s = sr.root ? sr.root->child("SIDE" + std::to_string(side)) : nullptr;
             if (!s) continue;
             std::vector<u8> fnt;
@@ -866,6 +893,8 @@ int main(int argc, char** argv) {
                 ta::gaf_read_directory(gf, dir);
                 const int i = ta::gaf_find_sequence(dir, "PANELBOT");
                 if (i >= 0) r.w32(gs + static_cast<u32>(side) * 4 + 0x14833, o.gaf(intgaf, gf) + Original::gaf_entry(gf, i));
+                const int t = ta::gaf_find_sequence(dir, "PANELTOP");
+                if (t >= 0) r.w32(gs + static_cast<u32>(side) * 4 + 0x1481F, o.gaf(intgaf, gf) + Original::gaf_entry(gf, t));
             }
         }
         // The colour logos (textures\logos.gaf "32xlogos", frame = colour) of the LOGO boxes.
@@ -882,6 +911,57 @@ int main(int argc, char** argv) {
         for (int p = 0; p < 10; ++p) {
             const u8 side = static_cast<u8>(p < static_cast<int>(setup.players.size()) ? setup.players[static_cast<std::size_t>(p)].side : 0);
             r.write(infos + static_cast<u32>(p) * 0x100 + 0x95, &side, 1);
+        }
+        // Unit type fields of the placement check and of the queued-order view: footprint and
+        // yard map, slope and water limits, build options, sight / cloak / kamikaze distances,
+        // the explosion weapon.
+        for (std::size_t k = 0; k < world.types_.size() && k < world.defs_.units.size(); ++k) {
+            const ta::UnitDefRecord& d = world.defs_.units[k];
+            const u32 def = udefs + static_cast<u32>(k) * kDefSize;
+            std::vector<u8> db(kDefSize, 0);
+            r.read(def, db.data(), db.size());
+            put_at<i16>(db, 0x14A, d.footprint_x);
+            put_at<i16>(db, 0x14C, d.footprint_z);
+            if (!d.yard_map.empty()) {
+                const u32 ym = o.alloc(static_cast<u32>(d.yard_map.size()) + 16);
+                r.write(ym, d.yard_map.data(), d.yard_map.size());
+                put_at<u32>(db, 0x14E, ym);
+            }
+            put_at<u32>(db, 0x156, d.has_build_options ? 1u : 0u);
+            put_at<i16>(db, 0x1BE, d.max_water_depth);
+            put_at<i16>(db, 0x1C0, d.min_water_depth);
+            put_at<i16>(db, 0x202, d.sight_distance);
+            put_at<i16>(db, 0x208, d.min_cloak_distance);
+            put_at<i16>(db, 0x218, d.kamikaze_distance);
+            put_at<u32>(db, 0x220, d.explode_as >= 0 && d.explode_as < 256 ? wdefs + static_cast<u32>(d.explode_as) * 0x115 : 0u);
+            db[0x228] = d.max_slope;
+            db[0x22C] = d.waterline;
+            db[0x22F] = d.bm_code;
+            r.write(def, db.data(), db.size());
+        }
+        // The pointer looks by number (anims\CURSORS.GAF) and the path marker: the queued-order view.
+        {
+            static const char* const kByNumber[22] = {nullptr,          "cursorattack",    "cursorairstrike", "cursortoofar",   "cursorcapture",
+                                                      "cursordefend",   "cursorrepair",    "cursorpatrol",    "cursorpickup",   "cursorteleport",
+                                                      "cursorrevive",   "cursorreclamate", "cursorload",      "cursorunload",   "cursormove",
+                                                      "cursorselect",   "cursorfindsite",  "cursorred",       "cursorgrn",      "cursornormal",
+                                                      "cursorhourglass", "pathicon"};
+            std::vector<u8> cf;
+            if (vfs.read("anims\\CURSORS.GAF", cf)) {
+                ta::GafDirectory dir;
+                ta::gaf_read_directory(cf, dir);
+                for (u32 n = 1; n < 22; ++n) {
+                    const int i = ta::gaf_find_sequence(dir, kByNumber[n]);
+                    if (i >= 0) r.w32(gs + 0x1487F + n * 4, o.gaf("anims\\CURSORS.GAF", cf) + Original::gaf_entry(cf, i));
+                }
+            }
+        }
+        for (int p = 0; p < 10; ++p) {
+            const sim::PlayerSlot& ps = b.players[static_cast<std::size_t>(p)];
+            if (ps.first_unit <= 0 || ps.last_unit < ps.first_unit) continue;
+            const u32 rec = gs + gPlayers + static_cast<u32>(p) * kPlayerSize;
+            r.w32(rec + 0x67, units_at + static_cast<u32>(ps.first_unit) * kUnitSize);
+            r.w32(rec + 0x6B, units_at + static_cast<u32>(std::min<int>(ps.last_unit, static_cast<int>(b.units.size()) - 1)) * kUnitSize);
         }
         gc.set_pointer_hidden(true);
     }
@@ -921,6 +1001,30 @@ int main(int argc, char** argv) {
                     if (rnd(0, 2) == 0) b.units[i].flags |= 0x10u;
                     else b.units[i].flags &= ~0x10u;
                 }
+            // Half of the time the player's selected units get a few queued orders (moves, patrols,
+            // structures to build around the view) so the queued-order view has something to show.
+            if (rnd(0, 3)) {
+                // (given to every unit of the player: all of them selected for the commands)
+                std::vector<std::uint32_t> before(b.units.size());
+                for (std::size_t i = 1; i < b.units.size(); ++i) {
+                    before[i] = b.units[i].flags;
+                    if (b.ticks[i].type_index && b.ticks[i].owner == 0) b.units[i].flags |= 0x10u;
+                }
+                int given = 0;
+                std::vector<std::uint16_t> structures;
+                for (std::size_t k = 1; k < world.content().types.size() && k < b.types.size(); ++k)
+                    if (world.content().types[k].structure && b.types[k].construction.footprint_x > 0) structures.push_back(static_cast<std::uint16_t>(k));
+                for (int k = rnd(1, 4); k > 0; --k) {
+                    const client::WorldPos pos{(sx + rnd(0, W - 128)) << 16, 0, (sy + rnd(0, H - 64)) << 16};
+                    const int what = rnd(0, 2);
+                    if (what == 2 && !structures.empty())
+                        given += client::command_build(b, 0, structures[static_cast<std::size_t>(rnd(0, static_cast<int>(structures.size()) - 1))], pos, true);
+                    else
+                        given += client::command_selected(b, 0, what ? sim::intent::kPatrol : sim::intent::kMove, nullptr, &pos, true);
+                }
+                for (std::size_t i = 1; i < b.units.size(); ++i) b.units[i].flags = before[i];
+                if (opt.verbose) std::printf("  hud: %d queued orders given\n", given);
+            }
             (void)gc.draw();  // the units on screen (the pick test uses them)
             std::vector<std::pair<int, int>> spots;
             for (std::size_t i = 1; i < b.units.size(); ++i) {
@@ -946,6 +1050,71 @@ int main(int argc, char** argv) {
         }
         const u8 view = 0;
         u16 visual = 0x02 | 0x04 | 0x08 | 0x10 | 0x20;  // anti-aliasing, shadows, unit and feature shadows, shading
+        // --hud: the top bar's random resource values (restored after the scene) and the state of
+        // its shown amounts, rates and refresh timer, put into both the client and the original.
+        client::GameClient::TopBarState top_state;
+        const sim::PlayerEconomy saved_ec = b.player_economy[0];
+        const sim::PlayerSlot saved_slot = b.players[0];
+        auto write_top = [&]() {
+            const u32 rec = gs + gPlayers;
+            const sim::PlayerEconomy& ec = b.player_economy[0];
+            const sim::PlayerSlot& ps = b.players[0];
+            auto wf = [&](u32 off, float v) { r.write(rec + off, &v, 4); };
+            wf(0x8C, ps.energy_stored);
+            wf(0x98, ps.metal_stored);
+            wf(0xA4, ec.energy_storage);
+            wf(0xA8, ec.metal_storage);
+            wf(0x90, ec.energy_income);
+            wf(0x94, ec.energy_usage);
+            wf(0x9C, ec.metal_income);
+            wf(0xA0, ec.metal_usage);
+            wf(0xE4, ec.share_metal_above);
+            wf(0xE8, ec.share_energy_above);
+            r.w32(rec + pNextTurn, top_state.timer);
+            // The last-drawn copy: the same shown amounts and rates, storages that differ (so the
+            // bar is drawn).
+            std::vector<u8> top(33, 0);
+            put_at<float>(top, 1, top_state.shown[0]);
+            put_at<float>(top, 5, top_state.rates[0]);
+            put_at<float>(top, 9, top_state.rates[1]);
+            put_at<float>(top, 0xD, top_state.shown[1]);
+            put_at<float>(top, 0x11, top_state.rates[2]);
+            put_at<float>(top, 0x15, top_state.rates[3]);
+            put_at<u32>(top, 0x19, 0xFFFFFFFFu);
+            put_at<u32>(top, 0x1D, 0xFFFFFFFFu);
+            r.write(gs + gTopBar, top.data(), top.size());
+        };
+        if (opt.hud) {
+            sim::PlayerEconomy& ec = b.player_economy[0];
+            sim::PlayerSlot& ps = b.players[0];
+            auto rate = [&](bool use) -> float {
+                switch (rnd(0, 7)) {
+                case 0: return 0.0f;
+                case 1: return static_cast<float>(rnd(0, 99999)) / 10.0f;
+                case 2: return static_cast<float>(rnd(100000, 3000000)) + static_cast<float>(rnd(0, 9)) / 10.0f;
+                case 3: return 99999.0f + static_cast<float>(rnd(0, 1)) * 0.5f;
+                case 4: return use ? -static_cast<float>(rnd(100000, 3000000)) : static_cast<float>(rnd(0, 200));
+                case 5: return use ? -static_cast<float>(rnd(0, 99999)) / 10.0f : static_cast<float>(rnd(0, 999)) / 100.0f;
+                default: return static_cast<float>(rnd(0, 5000)) + static_cast<float>(rnd(0, 99)) / 100.0f;
+                }
+            };
+            ec.energy_income = rate(false);
+            ec.energy_usage = rate(true);
+            ec.metal_income = rate(false);
+            ec.metal_usage = rate(true);
+            for (int k = 0; k < 2; ++k) {
+                float& storage = k ? ec.metal_storage : ec.energy_storage;
+                float& stored = k ? ps.metal_stored : ps.energy_stored;
+                float& thr = k ? ec.share_metal_above : ec.share_energy_above;
+                storage = rnd(0, 5) == 0 ? 0.0f : static_cast<float>(rnd(1, 30000));
+                stored = static_cast<float>(rnd(0, std::max(1, static_cast<int>(storage) + 100))) + static_cast<float>(rnd(0, 9)) / 10.0f;
+                thr = rnd(0, 2) == 0 ? static_cast<float>(rnd(0, std::max(1, static_cast<int>(storage)))) : 0.0f;
+                top_state.shown[static_cast<std::size_t>(k)] = rnd(0, 2) ? stored + static_cast<float>(rnd(-500, 500)) : stored;
+            }
+            for (float& v : top_state.rates) v = rate(rnd(0, 1) != 0);
+            top_state.timer = b.game_tick() + static_cast<u32>(rnd(-2, 1));
+            top_state.timer_set = true;
+        }
 
         // Engine frame.
         // Extra shots of random weapons around the view (coverage of every render type); the
@@ -1174,6 +1343,7 @@ int main(int argc, char** argv) {
                 if (!t.type_index || t.type_index >= world.types_.size() || !unit_type(t.type_index)) continue;
                 const sim::Unit& u = b.units[i];
                 const u32 at = units_at + static_cast<u32>(i) * kUnitSize;
+                const u32 at_unit = at;
                 // Object state: built once per unit and type, then the engine's pose copied in.
                 if (!unit_state[i] || unit_state_type[i] != t.type_index) {
                     u32 state = 0;
@@ -1241,12 +1411,33 @@ int main(int argc, char** argv) {
                     // +0x16), no secondary orders (+0x60), kills (+0xB8), the resource slot's last
                     // settlement (+0xCC energy made, +0xD0 energy used, +0xE4 metal made, +0xE8 metal used).
                     if (u.orders) {
-                        const u32 ord = head_orders + static_cast<u32>(i) * 0x58;
-                        std::vector<u8> ob(0x56, 0);
-                        ob[4] = u.orders->kind;
-                        put_at<u32>(ob, 0x16, uptr(u.orders->target.unit));
-                        r.write(ord, ob.data(), ob.size());
-                        std::memcpy(d + 0x5C, &ord, 4);
+                        // The primary list: kind, unit, target, position, behaviour words,
+                        // parameters, flags, creation step, next.
+                        std::vector<const sim::MissionOrder*> list;
+                        for (const sim::MissionOrder* q = u.orders; q && list.size() < 64; q = q->next) list.push_back(q);
+                        std::vector<u32> at(list.size());
+                        at[0] = head_orders + static_cast<u32>(i) * 0x58;
+                        for (std::size_t q = 1; q < list.size(); ++q) at[q] = o.alloc(0x58);
+                        for (std::size_t q = 0; q < list.size(); ++q) {
+                            const sim::MissionOrder& mo = *list[q];
+                            std::vector<u8> ob(0x56, 0);
+                            ob[4] = mo.kind;
+                            put_at<u32>(ob, 0x0E, at_unit);
+                            put_at<u32>(ob, 0x16, uptr(mo.target.unit));
+                            put_at<i32>(ob, 0x22, mo.pos[0]);
+                            put_at<i32>(ob, 0x26, mo.pos[1]);
+                            put_at<i32>(ob, 0x2A, mo.pos[2]);
+                            put_at<u32>(ob, 0x2E, mo.scratch0);
+                            put_at<u32>(ob, 0x32, mo.scratch1);
+                            put_at<i32>(ob, 0x36, mo.param0);
+                            put_at<i32>(ob, 0x3A, mo.param1);
+                            put_at<i32>(ob, 0x3E, mo.param2);
+                            put_at<u32>(ob, 0x42, mo.flags);
+                            put_at<u32>(ob, 0x46, mo.created_tick);
+                            put_at<u32>(ob, 0x4A, q + 1 < list.size() ? at[q + 1] : 0u);
+                            r.write(at[q], ob.data(), ob.size());
+                        }
+                        std::memcpy(d + 0x5C, &at[0], 4);
                     }
                     // Weapon slots (+0x10, 0x1C each): the bar only remembers their reload state,
                     // so each gets a definition with reload time 0 (state "none").
@@ -1285,6 +1476,7 @@ int main(int argc, char** argv) {
             r.read(gs + gGameOptions, &go, 1);
             go = static_cast<u8>(go | 4);
             r.write(gs + gGameOptions, &go, 1);
+            write_top();
             const u16 none = 0xFFFF, zero = 0;
             r.write(gs + 0x2CBA, &hover, 2);
             r.write(gs + 0x2CBC, &none, 2);
@@ -1292,6 +1484,7 @@ int main(int argc, char** argv) {
             r.write(gs + 0x3923B, &zero, 2);
             std::vector<u8> ff(0x3C, 0xFF);
             r.write(gs + 0x37E60, ff.data(), ff.size());
+            r.w32(gs + 0x37E90, 0);  // (the info panel's slide position lies in that range: closed)
             if (opt.verbose && hover)
                 std::printf("  hover unit %u: owner %d kills %u flags %08X order %d hp %d\n", hover, b.ticks[hover].owner, b.ticks[hover].kill_count,
                             b.units[hover].flags, b.units[hover].orders ? b.units[hover].orders->kind : -1, b.units[hover].hit_points);
@@ -1376,6 +1569,13 @@ int main(int argc, char** argv) {
         ++st.scenes;
         st.pixels += diff;
         if (!diff) ++st.identical;
+        bool scene_differs = diff != 0;
+        auto differs = [&](long long n) {
+            if (n && !scene_differs) {
+                --st.identical;
+                scene_differs = true;
+            }
+        };
         int nunits = 0;
         for (std::size_t i = 1; i < b.units.size(); ++i) nunits += b.ticks[i].type_index != 0;
         std::printf("scene %d: tick %u scroll %d,%d units %d visible %u shots %d: %lld of %lld view pixels differ\n", sc, b.game_tick(), sx, sy, nunits,
@@ -1385,6 +1585,7 @@ int main(int argc, char** argv) {
             // right of the side panel.
             int nsel = 0;
             for (const render::UnitInstance& ui : scene.units) nsel += ui.outline;
+            gc.set_top_bar_state(top_state);
             const render::Image8 cf = render::execute(gc.draw(), world.blend_);
             long long bd = 0, bn = 0;
             render::Image8 bimg(W, H, 0);
@@ -1409,7 +1610,231 @@ int main(int argc, char** argv) {
                 render::write_bmp(base + "_diff.bmp", bimg, world.palette_);
             }
             st.pixels += bd;
-            if (bd && !diff) --st.identical;
+            differs(bd);
+
+            // The top bar: rows 0..31 right of the side panel.
+            long long td = 0, tn = 0;
+            render::Image8 timg(W, H, 0);
+            for (int y = 0; y < 32; ++y)
+                for (int x = 129; x < W; ++x) {
+                    const std::size_t i = static_cast<std::size_t>(y * W + x);
+                    ++tn;
+                    if (theirs[i] != cf.pixels[i]) {
+                        ++td;
+                        timg.pixels[i] = 0xFF;
+                    }
+                }
+            const sim::PlayerEconomy& ec = b.player_economy[0];
+            std::printf("  hud: top bar (energy %.1f/%.1f made %.1f used %.1f, metal %.1f/%.1f made %.1f used %.1f, rates %s): %lld of %lld pixels differ\n",
+                        b.players[0].energy_stored, ec.energy_storage, ec.energy_income, ec.energy_usage, b.players[0].metal_stored,
+                        ec.metal_storage, ec.metal_income, ec.metal_usage, top_state.timer < b.game_tick() ? "read" : "kept", td, tn);
+            if (!opt.out_dir.empty() && td && written < 40) {
+                render::Image8 a(W, H);
+                a.pixels = theirs;
+                const std::string base = opt.out_dir + "/top_" + std::to_string(opt.seed) + "_" + std::to_string(sc);
+                render::write_bmp(base + "_orig.bmp", a, world.palette_);
+                render::write_bmp(base + "_client.bmp", cf, world.palette_);
+                render::write_bmp(base + "_diff.bmp", timg, world.palette_);
+            }
+            st.pixels += td;
+            differs(td);
+
+            // Compares what a change (placement, Shift) adds to the view in both frames: every view
+            // pixel either frame changes is compared between the two changed frames.
+            auto original_frame = [&](std::vector<u8>& out) -> bool {
+                // The battle's own shots only (the scene's extra ones are gone on the client's
+                // side), the C runtime's random state as the battle has it (lightning draws).
+                r.w32(gs + 0x141F3, static_cast<u32>(b.projectiles.count));
+                r.w32(o.rand_state, b.crt_rand.state());
+                r.write(o.frame, bg.data(), bg.size());
+                write_top();
+                const u16 hv = gc.hover_unit();
+                r.write(gs + 0x2CBA, &hv, 2);
+                r.write(gs + 0x37E60, std::vector<u8>(0x3C, 0xFF).data(), 0x3C);
+                r.w32(gs + 0x37E90, 0);  // (the info panel's slide position lies in that range: closed)
+                if (!o.call(kVisibleList, 0, {}) || !o.call(kDrawFrame, 0, {1, 0})) return false;
+                out.resize(static_cast<std::size_t>(W * H));
+                r.read(o.frame, out.data(), out.size());
+                return true;
+            };
+            auto client_frame = [&]() {
+                gc.set_top_bar_state(top_state);
+                return render::execute(gc.draw(), world.blend_);
+            };
+            auto delta = [&](const std::vector<u8>& o0, const std::vector<u8>& o1, const render::Image8& c0, const render::Image8& c1, long long& changed,
+                             render::Image8& dimg2) {
+                long long d = 0;
+                changed = 0;
+                for (int y = 32; y <= H - 33; ++y)
+                    for (int x = 128; x < W; ++x) {
+                        const std::size_t i = static_cast<std::size_t>(y * W + x);
+                        if (o0[i] == o1[i] && c0.pixels[i] == c1.pixels[i]) continue;
+                        ++changed;
+                        if (o1[i] != c1.pixels[i]) {
+                            ++d;
+                            dimg2.pixels[i] = 0xFF;
+                        }
+                    }
+                return d;
+            };
+            auto dump = [&](const char* what, const std::vector<u8>& o1, const render::Image8& c1, const render::Image8& dimg2) {
+                if (opt.out_dir.empty() || written >= 40) return;
+                render::Image8 a(W, H);
+                a.pixels = o1;
+                const std::string base = opt.out_dir + "/" + what + "_" + std::to_string(opt.seed) + "_" + std::to_string(sc);
+                render::write_bmp(base + "_orig.bmp", a, world.palette_);
+                render::write_bmp(base + "_client.bmp", c1, world.palette_);
+                render::write_bmp(base + "_diff.bmp", dimg2, world.palette_);
+            };
+
+            // (Both need the scene's view to agree: a scene whose view differs is not used for them.)
+            if (diff) std::printf("  hud: placement and queued orders not compared (the view differs)\n");
+            // Placement: a random structure type at a random view point.
+            if (!diff) {
+                std::vector<std::uint16_t> structures;
+                for (std::size_t k = 1; k < world.content().types.size() && k < world.defs_.units.size(); ++k)
+                    if (world.content().types[k].structure && world.defs_.units[k].footprint_x > 0 && world.defs_.units[k].has_yard_map &&
+                        k < b.types.size())
+                        structures.push_back(static_cast<std::uint16_t>(k));
+                if (!structures.empty()) {
+                    const std::uint16_t type = structures[static_cast<std::size_t>(rnd(0, static_cast<int>(structures.size()) - 1))];
+                    client::InputEvent mv;
+                    mv.type = client::InputEvent::Type::MouseMove;
+                    mv.x = rnd(128, W - 1);
+                    mv.y = rnd(32, H - 33);
+                    // Near one of the player's units half of the time (ground it sees: placements that fit).
+                    for (std::size_t i = 1; i < b.units.size() && rnd(0, 1); ++i) {
+                        if (!b.ticks[i].type_index || b.ticks[i].owner != 0) continue;
+                        const sim::Unit& u = b.units[i];
+                        const int px = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[0]) >> 16) - sx + 128 + rnd(-80, 80);
+                        const int py = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[2]) >> 16) -
+                                       (static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[1]) >> 16) >> 1) - sy + 32 + rnd(-80, 80);
+                        if (px >= 128 && px < W && py >= 32 && py <= H - 33) {
+                            mv.x = px;
+                            mv.y = py;
+                            break;
+                        }
+                    }
+                    gc.handle(mv);
+                    const render::Image8 c0 = client_frame();
+                    gc.start_placement(type);
+                    gc.update_placement();
+                    const render::Image8 c1 = client_frame();
+                    client::InputEvent esc;
+                    esc.type = client::InputEvent::Type::KeyDown;
+                    esc.key = client::keys::kEscape;
+                    gc.handle(esc);
+                    std::vector<u8> o0, o1;
+                    const u8 dflt = 1, place = 14;
+                    r.write(gs + 0x2CC3, &dflt, 1);
+                    bool ok2 = original_frame(o0);
+                    r.w32(gs + 0x2C76, static_cast<u32>(mv.x));
+                    r.w32(gs + 0x2C7A, static_cast<u32>(mv.y));
+                    // (the conversion clamps to the map's size in pixels, GS+0x14223 / 0x14227; set
+                    // for the call only, the frame draw runs with them as the harness has them)
+                    r.w32(gs + 0x14223, static_cast<u32>(mw * 16));
+                    r.w32(gs + 0x14227, static_cast<u32>(mh * 16));
+                    ok2 = ok2 && o.call(0x00484B50, 0, {static_cast<u32>(sx + mv.x - 128), static_cast<u32>(sy + mv.y - 32), gs + 0x2CAA});
+                    r.w32(gs + 0x14223, 0);
+                    r.w32(gs + 0x14227, 0);
+                    r.write(gs + 0x2CC3, &place, 1);
+                    r.write(gs + 0x2CC4, &type, 2);
+                    u8 flags6 = 0;
+                    r.read(gs + 0x2CC6, &flags6, 1);
+                    flags6 = static_cast<u8>(flags6 & ~8);
+                    r.write(gs + 0x2CC6, &flags6, 1);
+                    ok2 = ok2 && o.call(0x004197D0, 0, {});
+                    r.read(gs + 0x2CC6, &flags6, 1);
+                    ok2 = ok2 && original_frame(o1);
+                    r.write(gs + 0x2CC3, &dflt, 1);
+                    if (!ok2) {
+                        std::printf("  hud: placement: original call failed\n");
+                        ++st.failures;
+                    } else {
+                        render::Image8 pimg(W, H, 0);
+                        long long changed = 0;
+                        const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                        std::printf("  hud: placement of %s at %d,%d (fits %d, corner %d,%d height %d): %lld of %lld changed pixels differ\n",
+                                    world.defs_.units[type].unit_name.c_str(), mv.x, mv.y, (flags6 >> 6) & 1, static_cast<int>(r.r32(gs + 0x2C92)) / 16, static_cast<int>(r.r32(gs + 0x2C9A)) / 16, static_cast<int>(r.r32(gs + 0x2C96)), pd, changed);
+                        if (pd) dump("place", o1, c1, pimg);
+                        st.pixels += pd;
+                        differs(pd);
+                    }
+                }
+            }
+
+            // The queued-order view: Shift held against not held.
+            if (!diff) {
+                client::InputEvent mv;
+                mv.type = client::InputEvent::Type::MouseMove;
+                mv.x = rnd(129, W - 2);
+                mv.y = rnd(33, H - 34);
+                // Over a unit of the player most of the time (its paths show).
+                std::vector<std::pair<int, int>> own;
+                for (std::size_t i = 1; i < b.units.size(); ++i) {
+                    if (!b.ticks[i].type_index || b.ticks[i].owner != 0) continue;
+                    const sim::Unit& u = b.units[i];
+                    const int px = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[0]) >> 16) - sx + 128;
+                    const int py = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[2]) >> 16) -
+                                   (static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[1]) >> 16) >> 1) - sy + 32;
+                    if (px > 128 && px < W - 1 && py > 32 && py < H - 33) own.push_back({px, py});
+                }
+                if (!own.empty() && rnd(0, 3)) {
+                    const auto& sp = own[static_cast<std::size_t>(rnd(0, static_cast<int>(own.size()) - 1))];
+                    mv.x = sp.first;
+                    mv.y = sp.second;
+                }
+                // Every unit of the player selected (both sides), so their orders show.
+                std::vector<std::pair<std::size_t, std::uint32_t>> kept_flags;
+                for (std::size_t i = 1; i < b.units.size(); ++i)
+                    if (b.ticks[i].type_index && b.ticks[i].owner == 0 && rnd(0, 3)) {
+                        kept_flags.push_back({i, b.units[i].flags});
+                        b.units[i].flags |= 0x10u;
+                        r.w32(units_at + static_cast<u32>(i) * kUnitSize + 0x110, b.units[i].flags);
+                    }
+                mv.shift = false;
+                gc.handle(mv);
+                const render::Image8 c0 = client_frame();
+                mv.shift = true;
+                gc.handle(mv);
+                const render::Image8 c1 = client_frame();
+                mv.shift = false;
+                gc.handle(mv);
+                std::vector<u8> o0, o1;
+                const u8 up = 0, down = 1;
+                const u16 none16 = 0;
+                r.write(gs + 0x37E9C, &none16, 2);
+                r.w32(gs + 0x142F3, 0);
+                r.write(o.key_state + 0xF9, &up, 1);
+                bool ok2 = original_frame(o0);
+                r.write(o.key_state + 0xF9, &down, 1);
+                ok2 = ok2 && original_frame(o1);
+                r.write(o.key_state + 0xF9, &up, 1);
+                if (!ok2) {
+                    std::printf("  hud: queued orders: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    int orders = 0;
+                    for (std::size_t i = 1; i < b.units.size(); ++i)
+                        if (b.ticks[i].type_index && b.ticks[i].owner == 0)
+                            for (const sim::MissionOrder* q = b.units[i].orders; q; q = q->next) ++orders;
+                    render::Image8 qimg(W, H, 0);
+                    long long changed = 0;
+                    const long long qd = delta(o0, o1, c0, c1, changed, qimg);
+                    std::printf("  hud: queued orders (pointer over unit %u, %d own orders, %zu more units selected): %lld of %lld changed pixels differ\n",
+                                gc.hover_unit(), orders, kept_flags.size(), qd, changed);
+                    if (qd) dump("shift", o1, c1, qimg);
+                    if (changed && std::getenv("FH_SHOTS")) dump("shiftok", o1, c1, qimg);
+                    st.pixels += qd;
+                    differs(qd);
+                }
+                for (const auto& [i, f] : kept_flags) {
+                    b.units[i].flags = f;
+                    r.w32(units_at + static_cast<u32>(i) * kUnitSize + 0x110, f);
+                }
+            }
+            b.player_economy[0] = saved_ec;
+            b.players[0] = saved_slot;
         }
         if (opt.verbose) {
             std::uint16_t w[4];

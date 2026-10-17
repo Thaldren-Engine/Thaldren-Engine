@@ -1429,6 +1429,12 @@ bool placement_blocked(const Construction& c, const MapCell& cell, i32 x, i32 z)
 } // namespace
 
 bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z) {
+    return structure_fits(c, type, cell_x, cell_z, true, nullptr);
+}
+
+bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell_x, std::int16_t cell_z, bool occupants_block,
+                    std::uint8_t* height) {
+    if (height) *height = 0;
     c.env.last_place_metal = 0;
     if (type >= c.types.size()) return false;
     const ConstructionTypeInfo& t = c.types[type];
@@ -1450,8 +1456,8 @@ bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell
                 if (cell->height_max > hi) hi = cell->height_max;
             }
             if ((y & 0x10) && cell->height_max > water) water = cell->height_max;
-            if ((y & 1) && (cell->flags & 2)) return false;
-            if ((y & 6) && cell->unit != 0) return false;
+            if ((y & 1) && (cell->flags & 2) && occupants_block) return false;
+            if ((y & 6) && cell->unit != 0 && occupants_block) return false;
             if ((y & 0x20) && placement_blocked(c, *cell, x, z)) return false;
             if (y & 0x40) {
                 const FeatureTypeInfo* f = placement_feature(c, *cell, x, z);
@@ -1476,6 +1482,7 @@ bool structure_fits(const Construction& c, std::uint16_t type, std::int16_t cell
     if (static_cast<i32>(lo) < static_cast<i32>(sea) - t.max_water_depth) return false;
     const u8 top = hi > water ? hi : water;
     if (static_cast<i32>(top) > static_cast<i32>(sea) - t.min_water_depth) return false;
+    if (height) *height = h;
     return true;
 }
 

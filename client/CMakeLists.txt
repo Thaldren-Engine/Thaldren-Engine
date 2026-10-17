@@ -11,6 +11,7 @@ add_library(client STATIC
     src/hud.cpp
     src/menu.cpp
     src/music.cpp
+    src/queued_orders.cpp
     src/settings.cpp
 )
 if(WIN32)

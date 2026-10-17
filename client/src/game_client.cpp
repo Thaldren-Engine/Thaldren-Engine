@@ -10,6 +10,7 @@
 #include <cstdlib>
 
 #include "sim/features.h"
+#include "sim/mission_goals.h"
 #include "sim/missions.h"
 #include "sim/orders.h"
 #include "sim/targeting.h"
@@ -196,6 +197,13 @@ int GameClient::frame(std::uint32_t now_ms) {
         }
     }
     hover_feature_ = in_view(mouse_x_, mouse_y_) && !hover_ ? feature_under(mouse_x_, mouse_y_) : -1;
+    // The pointer over the view in placement mode: the placement check of this pass (the
+    // pointer's look stays as it was); otherwise the pointer's look follows what it is over.
+    if (mode_ == Action::BuildUnit && in_view(mouse_x_, mouse_y_)) update_placement();
+    else set_pointer(cursor_kind());
+    // An order (or placement) given with Shift kept its mode: letting Shift go ends it.
+    if (mode_kept_ && !shift_ && !keys_down_[keys::kShift]) end_order_mode();
+    advance_pointer(dt);
     speech_step();
     if (panel_dirty_) refresh_panel();
     ++frame_counter_;
@@ -503,7 +511,8 @@ void GameClient::refresh_panel() {
             only = static_cast<std::uint16_t>(i);
         }
     focus_ = n == 1 ? only : 0;
-    if (mode_ != Action::None && n == 0) mode_ = Action::None;
+    if (mode_ != Action::None && n == 0) end_order_mode();
+    pressed_order_ = Action::None;  // the panel is made afresh: no button of the group pressed
 }
 
 const Panel* GameClient::current_panel() const {
@@ -579,41 +588,55 @@ int GameClient::button_stage(const Button& btn) const {
     return std::max(stage, 0);
 }
 
+void GameClient::end_order_mode() {
+    mode_ = Action::None;
+    mode_kept_ = false;
+    pressed_order_ = Action::None;
+}
+
 bool GameClient::press_button(const Button& btn, const InputEvent& e) {
     if (!button_enabled(btn)) return false;
     const int player = opt_.player;
     sim::Unit* focus = focus_ ? &b_.units[focus_] : nullptr;
     switch (btn.action) {
     case Action::OrdersTab:
-        if (focus) focus->flags &= ~(kBuildMenuShown | kBuildPageMask);
+        // The orders: the build menu flag goes (the page is kept).
+        if (focus) focus->flags &= ~kBuildMenuShown;
+        pressed_order_ = Action::None;
         play_ui(c_.ui_sounds.orders_tab);
         return true;
     case Action::BuildTab:
-        if (focus) focus->flags = (focus->flags & ~kBuildPageMask) | kBuildMenuShown | (1u << kBuildPageShift);
+        // The build menu: its flag is set, the page it was on stays.
+        if (focus) focus->flags |= kBuildMenuShown;
+        pressed_order_ = Action::None;
         play_ui(c_.ui_sounds.build_tab);
         return true;
     case Action::PrevPage:
     case Action::NextPage:
+        // Either mouse button: next / previous page, wrapping (the menu shown).
         if (focus) {
             const std::uint16_t t = b_.ticks[focus_].type_index;
             const int pages = t < c_.types.size() ? static_cast<int>(c_.types[t].build_pages.size()) : 0;
             if (pages > 0) {
                 int page = static_cast<int>((focus->flags & kBuildPageMask) >> kBuildPageShift);
-                page = btn.action == Action::NextPage ? (page % pages) + 1 : (page <= 1 ? pages : page - 1);
-                focus->flags = (focus->flags & ~kBuildPageMask) | kBuildMenuShown | (static_cast<std::uint32_t>(page) << kBuildPageShift);
+                page = btn.action == Action::NextPage ? (page == pages ? 1 : page + 1) : (page <= 1 ? pages : page - 1);
+                focus->flags = (focus->flags & ~kBuildPageMask) | kBuildMenuShown | (static_cast<std::uint32_t>(page & 7) << kBuildPageShift);
+                pressed_order_ = Action::None;
             }
         }
         play_ui(c_.ui_sounds.next_build_menu);
         return true;
     case Action::Stop:
+        // Stop ends any order mode (its button group shows none pressed).
+        end_order_mode();
         command_selected_kind(b_, player, sim::mission::kStop, 0, false);
         play_ui(c_.ui_sounds.immediate);
         return true;
     case Action::FireOrders:
     case Action::MoveOrders: {
-        // Left click steps forward, right click back (three stages).
+        // Either way round the three stages go forward (the "mixed" look counts as the last).
         const int cur = button_stage(btn);
-        const int next = e.button == 3 ? (cur + 2) % 3 : (cur + 1) % 3;
+        const int next = cur >= 2 ? 0 : cur + 1;
         command_selected_kind(b_, player, btn.action == Action::FireOrders ? sim::mission::kStandingFireOrder : sim::mission::kStandingMoveOrder,
                               next, false);
         play_ui(btn.action == Action::FireOrders ? c_.ui_sounds.set_fire : c_.ui_sounds.set_move);
@@ -632,25 +655,57 @@ bool GameClient::press_button(const Button& btn, const InputEvent& e) {
         return true;
     }
     case Action::BuildUnit: {
-        if (!focus) return false;
-        if (!b_.ticks[focus_].has_motion) {
-            // A factory: left adds to the queue, right takes away; shift by five.
-            const int n = e.shift ? 5 : 1;
-            change_build_count(b_, *focus, btn.unit_type, e.button == 3 ? -n : n);
-            play_ui(e.button == 3 ? c_.ui_sounds.sub_build : c_.ui_sounds.add_build);
-        } else {
+        // A structure's button (either mouse button) starts placement; a mobile type's button
+        // changes the focus unit's queue (left +1, right -1; Shift by five) while it is selected.
+        const bool structure = btn.unit_type < c_.types.size() && c_.types[btn.unit_type].structure;
+        if (structure) {
             mode_ = Action::BuildUnit;
+            mode_kept_ = false;
             build_type_ = btn.unit_type;
+            place_valid_ = false;
             play_ui(c_.ui_sounds.add_build);
+            return true;
         }
+        if (!focus || !(focus->flags & kSelected)) return false;
+        const int n = e.shift ? 5 : 1;
+        change_build_count(b_, *focus, btn.unit_type, e.button == 3 ? -n : n);
+        play_ui(e.button == 3 ? c_.ui_sounds.sub_build : c_.ui_sounds.add_build);
         return true;
     }
     default:
-        // Order modes wait for a map click.
-        mode_ = btn.action;
+        // Order modes wait for a map click; the button toggles (a second press ends the mode),
+        // and is the one of its group shown pressed.
+        if (pressed_order_ == btn.action) {
+            end_order_mode();
+        } else {
+            mode_ = btn.action;
+            mode_kept_ = false;
+            pressed_order_ = btn.action;
+        }
         play_ui(c_.ui_sounds.special);
         return true;
     }
+}
+
+bool GameClient::button_pressed_look(const Button& btn) const {
+    // While the pointer holds a button: plain buttons look pressed with the pointer over them,
+    // order-mode buttons too (and not while it is off them, whatever their state); tabs and
+    // switches keep their state. Otherwise: tabs show the menu shown, the order-mode button of
+    // the group its state.
+    const bool over = mouse_x_ >= btn.x && mouse_x_ < btn.x + btn.w && mouse_y_ >= btn.y && mouse_y_ < btn.y + btn.h;
+    const bool tab = (btn.attribs & 0x10) != 0, mode_button = (btn.attribs & 0x40) != 0;
+    if (held_button_ == &btn && !tab && !btn.staged) return over;
+    if (tab) {
+        const bool build_shown = focus_ && (b_.units[focus_].flags & kBuildMenuShown);
+        return btn.action == Action::OrdersTab ? !build_shown : btn.action == Action::BuildTab && build_shown;
+    }
+    if (mode_button) return pressed_order_ != Action::None && pressed_order_ == btn.action;
+    return false;
+}
+
+void GameClient::release_button(const Button& btn, const InputEvent& e) {
+    // A held button acts when the pointer is let go over it (either mouse button).
+    if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h) press_button(btn, e);
 }
 
 // ---- commands ----------------------------------------------------------------------------------
@@ -719,7 +774,6 @@ int GameClient::cursor_id_for(const sim::Unit& u, std::uint8_t intent, const sim
 
 CursorKind GameClient::cursor_kind() const {
     if (mouse_x_ < 128 || !in_view(mouse_x_, mouse_y_)) return CursorKind::Normal;
-    if (mode_ == Action::BuildUnit) return CursorKind::FindSite;
     if (dragging_) return CursorKind::Normal;
     const sim::Unit* target = hover_ ? &b_.units[hover_] : nullptr;
     const bool any = selected_count() > 0;
@@ -820,8 +874,32 @@ void GameClient::mouse_down(const InputEvent& e) {
         held_button_ = nullptr;
         if (const Panel* p = current_panel())
             for (const Button& btn : p->buttons)
-                if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h && button_enabled(btn)) held_button_ = &btn;
+                if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h && button_enabled(btn)) {
+                    // Switches act at once (left button only); the others when let go.
+                    if (btn.staged) {
+                        press_button(btn, e);
+                        held_button_ = nullptr;
+                        return;
+                    }
+                    held_button_ = &btn;
+                    held_with_ = 1;
+                }
         if (on_minimap(e.x, e.y) && mode_ == Action::None) minimap_jump(e.x, e.y);
+    } else if (e.button == 3 && !e.ctrl && [&] {
+                   // The right button holds panel buttons as the left does (not switches).
+                   if (const Panel* p = current_panel())
+                       for (const Button& btn : p->buttons)
+                           if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h) return true;
+                   return false;
+               }()) {
+        right_down_ = true;
+        held_button_ = nullptr;
+        if (const Panel* p = current_panel())
+            for (const Button& btn : p->buttons)
+                if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h && button_enabled(btn) && !btn.staged) {
+                    held_button_ = &btn;
+                    held_with_ = 3;
+                }
     } else if (e.button == 2 || (e.button == 3 && e.ctrl && !opt_.right_click_orders)) {
         // Dragging the view: every 4 pixels of pointer travel scroll one cell (16 pixels).
         mdrag_ = true;
@@ -830,13 +908,6 @@ void GameClient::mouse_down(const InputEvent& e) {
         tracked_ = 0;
     } else if (e.button == 3) {
         right_down_ = true;
-        if (const Panel* p = current_panel())
-            for (const Button& btn : p->buttons)
-                if (e.x >= btn.x && e.x < btn.x + btn.w && e.y >= btn.y && e.y < btn.y + btn.h) {
-                    if (btn.action == Action::BuildUnit || btn.action == Action::FireOrders || btn.action == Action::MoveOrders)
-                        press_button(btn, e);
-                    return;
-                }
     }
 }
 
@@ -851,10 +922,10 @@ void GameClient::mouse_up(const InputEvent& e) {
         const bool was_drag = dragging_;
         left_down_ = false;
         dragging_ = false;
-        if (held_button_) {
+        if (held_button_ && held_with_ == 1) {
             const Button* btn = held_button_;
             held_button_ = nullptr;
-            if (e.x >= btn->x && e.x < btn->x + btn->w && e.y >= btn->y && e.y < btn->y + btn->h) press_button(*btn, e);
+            release_button(*btn, e);
             return;
         }
         if (was_drag) {
@@ -864,10 +935,17 @@ void GameClient::mouse_up(const InputEvent& e) {
         if (in_view(e.x, e.y) && in_view(press_x_, press_y_)) left_click_map(e);
         else if (on_minimap(e.x, e.y) && mode_ != Action::None && mode_ != Action::BuildUnit) {
             give_order(mode_, e);
-            if (!e.shift) mode_ = Action::None;
+            if (e.shift) mode_kept_ = true;
+            else end_order_mode();
         }
     } else if (e.button == 3) {
         right_down_ = false;
+        if (held_button_ && held_with_ == 3) {
+            const Button* btn = held_button_;
+            held_button_ = nullptr;
+            release_button(*btn, e);
+            return;
+        }
         if (in_view(e.x, e.y)) right_click_map(e);
         else if (on_minimap(e.x, e.y) && mode_ == Action::None && opt_.right_click_orders && selected_count() > 0)
             give_order(Action::None, e);
@@ -876,25 +954,28 @@ void GameClient::mouse_up(const InputEvent& e) {
 
 void GameClient::left_click_map(const InputEvent& e) {
     if (mode_ == Action::BuildUnit) {
-        // Placement: the footprint must fit; shift keeps the mode for more.
-        const sim::Vec3i p = world_at(e.x, e.y);
-        const std::uint16_t t = build_type_;
-        const int fx = t < b_.types.size() ? b_.types[t].construction.footprint_x : 1;
-        const int fz = t < b_.types.size() ? b_.types[t].construction.footprint_z : 1;
-        const int cx = ((p[0] >> 16) >> 4) - fx / 2, cz = ((p[2] >> 16) >> 4) - fz / 2;
-        if (!structure_fits(b_, t, cx, cz)) {
+        // Placement, as this pass's placement check found it (refused: the "not ok" sound);
+        // the build order goes to the footprint's centre at the height found. Shift keeps the
+        // mode until Shift is let go.
+        if (!place_valid_) update_placement();
+        if (!place_ok_) {
             play_ui(c_.ui_sounds.not_ok_to_build);
             return;
         }
-        play_ui(c_.ui_sounds.ok_to_build);
-        const WorldPos at{((cx * 16) + fx * 8) << 16, p[1], ((cz * 16) + fz * 8) << 16};
+        const std::uint16_t t = build_type_;
+        const int fx = t < b_.types.size() ? b_.types[t].construction.footprint_x : 1;
+        const int fz = t < b_.types.size() ? b_.types[t].construction.footprint_z : 1;
+        const WorldPos at{(fx + place_cx_ * 2) * 0x80000, place_h_ << 16, (fz + place_cz_ * 2) * 0x80000};
         command_build(b_, opt_.player, t, at, e.shift);  // the build order acknowledges itself
-        if (!e.shift) mode_ = Action::None;
+        play_ui(c_.ui_sounds.ok_to_build);
+        if (e.shift) mode_kept_ = true;
+        else end_order_mode();
         return;
     }
     if (mode_ != Action::None) {
         give_order(mode_, e);
-        if (!e.shift) mode_ = Action::None;
+        if (e.shift) mode_kept_ = true;
+        else end_order_mode();
         return;
     }
     // Default mode: select what is under the pointer; type 0 gives the default command
@@ -912,7 +993,7 @@ void GameClient::left_click_map(const InputEvent& e) {
 
 void GameClient::right_click_map(const InputEvent& e) {
     if (mode_ != Action::None) {
-        mode_ = Action::None;  // any order mode is cancelled
+        end_order_mode();  // any order mode is cancelled
         return;
     }
     if (opt_.right_click_orders) {
@@ -961,7 +1042,7 @@ void GameClient::key_down(const InputEvent& e) {
         return;
     }
     if (k == keys::kEscape) {
-        if (mode_ != Action::None) mode_ = Action::None;
+        if (mode_ != Action::None) end_order_mode();
         else deselect_all();
         return;
     }
@@ -1198,6 +1279,86 @@ int GameClient::feature_under(int sx, int sy) const {
             if (dx < std::max<int>(1, ft.footprint_x) && dz < std::max<int>(1, ft.footprint_z)) return f;
         }
     return -1;
+}
+
+// ---- placement and the pointer ----------------------------------------------------------------
+
+void GameClient::start_placement(std::uint16_t type) {
+    mode_ = Action::BuildUnit;
+    mode_kept_ = false;
+    build_type_ = type;
+    place_valid_ = false;
+}
+
+void GameClient::update_placement() {
+    // The ground point under the pointer (the map position of the view pixel, clamped to the
+    // view), the footprint's corner cell centred on it (half the footprint, rounded toward the
+    // point), and the interface's placement check: an unexplored centre refuses; occupants
+    // count only where the viewing player sees the centre.
+    place_valid_ = true;
+    place_ok_ = false;
+    const std::uint16_t t = build_type_;
+    if (t >= b_.types.size()) return;
+    const render::ClipRect v = view_rect();
+    const int mx = std::clamp(mouse_x_, v.x0, v.x1), my = std::clamp(mouse_y_, v.y0, v.y1);
+    const std::array<std::int32_t, 3> p = sim::screen_to_terrain(b_, scroll_x_ + mx - v.x0, scroll_y_ + my - v.y0);
+    const int fx = b_.types[t].construction.footprint_x, fz = b_.types[t].construction.footprint_z;
+    place_cx_ = static_cast<std::int16_t>((p[0] - fx * 0x80000 + 0x80000) >> 20);
+    place_cz_ = static_cast<std::int16_t>((p[2] - fz * 0x80000 + 0x80000) >> 20);
+    const int cx = place_cx_, cz = place_cz_;
+    bool fits = false;
+    std::uint8_t height = 0;
+    const sim::Construction& con = b_.construction();
+    const std::int32_t metal = con.env.last_place_metal;  // the check's metal sum belongs to the simulation: kept
+    if (cx >= 1 && cz >= 1 && cx + fx < b_.map.width && cz + fz < b_.map.height) {
+        const int h = b_.map.cells[static_cast<std::size_t>(cz * b_.map.width + cx)].height;
+        const int px = static_cast<std::int16_t>((fx + cx * 2) * 8), pz = static_cast<std::int16_t>((fz + cz * 2) * 8);
+        const int bx = px >> 5, bz = (pz - (h >> 1)) >> 5;
+        const sim::PlayerSight& ps = b_.sight.players[static_cast<std::size_t>(opt_.player)];
+        const std::uint16_t bit = static_cast<std::uint16_t>(1u << (opt_.player & 15));
+        if (static_cast<std::uint32_t>(bx) < static_cast<std::uint32_t>(ps.width) && static_cast<std::uint32_t>(bz) < static_cast<std::uint32_t>(ps.height)) {
+            const std::size_t at = static_cast<std::size_t>(bz) * static_cast<std::size_t>(ps.width) + static_cast<std::size_t>(bx);
+            const bool explored = at < b_.explored.size() && (b_.explored[at] & bit);
+            if (explored) {
+                const bool seen = (b_.sight.flags & sim::sight_flags::kFog) ? at < ps.counts.size() && ps.counts[at] != 0 : true;
+                fits = sim::structure_fits(con, t, static_cast<std::int16_t>(cx), static_cast<std::int16_t>(cz), seen, &height);
+            }
+        }
+    }
+    con.env.last_place_metal = metal;
+    place_ok_ = fits;
+    place_h_ = fits ? height : sim::structure_place_height(con, t, static_cast<std::int16_t>(cx), static_cast<std::int16_t>(cz));
+}
+
+void GameClient::set_pointer(CursorKind k) {
+    // A new look starts at its first frame with that frame's time; the same look goes on.
+    if (cursor_set_ && k == cursor_shown_) return;
+    cursor_set_ = true;
+    cursor_shown_ = k;
+    cursor_frame_ = 0;
+    cursor_ended_ = false;
+    const FrameTiming& t = c_.cursors.timing[static_cast<std::size_t>(k)];
+    cursor_count_ = static_cast<std::int16_t>(t.durations.empty() ? 0xFFFF : t.durations[0]);
+}
+
+void GameClient::advance_pointer(std::uint32_t dt) {
+    // Wall-clock ticks (1/30 s) since the last pass count the frame's time down; at zero or
+    // below the next frame comes with its own time added (several at once after a long pass).
+    // After the last frame a looping look starts over, another one ends (no pointer shown).
+    const FrameTiming& t = c_.cursors.timing[static_cast<std::size_t>(cursor_shown_)];
+    const int n = static_cast<int>(t.durations.size());
+    if (cursor_ended_ || n < 2) return;
+    cursor_count_ = static_cast<std::int16_t>(static_cast<std::uint16_t>(cursor_count_) - static_cast<std::uint16_t>(dt));
+    while (cursor_count_ < 1) {
+        if (++cursor_frame_ >= n) {
+            if (!t.loop) {
+                cursor_ended_ = true;
+                return;
+            }
+            cursor_frame_ = 0;
+        }
+        cursor_count_ = static_cast<std::int16_t>(static_cast<std::uint16_t>(cursor_count_) + t.durations[static_cast<std::size_t>(cursor_frame_)]);
+    }
 }
 
 } // namespace client

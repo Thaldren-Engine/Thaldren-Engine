@@ -701,6 +701,7 @@ DrawList build_draw_list(const BattleScene& s) {
     for (const auto& row : rows)
         for (const UnitInstance* ui : row)
             if (!ui->ground) draw_unit(s, *ui, out);
+    if (s.before_fog) s.before_fog(out);
     if (s.fog) draw_fog(s, out);
     return out;
 }

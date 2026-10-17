@@ -38,6 +38,12 @@ struct Button {
     int quickkey = 0;                                     // character that presses it (0 = none)
     std::uint16_t unit_type = 0;                          // BuildUnit: battle type index
     bool staged = false;                                  // shows a stage (standing orders, switches)
+    // The description's gadget fields the panel's drawing and input use: attribute bits (0x10
+    // tab, 0x40 order mode, 0x100 staged; caption alignment 1 left, 4 right, 2 centred, 0x20
+    // centred at the bottom), the caption colour (interface colour index) and font.
+    int attribs = 0;
+    std::uint8_t colorf = 0;
+    const Font* font = nullptr;
 };
 
 // Frame of a button's look: a staged button shows its stage (the last frame while
@@ -81,8 +87,20 @@ enum class CursorKind : std::uint8_t {
     Count
 };
 
+// An animated look's timing: each frame's duration in 1/30 s ticks and whether it starts
+// over after the last frame (else it ends).
+struct FrameTiming {
+    std::vector<std::uint16_t> durations;
+    bool loop = true;
+};
+
 struct CursorSet {
     std::array<const std::vector<render::Sprite8>*, static_cast<std::size_t>(CursorKind::Count)> looks{};
+    std::array<FrameTiming, static_cast<std::size_t>(CursorKind::Count)> timing{};
+    // The pointer looks by the game's own pointer number (1 attack .. 20 busy; 21 the path
+    // marker), with their timing: the queued orders' markers use them.
+    std::array<const std::vector<render::Sprite8>*, 22> by_number{};
+    std::array<FrameTiming, 22> by_number_timing{};
 };
 
 // Sound indices into the client's sample table (-1 = none).
@@ -116,6 +134,14 @@ struct UnitTypeLook {
     // importer marks).
     float cost_metal = 0.0f, cost_energy = 0.0f;
     bool no_build_line = false;
+    // Interface data: built where it stands (a structure: its build button starts placement;
+    // otherwise factories queue it), has build options, and the ranges the queued-order view
+    // draws (cloak distance, sight, kamikaze distance and the area of the explosion weapon).
+    bool structure = false;
+    bool builds = false;
+    bool kamikaze = false;
+    std::int16_t min_cloak_distance = 0, sight_distance = 0;
+    std::uint16_t kamikaze_distance = 0, explosion_area = 0;
 };
 
 // A decoded sound: signed 16-bit samples.
@@ -167,6 +193,10 @@ struct Content {
     // A unit's status line on the bottom bar: the text of its head order's mission kind (index
     // = mission kind; entry 0 is also shown for a unit without orders).
     std::vector<std::string> mission_status;
+    // What the queued-order view (Shift held) draws for an order of each mission kind (index =
+    // mission kind): bits 1 the build box, 2 the path to it, 4 a ring, 8 the marker at its
+    // target, 0x10 the unit's own ranges; and the marker's pointer number (0: none).
+    std::vector<std::uint8_t> mission_draw, mission_marker;
     // The players' colour logos (frame = colour; stretched into the bars' LOGO / LOGO2 boxes)
     // and each player's colour.
     const std::vector<render::Sprite8>* team_logos = nullptr;
