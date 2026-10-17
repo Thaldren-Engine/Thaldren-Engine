@@ -223,6 +223,9 @@ std::unique_ptr<HpiArchive> HpiArchive::open(const std::filesystem::path& path, 
         err = HpiError::BadDirectory;
         return nullptr;
     }
+    // Like the game, only archives kept open hold their file between reads (the
+    // others can be removed while mounted; the next scan then drops them).
+    if (!keep_open) a->file_.close();
     err = HpiError::None;
     return a;
 }
@@ -283,6 +286,7 @@ const HpiEntry* HpiArchive::find_dir_of_pattern(std::string_view pattern) const 
 }
 
 bool HpiArchive::read_raw(std::uint32_t offset, std::uint8_t* dst, std::size_t size) {
+    if (!file_.is_open()) file_.open(path_, std::ios::binary);
     file_.clear();
     file_.seekg(offset);
     if (!file_.read(reinterpret_cast<char*>(dst), static_cast<std::streamsize>(size))) return false;
@@ -292,6 +296,7 @@ bool HpiArchive::read_raw(std::uint32_t offset, std::uint8_t* dst, std::size_t s
 
 HpiError HpiArchive::read(const HpiEntry& f, std::vector<std::uint8_t>& out) {
     out.clear();
+    const CloseAfter close_after(*this);
     if (f.is_dir) return HpiError::ReadFailed;
     if (f.compression == 0) {
         out.resize(f.size);
@@ -316,6 +321,7 @@ HpiError HpiArchive::read(const HpiEntry& f, std::vector<std::uint8_t>& out) {
 
 HpiError HpiArchive::read_stored(const HpiEntry& f, std::vector<std::uint8_t>& out) {
     out.clear();
+    const CloseAfter close_after(*this);
     if (f.is_dir) return HpiError::ReadFailed;
     if (f.compression == 0) {
         out.resize(f.size);
@@ -530,9 +536,10 @@ std::vector<std::uint8_t> hpi_build(const std::vector<HpiWriteFile>& files, std:
     out[12] = key;
     set32(out, 16, static_cast<std::uint32_t>(root_at));
     // Obscure everything after the header (the reader's transform is its own inverse
-    // up to the complement: stored = ~(plain ^ pos ^ key')).
-    if (key) {
-        const auto k = static_cast<std::uint8_t>(~((key >> 6) | (key << 2)));
+    // up to the complement: stored = ~(plain ^ pos ^ key')). A key whose derived value
+    // is 0 (0xFF) leaves the archive plain, as the reader expects.
+    const auto k = key ? static_cast<std::uint8_t>(~((key >> 6) | (key << 2))) : std::uint8_t{0};
+    if (k) {
         for (std::size_t i = 20; i < out.size(); ++i)
             out[i] = static_cast<std::uint8_t>(~(out[i] ^ static_cast<std::uint8_t>(i) ^ k));
     }

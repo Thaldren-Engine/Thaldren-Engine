@@ -92,6 +92,14 @@ public:
 private:
     HpiArchive() = default;
     bool read_raw(std::uint32_t offset, std::uint8_t* dst, std::size_t size);
+    // Closes the file after a read unless the archive is kept open.
+    struct CloseAfter {
+        HpiArchive& a;
+        explicit CloseAfter(HpiArchive& archive) : a(archive) {}
+        ~CloseAfter() {
+            if (!a.keep_open_ && a.file_.is_open()) a.file_.close();
+        }
+    };
 
     std::filesystem::path path_;
     std::ifstream file_;
