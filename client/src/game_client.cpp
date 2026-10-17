@@ -266,9 +266,9 @@ void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos) {
     sounds_.push_back({sample, pan, volume});
 }
 void GameClient::speak(const sim::Unit& u, std::uint32_t id) {
-    const std::uint16_t t = b_.ticks[u.id].type_index;
-    if (t >= c_.types.size() || id >= c_.types[t].sounds.size()) return;
-    play_ui(c_.types[t].sounds[id]);
+    // The interface's own notices (selection) go through the notice queue like the
+    // simulation's: no sound of their own (the original never plays a unit sound directly).
+    on_speech(b_.units[u.id], id);
 }
 
 namespace {
@@ -687,15 +687,10 @@ void GameClient::give_order(Action mode, const InputEvent& e) {
     case Action::Special: intent = sim::intent::kSpecialAttack; break;
     default: break;
     }
-    const int n = command_selected(b_, opt_.player, intent, target, &pos, e.shift);
-    // The first ordered unit acknowledges.
-    if (n > 0)
-        for (std::size_t i = 1; i < b_.units.size(); ++i)
-            if (b_.ticks[i].type_index != 0 && b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected) &&
-                &b_.units[i] != target) {
-                speak(b_.units[i], 5);
-                break;
-            }
+    // No acknowledgement here: each new order acknowledges itself ("ok" notice) when its
+    // behaviour first runs (the simulation's order acknowledgement); the original's command
+    // routine plays nothing.
+    (void)command_selected(b_, opt_.player, intent, target, &pos, e.shift);
 }
 
 int GameClient::cursor_id_for(const sim::Unit& u, std::uint8_t intent, const sim::Unit* target, const sim::Vec3i& pos) const {
@@ -893,12 +888,7 @@ void GameClient::left_click_map(const InputEvent& e) {
         }
         play_ui(c_.ui_sounds.ok_to_build);
         const WorldPos at{((cx * 16) + fx * 8) << 16, p[1], ((cz * 16) + fz * 8) << 16};
-        command_build(b_, opt_.player, t, at, e.shift);
-        for (std::size_t i = 1; i < b_.units.size(); ++i)
-            if (b_.ticks[i].type_index != 0 && b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected)) {
-                speak(b_.units[i], 5);
-                break;
-            }
+        command_build(b_, opt_.player, t, at, e.shift);  // the build order acknowledges itself
         if (!e.shift) mode_ = Action::None;
         return;
     }

@@ -37,6 +37,7 @@
 #include "ta/client_world.h"
 #include "ta/model3do.h"
 #include "ta/render_assets.h"
+#include "ta/tdf.h"
 
 namespace {
 
@@ -85,6 +86,7 @@ struct Original {
     u32 heap = 0, heap_end = 0, bump_ptr = 0, stubs = 0, gs = 0, display = 0, ctx = 0, frame_hdr = 0, frame = 0;
     u32 key_state = 0, vis_table = 0, cache = 0, scratch = 0, rand_state = 0, probe = 0;
     int w = 0, h = 0;
+    bool keep_bottom_bar = false;  // --hud: the original's bottom bar runs inside its frame
     u32 host_next = 0;  // our own allocations (above the original's bump allocator)
     std::map<std::string, u32> gafs;                 // GAF file -> remote copy
     std::map<const render::ModelTexture*, u32> texture_seqs;
@@ -144,6 +146,8 @@ struct Original {
         // Interface-only parts of the frame: returns (stdcall: 1, 3 and 1 arguments).
         const std::pair<u32, u8> skipped[] = {{kBottomBar, 4}, {kGui, 12}, {kConsole, 4}};
         for (const auto& [fn, bytes] : skipped) {
+            if (fn == kBottomBar && keep_bottom_bar) continue;  // --hud: the bottom bar is compared too
+            (void)bytes;
             const u32 at = stubs + static_cast<u32>(s.size());
             s.insert(s.end(), {0xC2, bytes, 0x00});
             align16();
@@ -166,6 +170,28 @@ struct Original {
             s.insert(s.end(), {0xC2, 0x08, 0x00});
             align16();
             if (!r.patch_jump(kUnitVisible, at)) return false;
+        }
+        // Debugging: FH_STUB=addr:bytes,... makes stdcall routines return at once.
+        if (const char* e = std::getenv("FH_STUB")) {
+            for (const char* q = e; *q;) {
+                char* end = nullptr;
+                const u32 fn = static_cast<u32>(std::strtoul(q, &end, 16));
+                u8 pop = 0;
+                if (end && *end == ':') pop = static_cast<u8>(std::strtoul(end + 1, &end, 10));
+                const u32 at = stubs + static_cast<u32>(s.size());
+                s.insert(s.end(), {0xC2, pop, 0x00});
+                align16();
+                r.patch_jump(fn, at);
+                q = end && *end == ',' ? end + 1 : (end ? end : q + std::strlen(q));
+                if (end && *end == 0) break;
+            }
+        }
+        // Text translation (0x4C5740, stdcall(text)): English, every string stays as it is.
+        {
+            const u32 at = stubs + static_cast<u32>(s.size());
+            s.insert(s.end(), {0x8B, 0x44, 0x24, 0x04, 0xC2, 0x04, 0x00});  // mov eax,[esp+4]; ret 4
+            align16();
+            if (!r.patch_jump(0x004C5740, at)) return false;
         }
         // rand() on a state we set (the C runtime is not initialised in the suspended process).
         rand_state = r.alloc(0x1000);
@@ -377,6 +403,10 @@ struct Options {
     int shots = 12;       // extra shots per scene (up to)
     bool fog = true;
     bool verbose = false;
+    // --hud: the interface drawn over the view too: the selection boxes of selected units
+    // (compared within the view) and the bottom bar of the unit under the pointer (compared
+    // over the bottom bar's rows).
+    bool hud = false;
 };
 
 struct Stats {
@@ -404,6 +434,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-fog") opt.fog = false;
         else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
+        else if (a == "--hud") opt.hud = true;
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
         else if (positional == 2) opt.out_dir = argv[k], ++positional;
@@ -440,6 +471,7 @@ int main(int argc, char** argv) {
 
     // ---- Original ----
     Original o;
+    o.keep_bottom_bar = opt.hud;
     if (!o.start(argv[1], opt.width, opt.height)) {
         std::printf("cannot start the original\n");
         return 1;
@@ -747,6 +779,113 @@ int main(int argc, char** argv) {
     std::vector<u32> unit_state(b.units.size(), 0);
     std::vector<u16> unit_state_type(b.units.size(), 0);
 
+    // --hud: what the original's bottom bar (0x46A860) reads besides the units.
+    const u32 head_orders = o.alloc(static_cast<u32>(b.units.size()) * 0x58);
+    if (opt.hud) {
+        // The C runtime's floating-point set-up (its start-up never ran here): sprintf's "%f"
+        // goes through conversion routines it installs.
+        o.call(0x004E4320, 0, {1});
+        // The display's screen size (the bars place their art by it), and the screen height the
+        // side data's rows are for (sidedata.tdf [GENERAL] baseheight, 480 when absent: the
+        // loading's default).
+        r.w32(o.display + 0xD4, static_cast<u32>(W));
+        r.w32(o.display + 0xD8, static_cast<u32>(H));
+        r.w32(gs + 0x147A7, 480);
+        // Type names and descriptions are read from the definitions (+0 name, +0x40 description).
+        for (std::size_t k = 0; k < world.types_.size() && k < world.defs_.units.size(); ++k) {
+            const ta::UnitDefRecord& d = world.defs_.units[k];
+            char nm[0x20] = {}, ds[0x40] = {};
+            std::strncpy(nm, d.name.c_str(), sizeof nm - 1);
+            std::strncpy(ds, d.description.c_str(), sizeof ds - 1);
+            r.write(udefs + static_cast<u32>(k) * kDefSize, nm, sizeof nm);
+            r.write(udefs + static_cast<u32>(k) * kDefSize + 0x40, ds, sizeof ds);
+        }
+        // The mission table (0x00512344, 0x19-byte entries; the bar reads each entry's text at
+        // +0): built from the executable's own static entries, found by their lookup names.
+        {
+            const std::vector<std::string> kinds = ta::UnitDefContext::default_mission_names();
+            std::vector<u8> img(0x6000);
+            r.read(0x004FB000, img.data(), img.size());
+            std::map<std::string, u32> text_of;
+            for (std::size_t off = 0; off + 0x19 <= img.size(); ++off) {
+                const u32 text = get_at<u32>(img, off), look = get_at<u32>(img, off + 0x15), fn = get_at<u32>(img, off + 4);
+                if (text < 0x00500000 || text >= 0x00520000 || look < 0x00500000 || look >= 0x00520000 || fn < 0x00401000 || fn >= 0x004E0000) continue;
+                char name[40] = {};
+                r.read(look, name, sizeof name - 1);
+                if (name[0]) text_of.emplace(name, text);
+            }
+            const u32 table = o.alloc(static_cast<u32>(kinds.size()) * 0x19 + 16);
+            std::vector<u8> tb(kinds.size() * 0x19, 0);
+            put_at<u32>(tb, 0, r.r32(0x004FD288));  // the first entry (Ready, no lookup name)
+            int found = 0;
+            for (std::size_t k = 1; k < kinds.size(); ++k)
+                if (auto it = text_of.find(kinds[k]); it != text_of.end()) {
+                    put_at<u32>(tb, k * 0x19, it->second);
+                    ++found;
+                }
+            r.write(table, tb.data(), tb.size());
+            r.w32(0x00512344, table);
+            r.w32(0x00512348, table + static_cast<u32>(tb.size()));
+            std::printf("hud: mission table %d of %zu texts found\n", found + 1, kinds.size());
+        }
+        // Each side's bottom-bar regions, console font and bar art (sidedata.tdf).
+        std::vector<u8> sd;
+        vfs.read("gamedata\\sidedata.tdf", sd);
+        const ta::TdfParseResult sr = ta::tdf_parse(std::string_view(reinterpret_cast<const char*>(sd.data()), sd.size()));
+        for (std::size_t side = 0; side < world.content().sides.size() && side < 8; ++side) {
+            const client::SideLayout& L = world.content().sides[side];
+            const u32 rec = gs + static_cast<u32>(side) * 0x232 + 0x37F87;
+            auto region = [&](u32 dword_index, const client::Region& g) {
+                const i32 v[4] = {g.x1, g.y1, g.x2, g.y2};
+                r.write(rec + dword_index * 4, v, sizeof v);
+            };
+            region(0x3A, L.logo2);
+            region(0x3E, L.unit_name);
+            region(0x42, L.damage_bar);
+            region(0x46, L.unit_energy_make);
+            region(0x4A, L.unit_energy_use);
+            region(0x4E, L.unit_metal_make);
+            region(0x52, L.unit_metal_use);
+            region(0x56, L.mission_text);
+            region(0x5A, L.unit_name2);
+            region(0x5E, L.damage_bar2);
+            region(0x62, L.name);
+            region(0x66, L.description);
+            const ta::TdfSection* s = sr.root ? sr.root->child("SIDE" + std::to_string(side)) : nullptr;
+            if (!s) continue;
+            std::vector<u8> fnt;
+            if (vfs.read("fonts\\" + s->get_string("font", 256, "console") + ".FNT", fnt)) {
+                const u32 at = o.alloc(static_cast<u32>(fnt.size()) + 16);
+                r.write(at, fnt.data(), fnt.size());
+                r.w32(gs + static_cast<u32>(side) * 0x232 + 0x3816B, at);
+            }
+            const std::string intgaf = "anims\\" + s->get_string("intgaf", 30, "") + ".GAF";
+            std::vector<u8> gf;
+            if (vfs.read(intgaf, gf)) {
+                ta::GafDirectory dir;
+                ta::gaf_read_directory(gf, dir);
+                const int i = ta::gaf_find_sequence(dir, "PANELBOT");
+                if (i >= 0) r.w32(gs + static_cast<u32>(side) * 4 + 0x14833, o.gaf(intgaf, gf) + Original::gaf_entry(gf, i));
+            }
+        }
+        // The colour logos (textures\logos.gaf "32xlogos", frame = colour) of the LOGO boxes.
+        {
+            std::vector<u8> lg;
+            if (vfs.read("textures\\logos.gaf", lg)) {
+                ta::GafDirectory dir;
+                ta::gaf_read_directory(lg, dir);
+                const int i = ta::gaf_find_sequence(dir, "32xlogos");
+                if (i >= 0) r.w32(gs + 0x148DB, o.gaf("textures\\logos.gaf", lg) + Original::gaf_entry(lg, i));
+            }
+            std::printf("hud: colour logos %s\n", r.r32(gs + 0x148DB) ? "loaded" : "missing");
+        }
+        for (int p = 0; p < 10; ++p) {
+            const u8 side = static_cast<u8>(p < static_cast<int>(setup.players.size()) ? setup.players[static_cast<std::size_t>(p)].side : 0);
+            r.write(infos + static_cast<u32>(p) * 0x100 + 0x95, &side, 1);
+        }
+        gc.set_pointer_hidden(true);
+    }
+
     Stats st;
     int written = 0;
     for (int sc = 0; sc < opt.scenes; ++sc) {
@@ -773,6 +912,38 @@ int main(int argc, char** argv) {
         gc.set_scroll(sx, sy);
         sx = gc.scroll_x();
         sy = gc.scroll_y();
+        // --hud: some units selected (any owner), and the pointer put on a unit of the view (the
+        // client's own pick test decides which unit it is over; the original is told that one).
+        std::uint16_t hover = 0;
+        if (opt.hud) {
+            for (std::size_t i = 1; i < b.units.size(); ++i)
+                if (b.ticks[i].type_index) {
+                    if (rnd(0, 2) == 0) b.units[i].flags |= 0x10u;
+                    else b.units[i].flags &= ~0x10u;
+                }
+            (void)gc.draw();  // the units on screen (the pick test uses them)
+            std::vector<std::pair<int, int>> spots;
+            for (std::size_t i = 1; i < b.units.size(); ++i) {
+                if (!b.ticks[i].type_index) continue;
+                const sim::Unit& u = b.units[i];
+                const int px = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[0]) >> 16) - sx + 128;
+                const int py = static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[2]) >> 16) -
+                               (static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[1]) >> 16) >> 1) - sy + 32;
+                if (px > 128 && px < W - 1 && py > 32 && py < H - 33) spots.push_back({px, py});
+            }
+            client::InputEvent mv;
+            mv.type = client::InputEvent::Type::MouseMove;
+            if (!spots.empty() && rnd(0, 5)) {
+                const auto& sp = spots[static_cast<std::size_t>(rnd(0, static_cast<int>(spots.size()) - 1))];
+                mv.x = sp.first + rnd(-2, 2);
+                mv.y = sp.second + rnd(-2, 2);
+            } else {
+                mv.x = rnd(129, W - 2);
+                mv.y = rnd(33, H - 34);
+            }
+            gc.handle(mv);
+            hover = gc.hover_unit();
+        }
         const u8 view = 0;
         u16 visual = 0x02 | 0x04 | 0x08 | 0x10 | 0x20;  // anti-aliasing, shadows, unit and feature shadows, shading
 
@@ -814,6 +985,7 @@ int main(int argc, char** argv) {
         scene.camera.scroll_y = sy;
         world.fill_scene(scene, view, 0);
         if (!opt.fog) scene.fog = nullptr;
+        if (opt.hud) gc.add_selection_outlines(scene);
         render::DrawList list = render::build_draw_list(scene);
         {
             // The same background pattern under the frame (only the interface's area keeps it).
@@ -1064,6 +1236,27 @@ int main(int argc, char** argv) {
                 const u32 group = u.group;
                 std::memcpy(d + 0xAC, &group, 4);
                 d[0xFF] = static_cast<u8>(t.owner);
+                if (opt.hud) {
+                    // The bottom bar's reads: the head order (+0x5C: kind +4, target link's unit
+                    // +0x16), no secondary orders (+0x60), kills (+0xB8), the resource slot's last
+                    // settlement (+0xCC energy made, +0xD0 energy used, +0xE4 metal made, +0xE8 metal used).
+                    if (u.orders) {
+                        const u32 ord = head_orders + static_cast<u32>(i) * 0x58;
+                        std::vector<u8> ob(0x56, 0);
+                        ob[4] = u.orders->kind;
+                        put_at<u32>(ob, 0x16, uptr(u.orders->target.unit));
+                        r.write(ord, ob.data(), ob.size());
+                        std::memcpy(d + 0x5C, &ord, 4);
+                    }
+                    // Weapon slots (+0x10, 0x1C each): the bar only remembers their reload state,
+                    // so each gets a definition with reload time 0 (state "none").
+                    for (u32 k = 0; k < 3; ++k) std::memcpy(d + 0x10 + 0x1C * k, &wdefs, 4);
+                    std::memcpy(d + 0xB8, &t.kill_count, 2);
+                    std::memcpy(d + 0xCC, &t.energy_make_prev, 4);
+                    std::memcpy(d + 0xD0, &t.energy_use_prev, 4);
+                    std::memcpy(d + 0xE4, &t.metal_make_prev, 4);
+                    std::memcpy(d + 0xE8, &t.metal_use_prev, 4);
+                }
                 std::memcpy(d + 0x104, &u.build_fraction_left, 4);
                 std::memcpy(d + 0x108, &u.hit_points, 2);
                 d[0x10E] = u.activate_flags;
@@ -1084,6 +1277,60 @@ int main(int argc, char** argv) {
         for (int y = 0; y < H; ++y)
             for (int x = 0; x < W; ++x) bg[static_cast<std::size_t>(y * W + x)] = static_cast<u8>((x / 8 + y / 8) & 1 ? 0xC5 : 0x50);
         r.write(o.frame, bg.data(), bg.size());
+        if (opt.hud) {
+            // Selection boxes on (option bit 2); the bottom bar: the unit under the pointer, no
+            // build button and no feature under it, no debug view, and its last-drawn state
+            // forgotten (it redraws only when that changes).
+            u8 go = 0;
+            r.read(gs + gGameOptions, &go, 1);
+            go = static_cast<u8>(go | 4);
+            r.write(gs + gGameOptions, &go, 1);
+            const u16 none = 0xFFFF, zero = 0;
+            r.write(gs + 0x2CBA, &hover, 2);
+            r.write(gs + 0x2CBC, &none, 2);
+            r.w32(gs + 0x581, 0xFFFFFFFFu);
+            r.write(gs + 0x3923B, &zero, 2);
+            std::vector<u8> ff(0x3C, 0xFF);
+            r.write(gs + 0x37E60, ff.data(), ff.size());
+            if (opt.verbose && hover)
+                std::printf("  hover unit %u: owner %d kills %u flags %08X order %d hp %d\n", hover, b.ticks[hover].owner, b.ticks[hover].kill_count,
+                            b.units[hover].flags, b.units[hover].orders ? b.units[hover].orders->kind : -1, b.units[hover].hit_points);
+            if (std::getenv("FH_TEXT")) {
+                // Debugging: one line of text with the side's font straight onto the frame.
+                const u32 side_font = r.r32(gs + static_cast<u32>(setup.players[0].side) * 0x232 + 0x3816B);
+                o.call(0x004C1420, 0, {side_font});
+                o.call(0x004C13A0, 0, {0x53, 0xFFFFFFFFu});
+                u32 ctx_clip[4] = {};
+                r.read(o.ctx + 0x1C, ctx_clip, sizeof ctx_clip);
+                const u32 txt = o.alloc(16);
+                r.write(txt, "TEST 123", 9);
+                const bool t_ok = o.call(0x004C14F0, 0, {o.ctx, txt, 200, static_cast<u32>(H - 20), 0xFFFFFFFFu});
+                std::vector<u8> row(static_cast<std::size_t>(W) * 12);
+                r.read(o.frame + static_cast<u32>((H - 20) * W), row.data(), row.size());
+                int ink = 0;
+                for (u8 v : row) ink += v == 0x53;
+                // And a colour logo stretched into (300, 300)-(339, 339).
+                const u32 rect = o.alloc(16);
+                const i32 rv[4] = {300, 300, 339, 339};
+                r.write(rect, rv, sizeof rv);
+                std::vector<u8> before(40 * 40), after(40 * 40);
+                for (int yy = 0; yy < 40; ++yy) r.read(o.frame + static_cast<u32>((300 + yy) * W + 300), &before[static_cast<std::size_t>(yy) * 40], 40);
+                const bool l_ok = o.call(0x00467C00, 0, {o.ctx, gs + gPlayers, rect, 0});
+                for (int yy = 0; yy < 40; ++yy) r.read(o.frame + static_cast<u32>((300 + yy) * W + 300), &after[static_cast<std::size_t>(yy) * 40], 40);
+                int changed = 0;
+                for (std::size_t q = 0; q < before.size(); ++q) changed += before[q] != after[q];
+                std::printf("  logo test: %s, %d pixels changed (logos %08X)\n", l_ok ? "ok" : "failed", changed, r.r32(gs + 0x148DB));
+                std::printf("  text test: %s, font %08X (height %u), ctx clip %d,%d,%d,%d, ink %d\n", t_ok ? "ok" : "failed", side_font,
+                            side_font ? r.r32(side_font) & 0xFF : 0, static_cast<int>(ctx_clip[0]), static_cast<int>(ctx_clip[1]),
+                            static_cast<int>(ctx_clip[2]), static_cast<int>(ctx_clip[3]), ink);
+            }
+            if (std::getenv("FH_BAR_ALONE")) {
+                // Debugging: the bar on its own first.
+                const bool bar_ok = o.call(kBottomBar, 0, {o.ctx}, nullptr, 5000);
+                std::printf("  bottom bar alone: %s\n", bar_ok ? "ok" : "failed");
+                r.write(gs + 0x37E60, ff.data(), ff.size());
+            }
+        }
         // The original's frame.
         if (!o.call(kVisibleList, 0, {}) || !o.call(kDrawFrame, 0, {1, 0})) {
             ++st.failures;
@@ -1106,7 +1353,8 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            if (!o.r.start(argv[1])) return 1;  // (a fault leaves the process in an unknown state)
+            // A fault leaves the process in an unknown state: it is ended (o.r's destructor) and
+            // the run stops.
             return 1;
         }
         std::vector<u8> theirs(static_cast<std::size_t>(W * H));
@@ -1132,6 +1380,37 @@ int main(int argc, char** argv) {
         for (std::size_t i = 1; i < b.units.size(); ++i) nunits += b.ticks[i].type_index != 0;
         std::printf("scene %d: tick %u scroll %d,%d units %d visible %u shots %d: %lld of %lld view pixels differ\n", sc, b.game_tick(), sx, sy, nunits,
                     r.r32(gs + gVisibleCount), static_cast<int>(scene.projectiles.size()), diff, n);
+        if (opt.hud) {
+            // The bottom bar: the client's whole frame against the original's, over the bar's rows
+            // right of the side panel.
+            int nsel = 0;
+            for (const render::UnitInstance& ui : scene.units) nsel += ui.outline;
+            const render::Image8 cf = render::execute(gc.draw(), world.blend_);
+            long long bd = 0, bn = 0;
+            render::Image8 bimg(W, H, 0);
+            for (int y = H - 32; y < H; ++y)
+                for (int x = 129; x < W; ++x) {
+                    const std::size_t i = static_cast<std::size_t>(y * W + x);
+                    ++bn;
+                    if (theirs[i] != cf.pixels[i]) {
+                        ++bd;
+                        bimg.pixels[i] = 0xFF;
+                    }
+                }
+            const sim::Unit* hu = hover ? &b.units[hover] : nullptr;
+            std::printf("  hud: %d selection outlines in the view; bottom bar (unit %u%s, order %d): %lld of %lld pixels differ\n", nsel, hover,
+                        hu ? (b.ticks[hover].owner == 0 ? " own" : " other") : "", hu && hu->orders ? hu->orders->kind : -1, bd, bn);
+            if (!opt.out_dir.empty() && bd && written < 40) {
+                render::Image8 a(W, H);
+                a.pixels = theirs;
+                const std::string base = opt.out_dir + "/hud_" + std::to_string(opt.seed) + "_" + std::to_string(sc);
+                render::write_bmp(base + "_orig.bmp", a, world.palette_);
+                render::write_bmp(base + "_client.bmp", cf, world.palette_);
+                render::write_bmp(base + "_diff.bmp", bimg, world.palette_);
+            }
+            st.pixels += bd;
+            if (bd && !diff) --st.identical;
+        }
         if (opt.verbose) {
             std::uint16_t w[4];
             r.read(o.probe, w, 8);

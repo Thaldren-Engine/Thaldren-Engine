@@ -85,6 +85,11 @@ struct UnitInstance {
     std::uint32_t type_flags = 0;    // the type's flag word (digger, hover, floater, noshadow; see look_type_flags)
     bool animate_direct = false;     // pieces drawn straight onto the frame use the texture cursor (moving or active)
     bool own_view = false;           // seen under water (tinted) rather than cut: the viewer's own units
+    // Selection outline (given by the interface): a closed four-point outline in one colour,
+    // drawn in the unit's turn just before its shadow and model (clipped to the view).
+    bool outline = false;
+    std::array<int, 8> outline_xy{};  // x0, y0, x1, y1, x2, y2, x3, y3 (screen)
+    std::uint8_t outline_colour = 0;
 };
 
 // One nano lathe particle (sim/nano_spray.h): a dot in its palette colour.

@@ -112,6 +112,10 @@ struct UnitTypeLook {
     // wins: (size y / 2 + size z) * size x >> 16 of the type definition's model sizes).
     std::array<std::int32_t, 3> pick_min{}, pick_max{};  // the definition's bounds (footprint x, z)
     std::int64_t pick_rank = 0;
+    // The bottom bar's build-button line: the type's build costs (no line for types the
+    // importer marks).
+    float cost_metal = 0.0f, cost_energy = 0.0f;
+    bool no_build_line = false;
 };
 
 // A decoded sound: signed 16-bit samples.
@@ -119,6 +123,7 @@ struct Sample {
     int rate = 22050;
     int channels = 1;
     std::vector<std::int16_t> pcm;
+    std::string name;  // the sound's file name (logs)
 };
 
 // Shot looks by weapon index (the battle view draws shots through these).
@@ -156,8 +161,16 @@ struct Content {
     struct FeatureLook {
         std::string name;
         int metal = 0, energy = 0;
+        std::uint16_t flags = 0;  // the definition's flag word (0x200: name only, 0x400: no line)
     };
     std::vector<FeatureLook> features;
+    // A unit's status line on the bottom bar: the text of its head order's mission kind (index
+    // = mission kind; entry 0 is also shown for a unit without orders).
+    std::vector<std::string> mission_status;
+    // The players' colour logos (frame = colour; stretched into the bars' LOGO / LOGO2 boxes)
+    // and each player's colour.
+    const std::vector<render::Sprite8>* team_logos = nullptr;
+    std::array<std::uint8_t, 10> player_colour{};
     const render::Sprite8* victory_sign = nullptr;  // over the view when the battle is won / lost
     const render::Sprite8* defeat_sign = nullptr;
     // Builds the battle view of the viewing player (projection, culling and draw order are

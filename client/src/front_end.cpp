@@ -250,7 +250,16 @@ public:
     void play_pending_sounds() {
         if (in_battle()) {
             const std::vector<Sample>& smp = session_->content().samples;
-            for (const SoundEvent& e : session_->client().take_sounds())
+            const std::vector<SoundEvent> started = session_->client().take_sounds();
+            if (log_sounds_ && !started.empty()) {
+                // The sound log (headless runs): the battle's sounds started in this pass.
+                std::printf("step %u: %zu sound(s):", session_->battle().game_tick(), started.size());
+                for (const SoundEvent& e : started)
+                    std::printf(" %s/%d", e.sample >= 0 && static_cast<std::size_t>(e.sample) < smp.size() ? smp[static_cast<std::size_t>(e.sample)].name.c_str() : "?",
+                                e.volume);
+                std::printf("\n");
+            }
+            for (const SoundEvent& e : started)
                 if (audio_ && e.sample >= 0 && static_cast<std::size_t>(e.sample) < smp.size())
                     audio_->play_sample(&smp[static_cast<std::size_t>(e.sample)], e.pan, e.volume);
         }
@@ -354,6 +363,7 @@ private:
 public:
     std::size_t sound_count_ = 0;
     bool draw_pointer_ = true;
+    bool log_sounds_ = false;
 };
 
 void save_shot(const render::Image8& frame, const render::Palette& pal, const std::string& prefix, int n) {
@@ -412,6 +422,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             if (!gpu) std::printf("GPU backend unavailable: %s\n", render::GpuRenderer::last_error().c_str());
         }
 #endif
+        run.log_sounds_ = true;
         run.begin(nullptr);
         // The loading screen is shown once, half way, when screenshots are wanted.
         bool loading_shot = false;

@@ -9,9 +9,9 @@
 // the GUI compositor, and writes the surface with the display palette as an 8-bit BMP. Sound,
 // CD audio, the pointer and the frame presentation are replaced by routines that do nothing.
 //
-// Usage: gui_harness <TotalA.exe> <out_prefix> [screen ...] [--res WxH]
+// Usage: gui_harness <TotalA.exe> <out_prefix> [screen ...] [--res WxH] [--palettes PALETTE.PAL GUIPAL.PAL] [--type N]
 //   screens: main single options skirmish ingame (the in-game menu, F2) prefs (its options)
-//            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu
+//            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu; tabmenu
 //   Writes <out_prefix><screen>.bmp.
 
 #define WIN32_LEAN_AND_MEAN
@@ -202,9 +202,17 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> screens;
     int bw = 640, bh = 480;
+    std::string battle_pal, battle_guipal;
+    int game_type = -1;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
-        if (a == "--res" && i + 1 < argc) {
+        if (a == "--type" && i + 1 < argc) {
+            game_type = std::atoi(argv[++i]);
+        } else if (a == "--palettes" && i + 2 < argc) {
+            // palettes\PALETTE.PAL and palettes\GUIPAL.PAL as files (the battle's colours).
+            battle_pal = argv[++i];
+            battle_guipal = argv[++i];
+        } else if (a == "--res" && i + 1 < argc) {
             const std::string v = argv[++i];
             bw = std::atoi(v.c_str());
             const auto x = v.find('x');
@@ -282,11 +290,37 @@ int main(int argc, char** argv) {
             r.write(r.r32(surf + 0xC), pat.data(), pat.size());
             r.w8(gs + 0x2A44, static_cast<std::uint8_t>(r.r32(gs + 0x2A44) | 4));
             r.w8(gs + 0x38A51, static_cast<std::uint8_t>(r.r32(gs + 0x38A51) | 1));
+            // The game type (the first word behind GS+0x391E9; 2 and 3 show the menu's briefing
+            // button as "Settings", 3 is a network game).
+            if (game_type >= 0 && r.r32(gs + 0x391E9)) r.w32(r.r32(gs + 0x391E9), static_cast<u32>(game_type));
+            // The battle's interface colours (built by the battle loading from the game palette
+            // and GUIPAL, 0x004AC7D0) and the game palette on the display, when the files are given.
+            if (!battle_pal.empty()) {
+                std::vector<std::uint8_t> pal, gpal;
+                auto load = [](const std::string& p, std::vector<std::uint8_t>& out) {
+                    FILE* fp = std::fopen(p.c_str(), "rb");
+                    if (!fp) return false;
+                    out.assign(1024, 0);
+                    const std::size_t n = std::fread(out.data(), 1, out.size(), fp);
+                    std::fclose(fp);
+                    return n == 1024;
+                };
+                if (load(battle_pal, pal) && load(battle_guipal, gpal)) {
+                    const u32 rp = r.alloc(1024), rg = r.alloc(1024);
+                    r.write(rp, pal.data(), pal.size());
+                    r.write(rg, gpal.data(), gpal.size());
+                    r.call(0x004AC7D0, 0, {g.gui(), rp, rg});
+                    r.write(0x0051F320 + 0x214, pal.data(), pal.size());
+                } else {
+                    std::printf("battle palettes not read\n");
+                }
+            }
             std::printf("battle screen %dx%d\n", bw, bh);
             continue;
         } else if (s == "ingame") ok = r.call(kGameMenu, 0, {});
         else if (s == "prefs") ok = r.call(kOptionsMenu, 0, {});
         else if (s == "exitmenu") ok = r.call(0x004608B0, 0, {});
+        else if (s == "tabmenu") ok = r.call(0x00495010, 0, {});  // the network games' Tab bar
         else if (s == "help") ok = r.call(0x0045FB30, 0, {});
         else {
             std::printf("%s: unknown screen\n", s.c_str());
