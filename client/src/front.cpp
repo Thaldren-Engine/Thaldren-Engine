@@ -29,6 +29,11 @@ int key_by_name(const std::string& s) {
     if (s == "pause") return keys::kPause;
     if (s == "escape") return keys::kEscape;
     if (s == "enter") return keys::kEnter;
+    if (s == "backspace") return keys::kBackspace;
+    if (s == "delete") return keys::kDelete;
+    if (s == "home") return keys::kHome;
+    if (s == "end") return keys::kEnd;
+    if (s == "space") return ' ';
     if (s == "tab") return keys::kTab;
     if (s == "plus") return '+';
     if (s == "minus") return '-';
@@ -225,8 +230,12 @@ int translate_key(SDL_Keycode k) {
     case SDLK_DOWN: return keys::kDown;
     case SDLK_PAUSE: return keys::kPause;
     case SDLK_ESCAPE: return keys::kEscape;
-    case SDLK_RETURN: return keys::kEnter;
+    case SDLK_RETURN: case SDLK_KP_ENTER: return keys::kEnter;
     case SDLK_TAB: return keys::kTab;
+    case SDLK_BACKSPACE: return keys::kBackspace;
+    case SDLK_DELETE: return keys::kDelete;
+    case SDLK_HOME: return keys::kHome;
+    case SDLK_END: return keys::kEnd;
     case SDLK_KP_PLUS: return '+';
     case SDLK_KP_MINUS: return '-';
     default: break;
@@ -253,6 +262,32 @@ void fit_window_to_frame(SDL_Window* window, int frame_w, int frame_h, int scale
     SDL_SyncWindow(window);
 }
 
+void confine_pointer(SDL_Window* window, const SDL_Event* ev) {
+    if (!window) return;
+    auto focused = [&] {
+        const SDL_WindowFlags f = SDL_GetWindowFlags(window);
+        return (f & SDL_WINDOW_INPUT_FOCUS) && !(f & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN));
+    };
+    if (!ev) {
+        SDL_SetWindowMouseGrab(window, focused());
+        return;
+    }
+    switch (ev->type) {
+    case SDL_EVENT_WINDOW_FOCUS_GAINED:
+    case SDL_EVENT_WINDOW_RESTORED:
+    case SDL_EVENT_WINDOW_SHOWN:
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        if (focused()) SDL_SetWindowMouseGrab(window, true);
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+    case SDL_EVENT_WINDOW_MINIMIZED:
+    case SDL_EVENT_WINDOW_HIDDEN:
+        SDL_SetWindowMouseGrab(window, false);
+        break;
+    default: break;
+    }
+}
+
 namespace {
 
 int run_window(GameClient& client, Content& content, const FrontOptions& o) {
@@ -268,6 +303,8 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     }
     fit_window_to_frame(win, w, h, scale);
     SDL_HideCursor();
+    confine_pointer(win, nullptr);
+    SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
@@ -296,6 +333,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         }
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            confine_pointer(win, &ev);
             InputEvent e;
             const SDL_Keymod mod = SDL_GetModState();
             e.shift = (mod & SDL_KMOD_SHIFT) != 0;
@@ -321,11 +359,21 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             case SDL_EVENT_KEY_UP:
                 e.type = ev.type == SDL_EVENT_KEY_DOWN ? InputEvent::Type::KeyDown : InputEvent::Type::KeyUp;
                 e.key = translate_key(ev.key.key);
-                if (e.key == 0 || (ev.key.repeat && e.type == InputEvent::Type::KeyDown && e.key >= 0x100)) continue;
+                if (e.key == 0 || (ev.key.repeat && e.type == InputEvent::Type::KeyDown && e.key >= 0x100 && !key_repeats(e.key))) continue;
                 // Shifted characters the original maps to their own codes.
                 if (e.shift && e.key == '=') e.key = '+';
                 if (e.shift && e.key == '-') e.key = '_';
                 break;
+            case SDL_EVENT_TEXT_INPUT:
+                // Typed characters as the keyboard layout makes them (the chat line's text).
+                for (const char* p = ev.text.text; p && *p; ++p)
+                    if (static_cast<unsigned char>(*p) < 0x80) {
+                        InputEvent t = e;
+                        t.type = InputEvent::Type::Text;
+                        t.key = static_cast<unsigned char>(*p);
+                        client.handle(t);
+                    }
+                continue;
             default: continue;
             }
             client.handle(e);

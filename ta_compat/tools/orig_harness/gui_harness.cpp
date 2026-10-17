@@ -393,6 +393,15 @@ int main(int argc, char** argv) {
             if (k == "esc") code = 27;
             else if (k == "enter") code = 13;
             else if (k == "tab") code = 9;
+            else if (k == "bksp") code = 8;
+            else if (k == "space") code = 0x20;
+            else if (k == "del") code = 0xEF;
+            else if (k == "home") code = 0xF0;
+            else if (k == "end") code = 0xF1;
+            else if (k == "left") code = 0xF4;
+            else if (k == "up") code = 0xF5;
+            else if (k == "right") code = 0xF6;
+            else if (k == "down") code = 0xF7;
             else if (k.size() > 1 && k[0] == 'f') code = 0xE2 + static_cast<u32>(std::atoi(k.c_str() + 1)) - 1;
             r.call(0x004C1B20, 0, {code});
             continue;
@@ -519,6 +528,26 @@ int main(int argc, char** argv) {
             const std::string t = s.substr(12);
             r.write(schema + 0xA14, t.c_str(), t.size() + 1);
             continue;
+        } else if (s.rfind("gadget:", 0) == 0) {
+            // gadget:NAME: the top layout's gadget record's kind and colour words (+0x1F, +0x23).
+            const u32 top = r.r32(g.gui() + 0x18);
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            u32 idx = 0xFFFFFFFFu;
+            if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str(s.substr(7))}, &idx);
+            if (idx != 0xFFFFFFFFu)
+                std::printf("%s: kind %u, +0x1F %d, +0x23 %d\n", s.c_str(), r.r32(gadgets + idx * 0x15B) & 0xFF, static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x1F)),
+                            static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x23)));
+            continue;
+        } else if (s == "lightinfo") {
+            // Debugging: the display's light table (0xC8) and its level-15 row's first entries, and
+            // the display flags (bit 0x80: lit blits on).
+            const u32 t = r.r32(0x0051F320 + 0xC8);
+            std::uint8_t row[256] = {};
+            if (t) r.read(t + 15 * 256, row, sizeof row);
+            std::printf("light table %08X flags %04X: level 15:", t, r.r32(0x0051F320 + 0xF0) & 0xFFFF);
+            for (int k = 80; k < 96; ++k) std::printf(" %u", row[k]);
+            std::printf("\n");
+            continue;
         } else if (s == "shadeinfo") {
             // Debugging: the display's shade table (dimmed screens) and a few of its level-8 entries.
             const u32 t = r.r32(0x0051F320 + 0xC4);
@@ -561,6 +590,76 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            continue;
+        } else if (s.rfind("talk", 0) == 0) {
+            // talk[:NET]: the chat line as Enter opens it in a battle (0x494050): TALK.GUI, or
+            // with NET = 1 a network game (game type 3); NET = 2 also with the recipient panel
+            // asked for (GS+0x2BEF bit 0, TALK2.GUI). The local player's side record is made when
+            // the battle set-up left none.
+            const int net = s.size() > 5 ? std::atoi(s.c_str() + 5) : 0;
+            u32 schema = r.r32(gs + 0x391E9);
+            if (!schema) {
+                schema = r.alloc(0x2000);
+                r.w32(gs + 0x391E9, schema);
+                r.w32(schema, game_type >= 0 ? static_cast<u32>(game_type) : 2u);
+            }
+            if (net) r.w32(schema, 3);
+            const u32 local = r.r32(gs + 0x2A42) & 0xFF;
+            if (!r.r32(gs + 0x1B8A + local * 0x14B)) r.w32(gs + 0x1B8A + local * 0x14B, r.alloc(0x100));
+            std::uint8_t b = static_cast<std::uint8_t>(r.r32(gs + 0x2BEF) & 0xFE);
+            if (net == 2) b |= 1;
+            r.w8(gs + 0x2BEF, b);
+            ok = r.call(0x00494050, 0, {});
+            const u32 top = r.r32(g.gui() + 0x18);
+            std::printf("%s: %s, top layout %08X, interface flags %04X\n", s.c_str(), ok ? "opened" : "failed", top, r.r32(gs + 0x37EBE) & 0xFFFF);
+            // The gadgets' colour words as loaded (+0x1F; the text's lit blit takes it as its level).
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            for (const char* n : {"CONSOLE", "TALK", "SENDTO"}) {
+                u32 idx = 0xFFFFFFFFu;
+                if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str(n)}, &idx);
+                if (idx != 0xFFFFFFFFu)
+                    std::printf("  gadget %s: kind %u, +0x1F %d, +0x23 %d, active %u\n", n, r.r32(gadgets + idx * 0x15B) & 0xFF,
+                                static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x1F)), static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x23)),
+                                r.r32(gadgets + idx * 0x15B + 0x29) & 0xFF);
+            }
+        } else if (s.rfind("bg:", 0) == 0) {
+            // bg:FILE.bmp: an 8-bit BMP of the screen's size (a client frame) put on the screen
+            // surface (what a layout opened over the battle takes in as the screen under it).
+            FILE* fp = std::fopen(s.c_str() + 3, "rb");
+            std::vector<std::uint8_t> b;
+            if (fp) {
+                char buf[65536];
+                for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, fp)) > 0;) b.insert(b.end(), buf, buf + n);
+                std::fclose(fp);
+            }
+            auto rd = [&](std::size_t at) -> u32 { return at + 4 <= b.size() ? static_cast<u32>(b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24) : 0u; };
+            const u32 surf = r.r32(0x0051F320 + 0xBC);
+            const int w = static_cast<int>(rd(18)), h = static_cast<int>(rd(22));
+            const u32 sw = surf ? r.r32(surf) : 0, sh = surf ? r.r32(surf + 4) : 0, pitch = surf ? r.r32(surf + 8) : 0;
+            if (b.size() < 54 || w != static_cast<int>(sw) || h != static_cast<int>(sh)) {
+                std::printf("%s: not a %ux%u 8-bit BMP\n", s.c_str(), sw, sh);
+                continue;
+            }
+            const u32 off = rd(10), stride = (static_cast<u32>(w) + 3u) & ~3u;
+            std::vector<std::uint8_t> px(static_cast<std::size_t>(pitch) * static_cast<std::size_t>(h), 0);
+            for (int y = 0; y < h; ++y) {
+                const std::size_t src = off + static_cast<std::size_t>(h - 1 - y) * stride;
+                if (src + static_cast<std::size_t>(w) <= b.size()) std::memcpy(&px[static_cast<std::size_t>(y) * pitch], &b[src], static_cast<std::size_t>(w));
+            }
+            r.write(r.r32(surf + 0xC), px.data(), px.size());
+            std::printf("%s: put on the screen\n", s.c_str());
+            continue;
+        } else if (s == "pass") {
+            // One pass of the interface (keys and pointer events queued so far).
+            ok = r.call(0x004A9FD0, 0, {g.gui()});
+            const u32 top = r.r32(g.gui() + 0x18);
+            char line[134] = {};
+            r.read(0x0051E788, line, 133);
+            std::printf("pass: %s, top layout %08X, interface flags %04X, stored line \"%s\"\n", ok ? "ok" : "failed", top, r.r32(gs + 0x37EBE) & 0xFFFF, line);
+            continue;
+        } else if (s.rfind("clock:", 0) == 0) {
+            // The interface clock (0x4B6340, ticks) held at a value.
+            r.stub(0x004B6340, static_cast<u32>(std::strtoul(s.c_str() + 6, nullptr, 10)), 0);
             continue;
         } else if (s == "ingame") ok = r.call(kGameMenu, 0, {});
         else if (s == "prefs") ok = r.call(kOptionsMenu, 0, {});
