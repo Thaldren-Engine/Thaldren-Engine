@@ -31,6 +31,10 @@ std::string upper(std::string s) {
 }
 bool is(const Widget& w, const char* name) { return upper(w.name) == upper(name); }
 
+// An interface sound of the sound bank by its section name (the screens' handlers each name
+// theirs; docs/RE_MEMORY.md, "Client", "Menu sounds").
+void sfx(FrontEnd& fe, MenuArt& art, const char* name) { fe.play_sound(art.sound(name)); }
+
 // The menus' rand() stream (the main menu's sparks draw from it; what is left of it is the
 // simulation thread's rand() state at the start of a battle, as in the original).
 sim::Lcg15& menu_rand() {
@@ -187,6 +191,10 @@ protected:
     void on_press(FrontEnd& fe, Widget& w) override {
         client::Settings& s = fe.settings();
         client::MusicPlayer* m = fe.music();
+        // Every button of the pages sounds "Options" (the sliders are silent); the sound test
+        // plays its file instead, and the sound mode switch first starts the menus' loop when it
+        // turns to mono outside a battle (and stops every sound when it turns off).
+        if (w.kind == WidgetKind::Button && !is(w, "TEST") && !is(w, "MODE")) sfx(fe, art_, "Options");
         if (w.kind == WidgetKind::ScrollBar) {
             if (is(w, "FXVOL")) s.set_int("fxvol", w.position);
             else if (is(w, "MUSICVOL")) s.set_int("musicvol", w.position);
@@ -209,6 +217,10 @@ protected:
             s.set_int("unitchat", w.stage * 5);
         } else if (is(w, "MODE")) {
             s.set_int("Sound Mode", w.stage);
+            fe.apply_settings();
+            if (w.stage == 0) fe.stop_sounds();
+            if (w.stage == 1 && !in_battle_) fe.play_sound_loop(art_.sound("BGM"));
+            sfx(fe, art_, "Options");
         } else if (is(w, "UNITCHAT")) {
             s.set_int("unitchattext", w.stage * 5);
         } else if (is(w, "LEFTCLICK")) {
@@ -242,7 +254,8 @@ protected:
                 load(fe);
             }
         } else if (is(w, "TEST")) {
-            fe.play_sound(art_.sound("OKTOBUILD"));
+            // sounds\explode.wav as a file of its own.
+            fe.play_sound_file(art_.sound("ActivateAllStatBars"));
         } else if (is(w, "RESTORE")) {
             restore_defaults(fe);
         } else if (is(w, "UNDO")) {
@@ -308,7 +321,17 @@ public:
         if (!entered_) {
             saved_ = fe.settings();
             entered_ = true;
+            // In a battle the panel slides in: "Panel" at once.
+            if (in_battle_) sfx(fe, art_, "Panel");
         }
+    }
+    void frame(FrontEnd& fe, std::uint32_t now) override {
+        LayoutScreen::frame(fe, now);
+        // In a battle the light bar runs across the panel 21 pixels a frame from 0 and stops
+        // past 276, with "Options" (the 14th battle frame since the menu opened).
+        if (!in_battle_ || slide_ > 276) return;
+        slide_ += 21;
+        if (slide_ > 276) sfx(fe, art_, "Options");
     }
     bool see_through() const override { return in_battle_; }
     const render::Palette* palette() const override {
@@ -343,6 +366,9 @@ protected:
     void on_press(FrontEnd& fe, Widget& w) override {
         static const std::pair<const char*, const char*> pages[] = {
             {"SOUND", "SOUNDS"}, {"MUSIC", "MUSIC"}, {"SPEEDS", "SPEEDS"}, {"VISUALS", "VISUALS"}};
+        // The page buttons and OK sound "Options", Cancel "Previous" (Undo nothing).
+        if (is(w, "SOUND") || is(w, "MUSIC") || is(w, "SPEEDS") || is(w, "VISUALS") || is(w, "PREV")) sfx(fe, art_, "Options");
+        else if (is(w, "CANCEL")) sfx(fe, art_, "Previous");
         for (const auto& [button, gui] : pages)
             if (is(w, button)) {
                 // In a battle the pages are SOUNDSRT, MUSICRT, SPEEDSRT and VISUALRT (no S).
@@ -382,6 +408,7 @@ private:
     bool in_battle_;
     bool entered_ = false;
     bool to_page_ = false;
+    int slide_ = 0;
     client::Settings saved_;
     std::unique_ptr<OptionsPage> page_;
 };
@@ -658,6 +685,14 @@ protected:
         };
         int r;
         const bool right = press_button_ == 3;
+        // The rows' buttons and the options sound "Skirmish"; Start "BigButton" (also when it
+        // is refused), the previous menu "Previous".
+        if (is(w, "Start")) sfx(fe, art_, "BigButton");
+        else if (is(w, "PrevMenu")) sfx(fe, art_, "Previous");
+        else if (row_of("PLAYER") >= 0 || row_of("SIDE") >= 0 || row_of("ALLIES") >= 0 || row_of("COLOR") >= 0 || row_of("METAL") >= 0 ||
+                 row_of("ENERGY") >= 0 || is(w, "StartLocation") || is(w, "CommanderDeath") || is(w, "Mapping") || is(w, "LineOfSight") ||
+                 is(w, "Difficulty") || is(w, "SelectMap"))
+            sfx(fe, art_, "Skirmish");
         if ((r = row_of("PLAYER")) >= 0) {
             // Open -> computer -> player (when there is none) or open; player -> open.
             Row& row = rows_[static_cast<std::size_t>(r)];
@@ -800,7 +835,6 @@ protected:
         req.start.crt_rand_state = menu_rand().state();
         const std::string dir = art_.game_dir();
         const client::ClientOptions opt = client_options(fe.settings(), fe.width(), fe.height());
-        fe.play_sound(art_.sound("BigButton"));
         fe.start_battle([dir, req, human, opt](const client::LoadProgress& progress, std::string& error) -> std::unique_ptr<client::BattleSession> {
             return SkirmishSession::start(dir, req, human, opt, progress, error);
         });
@@ -826,6 +860,10 @@ public:
 
 protected:
     void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "NewCamp") || is(w, "LoadGame") || is(w, "AnyMsn")) sfx(fe, art_, "BigButton");
+        else if (is(w, "Skirmish")) sfx(fe, art_, "Skirmish");
+        else if (is(w, "Options")) sfx(fe, art_, "Options");
+        else if (is(w, "PrevMenu")) sfx(fe, art_, "Previous");
         if (is(w, "NewCamp")) {
             if (fe.hooks().campaign_menu) fe.push(fe.hooks().campaign_menu(fe));
         } else if (is(w, "LoadGame")) {
@@ -858,6 +896,9 @@ public:
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("MULTI")) w->grayed = !fe.hooks().multiplayer_menu;
         if (fe.music()) fe.music()->set_mood(client::MusicMood::Silent);
+        // The menus' ambience: "BGM" looping (it keeps playing through the menus until a battle
+        // loads; a second start does nothing while it plays).
+        fe.play_sound_loop(art_.sound("BGM"));
     }
     void frame(FrontEnd&, std::uint32_t now) override {
         // The sparks run along the circuit lines of the picture, one move per 1/30 s.
@@ -946,8 +987,10 @@ protected:
             std::copy(surface_.row(y), surface_.row(y) + std::min(out.width, 640), out.row(y));
     }
     void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "SINGLE") || is(w, "MULTI")) sfx(fe, art_, "BigButton");
+        else if (is(w, "EXIT")) sfx(fe, art_, "Exit");
+        else if (is(w, "INTRO") || is(w, "Credits")) sfx(fe, art_, "SmlButton");
         if (is(w, "SINGLE")) {
-            fe.play_sound(art_.sound("BigButton"));
             fe.push(std::make_unique<SinglePlayer>(art_));
         } else if (is(w, "MULTI")) {
             if (fe.hooks().multiplayer_menu) fe.push(fe.hooks().multiplayer_menu(fe));
@@ -1043,6 +1086,7 @@ protected:
         (void)fe;
     }
     void on_press(FrontEnd& fe, Widget& w) override {
+        sfx(fe, art_, "Exit");
         if (is(w, "CHOICE1")) {
             if (kind_ == 2) fe.quit();
             else fe.to_main_menu();
@@ -1062,7 +1106,7 @@ private:
 // battle from its start with that difficulty).
 class RestartDialog : public LayoutScreen {
 public:
-    RestartDialog(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("RESTART")) {
+    RestartDialog(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("RESTART")), art_(art) {
         open_centred_ = -2;
         // DRESTART's top-left part in the box, its palette not put on the display (0x4288D0 with
         // no flags).
@@ -1110,6 +1154,8 @@ protected:
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         client::BattleSession* s = fe.session();
+        sfx(fe, art_, "Options");
+        if (is(w, "Difficulty")) sfx(fe, art_, "Options");
         if (is(w, "RESTART")) {
             const Widget* d = widget("Difficulty");
             client::BattleLauncher l = s ? s->restart_launcher(d ? d->stage : 1) : client::BattleLauncher();
@@ -1121,6 +1167,7 @@ protected:
     }
 
 private:
+    MenuArt& art_;
     std::string name_;
     bool named_ = false;
 };
@@ -1148,6 +1195,7 @@ protected:
         draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
     }
     void on_press(FrontEnd& fe, Widget& w) override {
+        sfx(fe, art_, "Options");
         if (is(w, "MAINMENU") || is(w, "EXITGAME")) {
             const int kind = is(w, "MAINMENU") ? 0 : 2;
             fe.pop();
@@ -1199,6 +1247,8 @@ public:
 protected:
     void on_press(FrontEnd& fe, Widget& w) override {
         client::BattleSession* s = fe.session();
+        if (is(w, "OK") || is(w, "SAVEGAME") || is(w, "LOADGAME") || is(w, "PREFS") || is(w, "EXIT") || is(w, "HELP") || is(w, "MISSION"))
+            sfx(fe, art_, "Options");
         if (is(w, "OK")) fe.pop();
         else if (is(w, "SAVEGAME") && s && fe.hooks().save_game_menu) fe.push(fe.hooks().save_game_menu(fe, *s));
         else if (is(w, "LOADGAME") && fe.hooks().load_game_menu) fe.push(fe.hooks().load_game_menu(fe, s));
@@ -1225,12 +1275,16 @@ public:
     explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) {}
     bool see_through() const override { return true; }
     void enter(FrontEnd& fe) override {
+        // Tab opening (and closing) the bar sounds "SmallButton".
+        if (!opened_) sfx(fe, art_, "SmallButton");
+        opened_ = true;
         if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu;
         if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu;
         if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu;
     }
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kTab) {
+            sfx(fe, art_, "SmallButton");
             fe.pop();
             return;
         }
@@ -1240,6 +1294,7 @@ public:
 protected:
     void on_press(FrontEnd& fe, Widget& w) override {
         client::BattleSession* s = fe.session();
+        if (is(w, "OPTIONS") || is(w, "ALLIES") || is(w, "SHARE") || is(w, "CONTROL")) sfx(fe, art_, "BigButton");
         if (!s) return;
         if (is(w, "OPTIONS") && art_.layout("ARMOPT")) fe.push(std::make_unique<GameMenu>(art_));
         else if (is(w, "ALLIES") && fe.hooks().allies_menu) fe.push(fe.hooks().allies_menu(fe, *s));
@@ -1250,6 +1305,7 @@ protected:
 
 private:
     MenuArt& art_;
+    bool opened_ = false;
 };
 
 // ------------------------------------------------------------------ end of the battle (ENDMSN.GUI)
@@ -1447,6 +1503,8 @@ protected:
         }
     }
     void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "MainMenu") || is(w, "LoadGame") || is(w, "SaveGame") || is(w, "Start") || is(w, "Missions")) sfx(fe, art_, "BigButton");
+        else if (is(w, "Difficulty")) sfx(fe, art_, "Skirmish");
         if (is(w, "MainMenu")) fe.to_main_menu();
     }
 
@@ -1632,6 +1690,7 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
         cur.alt_groups = o.alt_groups;
         cur.clock = o.clock;
         cur.sound_mode = o.sound_mode;
+        cur.fx_volume = o.fx_volume;
         if (o.game_speed != static_cast<int>(c.budget().game_speed)) c.set_game_speed(o.game_speed);
     };
 }

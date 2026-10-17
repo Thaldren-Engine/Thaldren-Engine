@@ -9,6 +9,7 @@
 #include <set>
 
 #include "client/audio.h"
+#include "client/sound_desk.h"
 #include "client/front.h"
 #include "client/front_end.h"
 #include "client/menu.h"
@@ -102,13 +103,27 @@ public:
     int width() const override { return s_.width; }
     int height() const override { return s_.height; }
     void play_sound(int sample) override {
-        if (sample >= 0) menu_sounds_.push_back(sample);
+        if (sample >= 0) menu_sounds_.push_back({sample, MenuSound::Plain});
     }
+    void play_sound_loop(int sample) override {
+        if (sample >= 0) menu_sounds_.push_back({sample, MenuSound::Loop});
+    }
+    void play_sound_file(int sample) override {
+        if (sample >= 0) menu_sounds_.push_back({sample, MenuSound::File});
+    }
+    void play_narration(int sample) override {
+        if (sample >= 0) menu_sounds_.push_back({sample, MenuSound::Narration});
+    }
+    void stop_narration() override { menu_sounds_.push_back({-1, MenuSound::StopNarration}); }
+    void stop_sounds() override { menu_sounds_.push_back({-1, MenuSound::StopAll}); }
     MusicPlayer* music() override { return s_.music; }
     void apply_settings() override {
-        // Volumes 0..64 (fxvol, musicvol); sound mode 0 is off.
-        fx_volume_ = settings_.get_int("Sound Mode", 1) == 0 ? 0 : settings_.get_int("fxvol", 27) * 256 / 64;
-        if (audio_) audio_->set_fx_volume(fx_volume_);
+        // Volumes 0..64 (fxvol, musicvol); sound mode 0 off, 1 mono, 2 3D; the sounds playing
+        // at once ("MixingBuffers", 8).
+        fx_volume_ = settings_.get_int("fxvol", 27);
+        sound_mode_ = settings_.get_int("Sound Mode", 1);
+        desk_.set_fx_volume(fx_volume_);
+        desk_.set_max_playing(settings_.get_int("MixingBuffers", 8));
         if (s_.music) {
             s_.music->set_volume(settings_.get_int("musicvol", 32));
             s_.music->set_mode(settings_.get_int("cdmode", 4));
@@ -139,6 +154,8 @@ public:
     // ---- the loop's side
     void begin(AudioOut* audio) {
         audio_ = audio;
+        desk_.attach(audio);
+        desk_.set_log(log_sounds_);
         apply_settings();
         if (s_.main_menu) push(s_.main_menu(*this));
         if (s_.music) s_.music->set_mood(MusicMood::Silent);
@@ -178,6 +195,7 @@ public:
 
     void frame(std::uint32_t now) {
         now_ = now;
+        ++frame_no_;
         graveyard_.clear();  // screens closed during the last pass go now
         retired_.reset();    // then a battle left during it
         const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
@@ -271,26 +289,53 @@ public:
     }
 
     void play_pending_sounds() {
+        // The main loop's 100 ms sweep, then this pass's starts: the battle's (simulation and
+        // interface), then the menus'.
+        desk_.tick(now_);
         if (in_battle()) {
             const std::vector<Sample>& smp = session_->content().samples;
-            const std::vector<SoundEvent> started = session_->client().take_sounds();
-            if (log_sounds_ && !started.empty()) {
-                // The sound log (headless runs): the battle's sounds started in this pass.
-                std::printf("step %u: %zu sound(s):", session_->battle().game_tick(), started.size());
-                for (const SoundEvent& e : started)
-                    std::printf(" %s/%d", e.sample >= 0 && static_cast<std::size_t>(e.sample) < smp.size() ? smp[static_cast<std::size_t>(e.sample)].name.c_str() : "?",
-                                e.volume);
-                std::printf("\n");
+            for (const SoundEvent& e : session_->client().take_sounds()) {
+                if (e.sample < 0 || static_cast<std::size_t>(e.sample) >= smp.size()) continue;
+                SoundRequest r;
+                r.sample = &smp[static_cast<std::size_t>(e.sample)];
+                r.volume = e.volume;
+                r.placed = e.placed;
+                r.pos = e.pos;
+                r.min_distance = e.min_distance;
+                r.max_distance = e.max_distance;
+                r.one_shot = e.one_shot;
+                desk_.play(r, now_);
             }
-            for (const SoundEvent& e : started)
-                if (audio_ && e.sample >= 0 && static_cast<std::size_t>(e.sample) < smp.size())
-                    audio_->play_sample(&smp[static_cast<std::size_t>(e.sample)], e.pan, e.volume);
         }
         const std::vector<Sample>& ms = s_.content->samples;
-        for (int i : menu_sounds_)
-            if (audio_ && static_cast<std::size_t>(i) < ms.size()) audio_->play_sample(&ms[static_cast<std::size_t>(i)], 0, 256);
-        sound_count_ += menu_sounds_.size();
+        const bool fx_on = fx_volume_ != 0 && sound_mode_ != 0;
+        for (const MenuSound& m : menu_sounds_) {
+            const Sample* smp = m.sample >= 0 && static_cast<std::size_t>(m.sample) < ms.size() ? &ms[static_cast<std::size_t>(m.sample)] : nullptr;
+            switch (m.kind) {
+            case MenuSound::Plain:
+            case MenuSound::Loop:
+            case MenuSound::File:
+                if (smp && fx_on) {
+                    SoundRequest r;
+                    r.sample = smp;
+                    r.loop = m.kind == MenuSound::Loop;
+                    r.one_shot = m.kind == MenuSound::File;
+                    desk_.play(r, now_);
+                }
+                break;
+            case MenuSound::Narration: desk_.play_stream(smp); break;
+            case MenuSound::StopNarration: desk_.stop_stream(); break;
+            case MenuSound::StopAll: desk_.stop_all(now_); break;
+            }
+        }
         menu_sounds_.clear();
+        std::string label;
+        if (log_sounds_) {
+            label = "frame " + std::to_string(frame_no_);
+            if (in_battle()) label += " step " + std::to_string(session_->battle().game_tick());
+        }
+        desk_.flush(label);
+        sound_count_ = desk_.started();
     }
 
     // The loop sets this: draws and shows a frame at once (the loading screen's progress).
@@ -320,6 +365,9 @@ private:
     }
 
     void run_launcher() {
+        // The sounds of the button that started it play first (the menus' loop goes on while
+        // the battle loads).
+        play_pending_sounds();
         BattleLauncher l = std::move(pending_);
         pending_ = nullptr;
         loading_ = true;
@@ -339,6 +387,9 @@ private:
             std::printf("battle failed to start: %s\n", error.c_str());
             return;
         }
+        // The end of the loading stops every sound (the menus' loop too; 0x497F40).
+        desk_.stop_all(now_);
+        desk_.flush(log_sounds_ ? "frame " + std::to_string(frame_no_) : std::string());
         session_ = std::move(s);
         ended_ = false;
         mood_set_ = false;
@@ -358,7 +409,7 @@ private:
         ended_ = false;
         battle_base_ = 0;
         if (s_.music) s_.music->set_mood(MusicMood::Silent);
-        if (audio_) audio_->set_samples(nullptr);
+        desk_.forget(s->content().samples);
         if (ask_session) s->after_battle(*this, o);
         retired_ = std::move(s);  // (gone after the screens closed with it, which may refer to it)
         if (!stack_.empty()) stack_.back()->enter(*this);
@@ -379,8 +430,14 @@ private:
     std::string load_stage_;
     bool quit_ = false;
     AudioOut* audio_ = nullptr;
-    int fx_volume_ = 256;
-    std::vector<int> menu_sounds_;
+    SoundDesk desk_;
+    int fx_volume_ = 27, sound_mode_ = 1;
+    struct MenuSound {
+        int sample = -1;
+        enum Kind : std::uint8_t { Plain, Loop, File, Narration, StopNarration, StopAll } kind = Plain;
+    };
+    std::vector<MenuSound> menu_sounds_;
+    int frame_no_ = -1;
     std::uint32_t now_ = 0;
     FrameClock pointer_;  // the menu pointer's animation
     std::uint32_t pointer_ticks_ = 0;
@@ -517,7 +574,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         if (tex) SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
     }
     AudioOut audio;
-    if (o.sound && !audio.open(nullptr)) std::printf("no sound output: %s\n", SDL_GetError());
+    if (o.sound && !audio.open()) std::printf("no sound output: %s\n", SDL_GetError());
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     const std::uint64_t start = SDL_GetTicks();
     if (const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {

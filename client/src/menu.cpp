@@ -101,7 +101,8 @@ void LayoutScreen::press(FrontEnd& fe, Widget& w) {
         // A switch steps forward (left click) or back (right click) through its stages.
         w.stage = press_button_ == 3 ? (w.stage + w.stages - 1) % w.stages : (w.stage + 1) % w.stages;
     }
-    fe.play_sound(w.sound >= 0 ? w.sound : fe.menu_content().click_sound);
+    // No sound of its own: each screen plays the one its gadget calls for (a gadget may name one).
+    if (w.sound >= 0) fe.play_sound(w.sound);
     for (std::size_t i = 0; i < widgets_.size(); ++i)
         if (&widgets_[i] == &w) {
             focus_before_press_ = focus_gadget_;

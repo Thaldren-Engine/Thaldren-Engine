@@ -96,10 +96,15 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
     if (vfs_.read("gamedata\\ALLSOUND.TDF", f))
         if (auto root = parse_tdf(f))
             for (const auto& s : root->children()) {
-                const std::string file = s->get_string("sound", 64, "");
+                // One sound per section (sections naming the same file keep their own copies);
+                // the file is sounds\<name> with its extension replaced by .wav.
+                std::string file = s->get_string("sound", 64, "");
+                const auto dot = file.find_last_of('.');
+                if (dot != std::string::npos) file.resize(dot);
                 std::vector<std::uint8_t> w;
                 client::Sample smp;
                 if (file.empty() || !vfs_.read("sounds\\" + file + ".wav", w) || !client::decode_wav(w, smp)) continue;
+                smp.name = upper(s->name());
                 sound_index_[upper(s->name())] = static_cast<int>(content_.samples.size());
                 content_.samples.push_back(std::move(smp));
             }
@@ -570,6 +575,7 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
     o.alt_groups = s.get_int("SwitchAlt", 0) != 0;
     o.clock = s.get_int("clock", 0) != 0;
     o.sound_mode = s.get_int("Sound Mode", 1);
+    o.fx_volume = s.get_int("fxvol", 27);
     return o;
 }
 

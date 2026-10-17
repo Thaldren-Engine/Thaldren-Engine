@@ -162,6 +162,10 @@ public:
     const std::vector<render::Sprite8>* sequence(const std::string& path, const std::string& name);
     const client::Font* font(const std::string& name);
     int sample(const std::string& name);  // sounds\<name>.wav into the sample table, -1 when missing
+    // A named sound of the sound bank (allsound.tdf's section `section`, file `file`): a sound
+    // of its own even when another section names the same file (the original's bank keeps one
+    // entry per name, so their copies do not mix); later lookups of the same file share it.
+    int bank_sample(const std::string& section, const std::string& file);
     const std::vector<render::Sprite8>* frames_of(std::uint32_t seq);
 };
 

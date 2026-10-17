@@ -14,6 +14,7 @@
 
 #include "client/commands.h"
 #include "client/content.h"
+#include "client/sound_rules.h"
 #include "render/draw_list.h"
 #include "sim/battle.h"
 #include "sim/step_budget.h"
@@ -54,6 +55,8 @@ struct ClientOptions {
     bool alt_groups = false;         // the alternate group keys (Alt+digit selects)
     bool clock = false;              // the game clock on the top bar (option)
     int sound_mode = 1;              // 0 off, 1 mono (world sounds centred), 2 3D (placed around the view's centre)
+    int fx_volume = 27;              // effect volume 0..64 (0: no sounds start at all)
+    bool sing = false;               // unit notices replaced by the two "sing" sounds (a command)
     // Typed commands (chat lines starting with '+', docs/RE_MEMORY.md "Console commands").
     bool cheats = false;             // cheat commands allowed (skirmish; network games whose host allows them)
     bool debug_commands = false;     // the debug commands unlocked (by a command)
@@ -62,12 +65,6 @@ struct ClientOptions {
     bool radar_everything = false;   // the minimap shows every unit (cheat)
     bool show_ranges = false;        // weapon range circles (not drawn yet)
     bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
-};
-
-struct SoundEvent {
-    int sample = -1;
-    int pan = 0;         // -100 (left) .. 100 (right)
-    int volume = 256;    // 0..256
 };
 
 // The minimap's place in its 126 x 126 square for a map whose scroll extent is sw x sh
@@ -131,10 +128,13 @@ public:
 
     // Presentation events from the simulation (the battle's outside forwards them).
     void on_sound(std::uint16_t sample, const sim::Vec3i& pos);
+    // An interface sound by sample index (centred; the simulation's cues such as a mission
+    // goal met).
+    void interface_sound(int sample) { play_ui(sample); }
     void on_speech(sim::Unit& unit, std::uint32_t id);
     void on_under_attack(sim::Unit& unit);
     void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
-    void message(const std::string& text, bool highlight = false);
+    void message(const std::string& text, bool highlight = false, bool beep = false);
     void selection_changed() { panel_dirty_ = true; }
     // The minimap's work inside a battle step (the battle's outside forwards it): after a
     // player's sight updates the viewed player's radar marks are drawn anew (player_stage),
@@ -239,8 +239,6 @@ private:
     void play_ui(int sample);
     void speak(const sim::Unit& u, std::uint32_t id);
     // Unit notices: the original's speech queue (8 entries by priority, per-notice gaps).
-    void speech_play(std::size_t index, bool sound, bool text);
-    void speech_step();
     void select_category(const std::string& category, bool keep);
     void select_on_screen();
     void select_same_types();
@@ -343,15 +341,11 @@ private:
     std::vector<SoundEvent> sounds_;
     std::array<float, 8> shown_{};   // eased top-bar values: energy, metal stored; storages (unused), incomes
     bool quit_ = false;
-    struct Speech {
-        std::uint32_t id = 0, tick = 0;
-        std::uint16_t unit = 0;
-        std::uint8_t priority = 0;
-        std::string text;
-    };
-    std::vector<Speech> speech_;                // the queue, highest priority first
-    std::array<std::uint32_t, 24> speech_next_{};  // per notice: first step it may sound again
-    std::uint32_t speech_last_ = 0, speech_length_ = 0;  // last spoken notice: step and length in steps
+    // Unit notices: the original's queue (client/sound_rules.h) and its host here.
+    struct NoticeHost;
+    NoticeQueue notices_;
+    NoticeQueue::Levels notice_levels() const;
+    void notices_frame();
     std::uint16_t tracked_ = 0;                 // unit the view follows (t / T, Ctrl+C)
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;

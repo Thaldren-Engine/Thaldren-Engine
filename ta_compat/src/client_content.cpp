@@ -243,6 +243,29 @@ int ClientWorld::sample(const std::string& name) {
     return index;
 }
 
+int ClientWorld::bank_sample(const std::string& section, const std::string& file) {
+    if (file.empty()) return -1;
+    const std::string key = "\x01" + upper(section);
+    auto it = sample_index_.find(key);
+    if (it != sample_index_.end()) return it->second;
+    // The path: the name with its extension replaced by .wav, under sounds\.
+    std::string path = file;
+    const auto dot = path.find_last_of('.');
+    if (dot != std::string::npos) path.resize(dot);
+    path += ".wav";
+    std::vector<std::uint8_t> f;
+    client::Sample s;
+    int index = -1;
+    if (vfs_.read("sounds\\" + path, f) && client::decode_wav(f, s)) {
+        s.name = upper(section);
+        content_.samples.push_back(std::move(s));
+        index = static_cast<int>(content_.samples.size()) - 1;
+        if (!sample_index_.count(upper(file))) sample_index_[upper(file)] = index;
+    }
+    sample_index_[key] = index;
+    return index;
+}
+
 bool ClientWorld::build_content(std::string& error) {
     client::Content& c = content_;
     c.palette = palette_;
@@ -500,7 +523,7 @@ bool ClientWorld::build_content(std::string& error) {
         const TdfParseResult a = parse(f);
         auto ui = [&](const char* sec) {
             const TdfSection* s = a.root ? a.root->child(sec) : nullptr;
-            return s ? sample(s->get_string("sound", 64, "")) : -1;
+            return s ? bank_sample(sec, s->get_string("sound", 64, "")) : -1;
         };
         // The status line's text by mission kind: the display name of each entry of the
         // original's mission table (0x00512344; the entries' first field, read from the static
@@ -577,7 +600,12 @@ bool ClientWorld::build_content(std::string& error) {
         u.create_squad = ui("CREATESQUAD");
         u.select_multiple = ui("SelectMultipleUnits");
         u.message = ui("MessageArrived");
+        u.small_button = ui("SMALLBUTTON");
+        u.victory = ui("Victory Condition");
         sample_index_["TREEBURN"] = ui("TREEBURN");
+        // The notices' sing switch: two sound files played instead of the notices' own.
+        u.honk = sample("honk");
+        u.sing = sample("sing");
     }
     std::vector<const TdfSection*> categories;
     std::vector<std::uint8_t> sound_tdf;
