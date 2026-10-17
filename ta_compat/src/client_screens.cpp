@@ -413,63 +413,112 @@ private:
     std::unique_ptr<OptionsPage> page_;
 };
 // ------------------------------------------------------------------ select map (SELMAP.GUI)
+// A screen dimmed under a dialog (open flag 0x800): its rectangle through shade level 8 (defined
+// with the in-game menus below).
+void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
+
+// A picture mapped onto a gadget's box as the original's surface gadgets draw theirs (0x4A4980):
+// texels (1,1) .. (w-1, h-1) onto the box's corners, clipped to the screen's box; without a
+// picture the box is filled with interface colour 7.
+void draw_surface_picture(render::Image8& out, const render::ClipRect& box, const render::Sprite8* pic, int x0, int y0, int w, int h,
+                          std::uint8_t empty_colour) {
+    const int x1 = x0 + w - 1, y1 = y0 + h - 1;
+    if (!pic) {
+        client::fill_rect(out, box, x0, y0, x1, y1, empty_colour);
+        return;
+    }
+    const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+    const int uv[4][2] = {{1, 1}, {pic->width - 1, 1}, {pic->width - 1, pic->height - 1}, {1, pic->height - 1}};
+    render::RasterTarget t;
+    t.pixels = out.pixels.data();
+    t.pitch = out.width;
+    t.clip = box;
+    render::textured_quad_uv(t, v, uv, *pic);
+}
+
+// What the map choice shows of a map (the map info the original loads for a skirmish or network
+// game, 0x435DA0 provider 2/3, from maps\<name>.ota [GlobalHeader]): the description (at most 127
+// characters, "No description available" when the key is missing), memory and numplayers.
+struct MapSummary {
+    bool loaded = false;
+    std::string description, memory, players;
+};
+MapSummary map_summary(MenuArt& art, const std::string& map) {
+    MapSummary m;
+    std::vector<std::uint8_t> f;
+    if (!art.vfs().read("maps\\" + map + ".ota", f)) return m;
+    m.loaded = true;
+    if (auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root)
+        if (const TdfSection* gh = root->child("GlobalHeader")) {
+            m.description = gh->get_string("missiondescription", 0x80, "No description available");
+            m.memory = gh->get_string("memory", 0x80, "");
+            m.players = gh->get_string("numplayers", 0x80, "");
+        }
+    return m;
+}
+
+// The map choice (0x47AAF0, SELMAP.GUI opened with flags 0x880 over the skirmish set-up: the
+// screen under it dimmed once, no stock panel; DSELECTMAP2's top-left part in its box, its palette
+// not put up). MAPNAMES lists the maps (MenuArt::skirmish_maps), the first one named exactly as the
+// setting is selected and brought into view; moving the selection shows that map (0x47AAA0 ->
+// 0x444A20): DESCRIPTION its description (word-wrapped), SIZE "<memory>  Players: <numplayers>",
+// MAPPIC its picture. Handler (0x47A910): MAPNAMES (double click, Enter, Space) and LOAD ("Select
+// Map", sound SmallButton) take the selected map as the skirmish map and close; PREVMENU (Cancel,
+// Escape) plays Previous and closes.
 class SelectMap : public LayoutScreen {
 public:
     SelectMap(MenuArt& art, std::string current, std::function<void(const std::string&)> chosen)
         : LayoutScreen(art.layout("SELMAP")), art_(art), chosen_(std::move(chosen)) {
-        Widget* list = widget("MAPNAMES");
-        if (list) {
-            list->items = art.skirmish_maps();
+        background_in_box_ = true;
+        if (Widget* list = widget("MAPNAMES")) {
+            set_list(*list, art.skirmish_maps());
             for (std::size_t i = 0; i < list->items.size(); ++i)
-                if (upper(list->items[i]) == upper(current)) list->selected = static_cast<int>(i);
-            if (list->selected < 0 && !list->items.empty()) list->selected = 0;
-            const int rows = std::max(1, list->h / ((art.content().font ? art.content().font->height : 12) + 1));
-            list->top = std::max(0, std::min(list->selected - rows / 2, static_cast<int>(list->items.size()) - rows));
-            if (Widget* s = widget("SLIDER")) {
-                s->range = std::max(0, static_cast<int>(list->items.size()) - rows);
-                s->position = list->top;
-                s->link = "MAPNAMES";
-            }
+                if (list->items[i] == current) {
+                    select_list_row(*list, static_cast<int>(i));
+                    break;
+                }
+            show(*list);
         }
-        describe();
     }
     bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        // The screen under it (the skirmish set-up's whole box) dimmed.
+        dim_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        LayoutScreen::draw(fe, out);
+    }
 
 protected:
-    void describe() {
-        const Widget* list = widget("MAPNAMES");
-        if (!list || list->selected < 0) return;
-        const std::string map = list->items[static_cast<std::size_t>(list->selected)];
-        std::vector<std::uint8_t> f;
-        std::string desc, size;
-        if (art_.vfs().read("maps\\" + map + ".ota", f))
-            if (auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root)
-                if (const TdfSection* gh = root->child("GlobalHeader")) {
-                    desc = gh->get_string("missiondescription", 256, "");
-                    size = gh->get_string("size", 64, "");
-                }
-        if (Widget* d = widget("DESCRIPTION")) d->text = desc;
-        if (Widget* s = widget("SIZE")) s->text = size;
+    void show(const Widget& list) {
+        if (list.selected < 0 || list.selected >= static_cast<int>(list.items.size())) return;
+        const std::string map = list.items[static_cast<std::size_t>(list.selected)];
+        const MapSummary m = map_summary(art_, map);
+        if (!m.loaded) return;
+        if (Widget* s = widget("SIZE")) s->text = m.memory + "  Players: " + m.players;
         if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(map, pic->w, pic->h);
+        if (Widget* d = widget("DESCRIPTION")) d->text = m.description;
     }
-    void on_pick(FrontEnd& fe, Widget& w, int row, bool dbl) override {
-        (void)row;
-        describe();
-        if (dbl) choose(fe, w);
-    }
+    void on_list_select(FrontEnd&, Widget& w) override { show(w); }
     void choose(FrontEnd& fe, Widget& list) {
-        if (list.selected >= 0 && chosen_) chosen_(list.items[static_cast<std::size_t>(list.selected)]);
+        if (list.selected >= 0 && list.selected < static_cast<int>(list.items.size()) && chosen_) chosen_(list.items[static_cast<std::size_t>(list.selected)]);
         fe.pop();
     }
     void on_press(FrontEnd& fe, Widget& w) override {
-        if (is(w, "LOAD")) {
+        if (is(w, "MAPNAMES")) {
+            choose(fe, w);
+        } else if (is(w, "LOAD")) {
+            sfx(fe, art_, "SmallButton");
             if (Widget* l = widget("MAPNAMES")) choose(fe, *l);
         } else if (is(w, "PREVMENU")) {
+            sfx(fe, art_, "Previous");
             fe.pop();
         }
     }
-    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
-        if (w.picture) render::blit(out, out.bounds(), *w.picture, ox_ + w.x + w.picture->x_offset, oy_ + w.y + w.picture->y_offset);
+    void draw_surface(FrontEnd& fe, render::Image8& out, const Widget& w) override {
+        const Widget& h = widgets_.front();
+        const render::ClipRect box{std::max(ox_, 0), std::max(oy_, 0), std::min(ox_ + h.w - 1, out.width - 1), std::min(oy_ + h.h - 1, out.height - 1)};
+        draw_surface_picture(out, box, w.picture, ox_ + w.x, oy_ + w.y, w.w, w.h, colour(7));
+        (void)fe;
     }
 
 private:
