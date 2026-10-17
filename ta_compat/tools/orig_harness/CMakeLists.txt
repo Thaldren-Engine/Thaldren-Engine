@@ -778,3 +778,12 @@ add_executable(netstate_harness
 )
 target_include_directories(netstate_harness PRIVATE ${ROOT}/engine/sim/include)
 target_compile_options(netstate_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Typed commands: registry, dispatch, the default command's unit row, meteor start, switches.
+add_executable(console_harness console_harness.cpp
+    ${ROOT}/engine/sim/src/console.cpp
+    ${ROOT}/engine/sim/src/rng.cpp
+    ${ROOT}/ta_compat/src/console_table.cpp
+)
+target_include_directories(console_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(console_harness PRIVATE /W4 /permissive- /fp:precise)
