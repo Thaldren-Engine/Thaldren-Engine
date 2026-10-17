@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <random>
 #include <thread>
 
@@ -283,9 +284,21 @@ void launch_network_battle(FrontEnd& fe, const NetMenuConfig& cfg, NetLaunch L) 
     // bar; this machine's players (its human, and the computer players a host runs) show this
     // machine's progress, the others what their packets report; "has loaded" is set at the
     // start for this machine's players, by packets for the others.
-    auto show_players = [room, fep, host, local](bool synchronised) {
+    auto shown = std::make_shared<std::string>();
+    auto show_players = [room, fep, host, local, shown](bool synchronised) {
         LoadingState* ls = fep->loading();
         if (!ls) return;
+        struct Report {  // (the bars as a log line whenever they change)
+            std::shared_ptr<std::string> last;
+            LoadingState* ls;
+            ~Report() {
+                std::string line = ls->synchronised ? "synchronised" : "";
+                for (const LoadingPlayer& p : ls->players)
+                    line += " | " + p.name + " " + std::to_string(p.percent) + "%" + (p.local ? " local" : "") + (p.loaded ? " loaded" : "");
+                if (line != *last) std::printf("loading bars:%s\n", line.c_str());
+                *last = line;
+            }
+        } report{shown, ls};
         ls->network = true;
         ls->synchronised = synchronised;
         ls->players.clear();

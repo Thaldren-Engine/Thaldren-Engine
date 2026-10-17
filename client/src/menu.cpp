@@ -182,7 +182,7 @@ int LayoutScreen::hit(int x, int y) {
     // The last drawn widget under the point wins (later entries lie on top).
     for (int i = static_cast<int>(widgets_.size()) - 1; i >= 1; --i) {
         const Widget& w = widgets_[static_cast<std::size_t>(i)];
-        if (!w.active || w.kind == WidgetKind::Label || w.kind == WidgetKind::FontRef || w.kind == WidgetKind::Header) continue;
+        if (!w.active || !w.hot || w.kind == WidgetKind::Label || w.kind == WidgetKind::FontRef || w.kind == WidgetKind::Header) continue;
         if (inside(w, ox_, oy_, x, y)) return i;
     }
     return -1;

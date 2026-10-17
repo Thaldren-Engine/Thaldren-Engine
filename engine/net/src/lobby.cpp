@@ -1064,7 +1064,8 @@ std::int32_t BattleRoom::computer_id(int slot) {
     data[0x13] = 0x50;
     const std::string name = ("AI:" + players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)].name).substr(0, 16);
     const std::int32_t id = transport_.create_player(name, data);
-    return id > 0 ? id : net_id_ + 0x1000 + slot;
+    // (Session ids are any 32-bit value, XORed with the session's key: 0 and -1 mean none.)
+    return id != 0 && id != -1 ? id : net_id_ + 0x1000 + slot;
 }
 
 void BattleRoom::publish_session_info() {

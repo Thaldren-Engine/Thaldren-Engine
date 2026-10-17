@@ -77,6 +77,7 @@ struct Widget {
     bool vertical = true;
     std::string link;   // label -> button it belongs to, scroll bar -> list box
     int sound = -1;     // sample played when pressed (-1: none; the screen plays its own)
+    bool hot = true;    // takes the pointer (false: the pointer reaches what lies under it)
 };
 
 // One screen's description.

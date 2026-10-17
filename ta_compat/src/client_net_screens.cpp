@@ -952,7 +952,7 @@ void enter_room(FrontEnd& fe, std::shared_ptr<NetPart> part, bool host) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
-    if (id <= 0) {
+    if (id == 0 || id == -1) {  // (session ids are any 32-bit value: XORed with the session key)
         show_net_message(fe, part->art, "Direct Play failed to add new player");
         return;
     }
@@ -1751,7 +1751,7 @@ protected:
                 // there points at "n/a", the text the ping column was given before.)
                 const std::string t = human_here ? std::to_string(p.screen_w) + "x" + std::to_string(p.screen_h) : std::string("n/a");
                 if (res->kind == WidgetKind::Button) {
-                    if (res->text != t) set_caption(*res, t);
+                    set_caption(*res, t);  // (0x4A0BF0 on every refresh: the quick key found anew)
                 } else {
                     res->text = t;
                 }
@@ -1818,12 +1818,13 @@ protected:
     std::string size_map_;
     std::int64_t map_size_ = 0;
     void caption_fit(Widget& w, const std::string& t) {
-        // 0x4A5D50: characters drop from the end until the caption fits the width - 6.
-        std::string c = t;
+        // Every refresh sets the whole caption (0x4A0BF0: a plain button finds its quick key in
+        // it anew, 0x4A05E0), then 0x4A5D50 drops characters from the end until the caption
+        // fits the width - 6 (the key stays).
+        if (w.kind == WidgetKind::Label) w.text = t;
+        else set_caption(w, t);
         const client::Font* f = (w.attribs & 0x8000) || w.kind == WidgetKind::Label ? art_.content().small_font : font();
-        while (f && !c.empty() && f->text_width(c) > w.w - 6) c.pop_back();
-        if (w.kind == WidgetKind::Label) w.text = c;
-        else if (w.text != c) set_caption(w, c);
+        while (f && !w.text.empty() && f->text_width(w.text) > w.w - 6) w.text.pop_back();
     }
 
     void draw_other(FrontEnd&, render::Image8& out, const Widget& w) override {
@@ -1950,6 +1951,9 @@ protected:
         }
         if (grill->stage != 0 && grill->stage < frames - 1) dirty_ = true;
         const bool ready = all_ready();
+        // The grill takes the pointer (its "hot" bit, gadget +0xC8) until everybody is ready
+        // (0x44A680 clears it, for good): then the pointer reaches START under it.
+        if (ready) grill->hot = false;
         if (ready) {
             dirty_ = true;
             if (grill->stage == 0) {
@@ -2152,7 +2156,11 @@ protected:
         dumped_sig_ = sig;
         char name[32];
         std::snprintf(name, sizeof name, "%04d", dump_n_++);
-        write_lounge(live_->dump + name + ".txt", st_);
+        {
+            LoungeState s = st_;
+            s.clock = clock_;  // the room clock of this frame (gui_harness: clock:T)
+            write_lounge(live_->dump + name + ".txt", s);
+        }
         write_frame(live_->dump + name + ".bmp", out);
     }
     std::string signature() const {
@@ -2511,6 +2519,7 @@ void Lounge::open_restrictions(FrontEnd& fe) {
 void write_lounge(const std::string& path, const LoungeState& st) {
     std::ofstream o(path);
     o << "local " << st.local << "\n";
+    if (st.clock) o << "clock " << st.clock << "\n";
     if (!st.map.empty()) o << "map " << st.map << "\n";
     o << "players " << st.session_players << "\n";
     o << "resources " << st.energy << " " << st.metal << " " << st.unit_limit << "\n";
