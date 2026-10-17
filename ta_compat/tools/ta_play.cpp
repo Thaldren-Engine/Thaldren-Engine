@@ -27,6 +27,9 @@
 //   --saves DIR         the saved games' directory (default <game_dir>\SAVEGAME, the original's)
 //   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
 //                       (the format of gui_harness's endmsn:)
+//   --net-screen SPEC   tests: the menus start at a multiplayer screen (repeat to stack them):
+//                       selprov, tcp[:ADDRESS], selgame:FILE, newmulti, lounge:FILE,
+//                       message:WIDTH:TEXT (the inputs of gui_harness's commands of those names)
 
 #include <array>
 #include <cstdint>
@@ -47,6 +50,7 @@
 #include "client/music.h"
 #include "ta/client_campaign.h"
 #include "ta/client_menus.h"
+#include "ta/client_net_screens.h"
 #include "ta/console_commands.h"
 #include "ta/client_world.h"
 
@@ -66,6 +70,7 @@ int main(int argc, char** argv) {
     bool direct = false;
     std::string settings_path = "settings.txt";
     std::string end_screen_file, saves_dir;
+    std::vector<std::string> net_screens;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -81,6 +86,9 @@ int main(int argc, char** argv) {
         }
         if (a == "--saves") {
             saves_dir = next();
+            continue;
+        } else if (a == "--net-screen") {
+            net_screens.push_back(next());
             continue;
         }
         if (a == "--map") setup.map = next();
@@ -167,8 +175,13 @@ int main(int argc, char** argv) {
             ta::install_campaign_hooks(fes.hooks, art, save_dir);
         }
 #ifdef TA_CLIENT_HAVE_NET
-        // Multiplayer: the connection and battle room screens on the main menu's button.
-        client::install_multiplayer(fes.hooks, ta::network_config(art, nullptr));
+        // Multiplayer: the original's connection, game list and battle room screens on the main
+        // menu's button.
+        ta::install_net_screens(fes.hooks, art, ta::network_config(art, nullptr));
+        if (!net_screens.empty()) {
+            const client::NetMenuConfig cfg = ta::network_config(art, nullptr);
+            fes.main_menu = [&art, cfg, net_screens](client::FrontEnd&) { return ta::make_net_test_screens(art, cfg, net_screens); };
+        }
 #endif
         {
             // Track types: the saved list, else the original's default for a 16-track disc

@@ -11,12 +11,16 @@ using u8 = std::uint8_t;
 
 namespace {
 constexpr std::size_t kMapLen = 0x40, kName = 0x40, kNameLen = 0x20;  // name: a place the original was not seen to read
+constexpr std::size_t kGameName = 0x60, kGameNameLen = 0x10;          // the game's name: likewise
 }  // namespace
 
 std::vector<std::uint8_t> encode_side_record(const RoomPlayer& p) {
     std::vector<u8> r(room::kRecordSize, 0);
     std::memcpy(r.data(), p.map.data(), std::min(p.map.size(), kMapLen - 1));
     std::memcpy(r.data() + kName, p.name.data(), std::min(p.name.size(), kNameLen - 1));
+    std::memcpy(r.data() + kGameName, p.game_name.data(), std::min(p.game_name.size(), kGameNameLen));
+    put16(&r[0x8B], p.screen_w);
+    put16(&r[0x8D], p.screen_h);
     r[0x8F] = p.map_ready ? 1 : 0;
     r[0x94] = p.kind;
     r[0x95] = p.side;
@@ -25,7 +29,8 @@ std::vector<std::uint8_t> encode_side_record(const RoomPlayer& p) {
     put16(&r[0x99], p.memory_mb);
     // The map flags are the option word's bits 8-10 (+0x9C, its high byte).
     put16(&r[0x9B], static_cast<std::uint16_t>((p.options & ~0x0700u) | ((p.map_flags & 7u) << 8)));
-    r[0x9D] = 4;  // has the game CD
+    put16(&r[0x9D], p.cd);  // bit 2: has the game CD
+    put16(&r[0x9F], p.best_ping);
     put16(&r[0xA1], p.energy);
     put16(&r[0xA3], p.metal);
     put16(&r[0xA5], p.unit_limit);
@@ -39,6 +44,11 @@ RoomPlayer decode_side_record(const std::uint8_t* r) {
     RoomPlayer p;
     p.map.assign(reinterpret_cast<const char*>(r), strnlen(reinterpret_cast<const char*>(r), kMapLen));
     p.name.assign(reinterpret_cast<const char*>(r + kName), strnlen(reinterpret_cast<const char*>(r + kName), kNameLen));
+    p.game_name.assign(reinterpret_cast<const char*>(r + kGameName), strnlen(reinterpret_cast<const char*>(r + kGameName), kGameNameLen));
+    p.screen_w = get16(r + 0x8B);
+    p.screen_h = get16(r + 0x8D);
+    p.cd = get16(r + 0x9D);
+    p.best_ping = get16(r + 0x9F);
     p.map_ready = r[0x8F] != 0;
     p.kind = r[0x94];
     p.side = r[0x95];
@@ -247,6 +257,133 @@ void BattleRoom::say(const std::string& text) {
     send_all(first_human_id(), pk, 65);
 }
 
+void BattleRoom::set_option_word(std::uint16_t options) {
+    if (!host_) return;
+    RoomPlayer& h = players_[0];
+    // The host's own ready and watch bits stay its own.
+    h.options = static_cast<std::uint16_t>((options & ~(room::kReady | room::kWatch | 0x0700u)) | (h.options & (room::kReady | room::kWatch)));
+    h.map_flags = static_cast<std::uint8_t>((options >> 8) & 7u);
+    dirty_ = true;
+}
+
+void BattleRoom::set_screen(std::uint16_t w, std::uint16_t h) {
+    pending_screen_w_ = w;
+    pending_screen_h_ = h;
+    if (local_slot_ >= 0) {
+        me().screen_w = w;
+        me().screen_h = h;
+    }
+    dirty_ = true;
+}
+
+void BattleRoom::set_game_name(const std::string& name) {
+    if (!host_) return;
+    players_[0].game_name = name.substr(0, 16);
+    dirty_ = true;
+}
+
+int BattleRoom::add_computer_at(int slot, std::uint8_t side) {
+    if (!host_ || slot < 0 || slot > 9 || players_[static_cast<std::size_t>(slot)].net_id) return -1;
+    RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
+    p = RoomPlayer{};
+    p.net_id = net_id_ + 0x1000 + slot;
+    p.name = "Computer " + std::to_string(slot + 1);
+    p.kind = 2;
+    p.side = side;
+    p.options = room::kNonCampaign | room::kReady;
+    p.map = players_[0].map;
+    p.map_checksum = players_[0].map_checksum;
+    p.map_ready = true;
+    p.group = players_[0].group;
+    // 0x447B10: the first logo no playing record holds (logos above 9 count as 9).
+    std::array<bool, 10> used{};
+    for (const RoomPlayer& q : players_)
+        if (q.net_id && &q != &p) used[std::min<std::size_t>(q.logo, 9)] = true;
+    p.logo = 0;
+    for (std::uint8_t k = 0; k < 10; ++k)
+        if (!used[k]) {
+            p.logo = k;
+            break;
+        }
+    blocked_[static_cast<std::size_t>(slot)] = false;
+    std::vector<std::int32_t> ids;
+    for (const RoomPlayer& q : players_)
+        if (q.net_id && mine(q)) ids.push_back(q.net_id);
+    transport_.set_local_players(ids);
+    dirty_ = true;
+    return slot;
+}
+
+bool BattleRoom::remove_computer(int slot) {
+    if (!host_ || slot < 0 || slot > 9) return false;
+    RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
+    if (!p.net_id || p.kind != 2 || !mine(p)) return false;
+    u8 st[6] = {packet::kStatus};
+    put32(st + 1, static_cast<std::uint32_t>(p.net_id));
+    st[5] = room::kLeft;
+    send_all(net_id_, st, 6);
+    p = RoomPlayer{};
+    dirty_ = true;
+    return true;
+}
+
+bool BattleRoom::set_blocked(int slot, bool b) {
+    if (!host_ || slot < 0 || slot > 9 || players_[static_cast<std::size_t>(slot)].net_id) return false;
+    blocked_[static_cast<std::size_t>(slot)] = b;
+    dirty_ = true;
+    return true;
+}
+
+bool BattleRoom::kick(int slot, std::uint8_t reason) {
+    if (!host_ || slot < 0 || slot > 9) return false;
+    RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
+    if (!p.net_id || mine(p)) return false;
+    u8 st[6] = {packet::kStatus};
+    put32(st + 1, static_cast<std::uint32_t>(p.net_id));
+    st[5] = reason;
+    send_all(net_id_, st, 6);
+    sender_.flush(clock_, true, send_fn());
+    p = RoomPlayer{};
+    dirty_ = true;
+    return true;
+}
+
+void BattleRoom::leave() {
+    for (const RoomPlayer& p : players_) {
+        if (!p.net_id || !mine(p)) continue;
+        u8 st[6] = {packet::kStatus};
+        put32(st + 1, static_cast<std::uint32_t>(p.net_id));
+        st[5] = 2;
+        send_all(net_id_, st, 6);
+    }
+    sender_.flush(clock_, true, send_fn());
+}
+
+void BattleRoom::set_allied(int slot, bool allied) {
+    if (local_slot_ < 0 || slot < 0 || slot > 9) return;
+    const RoomPlayer& t = players_[static_cast<std::size_t>(slot)];
+    allied_[static_cast<std::size_t>(slot)] = allied ? 1 : 0;
+    if (!t.net_id) return;
+    if (mine(t)) {
+        // A computer player of this machine answers at once.
+        allied_by_[static_cast<std::size_t>(slot)] = allied ? 1 : 0;
+        return;
+    }
+    u8 pk[14] = {packet::kAlliance};
+    put32(pk + 1, static_cast<std::uint32_t>(net_id_));
+    put32(pk + 5, static_cast<std::uint32_t>(t.net_id));
+    pk[9] = allied ? 1 : 0;
+    send_one(net_id_, t.net_id, pk, 14);
+}
+
+void BattleRoom::set_ally_team_of(int slot, std::uint8_t team) {
+    if (slot < 0 || slot > 9) return;
+    RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
+    if (!p.net_id || !mine(p)) return;
+    p.ally_team = team > room::kNoTeam ? room::kNoTeam : team;
+    dirty_ = true;
+}
+
 void BattleRoom::broadcast_records() {
     // 0x456310 / 0x450F90: each machine sends its own players' side records and ally teams; the
     // host also the slot table.
@@ -270,6 +407,8 @@ void BattleRoom::broadcast_records() {
         p.kind = 1;
         p.side = pending_side_;
         p.map_ready = pending_map_ready_;
+        p.screen_w = pending_screen_w_;
+        p.screen_h = pending_screen_h_;
         u8 pk[186] = {packet::kSideRecord};
         const auto r = encode_side_record(p);
         std::memcpy(pk + 1, r.data(), r.size());
@@ -277,7 +416,9 @@ void BattleRoom::broadcast_records() {
     }
     if (host_) {
         u8 pk[41] = {packet::kSlotTable};
-        for (int s = 0; s < 10; ++s) put32(pk + 1 + 4 * s, static_cast<std::uint32_t>(players_[static_cast<std::size_t>(s)].net_id));
+        // A blocked slot goes as -1 (the original's state 4).
+        for (int s = 0; s < 10; ++s)
+            put32(pk + 1 + 4 * s, static_cast<std::uint32_t>(blocked_[static_cast<std::size_t>(s)] ? -1 : players_[static_cast<std::size_t>(s)].net_id));
         send_all(net_id_, pk, 41);
     }
     // 0x450530 (outside the battle): players without a group ask the host for one.
@@ -467,7 +608,17 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
             const std::string who = fs >= 0 ? players_[static_cast<std::size_t>(fs)].name : std::string("?");
             on_chat(who + ": " + std::string(s, strnlen(s, 64)));
         }
+        if (on_chat_line) {
+            const char* s = reinterpret_cast<const char*>(p + 1);
+            on_chat_line(fs, std::string(s, strnlen(s, 64)));
+        }
         break;
+    case packet::kAlliance: {
+        // 0x452960 heard: the sender's alliance with this machine's player.
+        const int a = slot_of(static_cast<std::int32_t>(get32(p + 1)));
+        if (a >= 0 && static_cast<std::int32_t>(get32(p + 5)) == net_id_) allied_by_[static_cast<std::size_t>(a)] = p[9];
+        break;
+    }
     case packet::kProbe: {
         u8 r[1] = {packet::kProbeReply};
         send_one(net_id_, from, r, 1);
@@ -488,7 +639,7 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
             }
             for (int s = 0; s < 10; ++s) {
                 RoomPlayer& q = players_[static_cast<std::size_t>(s)];
-                if (q.net_id) continue;
+                if (q.net_id || blocked_[static_cast<std::size_t>(s)]) continue;
                 r.last_heard = clock_;
                 r.logo = 0xFF;
                 q = r;
@@ -579,6 +730,7 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         std::array<RoomPlayer, 10> next{};
         for (int s = 0; s < 10; ++s) {
             const std::int32_t id = static_cast<std::int32_t>(get32(p + 1 + 4 * s));
+            blocked_[static_cast<std::size_t>(s)] = id == -1;
             if (!id || id == -1) continue;
             const int old = slot_of(id);
             next[static_cast<std::size_t>(s)] = old >= 0 ? players_[static_cast<std::size_t>(old)] : RoomPlayer{};
@@ -590,6 +742,8 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
                 m.side = pending_side_;
                 m.map_ready = pending_map_ready_;
                 m.options = room::kNonCampaign;
+                m.screen_w = pending_screen_w_;
+                m.screen_h = pending_screen_h_;
                 dirty_ = true;
             }
         }
@@ -605,10 +759,18 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         const std::int32_t id = static_cast<std::int32_t>(get32(p + 1));
         if (id == net_id_ && p[5] == room::kRefused) {
             refused_ = true;
+            out_reason_ = 3;
             error_ = "the host refused the join (the game is closed or running)";
             break;
         }
+        if (id == net_id_) {
+            // Sent away by the host (0x452C40 names the reasons).
+            refused_ = true;
+            out_reason_ = p[5];
+            break;
+        }
         const int s = slot_of(id);
+        if (s >= 0 && !host_ && (players_[static_cast<std::size_t>(s)].flags & room::kHost) && !started_) out_reason_ = 10;  // the creator left
         if (s >= 0) {
             players_[static_cast<std::size_t>(s)] = RoomPlayer{};
             if (on_player_left) on_player_left(s);

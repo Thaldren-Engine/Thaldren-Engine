@@ -348,11 +348,12 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
                 if (g.attribs & 0x80) {
                     stock_name = "CHECKBOX";
                 } else if (g.stages > 0) {
-                    if (g.text == "Off|On" || g.stages == 1) {
+                    // (0x4A81E0: also a switch with attribute 0x4000; at most "stagebuttn4".)
+                    if (g.text == "Off|On" || g.stages == 1 || (g.attribs & 0x4000)) {
                         w.stages = 2;
                         stock_name = "stagebuttn1";
                     } else {
-                        stock_name = "stagebuttn" + std::to_string(g.stages);
+                        stock_name = "stagebuttn" + std::to_string(std::min(g.stages, 4));
                     }
                 } else {
                     stock_name = "BUTTONS0";
