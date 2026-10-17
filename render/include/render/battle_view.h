@@ -178,6 +178,28 @@ struct BattleScene {
     // it (the original's draw calls rand(); the renderer never advances the simulation's).
     std::uint32_t crt_rand_state = 0;
     std::uint8_t clear_index = 0;
+    // Optional: drawn poses kept between frames by the scene's owner (the same frames, less
+    // work for units whose pose did not change).
+    PoseDrawCache* pose_cache = nullptr;
+    // Optional, with pose_cache: each unit's plain sprite (the cached pieces) kept while its
+    // drawn pose and every other input of the sprite stay the same.
+    struct UnitSpriteCache* sprite_cache = nullptr;
+};
+
+struct UnitSpriteCache {
+    struct Entry {
+        bool valid = false;
+        std::uint32_t pose_version = 0;
+        const Model* model = nullptr;
+        std::uint8_t team_colour = 0;
+        std::uint32_t type_flags = 0;
+        bool structure = false, zbuffer = false;
+        std::uint32_t build_left_bits = 0;
+        ViewOptions options;
+        LookTables tables;
+        LookFrame sprite;
+    };
+    std::vector<Entry> entries;
 };
 
 DrawList build_draw_list(const BattleScene& scene);

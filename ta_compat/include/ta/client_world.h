@@ -144,6 +144,8 @@ public:
     std::deque<render::UnitInstance> feature_proxy_views_;
     std::map<std::string, const std::vector<render::Sprite8>*> scene_sequences_;  // by "file|sequence"
     render::FogOfWar fog_;
+    render::PoseDrawCache pose_cache_;  // drawn unit poses between frames (presentation)
+    render::UnitSpriteCache sprite_cache_;  // unit sprites between frames (presentation)
     std::array<std::vector<render::Sprite8>, 4> fog_black_, fog_gray_;
     render::BlendTable gray_table_;
     std::map<const sim::PoseModel*, const render::Model*> model_of_pose_;

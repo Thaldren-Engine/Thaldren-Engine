@@ -25,6 +25,8 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
     sim::Battle& b = battle();
     feature_proxy_views_.clear();
     feature_proxies_.clear();
+    scene.pose_cache = &pose_cache_;
+    scene.sprite_cache = &sprite_cache_;
     scene.terrain.width = tiles_.width;
     scene.terrain.height = tiles_.height;
     scene.terrain.map = &tiles_.map;

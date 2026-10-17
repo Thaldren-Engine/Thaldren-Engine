@@ -229,4 +229,39 @@ sim::PoseState pose_for_drawing(const sim::PoseState& pose, std::int16_t pitch, 
     return copy;
 }
 
+namespace {
+
+// Everything of a pose state the sync reads or keeps.
+bool same_pose(const sim::PoseState& a, const sim::PoseState& b) {
+    if (a.model() != b.model() || a.root != b.root || a.anim_dirty != b.anim_dirty || a.cache_draw_count != b.cache_draw_count ||
+        a.base_angle != b.base_angle || a.fault() != b.fault() || a.pieces.size() != b.pieces.size())
+        return false;
+    for (std::size_t i = 0; i < a.pieces.size(); ++i) {
+        const sim::PosePiece& p = a.pieces[i];
+        const sim::PosePiece& q = b.pieces[i];
+        if (p.node != q.node || p.move != q.move || p.turn != q.turn || p.xform != q.xform || p.skip_transform != q.skip_transform ||
+            p.flags != q.flags || p.sibling != q.sibling || p.child != q.child || p.parent != q.parent || p.points != q.points)
+            return false;
+    }
+    return true;
+}
+
+} // namespace
+
+const sim::PoseState& pose_for_drawing(PoseDrawCache& cache, std::size_t id, const sim::PoseState& pose, std::int16_t pitch,
+                                       std::uint16_t heading, std::int16_t bank) {
+    if (cache.entries.size() <= id) cache.entries.resize(id + 1);
+    PoseDrawCache::Entry& e = cache.entries[id];
+    if (e.valid && e.pitch == pitch && e.heading == heading && e.bank == bank && same_pose(e.in, pose)) return e.out;
+    e.in = pose;
+    e.out = pose;
+    if (e.out.model()) e.out.sync(pitch, heading, bank);
+    e.pitch = pitch;
+    e.heading = heading;
+    e.bank = bank;
+    e.valid = true;
+    ++e.version;
+    return e.out;
+}
+
 } // namespace render
