@@ -56,8 +56,15 @@ struct Widget {
     // List boxes: rows, first shown row, selected row (-1: none).
     std::vector<std::string> items;
     int top = 0, selected = -1;
-    // Text fields: maximum length.
+    // Text lists (set_list): the row height, the largest first row, and the gadgets that work with
+    // the list (a slider, a text field) share its nonzero group number.
+    int row_h = 0, max_top = 0;
+    bool text_list = false;
+    int assoc = 0;
+    bool list_slider = false;  // a slider moved by its list (knob_pos is the knob's offset, knob its length)
+    // Text fields: maximum length, the insertion point.
     int max_chars = 0;
+    int cursor = 0;
     // Scroll bars: range and position; the list box it moves (by name).
     int range = 0, position = 0, knob = 0;
     // Slider art (the SLIDERS sequence in frames): first frame of its set (0 vertical, 10
@@ -80,6 +87,7 @@ struct ScreenLayout {
     int x = 0, y = 0;                             // origin (dialogs are centred by the front end)
     std::vector<Widget> widgets;                  // [0] is the header
     std::string default_focus, enter_default, escape_default;
+    int font_height = 14;                         // the text height of the screen's font (lists' rows)
 };
 
 // Art and sounds of the menus (filled by an importer).
@@ -110,6 +118,11 @@ struct MenuContent {
     std::uint8_t text_colour = 255, text_dim = 8, text_highlight = 0xF4, box_colour = 0, frame_colour = 8;
 };
 
+// Text broken into lines at spaces and carriage returns as the original's labels and lists do:
+// words are added while the line fits `width`, lines are the font's height + 2 apart, and drawing
+// stops when `height` is used up. Returns the y after the last line.
+int draw_wrapped(render::Image8& out, const render::ClipRect& clip, const Font& font, const std::string& text, int x, int y, int width, int height);
+
 // A screen run from a ScreenLayout: draws the background and widgets, handles
 // pointer/keyboard input (press and release on the same widget, quick keys,
 // Enter/Escape defaults, list and scroll bar clicks, typing into the focused text
@@ -132,6 +145,18 @@ public:
     // Sets a gadget's caption the way the original does: a plain button (no attribute 0x10000)
     // takes a new quick key from it (the first character, not a space, no other gadget has).
     void set_caption(Widget& w, const std::string& text);
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override;
+
+    // Text lists (spec: docs/RE_MEMORY.md, "Client", "Lists"). set_list gives a list its rows: the
+    // first row selected and shown, the row height (at least the font's height + 1), the largest
+    // first row; the slider of its group gets its knob and travel and is shown only when the rows
+    // do not fit.
+    void set_list(Widget& list, std::vector<std::string> items);
+    // Selects a row, showing it at the top when it is not in view; the slider follows.
+    void select_list_row(Widget& list, int row);
+    // The gadgets of the list's group follow it: its slider's knob, a text field the row's text
+    // (lists with attribute 8).
+    void list_moved(Widget& list);
 
 
 protected:
@@ -139,6 +164,9 @@ protected:
     virtual void on_press(FrontEnd&, Widget&) {}
     // A list row was picked (double = double click / Enter).
     virtual void on_pick(FrontEnd&, Widget&, int /*row*/, bool /*double_click*/) {}
+    // A text list's selection was moved by the pointer or the arrow keys (the original's list
+    // callback; the arrow keys call it even when the selection stays).
+    virtual void on_list_select(FrontEnd&, Widget&) {}
     // Text field committed with Enter.
     virtual void on_text(FrontEnd&, Widget&) {}
     // Draws a Surface widget.
@@ -169,7 +197,20 @@ protected:
     std::size_t focus_limit_ = 0;  // gadgets the first focus is chosen from (those of the description)
     bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
     bool background_in_box_ = false;  // the picture drawn only inside the screen's box, from its top-left
+    const render::Sprite8* background_ = nullptr;  // another picture than the layout's (null: the layout's)
+    // Interface colours other than the layout's (screens opened in a battle take the battle's,
+    // made from the game palette); null: the layout's.
+    const std::array<std::uint8_t, 256>* colours_ = nullptr;
     int focus_ = -1;               // index of the text field taking keys (-1: none)
+    bool field_escape_clears_ = false;  // Escape in the text field empties it and commits (the original's fields)
+    bool key_press_ = false;            // the press being handled came from a key
+    int lit_field_ = -2;                // the gadget whose focus marking is shown (-2: the focus's)
+    // The focus ring held where it was while a screen opened by a press covers this one (until
+    // the stack is back to hold_depth_; 0: not held). A press handler that redraws this screen
+    // before covering it sets ring_follow_.
+    int ring_hold_ = -1;
+    std::size_t hold_depth_ = 0;
+    bool ring_follow_ = false;
     int held_ = -1;                // index of the pressed button (pointer down)
     int drag_ = -1;                // index of the scroll bar being dragged
     int press_button_ = 1;         // mouse button of the last press (1 left, 3 right)
@@ -177,6 +218,24 @@ protected:
     int focus_before_press_ = -1;  // the focus before the last press (a press that opens a dialog keeps it)
     std::uint32_t last_click_ms_ = 0;
     int last_click_row_ = -1;
+    int last_click_x_ = 0, last_click_y_ = 0;
+    // A text list held by the pointer (its index, -1: none), the pointer, the next auto-scroll time.
+    int list_held_ = -1;
+    int pointer_x_ = 0, pointer_y_ = 0;
+    std::uint32_t list_scroll_ms_ = 0;
+    // A list's slider held: its index, dragging the knob (else stepping toward the pointer each
+    // frame), the pointer row and knob at the press.
+    int slider_held_ = -1;
+    bool slider_drag_ = false;
+    int slider_anchor_ = 0, slider_anchor_knob_ = 0;
+    void draw_text_list(const MenuContent& mc, render::Image8& out, const render::ClipRect& clip, const Widget& w, int x, int y);
+    bool field_insert(FrontEnd& fe, Widget& f, char c);
+    int text_provisional_ = -1;  // a character typed by its key, replaced by the Text event that follows
+    bool text_events_ = false;
+    void list_pointer(FrontEnd& fe, int index);
+    void slider_pointer(FrontEnd& fe, int index);
+    Widget* list_of(const Widget& w);
+    Widget* slider_of(const Widget& list);
 
 private:
     const ScreenLayout* layout_;

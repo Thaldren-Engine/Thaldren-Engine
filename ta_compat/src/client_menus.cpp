@@ -13,6 +13,7 @@
 
 #include "client/audio.h"
 #include "client/canvas.h"
+#include "render/raster.h"
 #include "sim/battle.h"
 #include "sim/economy.h"
 #include "sim/victory.h"
@@ -279,6 +280,7 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
     L->enter_default = head.crdefault;
     L->escape_default = head.escdefault;
     L->default_focus = head.defaultfocus;
+    if (content_.font) L->font_height = content_.font->height;
     if (const char* bg = background_of(gui)) {
         L->background = picture(bg, &L->palette);
         // Only some screens put their picture's palette on the display (the main menu, the end of
@@ -323,7 +325,14 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
         w.status = g.status;
         w.text = g.text;
         w.link = g.link;
+        w.assoc = g.assoc;
+        w.max_chars = g.max_chars;
         w.vertical = g.h > g.w;
+        if (w.kind == WidgetKind::ListBox && content_.font) {
+            // A list's height is cut to whole steps of the font's height + 2 when its screen opens.
+            const int step = content_.font->height + 2;
+            w.h -= w.h % step;
+        }
         if (w.kind == WidgetKind::Button && (g.attribs & 0x1800) == 0) {
             // Art: the gadget's own sequence in the screen's GAF, else commongui's sequence of
             // its name; else (attribute 0x80 clear) a switch takes "stagebuttn<stages>" (a
@@ -480,6 +489,11 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
 const std::vector<std::string>& MenuArt::skirmish_maps() {
     if (maps_done_) return maps_;
     maps_done_ = true;
+    // The original's map list (0x434BF0): Maps\*.ota in the archives' enumeration order, each map
+    // whose [GlobalHeader] has a schema for network play — [Schema 0], [Schema 1], ... up to the
+    // first missing one, with a Type of "Network 1" .. "Network 4" (any case); the name is the
+    // file's without its extension. Then sorted (0x4AEFA0: a bubble sort by the runtime's
+    // case-blind comparison, which compares lower-case letters, so stable and '_' before letters).
     for (const std::string& file : vfs_.enumerate("maps\\*.ota")) {
         std::vector<std::uint8_t> f;
         if (!vfs_.read("maps\\" + file, f)) continue;
@@ -487,15 +501,28 @@ const std::vector<std::string>& MenuArt::skirmish_maps() {
         const TdfSection* gh = root ? root->child("GlobalHeader") : nullptr;
         if (!gh) continue;
         bool network = false;
-        for (const auto& c : gh->children())
-            if (upper(c->get_string("Type", 64, "")).find("NETWORK") != std::string::npos) network = true;
+        for (int t = 1; t <= 4 && !network; ++t)
+            for (int n = 0;; ++n) {
+                const TdfSection* s = gh->child("Schema " + std::to_string(n));
+                if (!s) break;
+                if (ieq(s->get_string("Type", 0x20, ""), "Network " + std::to_string(t))) {
+                    network = true;
+                    break;
+                }
+            }
         if (!network) continue;
-        std::string name = file.substr(0, file.size() - 4);
-        if (vfs_.size_or_zero("maps\\" + name + ".tnt") == 0) continue;
-        maps_.push_back(name);
+        const auto dot = file.find_last_of('.');
+        maps_.push_back(dot == std::string::npos ? file : file.substr(0, dot));
     }
-    std::sort(maps_.begin(), maps_.end(), [](const std::string& a, const std::string& b) { return upper(a) < upper(b); });
-    maps_.erase(std::unique(maps_.begin(), maps_.end(), [](const std::string& a, const std::string& b) { return ieq(a, b); }), maps_.end());
+    auto lower_less = [](const std::string& a, const std::string& b) {
+        for (std::size_t i = 0;; ++i) {
+            const int ca = i < a.size() ? std::tolower(static_cast<unsigned char>(a[i])) : 0;
+            const int cb = i < b.size() ? std::tolower(static_cast<unsigned char>(b[i])) : 0;
+            if (ca != cb) return ca < cb;
+            if (ca == 0) return false;
+        }
+    };
+    std::stable_sort(maps_.begin(), maps_.end(), lower_less);
     return maps_;
 }
 
@@ -504,35 +531,58 @@ const render::Sprite8* MenuArt::map_preview(const std::string& map, int w, int h
     if (auto it = previews_.find(key); it != previews_.end()) return it->second.get();
     std::unique_ptr<render::Sprite8> out;
     std::vector<std::uint8_t> tnt;
-    if (vfs_.read("maps\\" + map + ".tnt", tnt) && tnt.size() > 48) {
+    if (vfs_.read("maps\\" + map + ".tnt", tnt) && tnt.size() >= 0x40) {
         auto rd32 = [&](std::size_t o) -> std::uint32_t {
             if (o + 4 > tnt.size()) return 0;
             std::uint32_t v;
             std::memcpy(&v, &tnt[o], 4);
             return v;
         };
-        // The TNT's own minimap (header word 10), cut to the map's shape, scaled to fit.
-        const std::uint32_t at = rd32(40);
+        // The map file's own small picture (0x4295B0: header word 10 its offset, bit 0 of word 11
+        // says it is there; u32 width, u32 height, pixels), fitted into a w x h picture
+        // (0x4665D0): the part of the map the scroll extent covers (map width x 16 - 32 by
+        // height x 16 - 128) keeps its shape — the longer side fills the box, centred across the
+        // other — mapped with the textured-quad rules from texels (0,0) .. (pw-1, sh-1) onto
+        // (x0, y0) .. (x0 + dw, y0 + dh) of a picture cleared to 0. (The original reuses the map
+        // picture's buffer for the result.)
+        const std::uint32_t at = rd32(0x28);
         const int pw = static_cast<int>(rd32(at)), ph = static_cast<int>(rd32(at + 4));
-        const int mw = static_cast<int>(rd32(4)), mh = static_cast<int>(rd32(8));
-        if (at && pw > 0 && ph > 0 && pw <= 1024 && ph <= 1024 && at + 8 + static_cast<std::size_t>(pw) * ph <= tnt.size()) {
-            int cw = pw, ch = ph;
-            if (mw > mh && mw > 0) ch = std::max(1, ph * mh / mw);
-            else if (mh > mw && mh > 0) cw = std::max(1, pw * mw / mh);
-            int ow = w, oh = h;
-            if (cw > ch) oh = std::max(1, h * ch / cw);
-            else if (ch > cw) ow = std::max(1, w * cw / ch);
+        const int ew = static_cast<int>(rd32(4)) * 16 - 32, eh = static_cast<int>(rd32(8)) * 16 - 128;
+        if ((tnt[0x2C] & 1) && pw > 0 && ph > 0 && pw <= 4096 && ph <= 4096 && at + 8 + static_cast<std::size_t>(pw) * ph <= tnt.size() && ew != 0 &&
+            eh != 0) {
+            render::Sprite8 src;
+            src.width = pw;
+            src.height = ph;
+            src.has_key = false;
+            src.pixels.assign(tnt.begin() + static_cast<std::ptrdiff_t>(at) + 8, tnt.begin() + static_cast<std::ptrdiff_t>(at) + 8 + static_cast<std::ptrdiff_t>(pw) * ph);
+            int dw, dh, sw, sh, x0, y0;
+            if (ew >= eh) {
+                dw = w;
+                dh = eh * h / ew;
+                sw = pw;
+                sh = eh * ph / ew;
+                x0 = 0;
+                y0 = (h - dh) / 2;
+            } else {
+                dw = ew * w / eh;
+                dh = h;
+                sw = ew * pw / eh;
+                sh = ph;
+                x0 = (w - dw) / 2;
+                y0 = 0;
+            }
             out = std::make_unique<render::Sprite8>();
-            out->width = ow;
-            out->height = oh;
+            out->width = w;
+            out->height = h;
             out->has_key = false;
-            out->x_offset = -(w - ow) / 2;
-            out->y_offset = -(h - oh) / 2;
-            out->pixels.resize(static_cast<std::size_t>(ow) * static_cast<std::size_t>(oh));
-            for (int y = 0; y < oh; ++y)
-                for (int x = 0; x < ow; ++x)
-                    out->pixels[static_cast<std::size_t>(y * ow + x)] =
-                        tnt[at + 8 + static_cast<std::size_t>(y * ch / oh) * static_cast<std::size_t>(pw) + static_cast<std::size_t>(x * cw / ow)];
+            out->pixels.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);
+            render::RasterTarget t;
+            t.pixels = out->pixels.data();
+            t.pitch = w;
+            t.clip = {0, 0, w - 1, h - 1};
+            const render::RasterVertex v[4] = {{x0, y0, 0}, {x0 + dw, y0, 0}, {x0 + dw, y0 + dh, 0}, {x0, y0 + dh, 0}};
+            const int uv[4][2] = {{0, 0}, {sw - 1, 0}, {sw - 1, sh - 1}, {0, sh - 1}};
+            render::textured_quad_uv(t, v, uv, src);
         }
     }
     auto* raw = out.get();

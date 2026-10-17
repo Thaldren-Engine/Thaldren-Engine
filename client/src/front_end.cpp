@@ -65,6 +65,7 @@ public:
         stack_.push_back(std::move(screen));
         stack_.back()->enter(*this);
     }
+    std::size_t depth() const override { return stack_.size(); }
     void pop() override {
         if (!stack_.empty()) trim(stack_.size() - 1);
         if (session_ && ended_ && stack_.size() <= battle_base_) finish_battle();

@@ -370,6 +370,7 @@ int main(int argc, char** argv) {
         else if (s == "single") ok = r.call(kSinglePlayer, 0, {});
         else if (s == "options") ok = r.call(kOptionsMenu, 0, {});
         else if (s == "skirmish") ok = r.call(kSkirmish, 0, {});
+        else if (s == "selmap") ok = r.call(0x0047AAF0, 0, {});
         else if (s == "sounds" || s == "soundsrt") ok = r.call(0x0045DE30, 0, {});
         else if (s == "music" || s == "musicrt") ok = r.call(0x0045D7C0, 0, {});
         else if (s == "speeds" || s == "speedsrt") ok = r.call(0x0045ED50, 0, {});
@@ -534,9 +535,22 @@ int main(int argc, char** argv) {
             const u32 gadgets = top ? r.r32(top + 4) : 0;
             u32 idx = 0xFFFFFFFFu;
             if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str(s.substr(7))}, &idx);
-            if (idx != 0xFFFFFFFFu)
-                std::printf("%s: kind %u, +0x1F %d, +0x23 %d\n", s.c_str(), r.r32(gadgets + idx * 0x15B) & 0xFF, static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x1F)),
-                            static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x23)));
+            if (idx != 0xFFFFFFFFu) {
+                const u32 g = gadgets + idx * 0x15B;
+                std::printf("%s: kind %u, +0x1F %d, +0x23 %d\n", s.c_str(), r.r32(g) & 0xFF, static_cast<int>(r.r32(g + 0x1F)),
+                            static_cast<int>(r.r32(g + 0x23)));
+                std::uint8_t rec[0x15B] = {};
+                r.read(g, rec, sizeof rec);
+                auto s16 = [&](int o) { return static_cast<int>(static_cast<std::int16_t>(rec[o] | rec[o + 1] << 8)); };
+                std::printf("  x %d y %d w %d h %d attribs %08X | +BA %d +BC %d +BE %d +C0 %d +DA %d | +136 %d +138 %d +140 %d\n", s16(0x13), s16(0x15),
+                            s16(0x17), s16(0x19), static_cast<unsigned>(rec[0x1B] | rec[0x1C] << 8 | rec[0x1D] << 16 | rec[0x1E] << 24), s16(0xBA), s16(0xBC),
+                            s16(0xBE), s16(0xC0), s16(0xDA), s16(0x136), s16(0x138), s16(0x140));
+                for (int o = 0; o < 0x15B; o += 32) {
+                    std::printf("  %03X:", o);
+                    for (int k = o; k < o + 32 && k < 0x15B; ++k) std::printf(" %02X", rec[k]);
+                    std::printf("\n");
+                }
+            }
             continue;
         } else if (s == "lightinfo") {
             // Debugging: the display's light table (0xC8) and its level-15 row's first entries, and
@@ -547,6 +561,80 @@ int main(int argc, char** argv) {
             std::printf("light table %08X flags %04X: level 15:", t, r.r32(0x0051F320 + 0xF0) & 0xFFFF);
             for (int k = 80; k < 96; ++k) std::printf(" %u", row[k]);
             std::printf("\n");
+            continue;
+        } else if (s.rfind("savedir:", 0) == 0) {
+            // savedir:PATH: the saved games' directory (the pointer at 0x5091C8 to "SAVEGAME", a
+            // path relative to the game's directory) pointed at PATH instead.
+            r.w32(0x005091C8, r.str(s.substr(8)));
+            continue;
+        } else if (s == "loadmenu" || s == "savemenu") {
+            // The load menu (0x4931D0) or the save menu (0x493060), as the menus and the game menu
+            // open them; then one redraw of the top layout.
+            ok = r.call(s == "loadmenu" ? 0x004931D0 : 0x00493060, 0, {});
+            const u32 top = r.r32(g.gui() + 0x18);
+            if (ok && top) r.call(0x004A81E0, 0, {g.gui(), r.r32(top + 0x10) | 0x40});
+            Frame f;
+            if (ok && g.grab(f)) write_bmp(out + s + ".bmp", f);
+            std::printf("%s: %s, top layout %08X\n", s.c_str(), ok ? "opened" : "failed", top);
+            continue;
+        } else if (s.rfind("msgbox:", 0) == 0) {
+            // msgbox:TEXT: the original's message box (0x4ABD90: 320 pixels, OK, sized to the text).
+            ok = r.call(0x004ABD90, 0, {g.gui(), r.str(s.substr(7)), 0x140, 1, 1});
+            Frame f;
+            if (ok && g.grab(f)) write_bmp(out + "msgbox.bmp", f);
+            std::printf("%s: %s\n", s.c_str(), ok ? "shown" : "failed");
+            continue;
+        } else if (s.rfind("items:", 0) == 0) {
+            // items:NAME: the top layout's list gadget's rows (+0xC0 count, +0xC2 the rows, each
+            // zero-terminated), its selection and first row.
+            const u32 top = r.r32(g.gui() + 0x18);
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            u32 idx = 0xFFFFFFFFu;
+            if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str(s.substr(6))}, &idx);
+            if (idx != 0xFFFFFFFFu) {
+                const u32 g0 = gadgets + idx * 0x15B;
+                std::uint8_t rec[0x15B] = {};
+                r.read(g0, rec, sizeof rec);
+                const int count = static_cast<std::int16_t>(rec[0xC0] | rec[0xC1] << 8);
+                u32 at = static_cast<u32>(rec[0xC2] | rec[0xC3] << 8 | rec[0xC4] << 16 | rec[0xC5] << 24);
+                std::printf("%s: %d rows, selected %d, top %d\n", s.c_str(), count, static_cast<std::int16_t>(rec[0xBA] | rec[0xBB] << 8),
+                            static_cast<std::int16_t>(rec[0xBC] | rec[0xBD] << 8));
+                for (int k = 0; k < count && at; ++k) {
+                    char row[256] = {};
+                    r.read(at, row, 255);
+                    std::printf("  row %d: %s\n", k, row);
+                    at += static_cast<u32>(std::strlen(row)) + 1;
+                }
+            }
+            continue;
+        } else if (s.rfind("maptype:", 0) == 0) {
+            // maptype:N: the map info's provider word (GS+0x391E9 -> +0): 2 skirmish, 3 network,
+            // 1 campaign (the skirmish set-up leaves 2; the map choice loads map info only for 2, 3).
+            u32 schema = r.r32(gs + 0x391E9);
+            if (!schema) {
+                schema = r.alloc(0x2000);
+                r.w32(gs + 0x391E9, schema);
+            }
+            r.w32(schema, static_cast<u32>(std::atoi(s.c_str() + 8)));
+            continue;
+        } else if (s.rfind("skirmap:", 0) == 0) {
+            // skirmap:NAME: the settings record's map name (GS+0x29A0 -> +0x11C, the SkirmishMap the
+            // map choice selects and writes).
+            const u32 rec = r.r32(gs + 0x29A0);
+            const std::string t = s.substr(8);
+            if (rec) r.write(rec + 0x11C, t.c_str(), t.size() + 1);
+            std::printf("%s: settings record %08X\n", s.c_str(), rec);
+            continue;
+        } else if (s.rfind("tables:", 0) == 0) {
+            // tables:FILE: the display's light table (+0xC8) then its shade table (+0xC4), 0x2000
+            // bytes each, as the screen shown last left them.
+            std::vector<std::uint8_t> t(0x4000, 0);
+            if (const u32 lt = r.r32(0x0051F320 + 0xC8)) r.read(lt, t.data(), 0x2000);
+            if (const u32 st = r.r32(0x0051F320 + 0xC4)) r.read(st, t.data() + 0x2000, 0x2000);
+            if (FILE* fp = std::fopen(s.c_str() + 7, "wb")) {
+                std::fwrite(t.data(), 1, t.size(), fp);
+                std::fclose(fp);
+            }
             continue;
         } else if (s == "shadeinfo") {
             // Debugging: the display's shade table (dimmed screens) and a few of its level-8 entries.

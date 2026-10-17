@@ -43,58 +43,120 @@ sim::Lcg15& menu_rand() {
 }
 
 // ------------------------------------------------------------------ message box (MSGBOX.GUI)
+void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h);
+void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
+
+// The original's message box (0x4ABD90): MSGBOX.GUI opened with flag 0x800 (the screen under it
+// dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to 320
+// pixels (0x4AC4C0) and cut at the line breaks into labels ("TEXT", centred across the box, from
+// y 20, one row every 5 + the font's height); the box as wide as the widest line + 20 and
+// lines x 25 + OK's height + 40 high, centred on the screen; OK at 15 pixels from the right and
+// bottom edges, the Enter and Escape default and the focus. OK closes it (no sound).
 class MessageBox : public LayoutScreen {
 public:
-    MessageBox(MenuArt& art, std::string text) : LayoutScreen(art.layout("MSGBOX")), text_(std::move(text)) {}
+    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under) : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(std::move(text)) {
+        if (under) {
+            under_ = *under;
+            has_under_ = true;
+        }
+    }
     bool see_through() const override { return true; }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        if (!placed_) arrange(fe, out.width, out.height);
+        if (has_under_) dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+        else dim_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        LayoutScreen::draw(fe, out);
+    }
 
 protected:
+    void arrange(FrontEnd& fe, int fw, int fh) {
+        // The wrapping and the widths are measured in the interface's font (the labels then draw
+        // in the small one); the rows are 5 + 13 apart (the text routine's own font height).
+        const client::MenuContent& mc = fe.menu_content();
+        const client::Font* lf = mc.font ? mc.font : mc.small_font;
+        std::vector<std::string> lines;
+        if (lf) {
+            const std::string wrapped = wrap_for_width(*lf, text_, 320);
+            std::size_t at = 0;
+            while (at <= wrapped.size()) {
+                const std::size_t nl = wrapped.find('\n', at);
+                const std::string part = wrapped.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+                if (!part.empty()) lines.push_back(part);
+                if (nl == std::string::npos) break;
+                at = nl + 1;
+            }
+        }
+        Widget* ok = widget("OK");
+        int widest = 0;
+        for (const std::string& l : lines) widest = std::max(widest, lf ? lf->text_width(l) : 0);
+        Widget& h = widgets_.front();
+        h.w = widest + 20;
+        h.h = static_cast<int>(lines.size()) * 25 + (ok ? ok->h : 0) + 40;
+        place(fw, fh);
+        ox_ = (fw - h.w) / 2;
+        oy_ = (fh - h.h) / 2;
+        const int step = 5 + 13;
+        for (std::size_t k = 0; k < lines.size(); ++k) {
+            Widget t;
+            t.kind = WidgetKind::Label;
+            t.name = "TEXT";
+            t.x = 0;
+            t.y = 20 + static_cast<int>(k) * step;
+            t.w = h.w;
+            t.h = 15;
+            t.attribs = 2;
+            t.text = lines[k];
+            widgets_.push_back(t);
+        }
+        if ((ok = widget("OK")) != nullptr) {
+            ok->x = h.w - ok->w - 15;
+            ok->y = h.h - ok->h - 15;
+        }
+    }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
     void on_press(FrontEnd& fe, Widget& w) override {
         if (is(w, "OK")) fe.pop();
     }
-    void draw_under(FrontEnd& fe, render::Image8& out) override {
-        // A plain panel with the text broken into lines.
-        const auto& mc = fe.menu_content();
-        const Widget& h = widgets_.front();
-        client::fill_rect(out, out.bounds(), ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1, mc.box_colour);
-        client::outline_rect(out, out.bounds(), ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1, mc.text_colour);
-        if (!mc.font) return;
-        std::vector<std::string> lines;
-        std::string line;
-        for (std::size_t i = 0; i <= text_.size(); ++i) {
-            const bool end = i == text_.size() || text_[i] == ' ';
-            if (!end) continue;
-            std::size_t start = 0;
-            for (std::size_t k = i; k-- > 0;)
-                if (text_[k] == ' ') {
-                    start = k + 1;
-                    break;
-                }
-            const std::string word = text_.substr(start, i - start);
-            const std::string trial = line.empty() ? word : line + " " + word;
-            if (mc.font->text_width(trial) > h.w - 30 && !line.empty()) {
-                lines.push_back(line);
-                line = word;
-            } else {
-                line = trial;
-            }
-        }
-        if (!line.empty()) lines.push_back(line);
-        int y = oy_ + 30;
-        for (const std::string& l : lines) {
-            client::draw_text(out, out.bounds(), *mc.font, l, ox_ + (h.w - mc.font->text_width(l)) / 2, y, mc.text_colour);
-            y += mc.font->height + 2;
-        }
-    }
 
 private:
+    MenuArt& art_;
     std::string text_;
+    render::ClipRect under_{};
+    bool has_under_ = false;
 };
 
-void show_message(FrontEnd& fe, MenuArt& art, const std::string& text) {
-    if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text));
+}  // namespace
+
+std::string wrap_for_width(const client::Font& f, const std::string& t, int width) {
+    std::string out;
+    std::size_t line_start = 0;
+    for (std::size_t i = 0; i < t.size(); ++i) {
+        out.push_back(t[i]);
+        const char next = i + 1 < t.size() ? t[i + 1] : '\0';
+        if ((next == ' ' || next == '\n' || next == '-') && f.text_width(out.substr(line_start)) >= width) {
+            std::size_t k = out.size() - 1, j = i;
+            while (k > line_start && t[j] != ' ' && t[j] != '-') {
+                out.pop_back();
+                --k;
+                --j;
+            }
+            out.back() = '\n';
+            line_start = out.size();
+            i = j;
+        }
+    }
+    return out;
+}
+
+void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under) {
+    if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text, under));
     else std::printf("message: %s\n", text.c_str());
 }
+
+namespace {
 
 // ------------------------------------------------------------------ options
 // The screen sizes offered: 640 x 480, 800 x 600 and 1024 x 768, then 1280 x 1024 and
@@ -413,63 +475,112 @@ private:
     std::unique_ptr<OptionsPage> page_;
 };
 // ------------------------------------------------------------------ select map (SELMAP.GUI)
+// A screen dimmed under a dialog (open flag 0x800): its rectangle through shade level 8 (defined
+// with the in-game menus below).
+void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
+
+// A picture mapped onto a gadget's box as the original's surface gadgets draw theirs (0x4A4980):
+// texels (1,1) .. (w-1, h-1) onto the box's corners, clipped to the screen's box; without a
+// picture the box is filled with interface colour 7.
+void draw_surface_picture(render::Image8& out, const render::ClipRect& box, const render::Sprite8* pic, int x0, int y0, int w, int h,
+                          std::uint8_t empty_colour) {
+    const int x1 = x0 + w - 1, y1 = y0 + h - 1;
+    if (!pic) {
+        client::fill_rect(out, box, x0, y0, x1, y1, empty_colour);
+        return;
+    }
+    const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+    const int uv[4][2] = {{1, 1}, {pic->width - 1, 1}, {pic->width - 1, pic->height - 1}, {1, pic->height - 1}};
+    render::RasterTarget t;
+    t.pixels = out.pixels.data();
+    t.pitch = out.width;
+    t.clip = box;
+    render::textured_quad_uv(t, v, uv, *pic);
+}
+
+// What the map choice shows of a map (the map info the original loads for a skirmish or network
+// game, 0x435DA0 provider 2/3, from maps\<name>.ota [GlobalHeader]): the description (at most 127
+// characters, "No description available" when the key is missing), memory and numplayers.
+struct MapSummary {
+    bool loaded = false;
+    std::string description, memory, players;
+};
+MapSummary map_summary(MenuArt& art, const std::string& map) {
+    MapSummary m;
+    std::vector<std::uint8_t> f;
+    if (!art.vfs().read("maps\\" + map + ".ota", f)) return m;
+    m.loaded = true;
+    if (auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root)
+        if (const TdfSection* gh = root->child("GlobalHeader")) {
+            m.description = gh->get_string("missiondescription", 0x80, "No description available");
+            m.memory = gh->get_string("memory", 0x80, "");
+            m.players = gh->get_string("numplayers", 0x80, "");
+        }
+    return m;
+}
+
+// The map choice (0x47AAF0, SELMAP.GUI opened with flags 0x880 over the skirmish set-up: the
+// screen under it dimmed once, no stock panel; DSELECTMAP2's top-left part in its box, its palette
+// not put up). MAPNAMES lists the maps (MenuArt::skirmish_maps), the first one named exactly as the
+// setting is selected and brought into view; moving the selection shows that map (0x47AAA0 ->
+// 0x444A20): DESCRIPTION its description (word-wrapped), SIZE "<memory>  Players: <numplayers>",
+// MAPPIC its picture. Handler (0x47A910): MAPNAMES (double click, Enter, Space) and LOAD ("Select
+// Map", sound SmallButton) take the selected map as the skirmish map and close; PREVMENU (Cancel,
+// Escape) plays Previous and closes.
 class SelectMap : public LayoutScreen {
 public:
     SelectMap(MenuArt& art, std::string current, std::function<void(const std::string&)> chosen)
         : LayoutScreen(art.layout("SELMAP")), art_(art), chosen_(std::move(chosen)) {
-        Widget* list = widget("MAPNAMES");
-        if (list) {
-            list->items = art.skirmish_maps();
+        background_in_box_ = true;
+        if (Widget* list = widget("MAPNAMES")) {
+            set_list(*list, art.skirmish_maps());
             for (std::size_t i = 0; i < list->items.size(); ++i)
-                if (upper(list->items[i]) == upper(current)) list->selected = static_cast<int>(i);
-            if (list->selected < 0 && !list->items.empty()) list->selected = 0;
-            const int rows = std::max(1, list->h / ((art.content().font ? art.content().font->height : 12) + 1));
-            list->top = std::max(0, std::min(list->selected - rows / 2, static_cast<int>(list->items.size()) - rows));
-            if (Widget* s = widget("SLIDER")) {
-                s->range = std::max(0, static_cast<int>(list->items.size()) - rows);
-                s->position = list->top;
-                s->link = "MAPNAMES";
-            }
+                if (list->items[i] == current) {
+                    select_list_row(*list, static_cast<int>(i));
+                    break;
+                }
+            show(*list);
         }
-        describe();
     }
     bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        // The screen under it (the skirmish set-up's whole box) dimmed.
+        dim_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        LayoutScreen::draw(fe, out);
+    }
 
 protected:
-    void describe() {
-        const Widget* list = widget("MAPNAMES");
-        if (!list || list->selected < 0) return;
-        const std::string map = list->items[static_cast<std::size_t>(list->selected)];
-        std::vector<std::uint8_t> f;
-        std::string desc, size;
-        if (art_.vfs().read("maps\\" + map + ".ota", f))
-            if (auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root)
-                if (const TdfSection* gh = root->child("GlobalHeader")) {
-                    desc = gh->get_string("missiondescription", 256, "");
-                    size = gh->get_string("size", 64, "");
-                }
-        if (Widget* d = widget("DESCRIPTION")) d->text = desc;
-        if (Widget* s = widget("SIZE")) s->text = size;
+    void show(const Widget& list) {
+        if (list.selected < 0 || list.selected >= static_cast<int>(list.items.size())) return;
+        const std::string map = list.items[static_cast<std::size_t>(list.selected)];
+        const MapSummary m = map_summary(art_, map);
+        if (!m.loaded) return;
+        if (Widget* s = widget("SIZE")) s->text = m.memory + "  Players: " + m.players;
         if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(map, pic->w, pic->h);
+        if (Widget* d = widget("DESCRIPTION")) d->text = m.description;
     }
-    void on_pick(FrontEnd& fe, Widget& w, int row, bool dbl) override {
-        (void)row;
-        describe();
-        if (dbl) choose(fe, w);
-    }
+    void on_list_select(FrontEnd&, Widget& w) override { show(w); }
     void choose(FrontEnd& fe, Widget& list) {
-        if (list.selected >= 0 && chosen_) chosen_(list.items[static_cast<std::size_t>(list.selected)]);
+        if (list.selected >= 0 && list.selected < static_cast<int>(list.items.size()) && chosen_) chosen_(list.items[static_cast<std::size_t>(list.selected)]);
         fe.pop();
     }
     void on_press(FrontEnd& fe, Widget& w) override {
-        if (is(w, "LOAD")) {
+        if (is(w, "MAPNAMES")) {
+            choose(fe, w);
+        } else if (is(w, "LOAD")) {
+            sfx(fe, art_, "SmallButton");
             if (Widget* l = widget("MAPNAMES")) choose(fe, *l);
         } else if (is(w, "PREVMENU")) {
+            sfx(fe, art_, "Previous");
             fe.pop();
         }
     }
-    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
-        if (w.picture) render::blit(out, out.bounds(), *w.picture, ox_ + w.x + w.picture->x_offset, oy_ + w.y + w.picture->y_offset);
+    void draw_surface(FrontEnd& fe, render::Image8& out, const Widget& w) override {
+        const Widget& h = widgets_.front();
+        const render::ClipRect box{std::max(ox_, 0), std::max(oy_, 0), std::min(ox_ + h.w - 1, out.width - 1), std::min(oy_ + h.h - 1, out.height - 1)};
+        draw_surface_picture(out, box, w.picture, ox_ + w.x, oy_ + w.y, w.w, w.h, colour(7));
+        (void)fe;
     }
 
 private:
@@ -867,7 +978,12 @@ protected:
         if (is(w, "NewCamp")) {
             if (fe.hooks().campaign_menu) fe.push(fe.hooks().campaign_menu(fe));
         } else if (is(w, "LoadGame")) {
-            if (fe.hooks().load_game_menu) fe.push(fe.hooks().load_game_menu(fe, nullptr));
+            if (fe.hooks().load_game_menu) {
+                if (auto next = fe.hooks().load_game_menu(fe, nullptr)) fe.push(std::move(next));
+                // (no saved games: the load menu closed again at once, this screen was redrawn
+                // with its new focus, then the message came over it)
+                else ring_follow_ = true;
+            }
         } else if (is(w, "Skirmish")) {
             if (art_.layout("SKIRMISH")) fe.push(std::make_unique<Skirmish>(art_, fe.settings()));
         } else if (is(w, "Options")) {
@@ -1130,25 +1246,7 @@ protected:
         const client::Font* f = fe.menu_content().small_font ? fe.menu_content().small_font : fe.menu_content().font;
         Widget* w1 = widget("MISSIONNAME");
         if (!w1 || !f) return;
-        const int width = w1->w;
-        std::string out;
-        std::size_t line_start = 0;
-        const std::string& t = name_;
-        for (std::size_t i = 0; i < t.size(); ++i) {
-            out.push_back(t[i]);
-            const char next = i + 1 < t.size() ? t[i + 1] : '\0';
-            if ((next == ' ' || next == '\n' || next == '-') && f->text_width(out.substr(line_start)) >= width) {
-                std::size_t k = out.size() - 1, j = i;
-                while (k > line_start && t[j] != ' ' && t[j] != '-') {
-                    out.pop_back();
-                    --k;
-                    --j;
-                }
-                out.back() = '\n';
-                line_start = out.size();
-                i = j;
-            }
-        }
+        const std::string out = wrap_for_width(*f, name_, w1->w);
         const std::size_t nl = out.find('\n');
         w1->text = out.substr(0, nl);
         if (nl != std::string::npos)
@@ -1252,8 +1350,14 @@ protected:
         if (is(w, "OK") || is(w, "SAVEGAME") || is(w, "LOADGAME") || is(w, "PREFS") || is(w, "EXIT") || is(w, "HELP") || is(w, "MISSION"))
             sfx(fe, art_, "Options");
         if (is(w, "OK")) fe.pop();
-        else if (is(w, "SAVEGAME") && s && fe.hooks().save_game_menu) fe.push(fe.hooks().save_game_menu(fe, *s));
-        else if (is(w, "LOADGAME") && fe.hooks().load_game_menu) fe.push(fe.hooks().load_game_menu(fe, s));
+        else if ((is(w, "SAVEGAME") && s && fe.hooks().save_game_menu) || (is(w, "LOADGAME") && fe.hooks().load_game_menu)) {
+            // The game menu closes and the save / load menu opens over the battle (0x4609B0).
+            std::unique_ptr<client::Screen> next = is(w, "SAVEGAME") ? fe.hooks().save_game_menu(fe, *s) : fe.hooks().load_game_menu(fe, s);
+            // (the battle stays held: the menu that opens holds it, and lets go when it closes)
+            if (next) session_ = nullptr;
+            fe.pop();
+            if (next) fe.push(std::move(next));
+        }
         else if (is(w, "PREFS")) fe.push(std::make_unique<OptionsMenu>(art_, true));
         else if (is(w, "EXIT") && art_.layout("EXITMENU")) {
             // (the exit menu opens over this one, which keeps its focus, dimmed: gui_harness)

@@ -154,6 +154,9 @@ public:
     // The minimap as the frame shows it (its picture at its place, the view's rectangle over
     // it), onto `o` (draw() does this; tests compare it).
     void draw_minimap_onto(render::Image8& o);
+    // The minimap picture with the radar marks as the last step left it (RADAR_FINAL; a saved
+    // game keeps it as its "Radar Image").
+    const render::Image8& minimap_image() const { return mm_final_; }
     // Tests: the minimap's fog picture and marks made anew from the battle as it is now, and
     // the blink phase its marks use.
     void minimap_refresh() {

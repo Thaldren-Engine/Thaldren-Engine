@@ -24,6 +24,7 @@
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
 //   --no-pointer        frames without the pointer (as the original's screen surface has them)
 //   --realtime          headless: run the frames at wall-clock speed (network games)
+//   --saves DIR         the saved games' directory (default <game_dir>\SAVEGAME, the original's)
 //   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
 //                       (the format of gui_harness's endmsn:)
 
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
     int side = 0;
     bool direct = false;
     std::string settings_path = "settings.txt";
-    std::string end_screen_file;
+    std::string end_screen_file, saves_dir;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -76,6 +77,10 @@ int main(int argc, char** argv) {
         }
         if (a == "--end-screen") {
             end_screen_file = next();
+            continue;
+        }
+        if (a == "--saves") {
+            saves_dir = next();
             continue;
         }
         if (a == "--map") setup.map = next();
@@ -155,10 +160,10 @@ int main(int argc, char** argv) {
         fes.height = 480;
         fes.settings_path = settings_path;
         ta::make_front_end(art, &music, fes);
-        // Campaign, briefings and the saved games (saves next to the settings file).
+        // Campaign, briefings and the saved games: <game dir>\SAVEGAME\<name>.sav as the original
+        // keeps them (--saves DIR: another directory).
         {
-            std::string save_dir = settings_path.substr(0, settings_path.find_last_of("\\/") == std::string::npos ? 0 : settings_path.find_last_of("\\/"));
-            if (save_dir.empty()) save_dir = ".";
+            std::string save_dir = saves_dir.empty() ? std::string(argv[1]) + "\\SAVEGAME" : saves_dir;
             ta::install_campaign_hooks(fes.hooks, art, save_dir);
         }
 #ifdef TA_CLIENT_HAVE_NET

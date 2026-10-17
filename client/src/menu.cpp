@@ -22,7 +22,127 @@ bool inside(const Widget& w, int ox, int oy, int x, int y) {
 
 int row_height(const MenuContent& mc) { return mc.font ? mc.font->height + 1 : 12; }
 
+// The game's float-to-integer conversion: truncation (out of range: 0x80000000).
+int conv(double v) {
+    if (!(v > -2147483648.0 && v < 2147483648.0)) return static_cast<int>(0x80000000u);
+    return static_cast<int>(v);
+}
+// The rows a list shows for the keys and the selection (the font's height + 1 apart).
+int visible_rows(const Widget& list, int fh) { return (list.h - 2) / (fh + 1); }
+
+// A rectangle of the screen's surface through a row of the light table (level > 0) or the shade
+// table (level < 0, row level + 32). The original indexes the row with the pixel as a signed byte:
+// pixels from 0x80 up take the previous row's entry.
+void shade_rect(const MenuContent& mc, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int x1, int y1, int level) {
+    const std::vector<std::uint8_t>& t = level < 0 ? mc.shade : mc.light;
+    if (t.size() < 0x2000) return;
+    const int row = level < 0 ? std::max(level, -32) + 32 : std::min(level, 31);
+    x0 = std::max(x0, clip.x0);
+    y0 = std::max(y0, clip.y0);
+    x1 = std::min(x1, clip.x1);
+    y1 = std::min(y1, clip.y1);
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+            std::uint8_t& p = out.row(y)[x];
+            const long at = static_cast<long>(row) * 256 + static_cast<std::int8_t>(p);
+            if (at >= 0) p = t[static_cast<std::size_t>(at)];
+        }
+}
+
+// One line of text with the picture font from (x, y) (the glyphs' own placement), stopping at the
+// first glyph wider than what is left of `width` (-1: no limit); characters below 0x20 are skipped.
+int draw_line(render::Image8& out, const render::ClipRect& clip, const Font& font, std::string_view text, int x, int y, int width) {
+    for (const char ch : text) {
+        const auto c = static_cast<unsigned char>(ch);
+        if (c < 0x20) continue;
+        const Glyph& g = font.glyphs[c];
+        if (width != -1 && width < g.width) break;
+        if (c != ' ') draw_text(out, clip, font, std::string_view(&ch, 1), x, y, 0);
+        if (width != -1) {
+            width -= g.width;
+            if (width < 0) break;
+        }
+        x += g.width;
+    }
+    return x;
+}
+
 }  // namespace
+
+// Text broken into lines at spaces and carriage returns (the original's 0x4A51D0): words are
+// added while the line fits `width`; a line is drawn when the next word would not fit, at a
+// carriage return and at the end; lines are font height + 2 apart and stop when the height is used.
+int draw_wrapped(render::Image8& out, const render::ClipRect& clip, const Font& font, const std::string& text, int x, int y, int width, int height) {
+    const std::size_t n = text.size();
+    std::size_t start = 0, last_break = 0, at = 0;
+    while (start < n && text[start] != '\0') {
+        while (at != n && text[at] != ' ' && text[at] != '\r') ++at;
+        const int w = font.text_width(std::string_view(text).substr(start, at - start));
+        std::size_t end = at;
+        bool draw = false;
+        if (w > width) {
+            end = last_break;
+            draw = true;
+        } else if (at == n || text[at] == '\r') {
+            draw = true;
+        }
+        if (draw) {
+            draw_line(out, clip, font, std::string_view(text).substr(start, end > start ? end - start : 0), x, y, width);
+            y += font.height + 2;
+            height -= font.height + 2;
+            if (end >= n) return y;
+            start = last_break = end + 1;
+            at = start;
+            if (height < 1) return y;
+        } else {
+            last_break = at;
+            ++at;
+        }
+    }
+    return y;
+}
+
+void LayoutScreen::draw_text_list(const MenuContent& mc, render::Image8& out, const render::ClipRect& clip, const Widget& w, int x, int y) {
+    // The original's text list (0x4A1B40): rows from (x + 2, y + 2), row_h apart, while what is
+    // left of the height is at least the font's height; each row's text placed by the list's
+    // attributes in [x + 2, x + w]; the selected row (not with attribute 0x100) is then lit through
+    // light level 30 over x + 2 .. x + w and its top .. top + row_h. Rows starting "&" lose two
+    // characters; "&G" rows are shaded (levels -19 .. -22 in turn) instead.
+    const Font* font = mc.font;
+    if (!font || w.items.empty()) return;
+    const int fh = font->height;
+    const int rh = w.row_h ? w.row_h : fh + 1;
+    int left = w.h;
+    for (int k = 0, i = w.top;; ++k, ++i) {
+        if (i < 0 || i >= static_cast<int>(w.items.size())) break;
+        const int x0 = x + 2, x1 = x + w.w, top = y + 2 + k * rh, bottom = top + rh;
+        std::string t = w.items[static_cast<std::size_t>(i)];
+        bool dim = false;
+        if (!t.empty() && t[0] == '&') {
+            dim = t.size() > 1 && t[1] == 'G';
+            t = t.size() > 2 ? t.substr(2) : std::string();
+        }
+        const int tw = font->text_width(t);
+        int tx = x0, width = x1 - x0 + 1;
+        if (w.attribs & 1) {
+        } else if (w.attribs & 4) {
+            tx = x1 - tw;
+            width = tw;
+        } else if (w.attribs & 2) {
+            tx = std::max((x0 + x1 - tw) / 2, x0);
+            width = x1 - tx + 1;
+        }
+        if (fh + 6 < rh) draw_wrapped(out, clip, *font, t, tx, top, width, w.h - 1);
+        else draw_line(out, clip, *font, t, tx, top, width);
+        if (dim) {
+            for (int level = -19; level >= -22; --level) shade_rect(mc, out, clip, x0, top, x1, bottom, level);
+        } else if (!(w.attribs & 0x100) && w.selected == i) {
+            shade_rect(mc, out, clip, x0, top, x1, bottom, 30);
+        }
+        left -= rh;
+        if (left < fh) break;
+    }
+}
 
 LayoutScreen::LayoutScreen(const ScreenLayout* layout) : layout_(layout) {
     if (!layout_) return;
@@ -53,6 +173,7 @@ std::string LayoutScreen::caption(const Widget& w) {
 }
 
 std::uint8_t LayoutScreen::colour(int k) const {
+    if (colours_) return (*colours_)[static_cast<std::size_t>(k & 0xFF)];
     if (!layout_) return static_cast<std::uint8_t>(k);
     return layout_->colours[static_cast<std::size_t>(k & 0xFF)];
 }
@@ -89,6 +210,15 @@ void LayoutScreen::press(FrontEnd& fe, Widget& w) {
     if (w.slider_step != 0) {
         // A slider's arrow moves its knob one pixel; the value follows the knob.
         if (Widget* s = widget(w.link)) {
+            if (s->list_slider) {
+                // A list's slider: the knob one pixel on, the list following it.
+                const int k = std::max(0, std::min(s->knob_pos + w.slider_step, s->range - 1));
+                if (k == s->knob_pos) return;
+                s->knob_pos = s->position = s->knob_value = k;
+                if (Widget* l = list_of(*s); l && l->row_h != 0)
+                    l->top = static_cast<std::int16_t>(conv(static_cast<double>(static_cast<int>(l->items.size()) - l->h / l->row_h) * k / (s->range - 1)));
+                return;
+            }
             if (s->knob_value != s->position) s->knob_pos = slider_knob(*s, s->position);
             s->knob_pos = std::clamp(s->knob_pos + w.slider_step, 0, std::max(0, s->span - 1));
             s->position = slider_value(*s, s->knob_pos);
@@ -108,7 +238,17 @@ void LayoutScreen::press(FrontEnd& fe, Widget& w) {
             focus_before_press_ = focus_gadget_;
             focus_gadget_ = static_cast<int>(i);  // a pressed gadget takes the focus
         }
+    // A press that opens another screen over this one leaves this screen as it was last drawn:
+    // the focus ring stays where it was until this screen is on top again (the original redraws
+    // a layout's focus marking only in its full redraws; gui_harness: the single player screen's
+    // Load Game key).
+    const std::size_t depth = fe.depth();
+    ring_follow_ = false;
     on_press(fe, w);
+    if (depth != 0 && fe.depth() > depth && !ring_follow_) {
+        ring_hold_ = focus_before_press_;
+        hold_depth_ = depth;
+    }
 }
 
 void LayoutScreen::scroll_to(Widget& bar, int x, int y) {
@@ -132,12 +272,51 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
     switch (e.type) {
     case InputEvent::Type::MouseDown: {
         press_button_ = e.button;
+        pointer_x_ = e.x;
+        pointer_y_ = e.y;
+        // A text field shows the focus marking (lit glyphs) it had at the last full redraw: the
+        // marking of a focus that moved away goes with the redraw after the next press.
+        lit_field_ = focus_gadget_;
         const int i = hit(e.x, e.y);
         if (i < 0) return;
         Widget& w = widgets_[static_cast<std::size_t>(i)];
+        if (w.kind == WidgetKind::ListBox && w.text_list) {
+            // A press over the rows (x .. x + w - 1, y + 2 .. y + h - 4) holds the list; a second
+            // left press within the double-click time acts on it (the screen's handler).
+            const int y0 = oy_ + w.y + 2, y1 = oy_ + w.y + w.h - 4;
+            if (e.y < y0 || e.y > y1) return;
+            // (the platform's double click: within 500 ms and 2 pixels of the first press)
+            const bool dbl = e.button == 1 && last_click_row_ == i && e.time_ms - last_click_ms_ < 500 && std::abs(e.x - last_click_x_) <= 2 &&
+                             std::abs(e.y - last_click_y_) <= 2;
+            last_click_ms_ = e.time_ms;
+            last_click_row_ = dbl ? -1 : i;
+            last_click_x_ = e.x;
+            last_click_y_ = e.y;
+            if (dbl) {
+                if (!w.items.empty()) on_press(fe, w);
+                return;
+            }
+            focus_gadget_ = i;
+            focus_ = -1;  // a text field stops taking the keys (the list is the active gadget now)
+            list_held_ = i;
+            list_pointer(fe, i);
+            return;
+        }
+        if (w.kind == WidgetKind::ScrollBar && w.list_slider) {
+            // Held (the focus stays where it was); a press on the knob drags it.
+            slider_held_ = i;
+            const int kx0 = ox_ + w.x + 1, kx1 = ox_ + w.x - 1 + w.w, ky0 = oy_ + w.y + w.knob_pos + 2, ky1 = ky0 + w.knob;
+            slider_drag_ = e.x >= kx0 && e.x <= kx1 && e.y >= ky0 && e.y <= ky1;
+            slider_anchor_ = e.y;
+            slider_anchor_knob_ = w.knob_pos;
+            return;
+        }
         switch (w.kind) {
         case WidgetKind::Button:
-            if (!w.grayed) held_ = i;
+            if (!w.grayed) {
+                held_ = i;
+                focus_ = -1;  // the button is the active gadget now: a text field stops taking the keys
+            }
             break;
         case WidgetKind::ListBox: {
             const int row = (e.y - (oy_ + w.y)) / row_height(fe.menu_content()) + w.top;
@@ -155,18 +334,36 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             scroll_to(w, e.x, e.y);
             on_press(fe, w);
             break;
-        case WidgetKind::TextField: focus_ = i; break;
+        case WidgetKind::TextField:
+            focus_ = i;
+            focus_gadget_ = i;
+            break;
         default: on_press(fe, w); break;
         }
         return;
     }
     case InputEvent::Type::MouseMove:
+        pointer_x_ = e.x;
+        pointer_y_ = e.y;
+        if (list_held_ >= 0) list_pointer(fe, list_held_);
         if (drag_ >= 0) {
             scroll_to(widgets_[static_cast<std::size_t>(drag_)], e.x, e.y);
             on_press(fe, widgets_[static_cast<std::size_t>(drag_)]);
         }
         return;
     case InputEvent::Type::MouseUp: {
+        pointer_x_ = e.x;
+        pointer_y_ = e.y;
+        if (list_held_ >= 0) {
+            // The pass that sees the button up still follows the pointer, then lets go.
+            list_pointer(fe, list_held_);
+            list_held_ = -1;
+        }
+        if (slider_held_ >= 0) {
+            slider_pointer(fe, slider_held_);
+            slider_held_ = -1;
+            slider_drag_ = false;
+        }
         drag_ = -1;
         const int was = held_;
         held_ = -1;
@@ -175,20 +372,76 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
     }
     case InputEvent::Type::KeyDown: {
         const int k = e.key;
-        if (focus_ >= 0) {
-            Widget& f = widgets_[static_cast<std::size_t>(focus_)];
-            if (k == keys::kBackspace) {
-                if (!f.text.empty()) f.text.pop_back();
+        lit_field_ = -2;
+        if (focus_gadget_ >= 0 && focus_gadget_ < static_cast<int>(widgets_.size()) && widgets_[static_cast<std::size_t>(focus_gadget_)].text_list &&
+            (k == keys::kUp || k == keys::kDown || k == ' ')) {
+            Widget& l = widgets_[static_cast<std::size_t>(focus_gadget_)];
+            if (k == ' ') {
+                if (l.active) on_press(fe, l);
                 return;
             }
-            if (k == keys::kEnter) {
+            // Up / Down (0x4A9830 / 0x4A99C0): a shown selection moves one row, the list scrolling
+            // with it; a selection out of view is first brought into view. The list's callback
+            // follows either way.
+            const int fh = layout_ ? layout_->font_height : 14;
+            const int rows = visible_rows(l, fh), count = static_cast<int>(l.items.size());
+            const int sel = l.selected, top = l.top;
+            auto marked = [&](int i) { return i >= 0 && i < count && l.items[static_cast<std::size_t>(i)].compare(0, 2, "&G") == 0; };
+            if (sel < top + rows && top <= sel) {
+                if (k == keys::kUp && count != 0 && sel != 0) {
+                    l.selected = sel - 1;
+                    if (l.selected < top) l.top = top - 1;
+                    if (marked(l.selected)) l.selected = sel;
+                    list_moved(l);
+                } else if (k == keys::kDown && count != 0 && sel != l.max_top - 1 + rows) {
+                    l.selected = sel + 1;
+                    if (top + rows - 1 < l.selected) l.top = top + 1;
+                    if (count - 1 <= l.selected) l.selected = count - 1;
+                    if (marked(l.selected)) l.selected = sel;
+                    list_moved(l);
+                }
+            } else if (count != 0) {
+                select_list_row(l, sel);
+            }
+            on_list_select(fe, l);
+            return;
+        }
+        if (focus_ >= 0) {
+            Widget& f = widgets_[static_cast<std::size_t>(focus_)];
+            f.cursor = std::clamp(f.cursor, 0, static_cast<int>(f.text.size()));
+            // The original's field editing (0x4AB720): Backspace removes the character before the
+            // insertion point, Delete the one at it, Home / End / Left / Right move it.
+            if (k == keys::kBackspace) {
+                if (f.cursor > 0) f.text.erase(static_cast<std::size_t>(--f.cursor), 1);
+                return;
+            }
+            if (k == keys::kDelete) {
+                if (f.cursor < static_cast<int>(f.text.size())) f.text.erase(static_cast<std::size_t>(f.cursor), 1);
+                return;
+            }
+            if (k == keys::kHome || k == keys::kEnd || k == keys::kLeft || k == keys::kRight) {
+                if (k == keys::kHome) f.cursor = 0;
+                else if (k == keys::kEnd) f.cursor = static_cast<int>(f.text.size());
+                else if (k == keys::kLeft) f.cursor = std::max(0, f.cursor - 1);
+                else f.cursor = std::min(static_cast<int>(f.text.size()), f.cursor + 1);
+                return;
+            }
+            if (k == keys::kEnter || (k == keys::kEscape && field_escape_clears_)) {
+                // Enter commits the line; Escape (screens that ask for it) empties it first.
+                if (k == keys::kEscape) {
+                    f.text.clear();
+                    f.cursor = 0;
+                }
+                text_provisional_ = -1;
                 on_text(fe, f);
                 return;
             }
             if (k >= 32 && k < 127) {
                 char c = static_cast<char>(k);
                 if (e.shift) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                if (f.max_chars <= 0 || static_cast<int>(f.text.size()) < f.max_chars) f.text.push_back(c);
+                // A typed character comes again as a Text event when the platform makes them; the
+                // key's guess stays only until then.
+                if (!text_events_ && field_insert(fe, f, c)) text_provisional_ = f.cursor - 1;
                 return;
             }
         }
@@ -197,11 +450,14 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             Widget* w = widget(name);
             if (!w || !w->active) return false;
             if (w->kind == WidgetKind::ListBox) {
-                if (w->selected >= 0) on_pick(fe, *w, w->selected, true);
+                if (w->text_list) on_press(fe, *w);
+                else if (w->selected >= 0) on_pick(fe, *w, w->selected, true);
                 return true;
             }
             press_button_ = 1;
+            key_press_ = true;
             press(fe, *w);
+            key_press_ = false;
             return true;
         };
         if (k == keys::kEnter && layout_ && press_named(layout_->enter_default)) return;
@@ -209,21 +465,53 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         if (k > 0 && k < 0x100 && !e.ctrl)
             for (Widget& w : widgets_)
                 if (w.kind == WidgetKind::Button && w.active && w.quickkey && w.quickkey == std::tolower(k)) {
+                    // (a key's press leaves the focus where it is: gui_harness, the single player
+                    // screen's Load Game key)
                     press_button_ = 1;
+                    key_press_ = true;
                     press(fe, w);
+                    key_press_ = false;
                     return;
                 } else if (w.kind == WidgetKind::Label && w.active && w.quickkey && w.quickkey == std::tolower(k) && !w.link.empty()) {
                     // A linked label's key presses the gadget it names.
                     if (Widget* t = widget(w.link); t && t->active && t->kind == WidgetKind::Button) {
                         press_button_ = 1;
+                        key_press_ = true;
                         press(fe, *t);
+                        key_press_ = false;
                     }
                     return;
                 }
         return;
     }
+    case InputEvent::Type::Text: {
+        text_events_ = true;
+        if (focus_ < 0) return;
+        Widget& f = widgets_[static_cast<std::size_t>(focus_)];
+        if (text_provisional_ >= 0 && text_provisional_ < static_cast<int>(f.text.size())) {
+            f.text.erase(static_cast<std::size_t>(text_provisional_), 1);
+            if (f.cursor > text_provisional_) --f.cursor;
+        }
+        text_provisional_ = -1;
+        if (e.key >= 32 && e.key < 127) field_insert(fe, f, static_cast<char>(e.key));
+        return;
+    }
     default: return;
     }
+}
+
+bool LayoutScreen::field_insert(FrontEnd& fe, Widget& f, char c) {
+    // A character goes in at the insertion point while the line is shorter than the field's
+    // maximum and its width with the character is at most the field's width less 4; fields with
+    // attribute 2 take letters, digits, '_', ' ' and '\'' only.
+    if ((f.attribs & 2) && !std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != ' ' && c != '\'') return false;
+    if (f.max_chars > 0 && static_cast<int>(f.text.size()) >= f.max_chars) return false;
+    const Font* font = fe.menu_content().font;
+    if (font && font->text_width(f.text) + font->glyphs[static_cast<unsigned char>(c)].width > f.w - 4) return false;
+    f.cursor = std::clamp(f.cursor, 0, static_cast<int>(f.text.size()));
+    f.text.insert(static_cast<std::size_t>(f.cursor), 1, c);
+    ++f.cursor;
+    return true;
 }
 
 void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& w, bool held) {
@@ -332,8 +620,10 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         int tx = x;
         if (w.attribs & 4) tx = x + w.w - tw;
         else if (w.attribs & 2) tx = x + w.w / 2 - tw / 2;
-        // One line clipped to the width (taller labels wrap; drawn here as one line).
-        draw_text(out, clip, *lf, w.text, tx, y + lf->raise, w.fg ? colour(w.fg) : mc.text_colour, -1, w.w);
+        // A label more than two lines high is word-wrapped to its width (0x4A51D0); otherwise one
+        // line, stopping at the first character that does not fit the width (0x4A50E0).
+        if (lf->height * 2 < w.h - 1) draw_wrapped(out, clip, *lf, w.text, tx, y + lf->raise, w.w, w.h);
+        else draw_line(out, clip, *lf, w.text, tx, y + lf->raise, w.w);
         if (w.quickkey_char && !w.grayed)
             if (const auto at = w.text.find(static_cast<char>(w.quickkey_char)); at != std::string::npos) {
                 const int cx = tx + lf->text_width(w.text.substr(0, at));
@@ -350,6 +640,10 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         }
         break;
     case WidgetKind::ListBox: {
+        if (w.text_list) {
+            draw_text_list(mc, out, clip, w, x, y);
+            break;
+        }
         const int rh = row_height(mc);
         const int rows = std::max(1, w.h / rh);
         for (int r = 0; r < rows; ++r) {
@@ -420,12 +714,38 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         break;
     }
     case WidgetKind::TextField: {
-        if (font) {
-            std::string t = w.text;
-            const bool focused = focus_ >= 0 && &widgets_[static_cast<std::size_t>(focus_)] == &w;
-            if (focused) t += '_';
-            while (!t.empty() && font->text_width(t) > w.w - 4) t.erase(t.begin());
-            draw_text(out, clip, *font, t, x + 2, y + (w.h - font->height) / 2 + font->raise, mc.text_colour);
+        // The original's text field (0x4A4D70): attribute 1 fills the field with interface colour
+        // 0 (else the screen's picture shows); the text from (x, y + 3), the glyphs that fit w - 1;
+        // the field with the focus has its glyphs lit through light level 30 (0x4A16F0 sets its
+        // colour word); the field taking keys shows the insertion point, a line in interface colour
+        // 9 from the text's top down the font's height.
+        if (!font) break;
+        if (w.attribs & 1) fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, colour(0));
+        const int index = static_cast<int>(&w - widgets_.data());
+        const bool lit = (lit_field_ == -2 ? focus_gadget_ : lit_field_) == index && mc.light.size() >= 0x2000;
+        int cx = x, left = w.w - 1;
+        for (const char ch : w.text) {
+            const auto c = static_cast<unsigned char>(ch);
+            if (c < 0x20) continue;
+            const Glyph& g = font->glyphs[c];
+            if (left < g.width) break;
+            if (c != ' ')
+                for (int r = 0; r < g.rows; ++r)
+                    for (int k = 0; k < g.width; ++k) {
+                        const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                        if (at >= g.ink.size() || !g.ink[at]) continue;
+                        std::uint8_t v = g.colours.empty() ? mc.text_colour : g.colours[at];
+                        if (lit) v = mc.light[30 * 256 + v];
+                        put_pixel(out, clip, cx + g.left + k, y + 3 + g.top + r, v);
+                    }
+            left -= g.width;
+            if (left < 0) break;
+            cx += g.width;
+        }
+        if (focus_ == index) {
+            const int at = std::clamp(w.cursor, 0, static_cast<int>(w.text.size()));
+            const int px = x + font->text_width(std::string_view(w.text).substr(0, static_cast<std::size_t>(at)));
+            fill_rect(out, clip, px, y + 3, px, y + 3 + font->height, colour(9));
         }
         break;
     }
@@ -515,12 +835,180 @@ void LayoutScreen::set_caption(Widget& w, const std::string& text) {
     }
 }
 
+// ------------------------------------------------------------------ text lists
+// (spec: docs/RE_MEMORY.md, "Client", "Lists": the original's 0x4A32A0 set, 0x4A2E40 select,
+// 0x4A2BE0 follow, 0x4A3EF0 knob, 0x4A3780 pointer, 0x4A4170 slider, 0x4A9830 / 0x4A99C0 keys.)
+
+Widget* LayoutScreen::slider_of(const Widget& list) {
+    for (Widget& s : widgets_)
+        if (s.kind == WidgetKind::ScrollBar && s.assoc == list.assoc && s.slider_step == 0) return &s;
+    return nullptr;
+}
+
+Widget* LayoutScreen::list_of(const Widget& w) {
+    for (Widget& l : widgets_)
+        if (l.kind == WidgetKind::ListBox && l.assoc == w.assoc && &l != &w) return &l;
+    return nullptr;
+}
+
+void LayoutScreen::set_list(Widget& list, std::vector<std::string> items) {
+    const int fh = layout_ ? layout_->font_height : 14;
+    list.items = std::move(items);
+    list.text_list = true;
+    if (list.row_h <= fh + 1) list.row_h = fh + 1;
+    list.top = 0;
+    list.selected = 0;
+    const int count = static_cast<int>(list.items.size());
+    // The largest first row: the rows that fit the height whole, counted back from the last.
+    list.max_top = count - 1;
+    int left = list.h;
+    for (int k = count - 1; k >= 0; --k) {
+        left -= list.row_h;
+        if (left < 0) break;
+        list.max_top = k;
+    }
+    if (!list.active) return;
+    Widget* s = slider_of(list);
+    if (!s) return;
+    const bool over = left < 0;
+    s->active = over;
+    s->list_slider = true;
+    for (Widget& a : widgets_)
+        if (a.slider_step != 0 && a.link == s->name) a.active = over;
+    if (!over) return;
+    // The knob: its length the shown share of the rows (at least 10), its travel the rest.
+    const int rows = (list.h - 2) / std::max(list.row_h, fh + 1);
+    int knob = static_cast<std::int16_t>(conv(static_cast<double>(rows) / count * (s->h - 3)));
+    if (knob < 10) knob = 10;
+    s->knob = knob;
+    s->range = count <= rows ? 0 : s->h - knob - 3;
+    s->knob_pos = 0;
+    s->position = s->knob_value = 0;
+}
+
+void LayoutScreen::select_list_row(Widget& list, int row) {
+    const int fh = layout_ ? layout_->font_height : 14;
+    list.selected = row;
+    if (visible_rows(list, fh) - 1 + list.top < row || row < list.top) {
+        if (list.max_top != 0) list.top = row;
+        if (list.max_top < list.top) list.top = list.max_top;
+        if (Widget* s = slider_of(list)) {
+            const int k = list.max_top == 0 ? 0 : static_cast<std::int16_t>(conv(static_cast<double>(s->range) * list.top / list.max_top));
+            s->knob_pos = s->position = s->knob_value = k;
+        }
+    }
+}
+
+void LayoutScreen::list_moved(Widget& list) {
+    for (Widget& o : widgets_) {
+        if (&o == &list || o.assoc != list.assoc || o.slider_step != 0) continue;
+        if (o.kind == WidgetKind::ListBox) {
+            o.top = list.top;
+            o.selected = list.selected;
+        } else if (o.kind == WidgetKind::TextField) {
+            if ((list.attribs & 8) && list.selected >= 0 && list.selected < static_cast<int>(list.items.size()))
+                o.text = list.items[static_cast<std::size_t>(list.selected)];
+        } else if (o.kind == WidgetKind::ScrollBar && list.items.size() > 1) {
+            const int k = list.max_top == 0 ? 0 : static_cast<std::int16_t>(conv(static_cast<double>(list.top) * o.range / list.max_top));
+            o.knob_pos = o.position = o.knob_value = k;
+        }
+    }
+}
+
+// One pass of a held list (0x4A3780): over the rows the pointer's row is selected; above or below
+// them the list scrolls one row every 2 ticks (above, between the steps, the selection goes to the
+// first row).
+void LayoutScreen::list_pointer(FrontEnd& fe, int index) {
+    Widget& w = widgets_[static_cast<std::size_t>(index)];
+    const int fh = layout_ ? layout_->font_height : 14;
+    const int rh = w.row_h ? w.row_h : fh + 1;
+    const int rows = (w.h - 2) / rh;
+    const int x0 = ox_ + w.x, x1 = x0 + w.w - 1, y0 = oy_ + w.y + 2, y1 = oy_ + w.y + w.h - 4;
+    const int px = pointer_x_, py = pointer_y_;
+    const int count = static_cast<int>(w.items.size());
+    const int before = w.selected;
+    const std::uint32_t tick = fe.now_ms() * 30u / 1000u;
+    auto marked = [&](int i) { return i >= 0 && i < count && w.items[static_cast<std::size_t>(i)].compare(0, 2, "&G") == 0; };
+    if (px >= x0 && px <= x1 && py >= y0 && py <= y1) {
+        focus_gadget_ = index;
+        int sel = (py - y0) / rh + w.top;
+        if (sel < 0) {
+            w.selected = before;
+        } else {
+            if (rows - 1 < sel - w.top) sel = rows - 1 + w.top;
+            if (count - 1 <= sel) sel = count - 1;
+            if (sel < 0) sel = 0;
+            w.selected = sel;
+            if ((w.attribs & 0x200) && marked(sel)) w.selected = before;
+            for (Widget& o : widgets_)
+                if (&o != &w && o.kind == WidgetKind::ListBox && o.assoc == w.assoc)
+                    o.selected = std::min(w.selected, static_cast<int>(o.items.size()) - 1);
+        }
+        if (before != w.selected) on_list_select(fe, w);
+        return;
+    }
+    if (py >= y0) {
+        if (py <= y1 || w.max_top <= w.top || tick <= list_scroll_ms_) return;
+        w.top += 1;
+        list_scroll_ms_ = tick + 2;
+        w.selected = rows - 1 + w.top;
+        if (marked(w.selected)) w.selected = before;
+    } else {
+        if (w.top < 1 || tick <= list_scroll_ms_) {
+            if (w.selected < 1) return;
+            w.selected = 0;
+        } else {
+            list_scroll_ms_ = tick + 2;
+            if (w.top < w.selected) w.selected = w.top;
+            w.selected -= 1;
+            w.top -= 1;
+            if (marked(std::max(w.selected, 0))) w.selected = before;
+        }
+    }
+    list_moved(w);
+}
+
+// One pass of a held list slider (0x4A4170): dragging the knob moves it with the pointer, else it
+// steps one pixel toward the pointer each pass; the list's first row follows the knob.
+void LayoutScreen::slider_pointer(FrontEnd&, int index) {
+    Widget& s = widgets_[static_cast<std::size_t>(index)];
+    const int y0 = oy_ + s.y;
+    const int before = s.knob_pos;
+    int k = before;
+    if (slider_drag_) {
+        k = slider_anchor_knob_ + (pointer_y_ - slider_anchor_);
+    } else {
+        const int top = y0 + s.knob_pos + 2, bottom = top + s.knob;
+        if (pointer_y_ < top) k = before - 1;
+        else if (pointer_y_ > bottom) k = before + 1;
+    }
+    if (s.range - 1 < k) k = s.range - 1;
+    if (k < 0) k = 0;
+    if (k == before) return;
+    s.knob_pos = s.position = s.knob_value = k;
+    if (Widget* l = list_of(s)) {
+        if (l->row_h != 0) {
+            const int count = static_cast<int>(l->items.size());
+            l->top = static_cast<std::int16_t>(conv(static_cast<double>(count - l->h / l->row_h) * k / (s.range - 1)));
+        }
+    }
+}
+
+void LayoutScreen::frame(FrontEnd& fe, std::uint32_t) {
+    if (list_held_ >= 0) list_pointer(fe, list_held_);
+    if (slider_held_ >= 0) slider_pointer(fe, slider_held_);
+}
+
 void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
     // Six shaded outlines around the focused gadget, one to six pixels out, light levels 31,
     // 28, 24, 19, 13, 6 (the four sides drawn as separate lines, so corners are lit twice).
     const std::vector<std::uint8_t>& light = fe.menu_content().light;
-    if (!focus_ring_ || focus_gadget_ < 0 || light.size() < 0x2000) return;
-    const Widget& w = widgets_[static_cast<std::size_t>(focus_gadget_)];
+    if (ring_hold_ >= -1 && hold_depth_ != 0) {
+        if (fe.depth() <= hold_depth_) hold_depth_ = 0;  // on top again: the ring follows the focus
+    }
+    const int ring = hold_depth_ != 0 ? ring_hold_ : focus_gadget_;
+    if (!focus_ring_ || ring < 0 || ring >= static_cast<int>(widgets_.size()) || light.size() < 0x2000) return;
+    const Widget& w = widgets_[static_cast<std::size_t>(ring)];
     if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox) return;
     const int gx0 = ox_, gy0 = oy_, gx1 = ox_ + widgets_.front().w - 1, gy1 = oy_ + widgets_.front().h - 1;  // the screen's own surface
     auto px = [&](int x, int y, int level) {
@@ -542,8 +1030,8 @@ void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
 
 void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
     if (!placed_) place(out.width, out.height);
-    if (layout_ && layout_->background) {
-        const render::Sprite8& bg = *layout_->background;
+    if (layout_ && (background_ || layout_->background)) {
+        const render::Sprite8& bg = background_ ? *background_ : *layout_->background;
         if (background_in_box_) {
             // The picture's top-left part the size of the screen's box, at the box.
             const Widget& h = widgets_.front();
