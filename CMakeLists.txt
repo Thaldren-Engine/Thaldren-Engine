@@ -115,11 +115,15 @@ target_include_directories(ta_compat PUBLIC ta_compat/include)
 target_link_libraries(ta_compat PUBLIC sim net)
 target_compile_options(ta_compat PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 
-foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow game_replay campaign_check save_check)
+foreach(tool hpi_check tdf_check vfs_cat unitdef_check weapondef_check model_check feature_check game_flow game_replay campaign_check save_check move_bench)
     add_executable(${tool} ta_compat/tools/${tool}.cpp)
     target_link_libraries(${tool} PRIVATE ta_compat)
     target_compile_options(${tool} PRIVATE ${WARN_FLAGS})
 endforeach()
+
+if(MSVC)
+    target_link_options(move_bench PRIVATE /MAP)  # function addresses for sampling profiles
+endif()
 
 add_executable(net_play ta_compat/tools/net_play.cpp)
 target_link_libraries(net_play PRIVATE ta_compat net)
