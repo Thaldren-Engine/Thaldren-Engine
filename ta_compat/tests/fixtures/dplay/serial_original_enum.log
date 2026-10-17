@@ -1,0 +1,10 @@
+# Serial: the original's serial port redirected to a pipe served by the engine (dplay_play serial pipe: host); its enumeration framed by the original's provider (smoke)
+# time (s), direction (-> sent, <- received over TCP, <~ / ~> datagrams), peer, message, size, bytes;
+# '##' lines: the tool's own report. Game messages after the first 40 are counted, not listed.
+    0.010 ## hosting "Serial game" on Serial; player id 58f8d507
+    0.010 ##   table: 58f8d506 flags f machine 58f8d506 ""
+    0.011 ##   table: 58f8d507 flags c machine 58f8d506 "SerialEngine"
+    0.218 ## room: [0 58f8d507 SerialEngine ARM logo 0]  map "Moon Quartet"
+   13.912 <- pipe:taserial system EnumSessions (2) 32 bytes 706c617902000e0020747999f5f5cf11982700a0241496c80000000081000000
+   13.912 -> pipe:taserial system EnumSessionsReply (1) 156 bytes 706c617901000e00500000000000000029e37a01c08e414fbaa2b32efb262e4c20747999f5f5cf11982700a0241496c80a00000001000000000000000000000006d5f9580000000040000020040000000a000a00fa0003015c000000530065007200690061006c002000670061006d006500200020002000200020004d006f006f006e00200051007500610072007400650074002000200020000000
+# 0 game messages in all, 0 not listed
