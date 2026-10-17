@@ -502,7 +502,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             // The screen size changes between the menus and a battle (the chosen display mode).
             cur_w = list.width;
             cur_h = list.height;
-            SDL_SetWindowSize(win, cur_w * scale, cur_h * scale);
+            fit_window_to_frame(win, cur_w, cur_h, scale);
             rgba.assign(static_cast<std::size_t>(cur_w) * static_cast<std::size_t>(cur_h) * 4, 0);
             if (tex) {
                 SDL_DestroyTexture(tex);

@@ -11,7 +11,7 @@
 //   --players N         players (2..4; extra players are computer players)
 //   --no-ai             the opponents are idle humans instead of computer players
 //   --res WxH           screen size (default 640x480; the view grows with it)
-//   --scale S           window pixels per screen pixel (default 2)
+//   --scale S           window pixels per screen pixel (default 1)
 //   --left-click        the original's default interface (left click orders, right deselects)
 //   --no-fog            no line of sight / mapping
 //   --speed N           game speed 1..20 (10 normal)

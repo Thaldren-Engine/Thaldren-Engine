@@ -207,6 +207,25 @@ int translate_key(SDL_Keycode k) {
     return 0;
 }
 
+}  // namespace
+
+void fit_window_to_frame(SDL_Window* window, int frame_w, int frame_h, int scale) {
+    const int w = frame_w * scale, h = frame_h * scale;
+    const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetDisplayForWindow(window));
+    const bool whole_display = dm && w >= dm->w && h >= dm->h;
+    if (whole_display) {
+        SDL_SetWindowFullscreenMode(window, nullptr);  // the desktop's own mode: no mode change
+        SDL_SetWindowFullscreen(window, true);
+    } else {
+        SDL_SetWindowFullscreen(window, false);
+        SDL_SetWindowSize(window, w, h);
+        SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+    SDL_SyncWindow(window);
+}
+
+namespace {
+
 int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::printf("SDL_Init: %s\n", SDL_GetError());
@@ -218,6 +237,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         std::printf("SDL_CreateWindow: %s\n", SDL_GetError());
         return 1;
     }
+    fit_window_to_frame(win, w, h, scale);
     SDL_HideCursor();
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;

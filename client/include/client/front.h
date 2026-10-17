@@ -9,6 +9,10 @@
 
 #include "client/game_client.h"
 
+#ifdef CLIENT_HAVE_SDL
+struct SDL_Window;
+#endif
+
 namespace client {
 
 struct ScriptedInput {
@@ -17,7 +21,7 @@ struct ScriptedInput {
 };
 
 struct FrontOptions {
-    int scale = 2;                    // window pixels per frame pixel
+    int scale = 1;                    // window pixels per frame pixel (1: the screen size is the window's pixel size)
     bool headless = false;            // no window, no sound: a fixed 30 frames per second clock
     int frames = 0;                   // headless: frames to run (window: 0 = until closed)
     std::vector<ScriptedInput> script;
@@ -29,6 +33,13 @@ struct FrontOptions {
     bool draw_pointer = true;            // false: frames without the pointer (comparisons with the original's screen surface)
     bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
 };
+
+#ifdef CLIENT_HAVE_SDL
+// Sizes the window to the frame times the scale, centred. A frame as large as the desktop
+// takes the whole display instead (borderless, still one window pixel per screen pixel), the
+// way the original's chosen display mode fills the screen.
+void fit_window_to_frame(SDL_Window* window, int frame_w, int frame_h, int scale);
+#endif
 
 // Runs the client until it quits (or for the given frames). Returns a process exit code.
 int run_client(GameClient& client, Content& content, const FrontOptions& options);
