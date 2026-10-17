@@ -154,6 +154,15 @@ public:
     virtual std::vector<PlayerStats> stats() { return {}; }
     // The statistics screen's table (false: the session has none).
     virtual bool end_table(EndTable&) { return false; }
+    // The same battle from its start again (the exit menu's Restart) with the computer
+    // players' difficulty given; an empty launcher when the session cannot restart.
+    virtual std::function<std::unique_ptr<BattleSession>(const std::function<void(float, const std::string&)>&, std::string&)> restart_launcher(int /*difficulty*/) {
+        return {};
+    }
+    // The computer players' difficulty the battle was started with (0 easy .. 2 hard).
+    virtual int difficulty() const { return 1; }
+    // The battle's name as its map describes it (the restart dialog shows it).
+    virtual std::string battle_name() const { return {}; }
     // Called once the battle and its end screens are over; may push the next
     // screen (campaign debriefing / next mission). Return false to go back to
     // the screen the battle was started from (the default).
@@ -206,6 +215,9 @@ public:
     // Leaves the running battle (in-game menu quit / surrender, or a loaded game
     // replacing it).
     virtual void end_battle(BattleOutcome outcome) = 0;
+    // Leaves the running battle without its end screens and starts `launcher` in its place
+    // (the exit menu's Restart); the screen the battle was started from stays below.
+    virtual void restart_battle(BattleLauncher launcher) { start_battle(std::move(launcher)); }
     // Ends the program.
     virtual void quit() = 0;
 

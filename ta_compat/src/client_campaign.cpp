@@ -134,6 +134,8 @@ public:
     void surrender() override { inner_->surrender(); }
     std::vector<client::PlayerStats> stats() override { return inner_->stats(); }
     bool end_table(client::EndTable& t) override { return inner_->end_table(t); }
+    std::string battle_name() const override { return inner_->battle_name(); }
+    int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
     SkirmishSession& inner() { return *inner_; }
     CampaignProgress& progress() { return *progress_; }

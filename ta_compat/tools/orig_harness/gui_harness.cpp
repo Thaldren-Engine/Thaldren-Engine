@@ -327,7 +327,7 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> screens;
     int bw = 640, bh = 480;
-    std::string battle_pal, battle_guipal;
+    std::string battle_pal, battle_guipal, battle_shade;
     int game_type = -1;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -337,6 +337,9 @@ int main(int argc, char** argv) {
             // palettes\PALETTE.PAL and palettes\GUIPAL.PAL as files (the battle's colours).
             battle_pal = argv[++i];
             battle_guipal = argv[++i];
+        } else if (a == "--shade" && i + 1 < argc) {
+            // palettesPALETTE.SHD as a file: the battle's shade table on the display (dimmed screens).
+            battle_shade = argv[++i];
         } else if (a == "--res" && i + 1 < argc) {
             const std::string v = argv[++i];
             bw = std::atoi(v.c_str());
@@ -492,11 +495,36 @@ int main(int argc, char** argv) {
                     r.write(rg, gpal.data(), gpal.size());
                     r.call(0x004AC7D0, 0, {g.gui(), rp, rg});
                     r.write(0x0051F320 + 0x214, pal.data(), pal.size());
+                    if (!battle_shade.empty()) {
+                        if (FILE* fp = std::fopen(battle_shade.c_str(), "rb")) {
+                            std::vector<std::uint8_t> shd(0x2000, 0);
+                            const std::size_t n = std::fread(shd.data(), 1, shd.size(), fp);
+                            std::fclose(fp);
+                            if (n == shd.size()) r.write(r.r32(0x0051F320 + 0xC4), shd.data(), shd.size());
+                        }
+                    }
                 } else {
                     std::printf("battle palettes not read\n");
                 }
             }
             std::printf("battle screen %dx%d\n", bw, bh);
+            continue;
+        } else if (s.rfind("missionname:", 0) == 0) {
+            // The map's mission name (map info +0xA14; the restart dialog shows it).
+            u32 schema = r.r32(gs + 0x391E9);
+            if (!schema) {
+                schema = r.alloc(0x2000);
+                r.w32(gs + 0x391E9, schema);
+            }
+            const std::string t = s.substr(12);
+            r.write(schema + 0xA14, t.c_str(), t.size() + 1);
+            continue;
+        } else if (s == "shadeinfo") {
+            // Debugging: the display's shade table (dimmed screens) and a few of its level-8 entries.
+            const u32 t = r.r32(0x0051F320 + 0xC4);
+            std::uint8_t row[256] = {};
+            if (t) r.read(t + 8 * 256, row, sizeof row);
+            std::printf("shade table %08X: level 8: 175->%u 230->%u 255->%u 66->%u\n", t, row[175], row[230], row[255], row[66]);
             continue;
         } else if (s.rfind("endmsn:", 0) == 0) {
             // The end of a battle's statistics (after "battle"): the players' records from a

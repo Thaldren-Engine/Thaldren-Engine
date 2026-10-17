@@ -55,6 +55,7 @@ public:
         // Screens go before the battle they may refer to.
         graveyard_.clear();
         while (!stack_.empty()) stack_.pop_back();
+        retired_.reset();
     }
 
     // ---- FrontEnd
@@ -86,6 +87,13 @@ public:
         trim(std::min(stack_.size(), battle_base_));
         if (s_.battle_over) push(s_.battle_over(*this, *session_, outcome));
         if (stack_.size() <= battle_base_) finish_battle();
+    }
+    void restart_battle(BattleLauncher launcher) override {
+        if (session_) {
+            trim(std::min(stack_.size(), battle_base_));
+            finish_battle(false);
+        }
+        start_battle(std::move(launcher));
     }
     void quit() override { quit_ = true; }
     Settings& settings() override { return settings_; }
@@ -171,6 +179,7 @@ public:
     void frame(std::uint32_t now) {
         now_ = now;
         graveyard_.clear();  // screens closed during the last pass go now
+        retired_.reset();    // then a battle left during it
         const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
         // The menu pointer steps by its frames' own times with the wall-clock ticks since the
         // last pass (as the battle's pointer does).
@@ -351,7 +360,7 @@ private:
         if (s_.music) s_.music->set_mood(MusicMood::Silent);
         if (audio_) audio_->set_samples(nullptr);
         if (ask_session) s->after_battle(*this, o);
-        s.reset();
+        retired_ = std::move(s);  // (gone after the screens closed with it, which may refer to it)
         if (!stack_.empty()) stack_.back()->enter(*this);
     }
 
@@ -360,6 +369,7 @@ private:
     std::vector<std::unique_ptr<Screen>> stack_;
     std::vector<std::unique_ptr<Screen>> graveyard_;
     std::unique_ptr<BattleSession> session_;
+    std::unique_ptr<BattleSession> retired_;  // a battle just left (kept until its screens are gone)
     std::size_t battle_base_ = 0;  // stack size when the battle started (screens above are its menus)
     bool ended_ = false, mood_set_ = false;
     BattleOutcome outcome_ = BattleOutcome::None;

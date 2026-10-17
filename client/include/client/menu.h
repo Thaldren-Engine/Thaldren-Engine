@@ -103,6 +103,9 @@ struct MenuContent {
     // The game's light table (32 levels x 256 entries, palettes\PALETTE.LHT; empty when absent):
     // shaded outlines (the focus ring) replace a pixel p by light[level * 256 + p].
     std::vector<std::uint8_t> light;
+    // The game's shade table (32 levels x 256 entries, palettes\PALETTE.SHD; empty when absent): a
+    // screen dimmed under a dialog replaces a pixel p by shade[level * 256 + p].
+    std::vector<std::uint8_t> shade;
     // Interface colours (palette indices).
     std::uint8_t text_colour = 255, text_dim = 8, text_highlight = 0xF4, box_colour = 0, frame_colour = 8;
 };
@@ -160,13 +163,18 @@ protected:
     // The focus ring around the focused gadget (shaded outlines through the light table).
     void draw_focus_ring(FrontEnd& fe, render::Image8& out);
     bool placed_ = false;
+    // A screen opened centred (the original's open flags 0x100 and 0x1000): -1 centred on the frame,
+    // -2 centred right of the side panel, whatever the description's position (0: the description's).
+    int open_centred_ = 0;
     std::size_t focus_limit_ = 0;  // gadgets the first focus is chosen from (those of the description)
     bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
+    bool background_in_box_ = false;  // the picture drawn only inside the screen's box, from its top-left
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     int held_ = -1;                // index of the pressed button (pointer down)
     int drag_ = -1;                // index of the scroll bar being dragged
     int press_button_ = 1;         // mouse button of the last press (1 left, 3 right)
     int focus_gadget_ = -1;        // the gadget with the focus ring (-1: none)
+    int focus_before_press_ = -1;  // the focus before the last press (a press that opens a dialog keeps it)
     std::uint32_t last_click_ms_ = 0;
     int last_click_row_ = -1;
 

@@ -966,28 +966,204 @@ private:
 };
 
 // ------------------------------------------------------------------ in-game menus
-class ExitMenu : public LayoutScreen {
+// A screen's stock panel when its description names no picture (0x4B0230 with commongui's
+// "BackTile", its frames' offsets cleared): the nine frames tile the w x h rectangle as a framed
+// box: rows of the first frame's height (the top row frames 0-2, middle rows 3-5, the last
+// row 6-8, which lies flush with the bottom), columns of its width (left, middle repeated, the
+// right one flush with the right edge).
+void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h) {
+    const auto* t = art.sequence("anims\\commongui.GAF", "BackTile");
+    if (!t || t->empty()) return;
+    const render::Sprite8& f0 = t->front();
+    if (t->size() < 2) {
+        render::blit(out, clip, f0, x0 + f0.x_offset, y0 + f0.y_offset);
+        return;
+    }
+    const int fw = f0.width, fh = f0.height;
+    if (fw <= 0 || fh <= 0) return;
+    for (int y = 0; y < h;) {
+        const int row = y == 0 ? 0 : (h - fh + 1 <= y ? 6 : 3);
+        if (h < fh + y) y = h - fh;
+        for (int x = 0; x < w;) {
+            int col;
+            if (fw + x < w) {
+                col = x != 0 ? 1 : 0;
+            } else {
+                col = 2;
+                x = w - fw;
+            }
+            const std::size_t k = static_cast<std::size_t>(row + col);
+            if (k < t->size()) {
+                const render::Sprite8& s = (*t)[k];
+                render::blit(out, clip, s, x0 + x + s.x_offset, y0 + y + s.y_offset);
+            }
+            x += fw;
+        }
+        y += fh;
+    }
+}
+
+// A screen dimmed under a dialog (open flag 0x800): its rectangle through shade level 8.
+void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1) {
+    const std::vector<std::uint8_t>& shade = fe.menu_content().shade;
+    if (shade.size() < 0x2000) return;
+    x0 = std::max(x0, 0);
+    y0 = std::max(y0, 0);
+    x1 = std::min(x1, out.width - 1);
+    y1 = std::min(y1, out.height - 1);
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+            std::uint8_t& p = out.row(y)[x];
+            p = shade[8 * 256 + p];
+        }
+}
+
+// The confirmation (YESORNO.GUI, 0x460680; opened centred right of the side panel): the
+// question, Yes and No, No focused. Yes leaves the battle for the main menu (kind 0: "Exit to
+// Menu", no statistics) or ends the program (kind 2: "Exit Game"); No closes it.
+class YesOrNo : public LayoutScreen {
 public:
-    explicit ExitMenu(MenuArt& art) : LayoutScreen(art.layout("EXITMENU")) {}
+    YesOrNo(MenuArt& art, int kind) : LayoutScreen(art.layout("YESORNO")), art_(art), kind_(kind) {
+        open_centred_ = -2;
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
+        if (Widget* w = widget("TITLE"))
+            w->text = kind == 0 ? "Surrender this battle and return to main menu?" : "Surrender this battle and exit to Windows?";
+        for (std::size_t i = 1; i < widgets_.size(); ++i)
+            if (is(widgets_[i], "CHOICE2")) focus_choice_ = static_cast<int>(i);
+    }
     bool see_through() const override { return true; }
 
 protected:
     void draw_under(FrontEnd& fe, render::Image8& out) override {
+        if (focus_choice_ >= 0) focus_gadget_ = focus_choice_;  // (set when the screen opens)
+        focus_choice_ = -1;
         const Widget& h = widgets_.front();
-        client::fill_rect(out, out.bounds(), ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1, fe.menu_content().box_colour);
-        client::outline_rect(out, out.bounds(), ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1, fe.menu_content().frame_colour);
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+        (void)fe;
     }
     void on_press(FrontEnd& fe, Widget& w) override {
-        if (is(w, "MAINMENU")) {
-            // Leaving counts as giving up: the end screens follow.
-            if (fe.session()) fe.session()->surrender();
-            fe.end_battle(client::BattleOutcome::Quit);
-        } else if (is(w, "EXITGAME")) {
-            fe.quit();
+        if (is(w, "CHOICE1")) {
+            if (kind_ == 2) fe.quit();
+            else fe.to_main_menu();
+        } else if (is(w, "CHOICE2")) {
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    int kind_ = 0;
+    int focus_choice_ = -1;
+};
+
+// The restart dialog (RESTART.GUI over DRESTART, 0x4604A0; opened centred right of the side
+// panel): the battle's name, the computer players' difficulty, Cancel and Restart (the same
+// battle from its start with that difficulty).
+class RestartDialog : public LayoutScreen {
+public:
+    RestartDialog(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("RESTART")) {
+        open_centred_ = -2;
+        // DRESTART's top-left part in the box, its palette not put on the display (0x4288D0 with
+        // no flags).
+        background_in_box_ = true;
+        if (Widget* w = widget("Difficulty")) w->stage = std::clamp(s.difficulty(), 0, std::max(0, w->stages - 1));
+        name_ = s.battle_name();
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8&) override {
+        if (named_) return;
+        named_ = true;
+        // The name word-wrapped to the label's width in the small font (0x4AC4C0: at the end of
+        // a word, when the line so far is at least as wide, it breaks at the last space or
+        // hyphen before, which the break replaces); the first line goes to MISSIONNAME, the
+        // second to MISSIONNAME1.
+        const client::Font* f = fe.menu_content().small_font ? fe.menu_content().small_font : fe.menu_content().font;
+        Widget* w1 = widget("MISSIONNAME");
+        if (!w1 || !f) return;
+        const int width = w1->w;
+        std::string out;
+        std::size_t line_start = 0;
+        const std::string& t = name_;
+        for (std::size_t i = 0; i < t.size(); ++i) {
+            out.push_back(t[i]);
+            const char next = i + 1 < t.size() ? t[i + 1] : '\0';
+            if ((next == ' ' || next == '\n' || next == '-') && f->text_width(out.substr(line_start)) >= width) {
+                std::size_t k = out.size() - 1, j = i;
+                while (k > line_start && t[j] != ' ' && t[j] != '-') {
+                    out.pop_back();
+                    --k;
+                    --j;
+                }
+                out.back() = '\n';
+                line_start = out.size();
+                i = j;
+            }
+        }
+        const std::size_t nl = out.find('\n');
+        w1->text = out.substr(0, nl);
+        if (nl != std::string::npos)
+            if (Widget* w2 = widget("MISSIONNAME1")) w2->text = out.substr(nl + 1, out.find('\n', nl + 1) - nl - 1);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        client::BattleSession* s = fe.session();
+        if (is(w, "RESTART")) {
+            const Widget* d = widget("Difficulty");
+            client::BattleLauncher l = s ? s->restart_launcher(d ? d->stage : 1) : client::BattleLauncher();
+            if (l) fe.restart_battle(std::move(l));
+            else fe.pop();
         } else if (is(w, "CANCEL")) {
             fe.pop();
         }
     }
+
+private:
+    std::string name_;
+    bool named_ = false;
+};
+
+// The exit menu (EXITMENU.GUI, 0x4608B0, opened with flags 0x1800: centred right of the side
+// panel, the game menu under it dimmed): the stock panel, Exit to Menu, Exit Game, Cancel, and
+// in skirmishes and campaigns Restart (captioned "Restart", a new quick key). Exit to Menu and
+// Exit Game ask first (YESORNO); Restart opens the restart dialog.
+class ExitMenu : public LayoutScreen {
+public:
+    ExitMenu(MenuArt& art, client::BattleSession* s, render::ClipRect under) : LayoutScreen(art.layout("EXITMENU")), art_(art), under_(under) {
+        open_centred_ = -2;
+        if (Widget* w = widget("RESTART")) {
+            const bool offered = s && !s->network();
+            w->active = offered;
+            if (offered) set_caption(*w, "Restart");
+        }
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "MAINMENU") || is(w, "EXITGAME")) {
+            const int kind = is(w, "MAINMENU") ? 0 : 2;
+            fe.pop();
+            if (art_.layout("YESORNO")) fe.push(std::make_unique<YesOrNo>(art_, kind));
+        } else if (is(w, "RESTART")) {
+            client::BattleSession* s = fe.session();
+            fe.pop();
+            if (s && art_.layout("RESTART")) fe.push(std::make_unique<RestartDialog>(art_, *s));
+        } else if (is(w, "CANCEL")) {
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    render::ClipRect under_;
 };
 
 class GameMenu : public LayoutScreen {
@@ -1027,7 +1203,12 @@ protected:
         else if (is(w, "SAVEGAME") && s && fe.hooks().save_game_menu) fe.push(fe.hooks().save_game_menu(fe, *s));
         else if (is(w, "LOADGAME") && fe.hooks().load_game_menu) fe.push(fe.hooks().load_game_menu(fe, s));
         else if (is(w, "PREFS")) fe.push(std::make_unique<OptionsMenu>(art_, true));
-        else if (is(w, "EXIT") && art_.layout("EXITMENU")) fe.push(std::make_unique<ExitMenu>(art_));
+        else if (is(w, "EXIT") && art_.layout("EXITMENU")) {
+            // (the exit menu opens over this one, which keeps its focus, dimmed: gui_harness)
+            focus_gadget_ = focus_before_press_;
+            const Widget& h = widgets_.front();
+            fe.push(std::make_unique<ExitMenu>(art_, s, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        }
     }
 
 private:

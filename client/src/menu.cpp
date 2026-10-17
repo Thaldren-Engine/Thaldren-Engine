@@ -103,7 +103,10 @@ void LayoutScreen::press(FrontEnd& fe, Widget& w) {
     }
     fe.play_sound(w.sound >= 0 ? w.sound : fe.menu_content().click_sound);
     for (std::size_t i = 0; i < widgets_.size(); ++i)
-        if (&widgets_[i] == &w) focus_gadget_ = static_cast<int>(i);  // a pressed gadget takes the focus
+        if (&widgets_[i] == &w) {
+            focus_before_press_ = focus_gadget_;
+            focus_gadget_ = static_cast<int>(i);  // a pressed gadget takes the focus
+        }
     on_press(fe, w);
 }
 
@@ -434,6 +437,7 @@ void LayoutScreen::place(int fw, int fh) {
     if (!layout_ || widgets_.empty()) return;
     const Widget& h = widgets_.front();
     int x = layout_->x, y = layout_->y;
+    if (open_centred_ != 0) x = open_centred_;
     if (x == -1) {
         x = (fw - h.w) / 2;
         y = (fh - h.h) / 2;
@@ -539,8 +543,15 @@ void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
     if (!placed_) place(out.width, out.height);
     if (layout_ && layout_->background) {
         const render::Sprite8& bg = *layout_->background;
-        const bool full = bg.width >= out.width && bg.height >= out.height;
-        render::blit(out, out.bounds(), bg, (full ? 0 : ox_) + bg.x_offset, (full ? 0 : oy_) + bg.y_offset);
+        if (background_in_box_) {
+            // The picture's top-left part the size of the screen's box, at the box.
+            const Widget& h = widgets_.front();
+            const render::ClipRect c{std::max(ox_, 0), std::max(oy_, 0), std::min(ox_ + h.w - 1, out.width - 1), std::min(oy_ + h.h - 1, out.height - 1)};
+            render::blit(out, c, bg, ox_ + bg.x_offset, oy_ + bg.y_offset);
+        } else {
+            const bool full = bg.width >= out.width && bg.height >= out.height;
+            render::blit(out, out.bounds(), bg, (full ? 0 : ox_) + bg.x_offset, (full ? 0 : oy_) + bg.y_offset);
+        }
     }
     draw_under(fe, out);
     for (std::size_t i = 1; i < widgets_.size(); ++i) {

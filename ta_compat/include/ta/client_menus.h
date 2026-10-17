@@ -101,9 +101,16 @@ public:
     void surrender() override;
     std::vector<client::PlayerStats> stats() override;
     bool end_table(client::EndTable& t) override;
+    client::BattleLauncher restart_launcher(int difficulty) override;
+    int difficulty() const override;
+    std::string battle_name() const override;
     ClientWorld& world() { return *world_; }
 
 private:
+    std::string dir_;
+    int human_ = 0;
+    client::ClientOptions options_;
+    bool network_start_ = false;
     std::unique_ptr<ClientWorld> world_;
     std::unique_ptr<client::GameClient> client_;
     bool surrendered_ = false;
