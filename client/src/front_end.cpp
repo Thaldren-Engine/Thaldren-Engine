@@ -555,7 +555,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         return 1;
     }
     const int scale = std::max(1, o.scale);
-    SDL_Window* win = SDL_CreateWindow("Battle", w * scale, h * scale, 0);
+    SDL_Window* win = SDL_CreateWindow(o.title.c_str(), w * scale, h * scale, 0);
     if (!win) {
         std::printf("SDL_CreateWindow: %s\n", SDL_GetError());
         return 1;

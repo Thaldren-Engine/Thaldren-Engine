@@ -290,7 +290,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         return 1;
     }
     const int w = client.options().width, h = client.options().height, scale = std::max(1, o.scale);
-    SDL_Window* win = SDL_CreateWindow("Battle", w * scale, h * scale, 0);
+    SDL_Window* win = SDL_CreateWindow(o.title.c_str(), w * scale, h * scale, 0);
     if (!win) {
         std::printf("SDL_CreateWindow: %s\n", SDL_GetError());
         return 1;

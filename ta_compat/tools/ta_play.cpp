@@ -1,7 +1,7 @@
 // Plays a skirmish from an installed copy of the original game with the
 // playable client: an SDL3 window (GPU), the in-game interface, sound.
 //
-// Usage: ta_play <game_dir> [options]
+// Usage: ta_play [<game_dir>] [options]   (without a folder: the game folder the program sits in)
 //   Without battle options it starts with the original's menus (main menu, single player,
 //   skirmish set-up, options, battles, the end screens); --settings FILE keeps the settings
 //   (default settings.txt in the current directory). Any of --map, --side, --players, --no-ai,
@@ -57,10 +57,36 @@
 #include "ta/console_commands.h"
 #include "ta/client_world.h"
 
+namespace {
+
+// The folder the executable is in. Like the original, the program can sit in the game folder
+// and find the game's files beside it.
+std::string own_folder(const char* argv0) {
+#ifdef _WIN32
+    char path[MAX_PATH] = {};
+    const DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string s = n ? std::string(path, n) : std::string(argv0 ? argv0 : "");
+#else
+    std::string s = argv0 ? argv0 : "";
+#endif
+    const auto cut = s.find_last_of("\\/");
+    return cut == std::string::npos ? std::string(".") : s.substr(0, cut);
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        std::fprintf(stderr, "usage: ta_play <game_dir> [--map NAME] [--side arm|core] [--headless --frames N --script F --shots a,b --out P] ...\n");
-        return 2;
+    // The game folder: the first argument when it isn't an option, else the executable's own
+    // folder (the program placed in the game folder, as the original runs).
+    const bool dir_given = argc >= 2 && std::string(argv[1]).rfind("--", 0) != 0;
+    const std::string game_dir = dir_given ? std::string(argv[1]) : own_folder(argc > 0 ? argv[0] : nullptr);
+    {
+        std::ifstream probe(game_dir + "\\TotalA.exe", std::ios::binary);
+        std::ifstream probe2(game_dir + "\\rev31.gp3", std::ios::binary);
+        if (!dir_given && !probe && !probe2)
+            std::fprintf(stderr, "no game files found next to the program (%s); place it in the game folder or pass the folder:\n"
+                                 "usage: ta_play [<game_dir>] [--map NAME] [--side arm|core] [--headless --frames N --script F --shots a,b --out P] ...\n",
+                         game_dir.c_str());
     }
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ta::SkirmishSetup setup;
@@ -71,10 +97,11 @@ int main(int argc, char** argv) {
     bool ai = true;
     int side = 0;
     bool direct = false;
-    std::string settings_path = "settings.txt";
+    std::string settings_path = own_folder(argc > 0 ? argv[0] : nullptr) + "\\settings.txt";
+    front.title = "Total Annihilation";
     std::string end_screen_file, saves_dir, dump_pages_dir;
     std::vector<std::string> net_screens;
-    for (int i = 2; i < argc; ++i) {
+    for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
         if (a == "--map" || a == "--side" || a == "--players" || a == "--no-ai" || a == "--seed" || a == "--direct") direct = true;
@@ -165,7 +192,7 @@ int main(int argc, char** argv) {
         // The original's front end.
         ta::MenuArt art;
         std::string err;
-        if (!art.load(argv[1], err)) {
+        if (!art.load(game_dir, err)) {
             std::fprintf(stderr, "%s\n", err.c_str());
             return 1;
         }
@@ -178,7 +205,7 @@ int main(int argc, char** argv) {
         // Campaign, briefings and the saved games: <game dir>\SAVEGAME\<name>.sav as the original
         // keeps them (--saves DIR: another directory).
         {
-            std::string save_dir = saves_dir.empty() ? std::string(argv[1]) + "\\SAVEGAME" : saves_dir;
+            std::string save_dir = saves_dir.empty() ? game_dir + "\\SAVEGAME" : saves_dir;
             ta::install_campaign_hooks(fes.hooks, art, save_dir);
         }
 #ifdef TA_CLIENT_HAVE_NET
@@ -262,7 +289,7 @@ int main(int argc, char** argv) {
 
     auto world = std::make_unique<ta::ClientWorld>();
     std::string err;
-    if (!world->load(argv[1], setup, err)) {
+    if (!world->load(game_dir, setup, err)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }

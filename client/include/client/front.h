@@ -23,6 +23,7 @@ struct ScriptedInput {
 
 struct FrontOptions {
     int scale = 1;                    // window pixels per frame pixel (1: the screen size is the window's pixel size)
+    std::string title = "Battle";     // the window's title (the importer names it after the game)
     bool headless = false;            // no window, no sound: a fixed 30 frames per second clock
     int frames = 0;                   // headless: frames to run (window: 0 = until closed)
     std::vector<ScriptedInput> script;
