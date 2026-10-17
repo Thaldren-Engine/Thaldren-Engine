@@ -562,6 +562,51 @@ int main(int argc, char** argv) {
             for (int k = 80; k < 96; ++k) std::printf(" %u", row[k]);
             std::printf("\n");
             continue;
+        } else if (s.rfind("savedir:", 0) == 0) {
+            // savedir:PATH: the saved games' directory (the pointer at 0x5091C8 to "SAVEGAME", a
+            // path relative to the game's directory) pointed at PATH instead.
+            r.w32(0x005091C8, r.str(s.substr(8)));
+            continue;
+        } else if (s == "loadmenu" || s == "savemenu") {
+            // The load menu (0x4931D0) or the save menu (0x493060), as the menus and the game menu
+            // open them; then one redraw of the top layout.
+            ok = r.call(s == "loadmenu" ? 0x004931D0 : 0x00493060, 0, {});
+            const u32 top = r.r32(g.gui() + 0x18);
+            if (ok && top) r.call(0x004A81E0, 0, {g.gui(), r.r32(top + 0x10) | 0x40});
+            Frame f;
+            if (ok && g.grab(f)) write_bmp(out + s + ".bmp", f);
+            std::printf("%s: %s, top layout %08X\n", s.c_str(), ok ? "opened" : "failed", top);
+            continue;
+        } else if (s.rfind("msgbox:", 0) == 0) {
+            // msgbox:TEXT: the original's message box (0x4ABD90: 320 pixels, OK, sized to the text).
+            ok = r.call(0x004ABD90, 0, {g.gui(), r.str(s.substr(7)), 0x140, 1, 1});
+            Frame f;
+            if (ok && g.grab(f)) write_bmp(out + "msgbox.bmp", f);
+            std::printf("%s: %s\n", s.c_str(), ok ? "shown" : "failed");
+            continue;
+        } else if (s.rfind("items:", 0) == 0) {
+            // items:NAME: the top layout's list gadget's rows (+0xC0 count, +0xC2 the rows, each
+            // zero-terminated), its selection and first row.
+            const u32 top = r.r32(g.gui() + 0x18);
+            const u32 gadgets = top ? r.r32(top + 4) : 0;
+            u32 idx = 0xFFFFFFFFu;
+            if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str(s.substr(6))}, &idx);
+            if (idx != 0xFFFFFFFFu) {
+                const u32 g0 = gadgets + idx * 0x15B;
+                std::uint8_t rec[0x15B] = {};
+                r.read(g0, rec, sizeof rec);
+                const int count = static_cast<std::int16_t>(rec[0xC0] | rec[0xC1] << 8);
+                u32 at = static_cast<u32>(rec[0xC2] | rec[0xC3] << 8 | rec[0xC4] << 16 | rec[0xC5] << 24);
+                std::printf("%s: %d rows, selected %d, top %d\n", s.c_str(), count, static_cast<std::int16_t>(rec[0xBA] | rec[0xBB] << 8),
+                            static_cast<std::int16_t>(rec[0xBC] | rec[0xBD] << 8));
+                for (int k = 0; k < count && at; ++k) {
+                    char row[256] = {};
+                    r.read(at, row, 255);
+                    std::printf("  row %d: %s\n", k, row);
+                    at += static_cast<u32>(std::strlen(row)) + 1;
+                }
+            }
+            continue;
         } else if (s.rfind("maptype:", 0) == 0) {
             // maptype:N: the map info's provider word (GS+0x391E9 -> +0): 2 skirmish, 3 network,
             // 1 campaign (the skirmish set-up leaves 2; the map choice loads map info only for 2, 3).

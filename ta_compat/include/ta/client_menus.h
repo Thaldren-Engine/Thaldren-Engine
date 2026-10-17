@@ -125,6 +125,15 @@ client::ClientOptions client_options(const client::Settings& settings, int width
 client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* settings_from);
 #endif
 
+// The original's message box (MSGBOX.GUI, 0x4ABD90) over the screen shown: the text word-wrapped
+// to 320 pixels, one centred line per row, OK; the screen under it dimmed — `under` its box
+// (null: the whole frame).
+void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under = nullptr);
+
+// Text broken for a width as the original's 0x4AC4C0 does (at the end of a word, when the line so
+// far is at least `width` wide, the last space or hyphen before becomes a line break).
+std::string wrap_for_width(const client::Font& font, const std::string& text, int width);
+
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);
 

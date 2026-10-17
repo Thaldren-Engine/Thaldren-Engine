@@ -237,7 +237,17 @@ void LayoutScreen::press(FrontEnd& fe, Widget& w) {
             focus_before_press_ = focus_gadget_;
             focus_gadget_ = static_cast<int>(i);  // a pressed gadget takes the focus
         }
+    // A press that opens another screen over this one leaves this screen as it was last drawn:
+    // the focus ring stays where it was until this screen is on top again (the original redraws
+    // a layout's focus marking only in its full redraws; gui_harness: the single player screen's
+    // Load Game key).
+    const std::size_t depth = fe.depth();
+    ring_follow_ = false;
     on_press(fe, w);
+    if (depth != 0 && fe.depth() > depth && !ring_follow_) {
+        ring_hold_ = focus_before_press_;
+        hold_depth_ = depth;
+    }
 }
 
 void LayoutScreen::scroll_to(Widget& bar, int x, int y) {
@@ -284,8 +294,7 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
             return;
         }
         if (w.kind == WidgetKind::ScrollBar && w.list_slider) {
-            // Held; a press on the knob drags it.
-            focus_gadget_ = i;
+            // Held (the focus stays where it was); a press on the knob drags it.
             slider_held_ = i;
             const int kx0 = ox_ + w.x + 1, kx1 = ox_ + w.x - 1 + w.w, ky0 = oy_ + w.y + w.knob_pos + 2, ky1 = ky0 + w.knob;
             slider_drag_ = e.x >= kx0 && e.x <= kx1 && e.y >= ky0 && e.y <= ky1;
@@ -383,18 +392,40 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         }
         if (focus_ >= 0) {
             Widget& f = widgets_[static_cast<std::size_t>(focus_)];
+            f.cursor = std::clamp(f.cursor, 0, static_cast<int>(f.text.size()));
+            // The original's field editing (0x4AB720): Backspace removes the character before the
+            // insertion point, Delete the one at it, Home / End / Left / Right move it.
             if (k == keys::kBackspace) {
-                if (!f.text.empty()) f.text.pop_back();
+                if (f.cursor > 0) f.text.erase(static_cast<std::size_t>(--f.cursor), 1);
                 return;
             }
-            if (k == keys::kEnter) {
+            if (k == keys::kDelete) {
+                if (f.cursor < static_cast<int>(f.text.size())) f.text.erase(static_cast<std::size_t>(f.cursor), 1);
+                return;
+            }
+            if (k == keys::kHome || k == keys::kEnd || k == keys::kLeft || k == keys::kRight) {
+                if (k == keys::kHome) f.cursor = 0;
+                else if (k == keys::kEnd) f.cursor = static_cast<int>(f.text.size());
+                else if (k == keys::kLeft) f.cursor = std::max(0, f.cursor - 1);
+                else f.cursor = std::min(static_cast<int>(f.text.size()), f.cursor + 1);
+                return;
+            }
+            if (k == keys::kEnter || (k == keys::kEscape && field_escape_clears_)) {
+                // Enter commits the line; Escape (screens that ask for it) empties it first.
+                if (k == keys::kEscape) {
+                    f.text.clear();
+                    f.cursor = 0;
+                }
+                text_provisional_ = -1;
                 on_text(fe, f);
                 return;
             }
             if (k >= 32 && k < 127) {
                 char c = static_cast<char>(k);
                 if (e.shift) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                if (f.max_chars <= 0 || static_cast<int>(f.text.size()) < f.max_chars) f.text.push_back(c);
+                // A typed character comes again as a Text event when the platform makes them; the
+                // key's guess stays only until then.
+                if (!text_events_ && field_insert(fe, f, c)) text_provisional_ = f.cursor - 1;
                 return;
             }
         }
@@ -408,7 +439,9 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
                 return true;
             }
             press_button_ = 1;
+            key_press_ = true;
             press(fe, *w);
+            key_press_ = false;
             return true;
         };
         if (k == keys::kEnter && layout_ && press_named(layout_->enter_default)) return;
@@ -416,21 +449,53 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         if (k > 0 && k < 0x100 && !e.ctrl)
             for (Widget& w : widgets_)
                 if (w.kind == WidgetKind::Button && w.active && w.quickkey && w.quickkey == std::tolower(k)) {
+                    // (a key's press leaves the focus where it is: gui_harness, the single player
+                    // screen's Load Game key)
                     press_button_ = 1;
+                    key_press_ = true;
                     press(fe, w);
+                    key_press_ = false;
                     return;
                 } else if (w.kind == WidgetKind::Label && w.active && w.quickkey && w.quickkey == std::tolower(k) && !w.link.empty()) {
                     // A linked label's key presses the gadget it names.
                     if (Widget* t = widget(w.link); t && t->active && t->kind == WidgetKind::Button) {
                         press_button_ = 1;
+                        key_press_ = true;
                         press(fe, *t);
+                        key_press_ = false;
                     }
                     return;
                 }
         return;
     }
+    case InputEvent::Type::Text: {
+        text_events_ = true;
+        if (focus_ < 0) return;
+        Widget& f = widgets_[static_cast<std::size_t>(focus_)];
+        if (text_provisional_ >= 0 && text_provisional_ < static_cast<int>(f.text.size())) {
+            f.text.erase(static_cast<std::size_t>(text_provisional_), 1);
+            if (f.cursor > text_provisional_) --f.cursor;
+        }
+        text_provisional_ = -1;
+        if (e.key >= 32 && e.key < 127) field_insert(fe, f, static_cast<char>(e.key));
+        return;
+    }
     default: return;
     }
+}
+
+bool LayoutScreen::field_insert(FrontEnd& fe, Widget& f, char c) {
+    // A character goes in at the insertion point while the line is shorter than the field's
+    // maximum and its width with the character is at most the field's width less 4; fields with
+    // attribute 2 take letters, digits, '_', ' ' and '\'' only.
+    if ((f.attribs & 2) && !std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != ' ' && c != '\'') return false;
+    if (f.max_chars > 0 && static_cast<int>(f.text.size()) >= f.max_chars) return false;
+    const Font* font = fe.menu_content().font;
+    if (font && font->text_width(f.text) + font->glyphs[static_cast<unsigned char>(c)].width > f.w - 4) return false;
+    f.cursor = std::clamp(f.cursor, 0, static_cast<int>(f.text.size()));
+    f.text.insert(static_cast<std::size_t>(f.cursor), 1, c);
+    ++f.cursor;
+    return true;
 }
 
 void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& w, bool held) {
@@ -633,12 +698,38 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
         break;
     }
     case WidgetKind::TextField: {
-        if (font) {
-            std::string t = w.text;
-            const bool focused = focus_ >= 0 && &widgets_[static_cast<std::size_t>(focus_)] == &w;
-            if (focused) t += '_';
-            while (!t.empty() && font->text_width(t) > w.w - 4) t.erase(t.begin());
-            draw_text(out, clip, *font, t, x + 2, y + (w.h - font->height) / 2 + font->raise, mc.text_colour);
+        // The original's text field (0x4A4D70): attribute 1 fills the field with interface colour
+        // 0 (else the screen's picture shows); the text from (x, y + 3), the glyphs that fit w - 1;
+        // the field with the focus has its glyphs lit through light level 30 (0x4A16F0 sets its
+        // colour word); the field taking keys shows the insertion point, a line in interface colour
+        // 9 from the text's top down the font's height.
+        if (!font) break;
+        if (w.attribs & 1) fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, colour(0));
+        const int index = static_cast<int>(&w - widgets_.data());
+        const bool lit = focus_gadget_ == index && mc.light.size() >= 0x2000;
+        int cx = x, left = w.w - 1;
+        for (const char ch : w.text) {
+            const auto c = static_cast<unsigned char>(ch);
+            if (c < 0x20) continue;
+            const Glyph& g = font->glyphs[c];
+            if (left < g.width) break;
+            if (c != ' ')
+                for (int r = 0; r < g.rows; ++r)
+                    for (int k = 0; k < g.width; ++k) {
+                        const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                        if (at >= g.ink.size() || !g.ink[at]) continue;
+                        std::uint8_t v = g.colours.empty() ? mc.text_colour : g.colours[at];
+                        if (lit) v = mc.light[30 * 256 + v];
+                        put_pixel(out, clip, cx + g.left + k, y + 3 + g.top + r, v);
+                    }
+            left -= g.width;
+            if (left < 0) break;
+            cx += g.width;
+        }
+        if (focus_ == index) {
+            const int at = std::clamp(w.cursor, 0, static_cast<int>(w.text.size()));
+            const int px = x + font->text_width(std::string_view(w.text).substr(0, static_cast<std::size_t>(at)));
+            fill_rect(out, clip, px, y + 3, px, y + 3 + font->height, colour(9));
         }
         break;
     }
@@ -896,8 +987,12 @@ void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
     // Six shaded outlines around the focused gadget, one to six pixels out, light levels 31,
     // 28, 24, 19, 13, 6 (the four sides drawn as separate lines, so corners are lit twice).
     const std::vector<std::uint8_t>& light = fe.menu_content().light;
-    if (!focus_ring_ || focus_gadget_ < 0 || light.size() < 0x2000) return;
-    const Widget& w = widgets_[static_cast<std::size_t>(focus_gadget_)];
+    if (ring_hold_ >= -1 && hold_depth_ != 0) {
+        if (fe.depth() <= hold_depth_) hold_depth_ = 0;  // on top again: the ring follows the focus
+    }
+    const int ring = hold_depth_ != 0 ? ring_hold_ : focus_gadget_;
+    if (!focus_ring_ || ring < 0 || ring >= static_cast<int>(widgets_.size()) || light.size() < 0x2000) return;
+    const Widget& w = widgets_[static_cast<std::size_t>(ring)];
     if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox) return;
     const int gx0 = ox_, gy0 = oy_, gx1 = ox_ + widgets_.front().w - 1, gy1 = oy_ + widgets_.front().h - 1;  // the screen's own surface
     auto px = [&](int x, int y, int level) {

@@ -62,8 +62,9 @@ struct Widget {
     bool text_list = false;
     int assoc = 0;
     bool list_slider = false;  // a slider moved by its list (knob_pos is the knob's offset, knob its length)
-    // Text fields: maximum length.
+    // Text fields: maximum length, the insertion point.
     int max_chars = 0;
+    int cursor = 0;
     // Scroll bars: range and position; the list box it moves (by name).
     int range = 0, position = 0, knob = 0;
     // Slider art (the SLIDERS sequence in frames): first frame of its set (0 vertical, 10
@@ -197,6 +198,14 @@ protected:
     bool focus_ring_ = true;  // false: the screen draws no focus ring (option pages: their menu's ring)
     bool background_in_box_ = false;  // the picture drawn only inside the screen's box, from its top-left
     int focus_ = -1;               // index of the text field taking keys (-1: none)
+    bool field_escape_clears_ = false;  // Escape in the text field empties it and commits (the original's fields)
+    bool key_press_ = false;            // the press being handled came from a key
+    // The focus ring held where it was while a screen opened by a press covers this one (until
+    // the stack is back to hold_depth_; 0: not held). A press handler that redraws this screen
+    // before covering it sets ring_follow_.
+    int ring_hold_ = -1;
+    std::size_t hold_depth_ = 0;
+    bool ring_follow_ = false;
     int held_ = -1;                // index of the pressed button (pointer down)
     int drag_ = -1;                // index of the scroll bar being dragged
     int press_button_ = 1;         // mouse button of the last press (1 left, 3 right)
@@ -214,6 +223,9 @@ protected:
     bool slider_drag_ = false;
     int slider_anchor_ = 0, slider_anchor_knob_ = 0;
     void draw_text_list(const MenuContent& mc, render::Image8& out, const render::ClipRect& clip, const Widget& w, int x, int y);
+    bool field_insert(FrontEnd& fe, Widget& f, char c);
+    int text_provisional_ = -1;  // a character typed by its key, replaced by the Text event that follows
+    bool text_events_ = false;
     void list_pointer(FrontEnd& fe, int index);
     void slider_pointer(FrontEnd& fe, int index);
     Widget* list_of(const Widget& w);

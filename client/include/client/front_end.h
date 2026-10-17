@@ -204,6 +204,8 @@ public:
     // Screen stack.
     virtual void push(std::unique_ptr<Screen> screen) = 0;
     virtual void pop() = 0;
+    // The number of screens on the stack (0: not known).
+    virtual std::size_t depth() const { return 0; }
     // Pops every screen above the main menu.
     virtual void to_main_menu() = 0;
     // Shows the loading screen, runs the launcher, then plays the battle; when
