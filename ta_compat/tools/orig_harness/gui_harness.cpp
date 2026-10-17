@@ -1331,6 +1331,76 @@ int main(int argc, char** argv) {
             // One more frame of the battle room (the chat scrolls a line a frame).
             ok = r.call(0x0044A680, 0, {});
             continue;
+        } else if (s.rfind("loadscreen", 0) == 0 || s.rfind("loadframe:", 0) == 0) {
+            // The battle's loading screen (0x497F40, the routine the main loop runs while the
+            // loading thread works). "loadscreen" runs its first call: the set-up (layouts
+            // closed, the game palette and GUIPAL's interface colours, loadgame2bg, the flash
+            // state cleared; the loading thread is not started) and the first frame, all rows at
+            // 0. "loadframe:T,TE,U,A,D,E[:READY[:BITS]]" sets the six rows (textures, terrain,
+            // units, animation, 3D data, explosions; percent) and draws one more frame; READY
+            // (network games, game type 3) answers the "everybody loaded" question (0x4568C0)
+            // and BITS are ORed into the loading flags (8: synchronised). The screen as
+            // presented is written as <out>load_<n>.bmp (n counts the frames). The loading
+            // routine's sleep, the registry save, the network's sends and its event pumps do
+            // nothing; the remote players' progress comes from "loadplayer:SLOT,PERCENT,READY".
+            static int load_n = 0;
+            r.stub(0x004B6B20, 1, 0xC);  // the loading thread: "started"
+            r.stub(0x00430F00, 0, 0);    // the settings' registry save
+            r.stub(0x004B6B50, 0, 4);    // Sleep(200) after each frame
+            r.stub(0x00453320, 0, 8);    // network: a player's packets
+            r.stub(0x00453D40, 0, 0);    // network: receive
+            r.stub(0x004C9790, 0, 4);    // network: synchronised
+            r.stub(0x004618A0, 0, 4);    // network: the session's message pump
+            r.stub(0x00451DF0, 0, 0xC);  // network: guaranteed broadcast (the own progress)
+            u32 bits = 0, ready = 0;
+            if (s[4] == 's') {
+                r.w16(gs + 0x38D75, static_cast<std::uint16_t>(r.r32(gs + 0x38D75) & ~0xFu));
+            } else {
+                int v[6] = {};
+                const char* q = s.c_str() + 10;
+                std::sscanf(q, "%d,%d,%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]);
+                for (int k = 0; k < 6; ++k) r.w8(gs + 0x38D6F + static_cast<u32>(k), static_cast<std::uint8_t>(v[k]));
+                if (const char* c = std::strchr(q, ':')) {
+                    ready = static_cast<u32>(std::strtoul(c + 1, nullptr, 0));
+                    if (const char* c2 = std::strchr(c + 1, ':')) bits = static_cast<u32>(std::strtoul(c2 + 1, nullptr, 0));
+                }
+                r.w16(gs + 0x38D75, static_cast<std::uint16_t>((r.r32(gs + 0x38D75) & 0xFFFF) | bits));
+            }
+            r.stub(0x004568C0, ready, 0);
+            ok = r.call(0x00497F40, 0, {});
+            Frame f;
+            if (ok && g.grab_raw(f)) {
+                const std::string name = out + "load_" + std::to_string(load_n) + ".bmp";
+                write_bmp(name, f);
+                std::uint8_t flash[6] = {}, prev[6] = {};
+                r.read(0x0051E6C8, flash, 6);
+                r.read(0x0051E820, prev, 6);
+                std::printf("%s: frame %d %dx%d -> %s, flags %04X, flash %u %u %u %u %u %u\n", s.c_str(), load_n, f.w, f.h, name.c_str(),
+                            r.r32(gs + 0x38D75) & 0xFFFF, flash[0], flash[1], flash[2], flash[3], flash[4], flash[5]);
+            } else {
+                std::printf("%s: failed\n", s.c_str());
+            }
+            ++load_n;
+            continue;
+        } else if (s.rfind("loadmap:", 0) == 0) {
+            // loadmap:NAME: the map info's chosen map (0x435A20, as the map choice sets it): the
+            // loading screen's map line names it (0x435C30).
+            const u32 schema = r.r32(gs + 0x391E9);
+            if (schema) r.call(0x00435A20, schema, {r.str(s.substr(8))});
+            char sel[0x8F] = {};
+            if (schema) r.read(schema + 0xA14, sel, sizeof sel - 1);
+            std::printf("%s: map info %08X chose \"%s\"\n", s.c_str(), schema, sel);
+            continue;
+        } else if (s.rfind("loadplayer:", 0) == 0) {
+            // loadplayer:SLOT,PERCENT,READY: a player's loading progress as its packets report it
+            // (record +0x20) and whether it said it has loaded (GS+0x29A4[slot]).
+            int slot = 0, pct = 0, rd = 0;
+            std::sscanf(s.c_str() + 11, "%d,%d,%d", &slot, &pct, &rd);
+            if (slot >= 0 && slot < 10) {
+                r.w8(gs + 0x1B63 + static_cast<u32>(slot) * 0x14B + 0x20, static_cast<std::uint8_t>(pct));
+                r.w32(gs + 0x29A4 + static_cast<u32>(slot) * 4, static_cast<u32>(rd));
+            }
+            continue;
         } else if (s == "ingame") ok = r.call(kGameMenu, 0, {});
         else if (s == "prefs") ok = r.call(kOptionsMenu, 0, {});
         else if (s == "exitmenu") ok = r.call(0x004608B0, 0, {});

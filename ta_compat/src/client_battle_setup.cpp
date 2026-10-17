@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "client/front_end.h"
 #include "sim/battle_quiet.h"
 #include "sim/missions.h"
 #include "ta/client_world.h"
@@ -113,10 +114,15 @@ BattleRequest to_battle_request(Vfs& vfs, const SkirmishSetup& setup) {
 }
 
 bool ClientWorld::setup_battle(std::string& error, const std::function<void(float, const std::string&)>& progress) {
-    auto stage = [&](float f, const char* s) {
-        if (progress) progress(f, s);
+    // The loading screen's rows in the original's order (Textures, Terrain, Units, Animation,
+    // 3D Data, Explosions): each row is reported when the client's own work for it is done, the
+    // units row model by model with the original's values (k * 100 / count for definition k of
+    // count, the blank one included), so the screen always shows a state the original's could.
+    auto row = [&](int r, int pct) {
+        if (progress) progress(static_cast<float>(pct) / 100.0f, client::load_row_stage(r));
     };
-    stage(0.05f, "Loading map");
+    textures_.load(vfs_);
+    row(0, 100);
     outside_ = std::make_unique<Outside>();
     outside_->w = this;
     sim::BattleOutside& out = net_wrap ? net_wrap(*outside_) : static_cast<sim::BattleOutside&>(*outside_);
@@ -128,7 +134,6 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
         set_network_weapons(*lb_->battle, lb_->weapons);
         net_attach(*lb_->battle);
     }
-    stage(0.55f, "Loading units");
     // Copies the client draws from (static data).
     defs_ = lb_->unit_defs;
     weapons_ = lb_->weapon_defs;
@@ -138,14 +143,16 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
         error = "bad map file";
         return false;
     }
-    textures_.load(vfs_);
+    row(1, 100);
 
     // Every unit type's model, at its definition index (the battle type index).
     sim::Battle& b = *lb_->battle;
     types_.clear();
     types_.push_back(nullptr);  // index 0: the blank type
     int loaded = 0;
-    for (std::size_t k = 1; k < lb_->type_assets.size(); ++k) {
+    const std::size_t ndefs = lb_->type_assets.size();
+    for (std::size_t k = 1; k < ndefs; ++k) {
+        row(2, static_cast<int>(k * 100 / ndefs));
         auto t = std::make_unique<ClientUnitType>();
         if (lb_->type_assets[k]) {
             t->assets = lb_->type_assets[k].get();
@@ -159,8 +166,12 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
             }
         }
         types_.push_back(std::move(t));
-        if ((k & 31) == 0) stage(0.55f + 0.35f * static_cast<float>(k) / static_cast<float>(lb_->type_assets.size()), "Loading units");
     }
+    row(2, 100);
+    // (The features, movement classes and explosion tables were made inside load_battle.)
+    row(3, 100);
+    row(4, 100);
+    row(5, 100);
     for (std::size_t k = 1; k < types_.size(); ++k)
         if (types_[k] && types_[k]->ok) model_of_pose_[&types_[k]->assets->pose_model] = &types_[k]->model;
     std::printf("map %s: %dx%d cells; unit types: %d of %zu loaded; players:", request_.map.c_str(), hm_.width(), hm_.height(), loaded,
@@ -196,10 +207,11 @@ bool ClientWorld::load(const std::string& game_dir, const BattleRequest& request
         error = "cannot load the palette / blend table";
         return false;
     }
+    // The map line: the map's name, none for missions.
+    if (progress) progress(0.0f, "map:" + (request.start.provider == 1 ? std::string() : request.map));
     if (!setup_battle(error, progress)) return false;
-    if (progress) progress(0.92f, "Loading interface");
+    if (progress) progress(1.0f, "Loading interface");
     if (!build_content(error)) return false;
-    if (progress) progress(1.0f, "Done");
     return true;
 }
 

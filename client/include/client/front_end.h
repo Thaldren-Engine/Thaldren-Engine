@@ -172,9 +172,40 @@ public:
     std::function<void(int)> combat_activity;
 };
 
-// Progress of a battle being loaded: fraction 0..1 and the stage's name. The
-// front end redraws the loading screen on every call.
+// Progress of a battle being loaded: fraction 0..1 and the stage's name. The loading screen
+// has six rows filled one after the other (kLoadRowNames, in their order); a stage named
+// "row:K" sets row K to the fraction (whole percent, rounded down). "map:NAME" gives the map
+// line its name, "map:" alone leaves the screen without a map line (missions). Other stage
+// names only redraw. The front end redraws at most every 200 ms (kLoadRedrawMs), as often as the
+// original's loading screen does.
 using LoadProgress = std::function<void(float fraction, const std::string& stage)>;
+constexpr int kLoadRows = 6;
+constexpr std::uint32_t kLoadRedrawMs = 200;
+inline std::string load_row_stage(int row) { return "row:" + std::to_string(row); }
+
+// A player of a network game on the loading screen (the bars along its bottom).
+struct LoadingPlayer {
+    std::string name;
+    int percent = 0;      // its loading as its packets report it (local players: this machine's)
+    bool local = false;   // played on this machine (its bar shows this machine's average)
+    bool loaded = false;  // said it has loaded (counts as ready once at 100)
+};
+
+// What the loading screen shows. The front end owns it while a battle loads; the drawing
+// keeps its own per-row state in `flash` / `seen` / `flash_tick` (reset with each load).
+struct LoadingState {
+    std::array<int, kLoadRows> rows{};  // percent per row
+    bool map_line = true;               // the map line is shown (not for missions)
+    std::string map;                    // the map's name on it
+    bool network = false;               // a network game: the players' bars and the status line
+    bool synchronised = false;          // every machine has loaded (the status line says so)
+    std::vector<LoadingPlayer> players;  // the counted players in slot order
+    // The drawing's state: a row that reaches 100 % lights its label up (flash 30, two less at
+    // each redraw on a later clock tick); `seen` is each row's value at the last redraw.
+    std::array<int, kLoadRows> flash{}, seen{};
+    std::uint32_t flash_tick = 0;
+    std::uint32_t now_ms = 0;  // the clock at this redraw
+};
 // Builds a session (game data, map, battle start); nullptr with `error` on failure.
 using BattleLauncher = std::function<std::unique_ptr<BattleSession>(const LoadProgress& progress, std::string& error)>;
 
@@ -252,6 +283,9 @@ public:
     virtual void desktop_size(int& w, int& h) const = 0;
     // The display's modes (width, height), when the platform lists them (else none).
     virtual void display_modes(std::vector<std::array<int, 2>>& out) const { out.clear(); }
+    // The loading screen's state while a battle loads (null otherwise): a network game's
+    // launcher fills in its players and their progress.
+    virtual LoadingState* loading() { return nullptr; }
 };
 
 // ---------------------------------------------------------------- running it
@@ -262,8 +296,8 @@ struct FrontEndSetup {
     std::string settings_path;           // where the settings live (loaded at start, saved at exit)
     FrontEndHooks hooks;
     std::function<std::unique_ptr<Screen>(FrontEnd&)> main_menu;
-    // Draws the loading screen (fraction 0..1, stage name).
-    std::function<void(FrontEnd&, render::Image8&, float, const std::string&)> draw_loading;
+    // Draws the loading screen (on a frame of the menus' size).
+    std::function<void(FrontEnd&, render::Image8&, LoadingState&)> draw_loading;
     // The screens after a battle (outcome and statistics); popping below them ends the battle.
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&, BattleOutcome)> battle_over;
     // The in-game menu (F2, and Tab outside network games).

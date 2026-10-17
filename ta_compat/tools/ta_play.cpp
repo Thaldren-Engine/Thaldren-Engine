@@ -30,6 +30,8 @@
 //   --net-screen SPEC   tests: the menus start at a multiplayer screen (repeat to stack them):
 //                       selprov, tcp[:ADDRESS], selgame:FILE, newmulti, lounge:FILE,
 //                       message:WIDTH:TEXT (the inputs of gui_harness's commands of those names)
+//   --loading-test FILE tests: writes loading screen frames for the states in FILE and exits
+//                       (the format is described where it is read; compare: gui_harness loadframe:)
 //   --dump-build-pages DIR  tests: writes every builder's build pages (listing and pictures, for
 //                       each viewing side) to DIR and exits (compare: gui_harness buildpages:)
 
@@ -52,6 +54,7 @@
 #include "client/music.h"
 #include "render/presenter.h"
 #include "ta/client_campaign.h"
+#include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/client_net_screens.h"
 #include "ta/console_commands.h"
@@ -99,7 +102,7 @@ int main(int argc, char** argv) {
     bool direct = false;
     std::string settings_path = own_folder(argc > 0 ? argv[0] : nullptr) + "\\settings.txt";
     front.title = "Total Annihilation";
-    std::string end_screen_file, saves_dir, dump_pages_dir;
+    std::string end_screen_file, saves_dir, dump_pages_dir, loading_test_file;
     std::vector<std::string> net_screens;
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -112,6 +115,10 @@ int main(int argc, char** argv) {
         }
         if (a == "--end-screen") {
             end_screen_file = next();
+            continue;
+        }
+        if (a == "--loading-test") {
+            loading_test_file = next();
             continue;
         }
         if (a == "--saves") {
@@ -226,6 +233,69 @@ int main(int argc, char** argv) {
             for (int t = 1; t <= music.track_count(); ++t)
                 music.types()[static_cast<std::size_t>(t)] = t - 1 < static_cast<int>(types.size()) ? static_cast<std::uint8_t>(types[static_cast<std::size_t>(t - 1)] - '0')
                                                                  : static_cast<std::uint8_t>(music.track_count() >= 16 && t <= 7 ? 1 : 0);
+        }
+        if (!loading_test_file.empty()) {
+            // Tests: loading screen frames from a file, one item per line (# comments):
+            //   map NAME | nomap          the map line (nomap: none, as for missions)
+            //   net 0|1, sync 0|1         a network game; every machine loaded
+            //   player NAME PERCENT LOADED LOCAL   a network game's player (slot order)
+            //   remote INDEX PERCENT LOADED        a listed player's progress as its packets say
+            //   clock MS                  the clock at the next frames
+            //   frame T,TE,U,A,D,E        the rows (percent) and one redraw, written as
+            //                             <--out PREFIX>load_<n>.bmp (n counts the frames from 0)
+            // (compare: gui_harness loadscreen / loadframe: / loadplayer: / clock:).
+            std::ifstream in(loading_test_file);
+            client::LoadingState st;
+            int n = 0;
+            for (std::string line; std::getline(in, line);) {
+                if (const auto c = line.find('#'); c != std::string::npos) line.resize(c);
+                std::istringstream ls(line);
+                std::string key;
+                if (!(ls >> key)) continue;
+                if (key == "map") {
+                    std::getline(ls >> std::ws, st.map);
+                    while (!st.map.empty() && (st.map.back() == '\r' || st.map.back() == ' ')) st.map.pop_back();
+                    st.map_line = true;
+                } else if (key == "nomap") {
+                    st.map_line = false;
+                } else if (key == "net") {
+                    int v = 0;
+                    ls >> v;
+                    st.network = v != 0;
+                } else if (key == "sync") {
+                    int v = 0;
+                    ls >> v;
+                    st.synchronised = v != 0;
+                } else if (key == "player") {
+                    client::LoadingPlayer p;
+                    int loaded = 0, local = 0;
+                    ls >> p.name >> p.percent >> loaded >> local;
+                    p.loaded = loaded != 0;
+                    p.local = local != 0;
+                    st.players.push_back(p);
+                } else if (key == "remote") {
+                    int k = 0, pct = 0, loaded = 0;
+                    ls >> k >> pct >> loaded;
+                    if (k >= 0 && k < static_cast<int>(st.players.size())) {
+                        st.players[static_cast<std::size_t>(k)].percent = pct;
+                        st.players[static_cast<std::size_t>(k)].loaded = loaded != 0;
+                    }
+                } else if (key == "clock") {
+                    ls >> st.now_ms;
+                } else if (key == "frame") {
+                    std::string v;
+                    ls >> v;
+                    std::sscanf(v.c_str(), "%d,%d,%d,%d,%d,%d", &st.rows[0], &st.rows[1], &st.rows[2], &st.rows[3], &st.rows[4], &st.rows[5]);
+                    render::Image8 img(fes.width, fes.height, 0);
+                    ta::draw_loading_screen(art, img, st);
+                    const std::string name = front.screenshot_prefix + "load_" + std::to_string(n) + ".bmp";
+                    render::write_bmp(name, img, art.content().palette);
+                    std::printf("loading frame %d -> %s, flash %d %d %d %d %d %d\n", n, name.c_str(), st.flash[0], st.flash[1], st.flash[2],
+                                st.flash[3], st.flash[4], st.flash[5]);
+                    ++n;
+                }
+            }
+            return 0;
         }
         if (!end_screen_file.empty()) {
             // Tests: the statistics screen on its own, from a table file (the format gui_harness's

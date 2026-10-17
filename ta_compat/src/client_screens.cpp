@@ -14,6 +14,7 @@
 #include "sim/economy.h"
 #include "sim/rng.h"
 #include "sim/victory.h"
+#include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/tdf.h"
 
@@ -1723,35 +1724,6 @@ client::EndTable end_table_of(client::BattleSession& s, client::BattleOutcome o)
     return t;
 }
 
-// ------------------------------------------------------------------ loading screen
-// The load picture; "Map: <name>" centred near the bottom; six stage rows (textures,
-// terrain, units, animation, 3D data, explosions) with a bar from x 205 growing 3.5 pixels
-// per percent, red while loading and green when done.
-void draw_loading(MenuArt& art, const std::string& map, render::Image8& out, float fraction, const std::string& stage) {
-    const render::Palette* pal = nullptr;
-    if (const render::Sprite8* bg = art.picture("loadgame2bg", &pal)) render::blit(out, out.bounds(), *bg, bg->x_offset, bg->y_offset);
-    const render::Palette& p = pal ? *pal : art.content().palette;
-    const client::Font* f = art.content().font;
-    static const std::pair<const char*, int> rows[] = {{"Textures", 0x87}, {"Terrain", 0xb1}, {"Units", 0xda},
-                                                       {"Animation", 0x106}, {"3D Data", 0x130}, {"Explosions", 0x15b}};
-    // The client's loading reports one fraction: the rows fill in turn.
-    const auto* bar = art.sequence("anims\\commongui.GAF", "LIGHTBAR");
-    for (int r = 0; r < 6; ++r) {
-        const float part = std::clamp(fraction * 6.0f - static_cast<float>(r), 0.0f, 1.0f);
-        const int pct = static_cast<int>(part * 100.0f);
-        const int y = rows[r].second;
-        if (f) client::draw_text(out, out.bounds(), *f, rows[r].first, 0x5a, y, art.gui_colour(p, 15));
-        const std::uint8_t col = art.gui_colour(p, pct < 100 ? 12 : 10);
-        if (pct > 0) client::fill_rect(out, out.bounds(), 0xcd, y, 0xcd + pct * 7 / 2, y + 20, col);
-        if (bar && !bar->empty()) render::blit(out, {0xcd, y, 0xcd + pct * 7 / 2, y + 20}, bar->front(), 0xcd, y);
-    }
-    if (f) {
-        const std::string t = "Map: " + map;
-        client::draw_text(out, out.bounds(), *f, t, out.width / 2 - f->text_width(t) / 2, out.height - f->height * 3 / 2, art.gui_colour(p, 15));
-    }
-    (void)stage;
-}
-
 }  // namespace
 
 std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table) {
@@ -1768,9 +1740,7 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
         if (!art.layout("MAINMENU")) return nullptr;
         return std::make_unique<MainMenu>(art);
     };
-    setup.draw_loading = [&art](FrontEnd& fe, render::Image8& out, float f, const std::string& stage) {
-        draw_loading(art, fe.settings().get_text("SkirmishMap", ""), out, f, stage);
-    };
+    setup.draw_loading = [&art](FrontEnd&, render::Image8& out, client::LoadingState& st) { draw_loading_screen(art, out, st); };
     setup.battle_over = [&art](FrontEnd&, client::BattleSession& s, client::BattleOutcome o) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ENDMSN")) return nullptr;
         auto bo = std::make_unique<BattleOver>(art, end_table_of(s, o), s.content().hud, s.network());
