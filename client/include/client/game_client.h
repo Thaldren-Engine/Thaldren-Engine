@@ -67,6 +67,13 @@ public:
     GameClient(sim::Battle& battle, Content& content, const ClientOptions& options);
 
     void handle(const InputEvent& e);
+    // The modifier keys held now (the front polls them every pass: the original asks the
+    // keyboard when it needs them, e.g. Shift for the queued-order view and kept order modes).
+    void poll_modifiers(bool shift, bool ctrl, bool alt) {
+        shift_ = shift;
+        ctrl_ = ctrl;
+        alt_ = alt;
+    }
     // One pass of the main loop at wall-clock time `now_ms`: the due simulation steps (at
     // most 5), the per-frame sight expiry, scrolling and interface refresh. Returns the
     // number of steps run.
@@ -142,9 +149,9 @@ public:
     // The pointer's animation: the look shown and its frame (tests); a new look (not the one
     // shown) starts at its first frame.
     CursorKind pointer_kind() const { return cursor_shown_; }
-    bool pointer_ended() const { return cursor_ended_; }
+    bool pointer_ended() const { return cursor_clock_.ended; }
     void set_pointer(CursorKind k);
-    int pointer_frame() const { return cursor_frame_; }
+    int pointer_frame() const { return cursor_clock_.frame; }
     // One pass of the pointer's animation with `dt` ticks (1/30 s) of wall clock since the last
     // (frame() does this; tests drive it directly).
     void advance_pointer(std::uint32_t dt);
@@ -253,9 +260,7 @@ private:
     // The pointer's look and animation (the original changes the look only when it differs;
     // a new look starts at its first frame).
     CursorKind cursor_shown_ = CursorKind::Normal;
-    int cursor_frame_ = 0;
-    std::int16_t cursor_count_ = 0;
-    bool cursor_ended_ = false;
+    FrameClock cursor_clock_;
     bool cursor_set_ = false;
     // The top bar's rates as last refreshed (energy made, used, metal made, used) and the timer
     // of the refresh (every 30 steps, from the player's display timer).

@@ -92,6 +92,7 @@ struct MenuContent {
     std::vector<Sample> samples;
     int click_sound = -1, error_sound = -1;
     const std::vector<render::Sprite8>* cursor = nullptr;  // the menu pointer
+    FrameTiming cursor_timing;                             // its frames' times (1/30 s) and looping
     // Loads a screen's layout by name (nullptr when the game has none). The result stays valid
     // for the life of the content.
     std::function<const ScreenLayout*(const std::string& name)> layout;

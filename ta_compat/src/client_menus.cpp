@@ -107,6 +107,25 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
     content_.click_sound = sound("SmallButton");
     content_.error_sound = sound("NOTOKTOBUILD");
     content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
+    // Its timing: the sequence entry's loop byte (+2) and each frame's time (the frame entry's
+    // second word, low 16 bits).
+    if (const auto* g = gaf("anims\\CURSORS.GAF")) {
+        GafDirectory dir;
+        const int s = gaf_read_directory(*g, dir) ? gaf_find_sequence(dir, "cursornormal") : -1;
+        auto u32_at = [&](std::size_t o) -> std::uint32_t {
+            if (o + 4 > g->size()) return 0;
+            std::uint32_t v;
+            std::memcpy(&v, &(*g)[o], 4);
+            return v;
+        };
+        const std::uint32_t entry = s >= 0 ? u32_at(12 + static_cast<std::size_t>(s) * 4) : 0;
+        if (entry && entry + 0x28 <= g->size()) {
+            const std::uint16_t frames = static_cast<std::uint16_t>((*g)[entry] | ((*g)[entry + 1] << 8));
+            content_.cursor_timing.loop = (*g)[entry + 2] != 0;
+            for (std::uint16_t i = 0; i < frames; ++i)
+                content_.cursor_timing.durations.push_back(static_cast<std::uint16_t>(u32_at(entry + 0x28 + 8u * i + 4)));
+        }
+    }
     content_.text_colour = gui_colour(content_.palette, 15);
     content_.text_dim = gui_colour(content_.palette, 8);
     content_.box_colour = gui_colour(content_.palette, 0);

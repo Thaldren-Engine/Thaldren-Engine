@@ -1339,30 +1339,13 @@ void GameClient::set_pointer(CursorKind k) {
     if (cursor_set_ && k == cursor_shown_) return;
     cursor_set_ = true;
     cursor_shown_ = k;
-    cursor_frame_ = 0;
-    cursor_ended_ = false;
-    const FrameTiming& t = c_.cursors.timing[static_cast<std::size_t>(k)];
-    cursor_count_ = static_cast<std::int16_t>(t.durations.empty() ? 0xFFFF : t.durations[0]);
+    cursor_clock_.start(c_.cursors.timing[static_cast<std::size_t>(k)]);
 }
 
 void GameClient::advance_pointer(std::uint32_t dt) {
-    // Wall-clock ticks (1/30 s) since the last pass count the frame's time down; at zero or
-    // below the next frame comes with its own time added (several at once after a long pass).
-    // After the last frame a looping look starts over, another one ends (no pointer shown).
-    const FrameTiming& t = c_.cursors.timing[static_cast<std::size_t>(cursor_shown_)];
-    const int n = static_cast<int>(t.durations.size());
-    if (cursor_ended_ || n < 2) return;
-    cursor_count_ = static_cast<std::int16_t>(static_cast<std::uint16_t>(cursor_count_) - static_cast<std::uint16_t>(dt));
-    while (cursor_count_ < 1) {
-        if (++cursor_frame_ >= n) {
-            if (!t.loop) {
-                cursor_ended_ = true;
-                return;
-            }
-            cursor_frame_ = 0;
-        }
-        cursor_count_ = static_cast<std::int16_t>(static_cast<std::uint16_t>(cursor_count_) + t.durations[static_cast<std::size_t>(cursor_frame_)]);
-    }
+    // Wall-clock ticks (1/30 s) since the last pass step the look's frames by their own times
+    // (see FrameClock; a look that does not loop ends: no pointer shown).
+    cursor_clock_.step(c_.cursors.timing[static_cast<std::size_t>(cursor_shown_)], dt);
 }
 
 } // namespace client

@@ -94,6 +94,37 @@ struct FrameTiming {
     bool loop = true;
 };
 
+// An animated look's place: the frame shown and the time left on it (1/30 s ticks, 16 bits).
+struct FrameClock {
+    int frame = 0;
+    std::int16_t left = 0;
+    bool ended = false;  // a look that does not loop went past its last frame (nothing shown)
+    // Starts the look at its first frame with that frame's time.
+    void start(const FrameTiming& t) {
+        frame = 0;
+        ended = false;
+        left = static_cast<std::int16_t>(t.durations.empty() ? 0xFFFF : t.durations[0]);
+    }
+    // `dt` ticks of wall clock since the last step: they count the frame's time down; at zero or
+    // below the next frame comes with its own time added (several at once after a long wait).
+    // After the last frame a looping look starts over, another one ends. One-frame looks stay.
+    void step(const FrameTiming& t, std::uint32_t dt) {
+        const int n = static_cast<int>(t.durations.size());
+        if (ended || n < 2) return;
+        left = static_cast<std::int16_t>(static_cast<std::uint16_t>(left) - static_cast<std::uint16_t>(dt));
+        while (left < 1) {
+            if (++frame >= n) {
+                if (!t.loop) {
+                    ended = true;
+                    return;
+                }
+                frame = 0;
+            }
+            left = static_cast<std::int16_t>(static_cast<std::uint16_t>(left) + t.durations[static_cast<std::size_t>(frame)]);
+        }
+    }
+};
+
 struct CursorSet {
     std::array<const std::vector<render::Sprite8>*, static_cast<std::size_t>(CursorKind::Count)> looks{};
     std::array<FrameTiming, static_cast<std::size_t>(CursorKind::Count)> timing{};

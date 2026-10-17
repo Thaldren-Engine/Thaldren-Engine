@@ -314,6 +314,10 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             }
             client.handle(e);
         }
+        {
+            const SDL_Keymod mod = SDL_GetModState();
+            client.poll_modifiers((mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_ALT) != 0);
+        }
         client.frame(now);
         for (const SoundEvent& s : client.take_sounds())
             if (s.sample >= 0 && static_cast<std::size_t>(s.sample) < content.samples.size())

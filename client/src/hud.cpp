@@ -232,12 +232,12 @@ render::DrawList GameClient::draw() {
     // times from the art, counted down by the wall clock; see advance_pointer).
     if (!cursor_set_) set_pointer(cursor_kind());
     const auto* look = c_.cursors.looks[static_cast<std::size_t>(cursor_shown_)];
-    int frame = cursor_frame_;
+    int frame = cursor_clock_.frame;
     if (!look || look->empty()) {
         look = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Normal)];
         frame = 0;
     }
-    if (look && !look->empty() && !pointer_hidden_ && !cursor_ended_) {
+    if (look && !look->empty() && !pointer_hidden_ && !cursor_clock_.ended) {
         const render::Sprite8& s = (*look)[static_cast<std::size_t>(frame) % look->size()];
         list.blit(&s, mouse_x_, mouse_y_, screen, true);
     }
