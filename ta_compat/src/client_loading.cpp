@@ -97,14 +97,15 @@ void draw_loading_screen(MenuArt& art, render::Image8& out, client::LoadingState
         if (bar && !bar->empty()) render::blit(out, clip, bar->front(), 0xCD + bar->front().x_offset, y + bar->front().y_offset);
     }
     if (!st.network) return;
-    // Network games: every counted player's bar along the bottom (620 pixels shared out from
-    // x 11, each two pixels narrower than its share, y 420..435: interface colour 4, the loaded
-    // part in colour 10, the name over it), then the status line at (10, 400).
+    // Network games: until every machine has loaded, every counted player's bar along the
+    // bottom (620 pixels shared out from x 11, each two pixels narrower than its share,
+    // y 420..435: interface colour 4, the loaded part in colour 10, the name over it) and the
+    // count of players ready; then only "Synchronization complete". The line is at (10, 400).
     const int n = static_cast<int>(st.players.size());
     int ready = 0;
     for (const client::LoadingPlayer& p : st.players)
         if (p.percent == 100 && p.loaded) ++ready;
-    if (n > 0) {
+    if (n > 0 && !st.synchronised) {
         const int w = 620 / n;
         int x = 11;
         for (const client::LoadingPlayer& p : st.players) {
