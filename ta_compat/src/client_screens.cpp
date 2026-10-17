@@ -1303,8 +1303,64 @@ public:
         }
         shown_ = bars_;
     }
+    // The battle's last frame and its palette: the end begins by darkening it (the state
+    // machine's first states, 0x41F7F0 0-4: a frame for the switch, ten steps one tick apart
+    // after the first tick, each putting the whole screen through shade levels 13, 12, .. 4 in
+    // turn, two more frames, then a black frame while the statistics screen is set up).
+    void begin_fade(render::Image8 last, const render::Palette& palette) {
+        last_ = std::move(last);
+        battle_palette_ = palette;
+        phase_ = 0;
+    }
+    const render::Palette* palette() const override {
+        if (phase_ >= 0 && phase_ <= 5) return &battle_palette_;
+        return LayoutScreen::palette();
+    }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        if (phase_ >= 0 && phase_ <= 5) {
+            if (last_.width == out.width && last_.height == out.height) out.pixels = last_.pixels;
+            return;
+        }
+        if (phase_ == 6) {  // the set-up frame: the screen cleared
+            std::fill(out.pixels.begin(), out.pixels.end(), std::uint8_t{0});
+            return;
+        }
+        LayoutScreen::draw(fe, out);
+    }
     void frame(FrontEnd& fe, std::uint32_t now) override {
         const std::uint32_t t = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
+        if (phase_ >= 0 && phase_ <= 5) {
+            switch (phase_) {
+            case 2:  // ten fade steps, the first after the next tick
+                fade_left_ = 10;
+                fade_deadline_ = static_cast<std::int64_t>(t) + 1;
+                phase_ = 3;
+                return;
+            case 3:
+                if (fade_left_ == 0) {
+                    phase_ = 4;
+                    return;
+                }
+                if (static_cast<std::int64_t>(t) > fade_deadline_) {
+                    const std::vector<std::uint8_t>& shade = fe.menu_content().shade;
+                    if (shade.size() >= 0x2000) {
+                        const std::size_t row = static_cast<std::size_t>(fade_left_ + 3) * 256;
+                        for (std::uint8_t& p : last_.pixels) p = shade[row + p];
+                    }
+                    fade_deadline_ = static_cast<std::int64_t>(t) + 1;
+                    --fade_left_;
+                }
+                return;
+            case 5:  // the statistics screen's set-up
+                set_up_ = true;
+                phase_ = 6;
+                return;
+            default:  // 0 the battle's last pass, 1 the switch to the end states, 4 one more state
+                ++phase_;
+                return;
+            }
+        }
+        if (phase_ == 6) phase_ = 7;
         if (!set_up_) {
             set_up_ = true;  // the state machine's set-up frame
             return;
@@ -1465,6 +1521,11 @@ private:
     bool set_up_ = false, done_ = false, key_ = false;
     std::int64_t deadline_ = -1;  // the next column's time (the first comes at once)
     int column_ = 0;
+    // The fade (phase -1: none; 0-5 the battle's last frame, 6 the cleared set-up frame).
+    render::Image8 last_;
+    render::Palette battle_palette_{};
+    int phase_ = -1, fade_left_ = 0;
+    std::int64_t fade_deadline_ = 0;
 };
 
 // A session's end table (from its statistics when it has no table of its own).
@@ -1541,7 +1602,12 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     };
     setup.battle_over = [&art](FrontEnd&, client::BattleSession& s, client::BattleOutcome o) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ENDMSN")) return nullptr;
-        return std::make_unique<BattleOver>(art, end_table_of(s, o), s.content().hud, s.network());
+        auto bo = std::make_unique<BattleOver>(art, end_table_of(s, o), s.content().hud, s.network());
+        // The battle's last frame (without the pointer) for the fade.
+        client::GameClient& c = s.client();
+        c.set_pointer_hidden(true);
+        bo->begin_fade(render::execute(c.draw(), s.content().blend), s.content().palette);
+        return bo;
     };
     setup.game_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ARMOPT")) return nullptr;
