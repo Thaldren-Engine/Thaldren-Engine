@@ -504,6 +504,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     }
     SDL_HideCursor();
     confine_pointer(win, nullptr);
+    SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
         gpu = render::GpuRenderer::create(run.blend());
@@ -606,10 +607,20 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             case SDL_EVENT_KEY_UP:
                 e.type = ev.type == SDL_EVENT_KEY_DOWN ? InputEvent::Type::KeyDown : InputEvent::Type::KeyUp;
                 e.key = sdl_key(ev.key.key);
-                if (e.key == 0 || (ev.key.repeat && e.type == InputEvent::Type::KeyDown && e.key >= 0x100 && e.key != keys::kBackspace)) continue;
+                if (e.key == 0 || (ev.key.repeat && e.type == InputEvent::Type::KeyDown && e.key >= 0x100 && !key_repeats(e.key))) continue;
                 if (e.shift && e.key == '=') e.key = '+';
                 if (e.shift && e.key == '-') e.key = '_';
                 break;
+            case SDL_EVENT_TEXT_INPUT:
+                // Typed characters as the keyboard layout makes them (the chat line's text).
+                for (const char* p = ev.text.text; p && *p; ++p)
+                    if (static_cast<unsigned char>(*p) < 0x80) {
+                        InputEvent t = e;
+                        t.type = InputEvent::Type::Text;
+                        t.key = static_cast<unsigned char>(*p);
+                        run.handle(t);
+                    }
+                continue;
             default: continue;
             }
             run.handle(e);

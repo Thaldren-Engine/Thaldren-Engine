@@ -52,6 +52,10 @@ void confine_pointer(SDL_Window* window, const SDL_Event* ev);
 // Runs the client until it quits (or for the given frames). Returns a process exit code.
 int run_client(GameClient& client, Content& content, const FrontOptions& options);
 
+// Keys whose held-down repeats reach the client (the text fields' editing keys); other
+// non-character keys come once per press.
+inline bool key_repeats(int k) { return k == keys::kBackspace || k == keys::kDelete || k == keys::kLeft || k == keys::kRight; }
+
 // Parses a script file: one event per line, "<frame> <event> <args...>" with events
 // move X Y | down X Y BUTTON | up X Y BUTTON | click X Y BUTTON (down and up) |
 // key K | keyup K | type TEXT (the rest of the line typed key by key) |

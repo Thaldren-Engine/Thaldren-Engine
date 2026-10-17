@@ -29,7 +29,9 @@ constexpr int kLeft = 0x100, kRight = 0x101, kUp = 0x102, kDown = 0x103, kPause 
 }
 
 struct InputEvent {
-    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit } type = Type::MouseMove;
+    // Text: one typed character (key = its code) as the platform composes it from the keys and the
+    // keyboard layout; KeyDown still comes for the key itself.
+    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text } type = Type::MouseMove;
     int x = 0, y = 0;  // frame coordinates (mouse events)
     int button = 0;    // 1 left, 2 middle, 3 right
     int key = 0;       // keys:: or a character
@@ -255,6 +257,7 @@ private:
     void step_build_page(bool forward);
     int feature_under(int sx, int sy) const;  // feature type index under a screen point (-1: none)
     void draw_chat(render::Image8& o);
+    void chat_insert(int ch);  // a character typed into the chat line
     void draw_clock_and_units(render::Image8& o);
     void draw_reload_bars(render::Image8& o, const sim::Unit& u, int dy);
     void draw_caption(render::Image8& o, const Button& b, const std::string& text, int pressed);
@@ -362,6 +365,9 @@ private:
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;
     std::string chat_text_;
+    int chat_cursor_ = 0;          // the text field's insertion point
+    bool text_events_ = false;     // the platform sends typed characters (Text events)
+    int chat_provisional_ = -1;    // a key's character standing in for its typed character
     std::string last_command_;  // the last command line (debug: '\' runs it again)
     bool mdrag_ = false;                        // dragging the view with the middle button
     int mdrag_x_ = 0, mdrag_y_ = 0;

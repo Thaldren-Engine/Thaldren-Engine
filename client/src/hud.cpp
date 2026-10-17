@@ -26,6 +26,13 @@ namespace {
 
 constexpr std::uint32_t kSelected = sim::unit_tick_flags::kSelected;
 
+// A pixel of a layout dimmed under a dialog (0x4BF4D0 with -24: shade level 8). The routine
+// indexes the level's row with the pixel as a signed byte, so pixels from 0x80 up take level
+// 7's entry (row 8 less 256).
+std::uint8_t dimmed(const std::vector<std::uint8_t>& shade, std::uint8_t p) {
+    return shade[static_cast<std::size_t>(8 * 256 + static_cast<std::int8_t>(p))];
+}
+
 std::string fmt(const char* f, double v) {
     char buf[64];
     std::snprintf(buf, sizeof buf, f, v);
@@ -123,6 +130,19 @@ void GameClient::prepare_drawing() {
             for (const auto& f : *v)
                 for (std::uint8_t p : f.pixels) used.insert(p);
     };
+    // (the chat line: its picture, the glyphs, the insertion point's colour; the panel's captions
+    // dimmed under it)
+    used.insert(c_.hud[9]);
+    if (c_.chat.picture)
+        for (std::uint8_t p : c_.chat.picture->pixels)
+            if (!c_.chat.picture->has_key || p != c_.chat.picture->key) used.insert(p);
+    if (c_.chat.font)
+        for (const Glyph& g : c_.chat.font->glyphs)
+            for (std::uint8_t p : g.colours) {
+                used.insert(p);
+                if (c_.light_levels.size() >= 32 * 256) used.insert(c_.light_levels[30 * 256 + p]);
+                if (c_.shade_levels.size() >= 32 * 256) used.insert(dimmed(c_.shade_levels, p));
+            }
     add_frames(c_.radar_dots);
     add_frames(c_.team_logos);
     if (c_.radar_dot_hover)
@@ -198,8 +218,35 @@ render::DrawList GameClient::draw() {
         for (int x = 129; side_->panel_bottom && x < w; x += std::max(1, side_->panel_bottom->width))
             list.blit(side_->panel_bottom, x + side_->panel_bottom->x_offset, h - 32 + side_->panel_bottom->y_offset, screen, true);
     }
-    // The panel and its buttons.
-    if (const Panel* p = current_panel()) {
+    // The panel and its buttons. While the chat line is open the panel's box is shown dimmed:
+    // the chat line opens with flag 0x800, which puts the layout under it (the panel, with what
+    // lay under it when it was drawn) through shade level 8 once; closing redraws it.
+    const Panel* dim_panel = chat_ && c_.shade_levels.size() >= 32 * 256 ? current_panel() : nullptr;
+    if (dim_panel) {
+        const Panel* p = dim_panel;
+        const int pw = p->w > 0 ? p->w : 128, ph = p->h > 0 ? p->h : h - p->y;
+        render::Image8 img(pw, ph, list.clear_index);
+        const render::ClipRect all = img.bounds();
+        auto put = [&](const render::Sprite8* s, int x, int y) {
+            if (s) render::blit(img, all, *s, x - p->x, y - p->y);
+        };
+        if (side_ && side_->panel_side) put(side_->panel_side, side_->panel_side->x_offset, side_->panel_side->y_offset);
+        if (p->background) put(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset);
+        for (const Button& btn : p->buttons) {
+            const int f = button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn));
+            if (f >= 0) {
+                const render::Sprite8& s = (*btn.frames)[static_cast<std::size_t>(f)];
+                put(&s, btn.x + s.x_offset, btn.y + s.y_offset);
+            }
+        }
+        for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
+        render::Sprite8 sp;
+        sp.width = pw;
+        sp.height = ph;
+        sp.has_key = false;
+        sp.pixels = std::move(img.pixels);
+        list.blit(list.keep(std::move(sp)), p->x, p->y, screen, false);
+    } else if (const Panel* p = current_panel()) {
         if (p->background) list.blit(p->background, p->x + p->background->x_offset, p->y + p->background->y_offset, screen, true);
         for (const Button& btn : p->buttons) {
             // Pressed: only the button the pointer holds (while over it), the tab of the menu
@@ -306,6 +353,15 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
                 if (n == 0) continue;
                 draw_caption(o, btn, "+" + std::to_string(n), button_pressed_look(btn) ? 1 : 0);
             }
+    // (the captions belong to the panel: dimmed with it while the chat line is open)
+    if (const Panel* p = current_panel(); p && chat_ && c_.shade_levels.size() >= 32 * 256) {
+        const int pw = p->w > 0 ? p->w : 128, ph = p->h > 0 ? p->h : opt_.height - p->y;
+        for (int y = std::max(p->y, 0); y < std::min(p->y + ph, o.height); ++y)
+            for (int x = std::max(p->x, 0); x < std::min(p->x + pw, o.width); ++x) {
+                std::uint8_t& px = o.row(y)[x];
+                if (px != overlay_key_) px = dimmed(c_.shade_levels, px);
+            }
+    }
     // Paused sign; the victory and defeat signs once the battle is decided (end flags).
     const int cx = (opt_.width + 128) / 2, cy = opt_.height / 2;
     if (budget_.paused && c_.paused_sign) render::blit(o, o.bounds(), *c_.paused_sign, cx, cy);
@@ -326,12 +382,49 @@ void GameClient::draw_clock_and_units(render::Image8& o) {
 }
 
 void GameClient::draw_chat(render::Image8& o) {
-    // The chat line being typed, in the top bar's place while it is open.
-    if (!chat_ || !side_ || !side_->font) return;
-    const Font& f = *side_->font;
-    fill_rect(o, o.bounds(), 128, 0, opt_.width - 1, 31, c_.hud[0]);
-    outline_rect(o, o.bounds(), 140, 6, std::min(opt_.width - 1, 500), 25, c_.hud[15]);
-    draw_text(o, o.bounds(), f, "> " + chat_text_ + "_", 144, 9 + f.raise, c_.hud[15], -1, 350);
+    // The chat line (TALK.GUI as the original opens it, 0x494050): a box at the description's
+    // place — at the bottom edge, over the bottom bar — clipped to the box: its picture (the
+    // CONSOLE gadget, its pixels as they are), the text field filled with interface colour 0
+    // (attribute 1), the line in the interface's picture font from 3 rows below the field's top
+    // (only the glyphs that fit the field's width less 1; the field has the focus, so its glyphs
+    // go through light level 30 — the focus marking of a text field, 0x4A16F0, which sets the
+    // gadget's colour word to 30 — instead of a focus ring), then the insertion point: a line in
+    // interface colour 9 from the text's top down the font's height (inclusive). No blinking.
+    if (!chat_) return;
+    const Content::ChatLine& t = c_.chat;
+    if (!t.loaded) return;
+    int bx = t.x, by = t.y;
+    if (bx + t.w > opt_.width) bx = (opt_.width - t.w) / 2;
+    if (by + t.h > opt_.height) by = (opt_.height - t.h) / 2;
+    if (by < 0) by += opt_.height;
+    const render::ClipRect box{std::max(bx, 0), std::max(by, 0), std::min(bx + t.w - 1, opt_.width - 1), std::min(by + t.h - 1, opt_.height - 1)};
+    // (the picture's top-left at the gadget's place: the routine adds the frame's offsets and
+    // the blit takes them off again)
+    if (const render::Sprite8* s = t.picture) render::blit(o, box, *s, bx + t.picture_x + s->x_offset, by + t.picture_y + s->y_offset);
+    const int fx = bx + t.field_x, fy = by + t.field_y;
+    if (t.field_attribs & 1) fill_rect(o, box, fx, fy, fx + t.field_w - 1, fy + t.field_h - 1, c_.hud[0]);
+    if (!t.font) return;
+    const Font& f = *t.font;
+    int x = fx, width = t.field_w - 1;
+    for (const unsigned char ch : chat_text_) {
+        const Glyph& g = f.glyphs[ch];
+        if (ch < 0x20 || !g.present) continue;
+        if (width < g.width) break;
+        const int rows = g.rows > 0 ? g.rows : f.height;
+        if (ch != ' ')
+            for (int r = 0; r < rows; ++r)
+                for (int k = 0; k < g.width; ++k) {
+                    const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                    if (at >= g.ink.size() || !g.ink[at]) continue;
+                    std::uint8_t v = g.colours.empty() ? c_.hud[static_cast<std::size_t>(t.field_colour & 0xFF)] : g.colours[at];
+                    if (!g.colours.empty() && c_.light_levels.size() >= 32 * 256) v = c_.light_levels[30 * 256 + v];
+                    put_pixel(o, box, x + g.left + k, fy + 3 + g.top + r, v);
+                }
+        width -= g.width;
+        x += g.width;
+    }
+    const int cx = fx + f.text_width(chat_text_.substr(0, static_cast<std::size_t>(std::clamp(chat_cursor_, 0, static_cast<int>(chat_text_.size())))));
+    render::draw_line(o, box, cx, fy + 3, cx, fy + 3 + f.height, c_.hud[9]);
 }
 
 void GameClient::draw_unit_marks(render::Image8& o) {

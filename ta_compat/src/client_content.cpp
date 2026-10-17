@@ -155,6 +155,7 @@ bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& ou
         g.crdefault = sec->get_string("crdefault", 32, "");
         g.escdefault = sec->get_string("escdefault", 32, "");
         g.defaultfocus = sec->get_string("defaultfocus", 32, "");
+        g.max_chars = sec->get_int("maxchars", 0);
         out.push_back(std::move(g));
     }
     return true;
@@ -298,6 +299,8 @@ bool ClientWorld::build_content(std::string& error) {
         const GuiGadget& head = gs[0];
         out.x = head.x;
         out.y = head.y;
+        out.w = head.w;
+        out.h = head.h;
         if (!head.panel.empty())
             if (const auto* p = sequence(common, head.panel)) out.background = &p->front();
         const std::string gui_gaf = "anims\\" + gui_name + ".GAF";
@@ -762,8 +765,10 @@ bool ClientWorld::build_content(std::string& error) {
     {
         std::vector<std::uint8_t> lht;
         if (vfs_.read("palettes\\PALETTE.LHT", lht)) light_table_ = render::light_blend_table(lht);
+        if (lht.size() >= 32 * 256) c.light_levels.assign(lht.begin(), lht.begin() + 32 * 256);
         // Unit looks: the shade table (lit structures) and the water tint (units seen under water).
         if (!vfs_.read("palettes\\PALETTE.SHD", shade_table_) || shade_table_.size() < 32 * 256) shade_table_.clear();
+        c.shade_levels = shade_table_;  // (also a layout dimmed under the chat line)
         water_table_ = render::water_tint_table(palette_);
     }
     {
@@ -779,6 +784,39 @@ bool ClientWorld::build_content(std::string& error) {
         gray_table_ = render::gray_remap_table(palette_);
         fog_.gray_table = &gray_table_;
         for (std::size_t k = 0; k < 256; ++k) c.minimap_grey[k] = gray_table_[k];
+    }
+    // The chat line: TALK.GUI's box, its picture gadget (art by the gadget's name in the layout's
+    // own GAF, else commongui) and its text field.
+    {
+        std::vector<std::uint8_t> f;
+        std::vector<GuiGadget> gs;
+        if (vfs_.read("guis\\TALK.GUI", f) && parse_gui(f, gs) && !gs.empty()) {
+            client::Content::ChatLine& t = c.chat;
+            t.loaded = true;
+            t.x = gs[0].x;
+            t.y = gs[0].y;
+            t.w = gs[0].w;
+            t.h = gs[0].h;
+            t.font = caption_font;
+            for (std::size_t i = 1; i < gs.size(); ++i) {
+                const GuiGadget& g = gs[i];
+                if (g.id == 12 && !t.picture) {
+                    const auto* s = sequence("anims\\TALK.GAF", g.name);
+                    if (!s) s = sequence(common, g.name);
+                    if (s && !s->empty()) t.picture = &s->front();
+                    t.picture_x = g.x;
+                    t.picture_y = g.y;
+                } else if (g.id == 3 && !t.field_w) {
+                    t.field_x = g.x;
+                    t.field_y = g.y;
+                    t.field_w = g.w;
+                    t.field_h = g.h;
+                    t.field_attribs = g.attribs;
+                    t.field_colour = g.colorf;
+                    t.max_chars = g.max_chars;
+                }
+            }
+        }
     }
     // Features' names and reclaim values (hover info), the victory and defeat signs.
     // The bottom bar shows a feature's description (the original's +0x80 text, also when empty).

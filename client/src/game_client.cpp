@@ -870,6 +870,17 @@ void GameClient::handle(const InputEvent& e) {
     case InputEvent::Type::KeyUp:
         if (e.key >= 0 && e.key < 0x200) keys_down_[e.key] = false;
         break;
+    case InputEvent::Type::Text:
+        text_events_ = true;
+        if (chat_) {
+            if (chat_provisional_ >= 0 && chat_provisional_ < static_cast<int>(chat_text_.size())) {
+                chat_text_.erase(static_cast<std::size_t>(chat_provisional_), 1);
+                if (chat_cursor_ > chat_provisional_) --chat_cursor_;
+            }
+            chat_provisional_ = -1;
+            chat_insert(e.key);
+        }
+        break;
     }
 }
 
@@ -1055,28 +1066,71 @@ sim::Vec3i GameClient::cursor_world() const {
     return {t[0], t[1], t[2]};
 }
 
+void GameClient::chat_insert(int ch) {
+    // A character goes in at the insertion point when the line is shorter than the field's
+    // maximum, it is 0x20..0x7F (a field with attribute 2 takes only letters, digits, '_', ' '
+    // and '\''), and the line with it is at most the field's width less 4 pixels wide.
+    const Content::ChatLine& t = c_.chat;
+    const int max_chars = t.loaded && t.max_chars > 0 ? t.max_chars : 63;
+    if (static_cast<int>(chat_text_.size()) == max_chars || ch < 0x20 || ch >= 0x80) return;
+    if ((t.field_attribs & 2) && !std::isalnum(ch) && ch != '_' && ch != ' ' && ch != '\'') return;
+    if (t.font && t.field_w > 0) {
+        const char one[2] = {static_cast<char>(ch), 0};
+        if (t.font->text_width(chat_text_) + t.font->text_width(one) > t.field_w - 4) return;
+    }
+    chat_cursor_ = std::clamp(chat_cursor_, 0, static_cast<int>(chat_text_.size()));
+    chat_text_.insert(chat_text_.begin() + chat_cursor_, static_cast<char>(ch));
+    ++chat_cursor_;
+}
+
 void GameClient::key_down(const InputEvent& e) {
     const int k = e.key;
-    // The chat line takes every key while it is open.
+    // The chat line takes every key while it is open (its text field's editing, 0x4AB720):
+    // Enter sends the line and closes it, Escape closes it with the line dropped; Backspace
+    // removes the character before the insertion point, Delete the one at it; Left / Right
+    // move the point, Home / End to the start / end; Up / Down do nothing (no history).
     if (chat_) {
+        const int n = static_cast<int>(chat_text_.size());
+        chat_cursor_ = std::clamp(chat_cursor_, 0, n);
         if (k == keys::kEnter) {
             chat_ = false;
             const std::string line = chat_text_;
             chat_text_.clear();
+            chat_cursor_ = 0;
             enter_chat_line(line);
         } else if (k == keys::kEscape) {
             chat_ = false;
             chat_text_.clear();
+            chat_cursor_ = 0;
         } else if (k == keys::kBackspace) {
-            if (!chat_text_.empty()) chat_text_.pop_back();
-        } else if (k >= 32 && k < 127 && chat_text_.size() < 60) {
-            chat_text_.push_back(e.shift ? static_cast<char>(std::toupper(k)) : static_cast<char>(k));
+            if (chat_cursor_ > 0) chat_text_.erase(static_cast<std::size_t>(--chat_cursor_), 1);
+        } else if (k == keys::kDelete) {
+            if (chat_cursor_ < n) chat_text_.erase(static_cast<std::size_t>(chat_cursor_), 1);
+        } else if (k == keys::kHome) {
+            chat_cursor_ = 0;
+        } else if (k == keys::kEnd) {
+            chat_cursor_ = n;
+        } else if (k == keys::kLeft) {
+            if (chat_cursor_ > 0) --chat_cursor_;
+        } else if (k == keys::kRight) {
+            if (chat_cursor_ < n) ++chat_cursor_;
+        } else if (k >= 32 && k < 127 && !text_events_) {
+            // Without the platform's typed characters: the key, Shift giving capitals. Until the
+            // first typed character arrives the key's character stands in for it (replaced when
+            // its typed character follows).
+            const std::size_t before = chat_text_.size();
+            chat_insert(e.shift ? std::toupper(k) : k);
+            if (chat_text_.size() > before) chat_provisional_ = chat_cursor_ - 1;
+            return;
         }
+        chat_provisional_ = -1;
         return;
     }
     if (k == keys::kEnter) {
+        // Opens the chat line (0x494050, TALK.GUI) with an empty line.
         chat_ = true;
         chat_text_.clear();
+        chat_cursor_ = 0;
         return;
     }
     if (k == keys::kPause) {

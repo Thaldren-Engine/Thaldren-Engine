@@ -53,6 +53,7 @@ int button_frame(const Button& b, bool held, bool disabled, int stage);
 struct Panel {
     const render::Sprite8* background = nullptr;
     int x = 0, y = 0;
+    int w = 0, h = 0;  // the description's box (header gadget)
     std::vector<Button> buttons;
 };
 
@@ -238,6 +239,21 @@ struct Content {
     std::array<std::uint8_t, 10> player_colour{};
     const render::Sprite8* victory_sign = nullptr;  // over the view when the battle is won / lost
     const render::Sprite8* defeat_sign = nullptr;
+    // The chat line (Enter): its layout as the game's description gives it (the box at x, y; a
+    // negative y counts from the bottom edge), the picture drawn in it and the text field, and
+    // the interface's picture font.
+    struct ChatLine {
+        bool loaded = false;
+        int x = 128, y = -33, w = 512, h = 33;
+        const render::Sprite8* picture = nullptr;
+        int picture_x = 0, picture_y = 0;
+        int field_x = 0, field_y = 0, field_w = 0, field_h = 0;  // relative to the box
+        int field_attribs = 0, field_colour = 15, max_chars = 63;
+        const Font* font = nullptr;
+    };
+    ChatLine chat;
+    std::vector<std::uint8_t> shade_levels;  // the shade table (32 levels x 256; a layout dimmed under a dialog)
+    std::vector<std::uint8_t> light_levels;  // the light table (32 levels x 256; the focused text field's text)
     // Builds the battle view of the viewing player (projection, culling and draw order are
     // the renderer's; which units, features and shots are seen is the content's).
     std::function<void(render::BattleScene& scene, int view_player, std::uint32_t frame_counter)> fill_scene;

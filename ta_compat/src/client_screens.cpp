@@ -1003,7 +1003,9 @@ void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& c
     }
 }
 
-// A screen dimmed under a dialog (open flag 0x800): its rectangle through shade level 8.
+// A screen dimmed under a dialog (open flag 0x800): its rectangle through shade level 8. The
+// original (0x4BF4D0) indexes the level's row with the pixel as a signed byte: pixels from 0x80
+// up take level 7's entry.
 void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1) {
     const std::vector<std::uint8_t>& shade = fe.menu_content().shade;
     if (shade.size() < 0x2000) return;
@@ -1014,7 +1016,7 @@ void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1)
     for (int y = y0; y <= y1; ++y)
         for (int x = x0; x <= x1; ++x) {
             std::uint8_t& p = out.row(y)[x];
-            p = shade[8 * 256 + p];
+            p = shade[static_cast<std::size_t>(8 * 256 + static_cast<std::int8_t>(p))];
         }
 }
 
