@@ -24,9 +24,9 @@
 
 namespace ta {
 
-// The original mounts the game directory's archives (at most ten .hpi), then the archives of
-// the game CD in a drive. On an install whose CD archives sit in the game directory
-// (totala3.hpi, totala4.hpi, worlds.hpi beyond the ten), this mounts them as the CD layer.
+// The archive rescan the original runs before a campaign starts (Vfs::scan): each scan mounts
+// at most ten new .hpi of the game directory, then the CD drives' archives. On the Steam
+// install the second scan adds totala3.hpi, totala4.hpi (the campaign) and worlds.hpi.
 void mount_cd_archives(Vfs& vfs, const std::filesystem::path& game_dir);
 
 struct CampaignMission {

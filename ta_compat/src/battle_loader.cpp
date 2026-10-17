@@ -119,14 +119,16 @@ void read_meteors(Vfs& vfs, const TdfSection* schema, sim::MeteorShower& m, std:
 
 std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, sim::BattleOutside& outside, std::string& error,
                                           const std::function<void(sim::Battle&)>& before_start) {
+    bool added = false;
     for (const std::filesystem::path& a : req.extra_archives) {
         bool mounted = false;
         std::error_code ec;
         for (const auto& m : vfs.archives())
             if (std::filesystem::equivalent(m->path(), a, ec)) mounted = true;
         HpiError err;
-        if (!mounted) vfs.mount(a, err);
+        if (!mounted) added |= vfs.mount(a, err);
     }
+    if (added) vfs.refresh_shadows();
     auto lb = std::make_unique<LoadedBattle>();
     if (!vfs.read("maps\\" + req.map + ".tnt", lb->tnt)) {
         error = "map not found: " + req.map;
@@ -164,6 +166,13 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     }
     if (ota_root && schema >= 0 && !req.saved_game) lb->feature_defs.load_schema_features(*ota_root, "Schema " + std::to_string(schema));
     load_unit_context(vfs, lb->unit_context);
+    if (!vfs.game_dir().empty()) {
+        // The unit files as the original enumerated them: once, after its start-up scan only.
+        Vfs first;
+        first.mount_game_dir(vfs.game_dir());
+        lb->unit_context.enumerated_unit_files = first.enumerate("units\\*.FBI");
+        lb->unit_context.enumerated_weapon_files = first.enumerate("Weapons\\*.tdf");
+    }
     lb->unit_defs = load_unit_defs(vfs, lb->unit_context, &lb->feature_defs);
     lb->feature_defs.resolve_chains();
 

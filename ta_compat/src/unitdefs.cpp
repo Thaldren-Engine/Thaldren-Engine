@@ -26,17 +26,6 @@ std::string truncate(std::string s, std::size_t buf) {
     return s;
 }
 
-// base + "\" + name, extension (after the last '.') replaced by ext.
-std::string virtual_path(const std::string& base, const std::string& name, const std::string& ext) {
-    std::string p = base + "\\" + name;
-    if (!ext.empty()) {
-        const auto dot = p.rfind('.');
-        if (dot != std::string::npos) p.resize(dot);
-        p += "." + ext;
-    }
-    return p;
-}
-
 std::string strip_extension(std::string s) {
     const auto dot = s.rfind('.');
     if (dot != std::string::npos) s.resize(dot);
@@ -129,9 +118,9 @@ struct WeaponFiles {
 
 WeaponFiles load_weapon_files(Vfs& vfs, const UnitDefContext& ctx) {
     WeaponFiles w;
-    for (const auto& name : vfs.enumerate("Weapons\\*.tdf")) {
+    for (const auto& name : ctx.enumerated_weapon_files ? *ctx.enumerated_weapon_files : vfs.enumerate("Weapons\\*.tdf")) {
         bool loose = false;
-        auto root = load_tdf(vfs, virtual_path("Weapons", name, "TDF"), &loose);
+        auto root = load_tdf(vfs, vfs.virtual_path("Weapons", name, "TDF"), &loose);
         if (root && (!loose || !ctx.cd_check_enabled)) w.roots.push_back(std::move(root));
     }
     return w;
@@ -149,7 +138,7 @@ std::uint32_t weapon_section_checksum(const WeaponFiles& w, const std::string* n
 // Fills the stub fields read while enumerating; returns false if the unit is incompatible.
 bool load_stub(Vfs& vfs, const UnitDefContext& ctx, const WeaponFiles& weapons, const std::string& file,
                UnitDefRecord& u, bool& aborted) {
-    const std::string path = virtual_path("units", file, "FBI");
+    const std::string path = vfs.virtual_path("units", file, "FBI");
     std::vector<std::uint8_t> data;
     if (!vfs.read(path, data)) return true;  // unopenable: record stays blank
     u.source_file = file;
@@ -474,7 +463,7 @@ void load_unit_context(Vfs& vfs, UnitDefContext& ctx) {
     ctx.weapon_names.fill("");
     for (const auto& name : vfs.enumerate("Weapons\\*.tdf")) {
         bool loose = false;
-        auto root = load_tdf(vfs, virtual_path("Weapons", name, "TDF"), &loose);
+        auto root = load_tdf(vfs, vfs.virtual_path("Weapons", name, "TDF"), &loose);
         if (!root || (loose && ctx.cd_check_enabled)) continue;
         for (const auto& sec : root->children()) {
             const std::int32_t id = sec->get_int("ID", -1);
@@ -502,7 +491,7 @@ void load_unit_context(Vfs& vfs, UnitDefContext& ctx) {
 UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable* features) {
     UnitDefTable table;
     const WeaponFiles weapons = load_weapon_files(vfs, ctx);
-    const auto files = vfs.enumerate("units\\*.FBI");
+    const auto files = ctx.enumerated_unit_files ? *ctx.enumerated_unit_files : vfs.enumerate("units\\*.FBI");
 
     // Record 0 is zero-filled apart from its unit name and the compatible flag.
     UnitDefRecord none;
@@ -539,11 +528,11 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
     std::string yard_buffer(1024, '\0');
     for (std::size_t i = 1; i < kept.size(); ++i) {
         UnitDefRecord& u = kept[i];
-        const std::string path = virtual_path("units", u.unit_name, "FBI");
+        const std::string path = vfs.virtual_path("units", u.unit_name, "FBI");
         if (vfs.size_or_zero(path) != 0) load_properties(vfs, ctx, table.categories, path, u, yard_buffer, features);
         {
             // Model: objects3d\<objectname>.3DO; height becomes the Y extent.
-            const std::string model_path = virtual_path("objects3d", truncate(u.object_name, 0x20), "3DO");
+            const std::string model_path = vfs.virtual_path("objects3d", truncate(u.object_name, 0x20), "3DO");
             std::vector<std::uint8_t> data;
             if (vfs.read(model_path, data)) {
                 const auto m = load_3do(data, true);
@@ -557,11 +546,11 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
             }
         }
         const std::string base = strip_extension(u.unit_name);
-        const bool gui0 = vfs.size_or_zero(virtual_path("guis", base + "0", "GUI")) != 0;
+        const bool gui0 = vfs.size_or_zero(vfs.virtual_path("guis", base + "0", "GUI")) != 0;
         u.type_flags = gui0 ? (u.type_flags | unit_flags::kHasGui0) : (u.type_flags & ~unit_flags::kHasGui0);
         std::uint8_t pages = 1;
         bool any = false;
-        while (vfs.size_or_zero(virtual_path("guis", base + std::to_string(pages), "GUI")) != 0) {
+        while (vfs.size_or_zero(vfs.virtual_path("guis", base + std::to_string(pages), "GUI")) != 0) {
             ++pages;
             any = true;
         }
@@ -635,7 +624,7 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
             return v;
         };
         for (std::size_t fi = 0; fi < menu_files.size(); ++fi) {
-            auto root = load_tdf(vfs, virtual_path("download", menu_files[fi], "TDF"));
+            auto root = load_tdf(vfs, vfs.virtual_path("download", menu_files[fi], "TDF"));
             if (!root) continue;
             const std::size_t base = fi * file_stride;
             std::uint32_t count = 0;

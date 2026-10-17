@@ -813,9 +813,15 @@ SaveContext battle_save_context(SkirmishSession& s, const CampaignProgress* camp
 }
 
 void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const std::string& save_dir) {
-    mount_cd_archives(art.vfs(), art.game_dir());
-    hooks.campaign_menu = [&art, save_dir](client::FrontEnd&) -> std::unique_ptr<client::Screen> { return std::make_unique<CampaignScreen>(art, save_dir); };
+    // The original rescans the archives when New Campaign is pressed (0x4775C9) and when the
+    // load-game dialog closes (0x49257A; its save listing cannot see archives, so rescanning
+    // as it opens is the same).
+    hooks.campaign_menu = [&art, save_dir](client::FrontEnd&) -> std::unique_ptr<client::Screen> {
+        mount_cd_archives(art.vfs(), art.game_dir());
+        return std::make_unique<CampaignScreen>(art, save_dir);
+    };
     hooks.load_game_menu = [&art, save_dir](client::FrontEnd& fe, client::BattleSession* s) -> std::unique_ptr<client::Screen> {
+        mount_cd_archives(art.vfs(), art.game_dir());
         // No saved games: the message instead (0x4931D0).
         if (list_save_files(save_dir).empty()) {
             show_message(fe, art, "There are no saved games to choose from");

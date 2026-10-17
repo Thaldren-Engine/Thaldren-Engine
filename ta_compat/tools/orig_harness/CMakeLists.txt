@@ -797,3 +797,23 @@ add_executable(sound_harness sound_harness.cpp
 )
 target_include_directories(sound_harness PRIVATE ${ROOT}/client/include ${ROOT}/render/include ${ROOT}/engine/sim/include)
 target_compile_options(sound_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# The file system (archive scan, shadow flags, finder, listers, lookups, bytes, unit file
+# enumeration) vs ta::Vfs; also builds the synthetic test folder ("make").
+add_executable(vfs_harness
+    vfs_harness.cpp
+    ${ROOT}/ta_compat/src/cob.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/featuredefs.cpp
+    ${ROOT}/ta_compat/src/gaf.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/model3do.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/unitdefs.cpp
+    ${ROOT}/ta_compat/src/weapondefs.cpp
+    ${ROOT}/engine/sim/src/pose.cpp
+    ${ROOT}/engine/sim/src/x87_trig.cpp
+)
+target_include_directories(vfs_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(vfs_harness PRIVATE /W4 /permissive- /fp:precise)

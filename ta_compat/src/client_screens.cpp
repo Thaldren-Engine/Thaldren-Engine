@@ -878,6 +878,7 @@ protected:
             fe.pop();
             return;
         } else if (is(w, "Start")) {
+            art_.vfs().scan();  // the original rescans the archives here (0x47AF2E)
             start(fe);
             return;
         }
