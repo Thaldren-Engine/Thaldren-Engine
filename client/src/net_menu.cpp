@@ -254,6 +254,8 @@ void launch_network_battle(FrontEnd& fe, const NetMenuConfig& cfg, NetLaunch L) 
     req->start.loading_rand_seed = t ^ 0x5A5A5A5Au;
     req->start.crt_rand_state = crt->state();
     req->settings = &fe.settings();
+    // The unit definitions' rules as the exchange left them (0x46E160 at the battle start).
+    for (const auto& [key, sum] : room->unit_checks()) req->unit_rules[key] = {room->unit_enabled(key), room->unit_limit(key)};
     {  // the host's record decides (the original reads the host's option word, bit 13)
         const auto& ps = room->players();
         const net::RoomPlayer* host = &ps[0];

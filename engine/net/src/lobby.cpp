@@ -607,13 +607,43 @@ void BattleRoom::judge_unit(std::uint32_t key) {
         }
     }
     verdicts_[key] = enabled;
+    send_answer(key);
+}
+
+void BattleRoom::send_answer(std::uint32_t key) {
+    // 0x46D860: the definition's entry to every peer: key, its "allowed" short (+0x18: 1 unless
+    // the restrictions set it to 0), its verdict (+0x1A: 0 until the definition was compared
+    // with every peer, 0x46D970), and the low 16 bits of its count (-1: no limit).
     u8 pk[14] = {packet::kSync, 3};
     put32(pk + 6, key);
-    pk[10] = enabled ? 1 : 0;
-    pk[11] = 1;
-    put16(pk + 12, players_[0].unit_limit);
+    pk[10] = unit_allowed(key) ? 1 : 0;
+    pk[11] = unit_confirmed(key) ? 1 : 0;
+    put16(pk + 12, static_cast<std::uint16_t>(unit_limit(key)));
     for (const PeerChecks& c : peers_) send_one(net_id_, c.id, pk, 14);
 }
+
+void BattleRoom::set_unit_limit(std::uint32_t key, std::int32_t count) {
+    limits_[key] = count;
+    // 0x46E550: a joining machine only keeps its own copy; the host answers every peer.
+    if (host_) send_answer(key);
+}
+
+void BattleRoom::set_unit_enabled(std::uint32_t key, bool on) {
+    allowed_[key] = on;
+    if (host_) send_answer(key);
+}
+
+bool BattleRoom::unit_allowed(std::uint32_t key) const {
+    const auto a = allowed_.find(key);
+    return a == allowed_.end() || a->second;
+}
+
+bool BattleRoom::unit_confirmed(std::uint32_t key) const {
+    const auto v = verdicts_.find(key);
+    return v != verdicts_.end() && v->second;
+}
+
+bool BattleRoom::unit_enabled(std::uint32_t key) const { return unit_allowed(key) && unit_confirmed(key); }
 
 void BattleRoom::loading_tick(sim::Lcg15* crt_rand) {
     // 0x4568C0, once per pass while loading.
@@ -868,7 +898,12 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         if (sub >= 100) break;
         if (!host_) {
             ++sync_heard_;
-            if (sub == 3) verdicts_[get32(p + 6)] = p[10] != 0 && p[11] != 0;
+            if (sub == 3) {
+                // 0x46D6C0: the host's entry replaces this machine's (enabled, confirmed, count).
+                allowed_[get32(p + 6)] = p[10] != 0;
+                verdicts_[get32(p + 6)] = p[11] != 0;
+                limits_[get32(p + 6)] = static_cast<std::int16_t>(get16(p + 12));
+            }
             break;
         }
         auto it = std::find_if(peers_.begin(), peers_.end(), [&](const PeerChecks& c) { return c.id == from; });

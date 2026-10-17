@@ -25,8 +25,10 @@
 #include "net/dplay_tcpip.h"
 #include "net/protocol.h"
 #include "render/raster.h"
+#include "ta/client_world.h"
 #include "ta/net_setup.h"
 #include "ta/tdf.h"
+#include "ta/unitdefs.h"
 
 namespace ta {
 
@@ -1461,6 +1463,328 @@ std::unique_ptr<client::Screen> make_room_map_view(MenuArt& art, std::function<s
 
 namespace {
 
+// ------------------------------------------------------------------ build restrictions (RESTRICT2.GUI)
+// One unit definition of the restrictions' list (0x44C7E0): every definition but the
+// "norestrict" ones, its row "<name>\r<side> <metal>M  <energy>E" (the costs cut to whole
+// numbers), its picture unitpics\<unitname>.PCX; sorted by the row's text (byte order).
+struct RestrictEntry {
+    std::uint32_t key = 0;  // the definition's key (the FBI file's simple checksum)
+    std::string text, picture;
+    bool wacky = false;     // "wacky" definitions start at a count of 0 (0x46D040)
+};
+const std::vector<RestrictEntry>& restrict_entries(MenuArt& art) {
+    static std::vector<RestrictEntry> entries;
+    static bool done = false;
+    if (done) return entries;
+    done = true;
+    UnitDefContext ctx;
+    load_unit_context(art.vfs(), ctx);
+    const UnitDefTable defs = load_unit_defs(art.vfs(), ctx);
+    for (std::size_t k = 1; k < defs.units.size(); ++k) {
+        const UnitDefRecord& d = defs.units[k];
+        if (d.can_do_flags & (1u << 15)) continue;  // norestrict
+        RestrictEntry e;
+        e.key = d.fbi_checksum;
+        e.text = d.name + "\r" + d.side + " " + std::to_string(static_cast<int>(d.build_cost_metal)) + "M  " +
+                 std::to_string(static_cast<int>(d.build_cost_energy)) + "E";
+        e.picture = "unitpics\\" + d.unit_name + ".PCX";
+        e.wacky = (d.can_do_flags & (1u << 16)) != 0;
+        entries.push_back(std::move(e));
+    }
+    std::stable_sort(entries.begin(), entries.end(), [](const RestrictEntry& a, const RestrictEntry& b) {
+        return std::lexicographical_compare(a.text.begin(), a.text.end(), b.text.begin(), b.text.end(),
+                                            [](char x, char y) { return static_cast<unsigned char>(x) < static_cast<unsigned char>(y); });
+    });
+    return entries;
+}
+
+// What the restrictions work on: each definition's count (the most one player may build, -1 no
+// limit) and whether it is enabled, in the room's unit definition exchange; `set_count` /
+// `set_enabled` change this machine's entry (the host's also go to every peer).
+struct RestrictHooks {
+    std::function<std::int32_t(std::uint32_t key)> count;
+    std::function<bool(std::uint32_t key)> enabled;
+    std::function<void(std::uint32_t key, std::int32_t count)> set_count;
+    std::function<void(std::uint32_t key, bool on)> set_enabled;
+};
+
+// The restrictions (0x44C7E0, handler 0x44C420, its frame 0x44C220), opened by the room's Build
+// Restrictions with flags 0x880 over the room; UnitRestrict5x behind it on the room's palette.
+// DESCLIST (rows 32 pixels high, no picked row) shows the entries, PICLIST their pictures (one
+// more loaded every two clock ticks), SLIDER0..11 and COUNT0..11 the counts of the twelve rows in
+// view (0..100, 101 "No Limit"); SCROLLSLIDER moves the lists. A row's flags: 1 not enabled (its
+// text dimmed four times, its picture shaded), 2 a count of 0 (a red cross over the picture). Only
+// the host moves the sliders (a joining player's are grayed) and has Load List, Save List and
+// Reset List. Each refresh of the rows in view puts every row's count back through its slider
+// (0x44BFD0 -> 0x44BE70), which on the host answers every peer for those definitions.
+class Restrictions : public LayoutScreen {
+public:
+    Restrictions(MenuArt& art, const client::ScreenLayout* layout, const render::Palette* palette, bool host, RestrictHooks hooks)
+        : LayoutScreen(layout), art_(art), palette_(palette), host_(host), hooks_(std::move(hooks)), entries_(restrict_entries(art)) {
+        flags_.assign(entries_.size(), 0);
+        pictures_.resize(entries_.size());
+        counts_.resize(entries_.size());
+        old_.resize(entries_.size());
+        for (std::size_t k = 0; k < entries_.size(); ++k) {
+            counts_[k] = hooks_.count ? hooks_.count(entries_[k].key) : -1;
+            old_[k] = counts_[k] == -1 ? 0x65 : counts_[k];  // (OLDCOUNTS keeps 101 for "no limit")
+        }
+        for (int i = 0; i < 12; ++i)
+            if (Widget* s = widget("SLIDER" + std::to_string(i))) s->range = 0x65;
+        if (Widget* d = widget("DESCLIST")) {
+            d->attribs |= 0x100;
+            d->row_h = 0x20;
+        }
+        if (Widget* p = widget("PICLIST")) {
+            p->attribs |= 0x180;
+            p->row_h = 0x20;
+            p->kind = WidgetKind::Surface;  // (drawn here)
+        }
+        refresh_rows();
+        if (Widget* d = widget("DESCLIST")) {
+            std::vector<std::string> rows;
+            for (const RestrictEntry& e : entries_) rows.push_back(e.text);
+            set_list(*d, rows);
+            d->row_h = 0x20;
+            d->max_top = std::max(0, static_cast<int>(rows.size()) - d->h / 0x20);
+            // The scroll slider is sized by the first list of its group, the picture list
+            // (0x4A3EF0): knob = whole rows shown x the slider's height / the rows, the travel
+            // the height less the knob.
+            const Widget* pl = widget("PICLIST");
+            if (Widget* s = slider_of(*d); s && pl && !rows.empty()) {
+                s->knob = (pl->h / 0x20) * s->h / static_cast<int>(rows.size());
+                s->range = s->h - s->knob;
+            }
+        }
+        top_ = 0;
+        refresh_rows();
+        for (const char* n : {"Load", "Save", "Reset"})
+            if (Widget* w = widget(n)) w->grayed = !host_;
+    }
+    const render::Palette* palette() const override { return palette_; }
+    bool rings(int i) const override { return i <= 0 || i >= static_cast<int>(widgets_.size()) || !is(widgets_[static_cast<std::size_t>(i)], "PICLIST"); }
+
+protected:
+    // 0x44BFD0: the twelve rows in view: each slider grayed unless the host may change that
+    // definition (it is enabled), its knob from the count (-1: the most, 101), then its own
+    // routine (0x44BE70): the count back from the knob (101: -1, "No Limit"), the row's flags,
+    // the label, and the entry set (the host's answer to every peer).
+    void refresh_rows() {
+        for (int i = 0; i < 12; ++i) {
+            const int row = top_ + i;
+            Widget* s = widget("SLIDER" + std::to_string(i));
+            if (!s || row < 0 || row >= static_cast<int>(entries_.size())) continue;
+            const RestrictEntry& e = entries_[static_cast<std::size_t>(row)];
+            const bool on = hooks_.enabled ? hooks_.enabled(e.key) : true;
+            const bool locked = !host_ || !on;
+            flags_[static_cast<std::size_t>(row)] = locked ? 1 : 0;
+            set_knob(*s, counts_[static_cast<std::size_t>(row)] == -1 ? s->range : counts_[static_cast<std::size_t>(row)]);
+            s->grayed = locked;
+            slider_moved(i);
+        }
+    }
+    void slider_moved(int i) {
+        const int row = top_ + i;
+        Widget* s = widget("SLIDER" + std::to_string(i));
+        if (!s || row < 0 || row >= static_cast<int>(entries_.size())) return;
+        const RestrictEntry& e = entries_[static_cast<std::size_t>(row)];
+        const int v = knob_value(*s);
+        const std::int32_t count = v < 0x65 ? v : -1;
+        if (Widget* l = widget("COUNT" + std::to_string(i))) l->text = v < 0x65 ? std::to_string(v) : std::string("No Limit");
+        counts_[static_cast<std::size_t>(row)] = count;
+        if (hooks_.set_count) hooks_.set_count(e.key, count);
+        const bool on = hooks_.enabled ? hooks_.enabled(e.key) : true;
+        flags_[static_cast<std::size_t>(row)] = static_cast<std::uint8_t>((on ? 0 : 1) | (count == 0 ? 2 : 0));
+        s->knob_value = s->position = v;
+        last_[static_cast<std::size_t>(i)] = v;
+    }
+    // The room's knob rules (0x45B9B0 / 0x45BA20, as the room's sliders).
+    static void set_knob(Widget& w, int value) {
+        if (w.span < 2 || w.range <= 0) return;
+        const double t = static_cast<double>(std::min(value, w.range)) / w.range * (w.span - 1);
+        const int k = static_cast<int>(t);
+        w.knob_pos = t - k != 0.0 ? static_cast<int>(t + 1.0) : k;
+        w.position = value;
+        w.knob_value = value;
+    }
+    static int knob_value(const Widget& w) {
+        if (w.span < 2) return 0;
+        return static_cast<int>(static_cast<double>(w.knob_pos) / (w.span - 1) * w.range);
+    }
+
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        LayoutScreen::frame(fe, now_ms);
+        clock_ = now_ms * 30u / 1000u;
+        // 0x44C220: a picture every two ticks.
+        if (next_clock_ < clock_) {
+            next_clock_ = clock_ + 2;
+            if (loaded_ < static_cast<int>(entries_.size())) {
+                auto& p = pictures_[static_cast<std::size_t>(loaded_)];
+                std::vector<std::uint8_t> f;
+                render::Sprite8 s;
+                if (art_.vfs().read(entries_[static_cast<std::size_t>(loaded_)].picture, f) && decode_pcx(f, s, nullptr)) p = std::make_unique<render::Sprite8>(std::move(s));
+                ++loaded_;
+            }
+        }
+        // The counts the exchange changed (a joining player sees the host's).
+        bool changed = false;
+        for (std::size_t k = 0; k < entries_.size() && hooks_.count; ++k) {
+            const std::int32_t c = hooks_.count(entries_[k].key);
+            if (c != counts_[k] && !host_) {
+                counts_[k] = c;
+                changed = true;
+            }
+        }
+        // The list moved by its slider: the pictures follow, the rows in view are refreshed.
+        if (Widget* d = widget("DESCLIST"); d && d->top != top_) {
+            top_ = d->top;
+            changed = true;
+        }
+        if (changed) refresh_rows();
+        // The host's sliders moved.
+        for (int i = 0; i < 12 && host_; ++i) {
+            const Widget* s = widget("SLIDER" + std::to_string(i));
+            if (s && last_[static_cast<std::size_t>(i)] != knob_value(*s)) slider_moved(i);
+        }
+    }
+
+    void draw_surface(FrontEnd& fe, render::Image8& out, const Widget& w) override {
+        if (!is(w, "PICLIST")) return;
+        // 0x4A1B40, picture lists: from (x + 2, y + 2), a row each 32 pixels while the row's top
+        // is above the list's bottom: the picture (when loaded) mapped onto x + 2 .. x + w - 1
+        // by the row's height (texels 1 .. size - 1), then flag 1 shades it, else flag 2 crosses
+        // it out in interface colour 12.
+        const Widget& h = widgets_.front();
+        render::ClipRect clip{std::max(ox_ + w.x, 0), std::max(oy_ + w.y, 0), std::min(ox_ + w.x + w.w - 1, out.width - 1),
+                              std::min(oy_ + w.y + w.h - 1, out.height - 1)};
+        clip.x1 = std::min(clip.x1, ox_ + h.w - 1);
+        clip.y1 = std::min(clip.y1, oy_ + h.h - 1);
+        const int x0 = ox_ + w.x + 2, x1 = ox_ + w.x + w.w - 1, bottom = oy_ + w.y + w.h - 1;
+        for (int row = top_, y0 = oy_ + w.y + 2; y0 < bottom && row < static_cast<int>(entries_.size()); ++row, y0 += 0x20) {
+            const render::Sprite8* p = pictures_[static_cast<std::size_t>(row)].get();
+            if (!p) continue;
+            const int y1 = y0 + 0x20 - 1;
+            const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+            const int uv[4][2] = {{1, 1}, {p->width - 1, 1}, {p->width - 1, p->height - 1}, {1, p->height - 1}};
+            render::RasterTarget t;
+            t.pixels = out.pixels.data();
+            t.pitch = out.width;
+            t.clip = clip;
+            render::textured_quad_uv(t, v, uv, *p);
+            const std::uint8_t f = flags_[static_cast<std::size_t>(row)];
+            if (f & 1) {
+                shade_rect(fe, out, clip, x0, y0, x1, y1, -20);
+            } else if (f & 2) {
+                const std::uint8_t c = colour(12);
+                line(out, clip, x0 + 1, y1 - 1, x1 - 2, y0 + 1, c);
+                line(out, clip, x0 + 2, y1 - 1, x1 - 1, y0 + 1, c);
+                line(out, clip, x0 + 1, y0 + 2, x1 - 1, y1 - 2, c);
+                line(out, clip, x0 + 2, y0 + 2, x1 - 2, y1 - 2, c);
+            }
+        }
+    }
+    static void line(render::Image8& out, const render::ClipRect& clip, int xa, int ya, int xb, int yb, std::uint8_t c) {
+        // (Bresenham; the original's line routine 0x4BE950 is not checked against it.)
+        const int dx = std::abs(xb - xa), dy = -std::abs(yb - ya), sx = xa < xb ? 1 : -1, sy = ya < yb ? 1 : -1;
+        int err = dx + dy;
+        for (;;) {
+            client::put_pixel(out, clip, xa, ya, c);
+            if (xa == xb && ya == yb) break;
+            const int e2 = 2 * err;
+            if (e2 >= dy) {
+                err += dy;
+                xa += sx;
+            }
+            if (e2 <= dx) {
+                err += dx;
+                ya += sy;
+            }
+        }
+    }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        // The rows whose flags say "not enabled" are drawn dimmed (the list's "&G" rule).
+        if (Widget* d = widget("DESCLIST")) {
+            const std::size_t n = std::min(d->items.size(), entries_.size());
+            for (std::size_t k = 0; k < n; ++k) d->items[k] = flags_[k] == 1 ? "&G" + entries_[k].text : entries_[k].text;
+        }
+        LayoutScreen::draw(fe, out);
+        // Grayed sliders (a joining player's) and their arrows go through shade row 12.
+        for (std::size_t i = 0; i < widgets_.size(); ++i) {
+            const Widget& w = widgets_[i];
+            bool arrow = false;
+            if (w.slider_step != 0 && w.active)
+                if (const Widget* s = widget(w.link)) arrow = s->grayed && s->kind == WidgetKind::ScrollBar && !s->list_slider;
+            if (!(w.kind == WidgetKind::ScrollBar && w.grayed && w.active) && !arrow) continue;
+            shade_rect(fe, out, out.bounds(), ox_ + w.x, oy_ + w.y, ox_ + w.x + w.w - 1, oy_ + w.y + w.h - 1, -20);
+        }
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        for (int i = 0; i < 12; ++i)
+            if (is(w, ("SLIDER" + std::to_string(i)).c_str())) {
+                if (host_) slider_moved(i);
+                return;
+            }
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            close(fe);
+        } else if (is(w, "Cancel")) {
+            // The counts as they were when the dialog opened (OLDCOUNTS: 101 where there was no
+            // limit), each answered anew.
+            sfx(fe, art_, "Previous");
+            for (std::size_t k = 0; k < entries_.size(); ++k) {
+                counts_[k] = old_[k];
+                if (hooks_.set_count) hooks_.set_count(entries_[k].key, old_[k]);
+            }
+            close(fe);
+        } else if (is(w, "Reset")) {
+            // 100 each ("wacky" ones 0), the changed ones answered.
+            sfx(fe, art_, "Options");
+            for (std::size_t k = 0; k < entries_.size(); ++k) {
+                const std::int32_t c = entries_[k].wacky ? 0 : 100;
+                if (c != counts_[k] && hooks_.set_count) hooks_.set_count(entries_[k].key, c);
+                counts_[k] = c;
+            }
+            refresh_rows();
+        } else if (is(w, "Load") || is(w, "Save")) {
+            sfx(fe, art_, "Options");  // (the lists' files: not built)
+        }
+    }
+    // Closing (0x44C420 with no gadget): on the host each listed definition is enabled again,
+    // or disabled with a count of 0, and answered.
+    void close(FrontEnd& fe) {
+        if (host_ && hooks_.set_enabled)
+            for (std::size_t k = 0; k < entries_.size(); ++k) hooks_.set_enabled(entries_[k].key, counts_[k] != 0);
+        fe.pop();
+    }
+
+private:
+    MenuArt& art_;
+    const render::Palette* palette_;
+    bool host_;
+    RestrictHooks hooks_;
+    const std::vector<RestrictEntry>& entries_;
+    std::vector<std::uint8_t> flags_;
+    std::vector<std::unique_ptr<render::Sprite8>> pictures_;
+    std::vector<std::int32_t> counts_, old_;
+    int top_ = 0, loaded_ = 0;
+    std::array<int, 12> last_{};  // each slider's value as last read
+    std::uint32_t clock_ = 0, next_clock_ = 0;
+};
+
+// The restrictions' layout: RESTRICT2 with UnitRestrict5x behind it, drawn on the room's palette
+// with the room's interface colours (0x4288D0 without a palette of its own).
+const client::ScreenLayout* restrict_layout(MenuArt& art, const client::ScreenLayout* room) {
+    static std::unique_ptr<client::ScreenLayout> made;
+    if (made) return made.get();
+    const client::ScreenLayout* base = art.layout("RESTRICT2");
+    if (!base) return nullptr;
+    made = std::make_unique<client::ScreenLayout>(*base);
+    made->background = art.picture("UnitRestrict5x", nullptr);
+    made->palette = room ? room->palette : nullptr;
+    if (room) made->colours = room->colours;
+    return made.get();
+}
+
 // The room screen. The rows are made from the description's templates (0x4455B0): each template
 // (PLAYERx, READYx, LOGOx, SIDEx, PINGx, MEMx, RESx, ALLYx, CDx, TEAMICONSx) is copied for rows 0-9,
 // named with the row's digit, 20 pixels a row down; the local player's PLAYER button becomes a
@@ -2627,7 +2951,22 @@ protected:
 };
 
 void Lounge::open_restrictions(FrontEnd& fe) {
-    (void)fe;  // (built in its own part below)
+    // 0x44C7E0 over the room: the counts of the room's unit definition exchange.
+    const client::ScreenLayout* l = restrict_layout(art_, net_layout(art_, "LOUNGE2", "battleroom", true));
+    if (!l) return;
+    RestrictHooks h;
+    if (live_) {
+        auto live = live_;
+        h.count = [live](std::uint32_t key) { return live->room->unit_limit(key); };
+        // (A row may be changed once the definition was compared with every peer: its verdict.)
+        h.enabled = [live](std::uint32_t key) { return live->room->unit_confirmed(key); };
+        h.set_count = [live](std::uint32_t key, std::int32_t c) { live->room->set_unit_limit(key, c); };
+        h.set_enabled = [live](std::uint32_t key, bool on) { live->room->set_unit_enabled(key, on); };
+    } else {
+        // Tests: a room without an exchange: no definition compared yet (every row locked).
+        h.enabled = [](std::uint32_t) { return false; };
+    }
+    fe.push(std::make_unique<Restrictions>(art_, l, palette(), host_, h));
 }
 
 void write_lounge(const std::string& path, const LoungeState& st) {
@@ -2701,6 +3040,12 @@ std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<v
     room.map_checksum = [art](const std::string& map) { return map_sync_checksum(art->vfs(), map); };
     if (live->cfg.unit_checks) room.set_unit_checks(live->cfg.unit_checks());
     room.defer_loading_handshake(true);  // the handshake runs once this machine's data is loaded
+    {  // this machine's own definition entries (0x46D040): "wacky" ones at a count of 0
+        std::map<std::uint32_t, std::int32_t> counts;
+        for (const RestrictEntry& e : restrict_entries(part->art))
+            if (e.wacky) counts[e.key] = 0;
+        room.set_unit_limits(std::move(counts));
+    }
     // This machine's record (0x449BB0): its screen size, the CD.
     room.set_screen(static_cast<std::uint16_t>(fe.settings().get_int("DisplaymodeWidth", 640)),
                     static_cast<std::uint16_t>(fe.settings().get_int("DisplaymodeHeight", 480)));

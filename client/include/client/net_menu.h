@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -35,6 +36,10 @@ struct NetGameRequest {
     const Settings* settings = nullptr;
     // The host's "cheat codes" option (side record option word bit 13): cheat commands allowed.
     bool cheats = false;
+    // The unit definitions' rules of the game (0x46E160), by definition key (the FBI file's
+    // simple checksum): whether this machine may build it, and the most one player may own (-1
+    // no limit). A definition without a rule cannot be built. Empty: no rules (tests).
+    std::map<std::uint32_t, std::pair<bool, std::int32_t>> unit_rules;
     // Called by the loader once the game data is loaded, right before the battle starts: runs
     // the loading handshake (start positions, "loaded") and completes the start's players.
     // Empty: the handshake already ran.

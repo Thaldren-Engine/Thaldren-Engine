@@ -685,10 +685,29 @@ client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* fe) {
         req.map = r.map;
         req.sides = r.sides;
         req.start = r.start;
-        if (r.before_start) {
-            // The loading handshake runs once the data is loaded, before the battle starts.
+        if (r.before_start || !r.unit_rules.empty()) {
             auto before = r.before_start;
-            req.prepare_start = [before](LoadedBattle&, sim::BattleStart& start) { before(start); };
+            auto rules = r.unit_rules;
+            req.prepare_start = [before, rules](LoadedBattle& lb, sim::BattleStart& start) {
+                // 0x46E160: each definition takes its rule from the exchange: buildable (the
+                // "version compatible" bit) and the most one player may own; one without a rule
+                // is neither buildable nor allowed any.
+                if (!rules.empty() && lb.battle)
+                    for (std::size_t k = 1; k < lb.unit_defs.units.size() && k < lb.battle->types.size(); ++k) {
+                        UnitDefRecord& d = lb.unit_defs.units[k];
+                        const auto it = rules.find(d.fbi_checksum);
+                        const bool on = it != rules.end() && it->second.first;
+                        const std::int32_t most = it != rules.end() ? it->second.second : 0;
+                        d.type_flags = on ? (d.type_flags | unit_flags::kVersionCompatible) : (d.type_flags & ~unit_flags::kVersionCompatible);
+                        d.max_this_unit = most;
+                        auto& t = lb.battle->types[k];
+                        t.create.type_flags = d.type_flags;
+                        t.create.max_per_player = most;
+                        t.settle.type_flags = d.type_flags;
+                    }
+                // The loading handshake runs once the data is loaded, before the battle starts.
+                if (before) before(start);
+            };
         }
         const int human = r.start.local_player;
         client::Settings none;

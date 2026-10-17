@@ -51,6 +51,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -1770,6 +1771,121 @@ int main(int argc, char** argv) {
             for (int k = 0; k < 21; ++k) std::printf(" %d", t[k]);
             std::printf("\n  GS+0x143A7: %u %u %u / %u %u %u / %u %u %u; gui+0xB2: %u %u %u / %u %u %u / %u %u %u\n", pal[0], pal[1], pal[2], pal[4], pal[5], pal[6],
                         pal[8], pal[9], pal[10], gp[0], gp[1], gp[2], gp[4], gp[5], gp[6], gp[8], gp[9], gp[10]);
+            continue;
+        } else if (s.rfind("callx:", 0) == 0) {
+            // Debugging: callx:ADDR:SELF:ARG,ARG..  calls a routine (SELF and each ARG a memx
+            // expression; "buf" a fresh 64-byte block printed afterwards) and prints EAX.
+            std::vector<std::string> f;
+            for (std::size_t a = 6;;) {
+                const std::size_t e = s.find(':', a);
+                f.push_back(s.substr(a, e == std::string::npos ? std::string::npos : e - a));
+                if (e == std::string::npos) break;
+                a = e + 1;
+            }
+            auto eval = [&](const std::string& e) {
+                u32 v = 0, num = 0;
+                bool have = false;
+                for (char ch : e + "+") {
+                    if (std::isxdigit(static_cast<unsigned char>(ch))) {
+                        num = num * 16 + static_cast<u32>(std::isdigit(static_cast<unsigned char>(ch)) ? ch - '0' : (std::tolower(ch) - 'a' + 10));
+                        have = true;
+                    } else {
+                        if (have) v += num;
+                        num = 0;
+                        have = false;
+                        if (ch == '*') v = r.r32(v);
+                    }
+                }
+                return v;
+            };
+            if (f.size() < 2) continue;
+            std::vector<u32> args;
+            u32 buf = 0;
+            if (f.size() > 2)
+                for (std::size_t a = 0; a <= f[2].size();) {
+                    const std::size_t e = f[2].find(',', a);
+                    const std::string t = f[2].substr(a, e == std::string::npos ? std::string::npos : e - a);
+                    if (t == "buf") {
+                        buf = r.alloc(64);
+                        std::vector<std::uint8_t> z(64, 0);
+                        r.write(buf, z.data(), z.size());
+                        args.push_back(buf);
+                    } else if (!t.empty()) {
+                        args.push_back(eval(t));
+                    }
+                    if (e == std::string::npos) break;
+                    a = e + 1;
+                }
+            u32 result = 0;
+            const bool done = r.call(eval(f[0]), eval(f[1]), args, &result);
+            std::printf("%s: %s, EAX %08X", s.c_str(), done ? "ok" : "failed", result);
+            if (buf) {
+                std::uint8_t b[32] = {};
+                r.read(buf, b, sizeof b);
+                std::printf(", buf:");
+                for (std::uint8_t x : b) std::printf(" %02X", x);
+            }
+            std::printf("\n");
+            continue;
+        } else if (s.rfind("memx:", 0) == 0) {
+            // Debugging: memx:EXPR[:N] prints N (default 16) bytes at EXPR: hex numbers added
+            // with '+', a '*' reads the 32-bit word at the address so far (e.g. 511DE8*+2A30*).
+            const std::string t = s.substr(5);
+            const auto c = t.find(':');
+            const std::string e = t.substr(0, c);
+            const u32 n = c == std::string::npos ? 16u : static_cast<u32>(std::strtoul(t.c_str() + c + 1, nullptr, 10));
+            u32 v = 0, num = 0;
+            bool have = false;
+            for (char ch : e + "+") {
+                if (std::isxdigit(static_cast<unsigned char>(ch))) {
+                    num = num * 16 + static_cast<u32>(std::isdigit(static_cast<unsigned char>(ch)) ? ch - '0' : (std::tolower(ch) - 'a' + 10));
+                    have = true;
+                } else {
+                    if (have) v += num;
+                    num = 0;
+                    have = false;
+                    if (ch == '*') v = r.r32(v);
+                }
+            }
+            std::vector<std::uint8_t> b(std::min<u32>(n, 256), 0);
+            if (v) r.read(v, b.data(), b.size());
+            std::printf("%s @%08X:", s.c_str(), v);
+            for (std::uint8_t x : b) std::printf(" %02X", x);
+            std::printf("\n");
+            continue;
+        } else if (s.rfind("mem:", 0) == 0) {
+            // Debugging: mem:ADDR[:N] prints N (default 16) bytes at the absolute address ADDR and,
+            // with *ADDR, at the address stored there.
+            std::string a = s.substr(4);
+            const bool deref = !a.empty() && a[0] == '*';
+            if (deref) a = a.substr(1);
+            const auto c = a.find(':');
+            u32 addr = static_cast<u32>(std::strtoul(a.c_str(), nullptr, 16));
+            const u32 n = c == std::string::npos ? 16u : static_cast<u32>(std::strtoul(a.c_str() + c + 1, nullptr, 10));
+            if (deref) addr = r.r32(addr);
+            std::vector<std::uint8_t> b(std::min<u32>(n, 256), 0);
+            if (addr) r.read(addr, b.data(), b.size());
+            std::printf("%s @%08X:", s.c_str(), addr);
+            for (std::uint8_t v : b) std::printf(" %02X", v);
+            std::printf("\n");
+            continue;
+        } else if (s == "unitdefs") {
+            // The unit definitions from the original's own enumeration (0x42A8D0), before a room
+            // (its unit definition exchange object is made from them when the room opens).
+            r.w32(gs + 0x1439B, 0);
+            r.w32(gs + 0x1438F, 0);
+            ok = r.call(0x0042A8D0, 0, {}, nullptr, 120000);
+            std::printf("unitdefs: %s, %u definitions\n", ok ? "ok" : "failed", r.r32(gs + 0x1438F));
+            continue;
+        } else if (s == "restrict") {
+            // The battle room's build restrictions (RESTRICT2.GUI, 0x44C7E0) over the room.
+            ok = r.call(0x0044C7E0, 0, {});
+            std::printf("restrict: %s\n", ok ? "opened" : "failed");
+            continue;
+        } else if (s == "restrictframe") {
+            // One pass of the restrictions' own frame routine (0x44C220: a unit picture every two
+            // ticks, the counts the exchange changed).
+            ok = r.call(0x0044C220, 0, {});
             continue;
         } else if (s == "loungeframe") {
             // One more frame of the battle room (the chat scrolls a line a frame).
