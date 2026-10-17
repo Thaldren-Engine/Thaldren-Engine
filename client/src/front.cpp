@@ -139,7 +139,20 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
         total_steps += client.frame(now);
         const auto t1 = clock::now();
         const auto sounds = client.take_sounds();
-        if (!sounds.empty()) std::printf("frame %d: %zu sound(s)\n", f, sounds.size());
+        if (!sounds.empty()) {
+            // The sound log: every sound started this frame (name, volume), and the same sound
+            // started twice in one frame flagged.
+            std::printf("frame %d (step %u): %zu sound(s):", f, client.battle().game_tick(), sounds.size());
+            for (std::size_t i = 0; i < sounds.size(); ++i) {
+                const SoundEvent& s = sounds[i];
+                const bool known = s.sample >= 0 && static_cast<std::size_t>(s.sample) < content.samples.size();
+                bool twice = false;
+                for (std::size_t k = 0; k < i; ++k) twice |= sounds[k].sample == s.sample;
+                std::printf(" %s/%d%s", known ? content.samples[static_cast<std::size_t>(s.sample)].name.c_str() : "?", s.volume,
+                            twice ? "(again)" : "");
+            }
+            std::printf("\n");
+        }
         render::DrawList list = client.draw();
         if (profile) {
             const auto t2 = clock::now();
@@ -302,7 +315,9 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             client.handle(e);
         }
         client.frame(now);
-        for (const SoundEvent& s : client.take_sounds()) audio.play(s.sample, s.pan);
+        for (const SoundEvent& s : client.take_sounds())
+            if (s.sample >= 0 && static_cast<std::size_t>(s.sample) < content.samples.size())
+                audio.play_sample(&content.samples[static_cast<std::size_t>(s.sample)], s.pan, s.volume);
         render::DrawList list = client.draw();
         if (std::find(o.screenshot_frames.begin(), o.screenshot_frames.end(), f) != o.screenshot_frames.end())
             save(render::execute(list, content.blend), content.palette, o.screenshot_prefix, f);

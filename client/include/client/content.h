@@ -119,6 +119,7 @@ struct Sample {
     int rate = 22050;
     int channels = 1;
     std::vector<std::int16_t> pcm;
+    std::string name;  // the sound's file name (logs)
 };
 
 // Shot looks by weapon index (the battle view draws shots through these).

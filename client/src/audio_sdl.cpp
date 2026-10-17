@@ -11,6 +11,7 @@ namespace client {
 
 namespace {
 constexpr int kRate = 22050;
+constexpr int kCopiesPerSound = 4;  // buffers the original keeps per sound (the first and three duplicates)
 }
 
 struct AudioOut::Impl {
@@ -117,14 +118,28 @@ void AudioOut::play(int index, int pan) {
 void AudioOut::play_sample(const Sample* s, int pan, int volume) {
     if (!impl_ || !s || s->pcm.empty()) return;
     std::lock_guard<std::mutex> g(impl_->lock);
+    // The original's mixer: at most `max_voices` sounds at once (the oldest started one stops
+    // to make room), and at most four copies of one sound; a fifth start of a sound whose
+    // four copies all play restarts the copy that has played furthest.
     Impl::Voice* use = nullptr;
     for (auto& v : impl_->voices)
         if (!v.s) {
             use = &v;
             break;
         }
-    if (!use) use = &*std::min_element(impl_->voices.begin(), impl_->voices.end(),
-                                       [](const Impl::Voice& a, const Impl::Voice& b) { return a.started < b.started; });
+    if (!use) {
+        use = &*std::min_element(impl_->voices.begin(), impl_->voices.end(),
+                                 [](const Impl::Voice& a, const Impl::Voice& b) { return a.started < b.started; });
+        use->s = nullptr;
+    }
+    int copies = 0;
+    Impl::Voice* furthest = nullptr;
+    for (auto& v : impl_->voices)
+        if (v.s == s) {
+            ++copies;
+            if (!furthest || v.pos > furthest->pos) furthest = &v;
+        }
+    if (copies >= kCopiesPerSound) use = furthest;
     use->s = s;
     use->pos = 0;
     use->step = (static_cast<std::uint64_t>(s->rate) << 32) / kRate;

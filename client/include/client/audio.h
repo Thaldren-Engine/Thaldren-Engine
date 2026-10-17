@@ -18,10 +18,12 @@ public:
     AudioOut();
     AudioOut(const AudioOut&) = delete;
     AudioOut& operator=(const AudioOut&) = delete;
-    bool open(const std::vector<Sample>* samples, int max_voices = 16);
+    // max_voices: sounds playing at once (the original's "MixingBuffers" setting, default 8).
+    bool open(const std::vector<Sample>* samples, int max_voices = 8);
     ~AudioOut();
     // Starts sample `index` panned -100 (left) .. 100 (right). When every voice is busy
-    // the oldest one is replaced.
+    // the oldest one is replaced; a sound already playing four times restarts its copy
+    // that has played furthest instead of starting a fifth.
     void play(int index, int pan);
     // The same for any sample (it must stay alive while it plays); volume 0..256.
     void play_sample(const Sample* sample, int pan, int volume = 256);

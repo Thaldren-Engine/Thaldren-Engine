@@ -201,6 +201,7 @@ int ClientWorld::sample(const std::string& name) {
     client::Sample s;
     int index = -1;
     if ((vfs_.read("sounds\\" + path, f) || vfs_.read(path, f)) && client::decode_wav(f, s)) {
+        s.name = key;
         content_.samples.push_back(std::move(s));
         index = static_cast<int>(content_.samples.size()) - 1;
     }
