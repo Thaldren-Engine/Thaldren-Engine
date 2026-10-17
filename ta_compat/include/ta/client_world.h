@@ -67,7 +67,8 @@ public:
     ClientWorld(const ClientWorld&) = delete;
     ClientWorld& operator=(const ClientWorld&) = delete;
     // Loads the game data and sets up the skirmish; false with a reason on failure.
-    bool load(const std::string& game_dir, const SkirmishSetup& setup, std::string& error);
+    bool load(const std::string& game_dir, const SkirmishSetup& setup, std::string& error,
+              const std::function<void(float, const std::string&)>& progress = {});
     // Loads the game data and starts the battle through ta::load_battle (the front end's way);
     // `human` is the slot the client plays. `progress` (optional) hears the loading stages.
     bool load(const std::string& game_dir, const BattleRequest& request, int human, std::string& error,

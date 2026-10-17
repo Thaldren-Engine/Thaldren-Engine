@@ -231,6 +231,10 @@ int GameClient::frame(std::uint32_t now_ms) {
         }
     }
     hover_feature_ = in_view(mouse_x_, mouse_y_) && !hover_ ? feature_under(mouse_x_, mouse_y_) : -1;
+    if (pointer_off_) {
+        hover_ = 0;  // nothing is under a pointer off the picture
+        hover_feature_ = -1;
+    }
     // The pointer over the view in placement mode: the placement check of this pass (the
     // pointer's look stays as it was); otherwise the pointer's look follows what it is over.
     if (mode_ == Action::BuildUnit && in_view(mouse_x_, mouse_y_)) update_placement();
@@ -250,10 +254,12 @@ void GameClient::scroll_step(std::uint32_t dt_ticks) {
     int step = static_cast<int>(std::min<std::uint32_t>(static_cast<std::uint32_t>(opt_.scroll_speed) * dt_ticks, 128u));
     if (step == 0) return;
     int x = scroll_x_, y = scroll_y_;
-    if (keys_down_[keys::kLeft] || (mouse_x_ == 0 && mouse_y_ < opt_.height)) x -= step;
-    else if (keys_down_[keys::kRight] || mouse_x_ == opt_.width - 1) x += step;
-    if (keys_down_[keys::kUp] || (mouse_y_ == 0 && mouse_x_ < opt_.width)) y -= step;
-    else if (keys_down_[keys::kDown] || mouse_y_ == opt_.height - 1) y += step;
+    // (A pointer off the picture is at no edge.)
+    const bool on = !pointer_off_;
+    if (keys_down_[keys::kLeft] || (on && mouse_x_ == 0 && mouse_y_ < opt_.height)) x -= step;
+    else if (keys_down_[keys::kRight] || (on && mouse_x_ == opt_.width - 1)) x += step;
+    if (keys_down_[keys::kUp] || (on && mouse_y_ == 0 && mouse_x_ < opt_.width)) y -= step;
+    else if (keys_down_[keys::kDown] || (on && mouse_y_ == opt_.height - 1)) y += step;
     if (x != scroll_x_ || y != scroll_y_) {
         // A scroll that moves the view ends unit tracking (the original's 0x41CE90).
         set_scroll(x, y);
@@ -875,10 +881,16 @@ void GameClient::handle(const InputEvent& e) {
     shift_ = e.shift;
     ctrl_ = e.ctrl;
     alt_ = e.alt;
-    if (e.type == InputEvent::Type::MouseMove || e.type == InputEvent::Type::MouseDown || e.type == InputEvent::Type::MouseUp)
+    if (e.type == InputEvent::Type::MouseMove || e.type == InputEvent::Type::MouseDown || e.type == InputEvent::Type::MouseUp) {
+        pointer_off_ = false;  // the pointer is where the system pointer is on the picture again
         hover_ = in_view(e.x, e.y) ? unit_at(e.x, e.y) : 0;
+    }
     switch (e.type) {
     case InputEvent::Type::Quit: quit_ = true; break;
+    case InputEvent::Type::PointerLeave:
+        pointer_off_ = true;
+        hover_ = 0;
+        break;
     case InputEvent::Type::MouseMove:
         mouse_x_ = e.x;
         mouse_y_ = e.y;

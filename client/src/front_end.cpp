@@ -171,6 +171,14 @@ public:
         if (e.type == InputEvent::Type::MouseMove || e.type == InputEvent::Type::MouseDown || e.type == InputEvent::Type::MouseUp) {
             mouse_x_ = e.x;
             mouse_y_ = e.y;
+            pointer_off_ = false;
+        }
+        if (e.type == InputEvent::Type::PointerLeave) {
+            // The system pointer is off the picture: the menus draw no pointer; a battle's
+            // client is told (no pointer, no edge scrolling) whatever is open over it.
+            pointer_off_ = true;
+            if (in_battle()) session_->client().handle(e);
+            return;
         }
         if (pending_) return;
         if (in_battle() && stack_.size() == battle_base_) {
@@ -267,7 +275,9 @@ public:
         }
         render::Image8 img(w, h, 0);
         if (loading_) {
-            if (s_.draw_loading) s_.draw_loading(*this, img, load_fraction_, load_stage_);
+            load_.now_ms = static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                          std::chrono::steady_clock::now() - load_clock_start_).count());
+            if (s_.draw_loading) s_.draw_loading(*this, img, load_);
         } else if (!stack_.empty()) {
             // The top screen, and the ones it lets show through.
             std::size_t first = stack_.size() - 1;
@@ -342,7 +352,12 @@ public:
     // The loop sets this: draws and shows a frame at once (the loading screen's progress).
     std::function<void()> present_now;
     const render::BlendTable& blend() const { return s_.content->blend; }
-    float load_fraction() const { return load_fraction_; }
+    float load_fraction() const {
+        int sum = 0;
+        for (int r : load_.rows) sum += r;
+        return static_cast<float>(sum) / (100.0f * kLoadRows);
+    }
+    LoadingState* loading() override { return loading_ ? &load_ : nullptr; }
 
 private:
     bool in_battle() const { return session_ != nullptr; }
@@ -356,7 +371,7 @@ private:
     }
 
     void add_pointer(render::DrawList& list) {
-        if (!draw_pointer_) return;
+        if (!draw_pointer_ || pointer_off_) return;
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
             if (pointer_.ended) return;
@@ -371,16 +386,30 @@ private:
         play_pending_sounds();
         BattleLauncher l = std::move(pending_);
         pending_ = nullptr;
+        // The loading screen starts with every row at 0 and its highlights off; it is drawn at
+        // the first report (the launcher names the map first) and then at most every 200 ms
+        // (the original's loading routine draws a frame, then sleeps 200 ms).
         loading_ = true;
-        load_fraction_ = 0.0f;
-        load_stage_ = "Loading";
-        if (present_now) present_now();
+        load_ = LoadingState{};
+        load_clock_start_ = std::chrono::steady_clock::now();
+        bool drawn = false;
+        std::chrono::steady_clock::time_point last_draw{};
         std::string error;
-        auto progress = [this](float f, const std::string& stage) {
-            load_fraction_ = f;
-            load_stage_ = stage;
-            std::printf("loading: %3d%% %s\n", static_cast<int>(f * 100.0f), stage.c_str());
+        auto progress = [this, &drawn, &last_draw](float f, const std::string& stage) {
+            const int pct = std::clamp(static_cast<int>(f * 100.0f), 0, 100);
+            if (stage.rfind("row:", 0) == 0) {
+                const int r = std::atoi(stage.c_str() + 4);
+                if (r >= 0 && r < kLoadRows) load_.rows[static_cast<std::size_t>(r)] = pct;
+            } else if (stage.rfind("map:", 0) == 0) {
+                load_.map = stage.substr(4);
+                load_.map_line = !load_.map.empty();
+            }
+            std::printf("loading: %3d%% %s\n", pct, stage.c_str());
+            const auto now = std::chrono::steady_clock::now();
+            if (drawn && now - last_draw < std::chrono::milliseconds(kLoadRedrawMs)) return;
+            drawn = true;
             if (present_now) present_now();
+            last_draw = std::chrono::steady_clock::now();
         };
         std::unique_ptr<BattleSession> s = l(progress, error);
         loading_ = false;
@@ -427,8 +456,8 @@ private:
     BattleOutcome outcome_ = BattleOutcome::None;
     BattleLauncher pending_;
     bool loading_ = false;
-    float load_fraction_ = 0.0f;
-    std::string load_stage_;
+    LoadingState load_;
+    std::chrono::steady_clock::time_point load_clock_start_{};
     bool quit_ = false;
     AudioOut* audio_ = nullptr;
     SoundDesk desk_;
@@ -444,6 +473,7 @@ private:
     std::uint32_t pointer_ticks_ = 0;
     bool pointer_started_ = false;
     int mouse_x_ = 0, mouse_y_ = 0;
+    bool pointer_off_ = false;  // the system pointer is outside the picture
     BattleMusicJudge judge_;
 
 public:
@@ -653,17 +683,9 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: e.type = InputEvent::Type::Quit; break;
             case SDL_EVENT_MOUSE_MOTION:
-                e.type = InputEvent::Type::MouseMove;
-                e.x = std::clamp(static_cast<int>(ev.motion.x) / scale, 0, cur_w - 1);
-                e.y = std::clamp(static_cast<int>(ev.motion.y) / scale, 0, cur_h - 1);
-                break;
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                e.type = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? InputEvent::Type::MouseDown : InputEvent::Type::MouseUp;
-                e.x = std::clamp(static_cast<int>(ev.button.x) / scale, 0, cur_w - 1);
-                e.y = std::clamp(static_cast<int>(ev.button.y) / scale, 0, cur_h - 1);
-                e.button = ev.button.button == SDL_BUTTON_LEFT ? 1 : ev.button.button == SDL_BUTTON_RIGHT ? 3 : 2;
-                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP: pointer_event(win, ev, scale, cur_w, cur_h, e); break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP:
                 e.type = ev.type == SDL_EVENT_KEY_DOWN ? InputEvent::Type::KeyDown : InputEvent::Type::KeyUp;

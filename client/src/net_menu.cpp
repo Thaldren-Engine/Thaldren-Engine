@@ -178,8 +178,29 @@ private:
             (*net)->set_room(players);
         };
         const NetMenuConfig cfg = cfg_;
+        const bool host = room_->is_host();
         room_.reset();  // the room's transport now belongs to the game
-        fe.start_battle([cfg, req, transport, session, net](const LoadProgress& progress, std::string& error) -> std::unique_ptr<BattleSession> {
+        // The loading screen's network part: every player in the game (slot order) with a bar;
+        // this machine's players (its human, and the computer players a host runs) show this
+        // machine's progress. Other machines' progress is not reported to the client yet: their
+        // bars stay empty until a loading-progress feed fills LoadingState::players.
+        std::vector<LoadingPlayer> loading_players;
+        for (std::size_t k = 0; k < players.size(); ++k) {
+            const net::RoomPlayer& p = players[k];
+            if (!p.net_id) continue;
+            LoadingPlayer lp;
+            lp.name = p.name;
+            lp.local = static_cast<int>(k) == req->start.local_player || (p.kind == 2 && host);
+            lp.loaded = lp.local;
+            loading_players.push_back(lp);
+        }
+        FrontEnd* fep = &fe;
+        fe.start_battle([cfg, req, transport, session, net, fep, loading_players](const LoadProgress& progress,
+                                                                                  std::string& error) -> std::unique_ptr<BattleSession> {
+            if (LoadingState* ls = fep->loading()) {
+                ls->network = true;
+                ls->players = loading_players;
+            }
             if (!cfg.load_network_game) {
                 error = "network games need the importer's loader";
                 return nullptr;

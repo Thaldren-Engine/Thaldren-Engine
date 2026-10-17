@@ -47,6 +47,7 @@ add_library(ta_compat_client STATIC
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_battle_setup.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_campaign.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_content.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/client_loading.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_menus.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_net_screens.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_screens.cpp
@@ -61,6 +62,7 @@ add_executable(ta_play ${CMAKE_SOURCE_DIR}/ta_compat/tools/ta_play.cpp)
 target_link_libraries(ta_play PRIVATE ta_compat_client)
 if(TARGET render_gpu)
     target_link_libraries(ta_play PRIVATE SDL3::SDL3-static)
+    target_compile_definitions(ta_play PRIVATE CLIENT_HAVE_SDL=1)  # (the pointer self-test's SDL events)
 endif()
 target_compile_options(ta_play PRIVATE ${WARN_FLAGS})
 if(MSVC)

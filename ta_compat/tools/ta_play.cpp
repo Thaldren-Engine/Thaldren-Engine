@@ -30,11 +30,17 @@
 //   --net-screen SPEC   tests: the menus start at a multiplayer screen (repeat to stack them):
 //                       selprov, tcp[:ADDRESS], selgame:FILE, newmulti, lounge:FILE,
 //                       message:WIDTH:TEXT (the inputs of gui_harness's commands of those names)
+//   --loading-test FILE tests: writes loading screen frames for the states in FILE and exits
+//                       (the format is described where it is read; compare: gui_harness loadframe:)
+//   --loading-trace     tests (with a direct battle): prints the loader's loading-screen reports
+//   --pointer-selftest  tests: checks the window front ends' pointer and focus rules and exits
 //   --dump-build-pages DIR  tests: writes every builder's build pages (listing and pictures, for
 //                       each viewing side) to DIR and exits (compare: gui_harness buildpages:)
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -47,11 +53,16 @@
 #include <windows.h>
 #endif
 
+#ifdef CLIENT_HAVE_SDL
+#include <SDL3/SDL.h>
+#endif
+
 #include "client/front.h"
 #include "client/game_client.h"
 #include "client/music.h"
 #include "render/presenter.h"
 #include "ta/client_campaign.h"
+#include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/client_net_screens.h"
 #include "ta/console_commands.h"
@@ -71,6 +82,94 @@ std::string own_folder(const char* argv0) {
 #endif
     const auto cut = s.find_last_of("\\/");
     return cut == std::string::npos ? std::string(".") : s.substr(0, cut);
+}
+
+// Tests (--pointer-selftest): the window front ends' pointer rules driven through a sequence of
+// what the system does (focus, minimise, the system pointer's moves inside and outside the
+// window), and SDL mouse events converted as the event loops do. Prints each check; returns 0
+// when all pass. (The hold itself is the platform's; no window is opened here.)
+int pointer_selftest() {
+    int failed = 0, checks = 0;
+    auto check = [&](bool ok, const char* what) {
+        ++checks;
+        if (!ok) ++failed;
+        std::printf("%s %s\n", ok ? "ok  " : "FAIL", what);
+    };
+    using T = client::InputEvent::Type;
+    const int W = 640, H = 480;
+    // What the client shows: the pointer (x, y) or off the picture.
+    struct Shown {
+        bool off = false;
+        int x = 0, y = 0;
+    } p;
+    auto feed = [&](const client::InputEvent& e) {
+        if (e.type == T::PointerLeave) p.off = true;
+        else if (e.type == T::MouseMove) p = {false, e.x, e.y};
+    };
+    auto motion = [&](int x, int y) { feed(client::pointer_motion(static_cast<float>(x), static_cast<float>(y), 1, W, H, W, H)); };
+    auto inside = [&](int x, int y) { return x >= 0 && y >= 0 && x < W && y < H; };
+    // 1. In the window with the focus: held, the pointer where the system pointer is.
+    motion(300, 200);
+    check(client::pointer_held(true, true, inside(300, 200)) && !p.off && p.x == 300 && p.y == 200, "focused, inside: held, pointer at (300, 200)");
+    // 2. Alt+Tab: free at once; the pointer stays where the system pointer is (no event, no warp).
+    check(!client::pointer_held(false, true, inside(300, 200)) && p.x == 300 && p.y == 200, "focus lost: free, pointer unchanged");
+    // 3. The system pointer moves over the unfocused window: the pointer follows it.
+    motion(300, 479);
+    check(!p.off && p.x == 300 && p.y == 479, "unfocused, inside: the pointer follows (300, 479)");
+    // 4. It leaves the window: the pointer is off the picture (not left on the edge).
+    motion(300, 600);
+    check(p.off, "unfocused, outside: pointer off the picture");
+    // 5. Focus back with the system pointer outside: not held (never pulled in), still off; the
+    //    motion the platform reports at the focus change is outside too.
+    motion(900, 600);
+    check(!client::pointer_held(true, true, inside(900, 600)) && p.off, "focus back, outside: not held, pointer still off");
+    // 6. It comes into the window: held from there, the pointer where it came in.
+    motion(630, 470);
+    check(client::pointer_held(true, true, inside(630, 470)) && !p.off && p.x == 630 && p.y == 470, "comes in: held, pointer at (630, 470)");
+    // 7. Out and back with the system pointer moved inside meanwhile: the pointer is where it is
+    //    now (the platform's motion at the focus change), not where it was.
+    check(!client::pointer_held(false, true, true), "Alt+Tab again: free");
+    motion(100, 100);
+    check(client::pointer_held(true, true, inside(100, 100)) && !p.off && p.x == 100 && p.y == 100,
+          "focus back, inside: held at once, pointer at the system pointer (100, 100)");
+    // 8. Minimised / hidden: free; restored with the pointer inside: held.
+    check(!client::pointer_held(true, false, true) && client::pointer_held(true, true, true), "minimised: free; restored: held");
+    // 9. Scaled windows: window pixels to frame pixels.
+    {
+        const client::InputEvent e = client::pointer_motion(641.0f, 401.0f, 2, W, H, 2 * W, 2 * H);
+        check(e.type == T::MouseMove && e.x == 320 && e.y == 200, "scale 2: (641, 401) -> (320, 200)");
+        const client::InputEvent f = client::pointer_motion(1280.0f, 10.0f, 2, W, H, 2 * W, 2 * H);
+        check(f.type == T::PointerLeave, "scale 2: x 1280 is outside");
+    }
+#ifdef CLIENT_HAVE_SDL
+    // 10. SDL events as the event loops convert them (no window: its size is the frame's).
+    {
+        SDL_Event ev{};
+        client::InputEvent e;
+        ev.type = SDL_EVENT_MOUSE_MOTION;
+        ev.motion.x = -5.0f;
+        ev.motion.y = 100.0f;
+        check(client::pointer_event(nullptr, ev, 1, W, H, e) && e.type == T::PointerLeave, "SDL motion at x -5: PointerLeave");
+        ev.motion.x = 639.0f;
+        ev.motion.y = 0.0f;
+        check(client::pointer_event(nullptr, ev, 1, W, H, e) && e.type == T::MouseMove && e.x == 639 && e.y == 0, "SDL motion at (639, 0): move");
+        ev = SDL_Event{};
+        ev.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+        check(client::pointer_event(nullptr, ev, 1, W, H, e) && e.type == T::PointerLeave, "SDL window mouse leave: PointerLeave");
+        ev = SDL_Event{};
+        ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        ev.button.button = SDL_BUTTON_RIGHT;
+        ev.button.x = 1279.0f;
+        ev.button.y = 959.0f;
+        check(client::pointer_event(nullptr, ev, 2, W, H, e) && e.type == T::MouseDown && e.button == 3 && e.x == 639 && e.y == 479,
+              "SDL right button at (1279, 959), scale 2: down at (639, 479)");
+        ev = SDL_Event{};
+        ev.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+        check(!client::pointer_event(nullptr, ev, 1, W, H, e), "SDL focus gained: no pointer event of its own");
+    }
+#endif
+    std::printf("pointer self-test: %d of %d checks passed\n", checks - failed, checks);
+    return failed ? 1 : 0;
 }
 
 }  // namespace
@@ -99,7 +198,8 @@ int main(int argc, char** argv) {
     bool direct = false;
     std::string settings_path = own_folder(argc > 0 ? argv[0] : nullptr) + "\\settings.txt";
     front.title = "Total Annihilation";
-    std::string end_screen_file, saves_dir, dump_pages_dir;
+    std::string end_screen_file, saves_dir, dump_pages_dir, loading_test_file;
+    bool loading_trace = false;
     std::vector<std::string> net_screens;
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -112,6 +212,15 @@ int main(int argc, char** argv) {
         }
         if (a == "--end-screen") {
             end_screen_file = next();
+            continue;
+        }
+        if (a == "--loading-test") {
+            loading_test_file = next();
+            continue;
+        }
+        if (a == "--pointer-selftest") return pointer_selftest();
+        if (a == "--loading-trace") {  // tests: print the loader's loading-screen reports
+            loading_trace = true;
             continue;
         }
         if (a == "--saves") {
@@ -227,6 +336,69 @@ int main(int argc, char** argv) {
                 music.types()[static_cast<std::size_t>(t)] = t - 1 < static_cast<int>(types.size()) ? static_cast<std::uint8_t>(types[static_cast<std::size_t>(t - 1)] - '0')
                                                                  : static_cast<std::uint8_t>(music.track_count() >= 16 && t <= 7 ? 1 : 0);
         }
+        if (!loading_test_file.empty()) {
+            // Tests: loading screen frames from a file, one item per line (# comments):
+            //   map NAME | nomap          the map line (nomap: none, as for missions)
+            //   net 0|1, sync 0|1         a network game; every machine loaded
+            //   player NAME PERCENT LOADED LOCAL   a network game's player (slot order)
+            //   remote INDEX PERCENT LOADED        a listed player's progress as its packets say
+            //   clock MS                  the clock at the next frames
+            //   frame T,TE,U,A,D,E        the rows (percent) and one redraw, written as
+            //                             <--out PREFIX>load_<n>.bmp (n counts the frames from 0)
+            // (compare: gui_harness loadscreen / loadframe: / loadplayer: / clock:).
+            std::ifstream in(loading_test_file);
+            client::LoadingState st;
+            int n = 0;
+            for (std::string line; std::getline(in, line);) {
+                if (const auto c = line.find('#'); c != std::string::npos) line.resize(c);
+                std::istringstream ls(line);
+                std::string key;
+                if (!(ls >> key)) continue;
+                if (key == "map") {
+                    std::getline(ls >> std::ws, st.map);
+                    while (!st.map.empty() && (st.map.back() == '\r' || st.map.back() == ' ')) st.map.pop_back();
+                    st.map_line = true;
+                } else if (key == "nomap") {
+                    st.map_line = false;
+                } else if (key == "net") {
+                    int v = 0;
+                    ls >> v;
+                    st.network = v != 0;
+                } else if (key == "sync") {
+                    int v = 0;
+                    ls >> v;
+                    st.synchronised = v != 0;
+                } else if (key == "player") {
+                    client::LoadingPlayer p;
+                    int loaded = 0, local = 0;
+                    ls >> p.name >> p.percent >> loaded >> local;
+                    p.loaded = loaded != 0;
+                    p.local = local != 0;
+                    st.players.push_back(p);
+                } else if (key == "remote") {
+                    int k = 0, pct = 0, loaded = 0;
+                    ls >> k >> pct >> loaded;
+                    if (k >= 0 && k < static_cast<int>(st.players.size())) {
+                        st.players[static_cast<std::size_t>(k)].percent = pct;
+                        st.players[static_cast<std::size_t>(k)].loaded = loaded != 0;
+                    }
+                } else if (key == "clock") {
+                    ls >> st.now_ms;
+                } else if (key == "frame") {
+                    std::string v;
+                    ls >> v;
+                    std::sscanf(v.c_str(), "%d,%d,%d,%d,%d,%d", &st.rows[0], &st.rows[1], &st.rows[2], &st.rows[3], &st.rows[4], &st.rows[5]);
+                    render::Image8 img(fes.width, fes.height, 0);
+                    ta::draw_loading_screen(art, img, st);
+                    const std::string name = front.screenshot_prefix + "load_" + std::to_string(n) + ".bmp";
+                    render::write_bmp(name, img, art.content().palette);
+                    std::printf("loading frame %d -> %s, flash %d %d %d %d %d %d\n", n, name.c_str(), st.flash[0], st.flash[1], st.flash[2],
+                                st.flash[3], st.flash[4], st.flash[5]);
+                    ++n;
+                }
+            }
+            return 0;
+        }
         if (!end_screen_file.empty()) {
             // Tests: the statistics screen on its own, from a table file (the format gui_harness's
             // endmsn: reads: tick, killmul, timemul, won, local, type and player lines).
@@ -289,7 +461,16 @@ int main(int argc, char** argv) {
 
     auto world = std::make_unique<ta::ClientWorld>();
     std::string err;
-    if (!world->load(game_dir, setup, err)) {
+    std::function<void(float, const std::string&)> trace;
+    if (loading_trace) {
+        // Tests: the loader's reports as the loading screen hears them (rows, map line), timed.
+        const auto t0 = std::chrono::steady_clock::now();
+        trace = [t0](float f, const std::string& stage) {
+            const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            std::printf("load report %6lld ms: %s %d\n", ms, stage.c_str(), static_cast<int>(f * 100.0f));
+        };
+    }
+    if (!world->load(game_dir, setup, err, trace)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
