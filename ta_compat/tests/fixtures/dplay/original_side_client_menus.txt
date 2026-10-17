@@ -1,0 +1,4 @@
+# Original host, the engine client's menus joining
+# packets of the game's own protocol seen by the original program (capture tool --net-trace, decoded by dplay_play decode)
+orig sends: 266 messages; packets by type: 02:27 06:63 07:12 08:1 09:1 11:1 15:1 18:1 1a:557 1e:1 20:24 22:2 24:24 26:15 28:7 2a:48 2c:823
+orig gets: 2846 messages; packets by type: 02:23 06:12 07:59 09:1 11:1 15:1972 17:1 1a:866 1f:1 20:15 21:2 24:14 28:9 2c:547

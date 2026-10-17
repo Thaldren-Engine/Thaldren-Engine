@@ -200,6 +200,13 @@ private:
     void handle(std::int32_t from, std::int32_t to, const std::vector<std::uint8_t>& p);
     void grant_logo(std::int32_t asker, std::uint8_t wanted);
     void sync_tick();
+    // Sessions with their own player directory (the original's session service).
+    void session_events();
+    std::int32_t computer_id(int slot);
+    void publish_session_info();
+    std::uint32_t published_user_[4] = {0, 0, 0, 0};
+    std::string published_name_;
+    bool logo_asked_ = false;  // a joining machine asks the host for logo 0 (0x4517B0 -> 0x4526C0(0))
     void judge_unit(std::uint32_t key);
     void loading_tick(sim::Lcg15* crt_rand);
     SendFn send_fn();

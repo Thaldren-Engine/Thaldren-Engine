@@ -5,6 +5,10 @@
 
 #include "net/codec.h"
 #include <algorithm>
+#include <deque>
+
+#include "net/dplay_serial.h"
+#include "net/dplay_session.h"
 
 #include "net/frames.h"
 #include "net/lobby.h"
@@ -314,7 +318,189 @@ static void test_room_shuffle() {
     CHECK(shuffled > 0 && shuffled < 8);
 }
 
+// ---- the original's session protocol (net/dplay_*.h): messages the original program sent,
+// decoded and made again byte for byte; the serial frame; a session over an in-memory link.
+static std::vector<std::uint8_t> unhex(const char* h) {
+    std::vector<std::uint8_t> v;
+    for (std::size_t i = 0; h[i] && h[i + 1]; i += 2) {
+        auto nib = [](char c) { return c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10; };
+        v.push_back(static_cast<std::uint8_t>(nib(h[i]) * 16 + nib(h[i + 1])));
+    }
+    return v;
+}
+
+// Observed (TCP/IP, message version 14): the payloads from the signature on.
+static const char* kObsRequestId = "706c617905000e0009000000";
+static const char* kObsAddForward =
+    "706c617913000e00000000007a563512000000001c0000006c00000050000000090000007a56351200000000000000002000000000000000000000007a5635123000"
+    "00000e00000000000000020008fc0000000000000000000000000200092e000000000000000000000000000078563412";
+static const char* kObsCreate =
+    "706c617908000e00000000007b563512000000001c00000000000000a1000000080000007b5635121e0000001e0000002000000015000000000000007a5635123000"
+    "00000e000000000000005000520049004d0045005f005400680061006c006400720065006e0000005000520049004d0045005f005400680061006c006400720065006e"
+    "000000020008fc0000000000000000000000000200092e000000000000000000000000000000000000000000000000000000000000005000000000000000";
+static const char* kObsEnumReply =
+    "706c617901000e005000000000000000c6473133b5d6f64592b80ff070ee6a7120747999f5f5cf11982700a0241496c80a000000010000000000000000000000"
+    "29e9d61200000000000000000000000000000000000003015c0000005000520049004d0045005f005400680061006c006400720065006e0027007300430061006e0061"
+    "006c002000430072006f007300730069006e00670020000000";
+static const char* kObsSuper =
+    "706c617929000e000300000000000000b40000000000000024000000740000000000000050000000000000006231a83206fe3b47898c644e19f6d96520747999f5f5"
+    "cf11982700a0241496c80a0000000100000000000000000000004002da12000000000008010e040000000a000a00fa0003015000520049004d0045005f00540068006100"
+    "6c006400720065006e0027007300430061006e0061006c002000430072006f007300730069006e0067002000000010000000050000004202db12040000000e00000020"
+    "0200092e7f00000100000000000000000200092f7f0000010000000000000000100000000f0000004002db12040000000e00000020020008fc00000000000000000000"
+    "00000200092e000000000000000000000000100000000c0000004102db12170000004002db125000520049004d0045005f005400680061006c006400720065006e0000"
+    "005000520049004d0045005f005400680061006c006400720065006e0000001500000000000000000000000000000000000000500020020008fc000000000000000000"
+    "0000000200092e000000000000000000000000";
+
+// Two in-memory ends of one link (a provider pair for sessions in one process).
+struct MemLink {
+    std::deque<std::vector<std::uint8_t>> to[2];
+};
+class MemProvider final : public net::dplay::Provider {
+public:
+    MemProvider(MemLink& l, int side) : l_(l), side_(side) {}
+    const char* name() const override { return "memory"; }
+    net::dplay::Bytes local_sp_data() const override { return {}; }
+    bool same_machine(const net::dplay::Bytes&, const net::dplay::Bytes&) const override { return true; }
+    void send(const net::dplay::Bytes&, const net::dplay::Bytes& p, bool) override { l_.to[1 - side_].push_back(p); }
+    bool receive(net::dplay::Inbound& in) override {
+        auto& q = l_.to[side_];
+        if (q.empty()) return false;
+        in = net::dplay::Inbound{};
+        in.payload = std::move(q.front());
+        q.pop_front();
+        return true;
+    }
+    void pump() override {}
+    void enumerate(const net::dplay::Bytes& p) override { send({}, p, true); }
+    bool listen(std::string&) override { return true; }
+
+private:
+    MemLink& l_;
+    int side_;
+};
+
+static void test_dplay() {
+    using namespace net::dplay;
+    // Requests and the full player form, made again from what they carry.
+    CHECK(request_player_id(kSystemPlayer | kSenderLocal) == unhex(kObsRequestId));
+    {
+        const auto obs = unhex(kObsAddForward);
+        auto m = decode(obs.data(), obs.size());
+        CHECK(m && m->command == cmd::kAddForwardRequest && m->player.flags == 9 && m->key == 0x12345678u && m->player.sp_data.size() == 32);
+        if (m) CHECK(add_forward_request(m->to, m->player, m->password, m->key) == obs);
+    }
+    {
+        const auto obs = unhex(kObsCreate);
+        auto m = decode(obs.data(), obs.size());
+        CHECK(m && m->command == cmd::kCreatePlayer && m->player.player_data.size() == 21 && m->player.player_data[0x13] == 0x50);
+        if (m) CHECK(create_player(m->to, m->player) == obs);
+    }
+    {
+        const auto obs = unhex(kObsEnumReply);
+        auto m = decode(obs.data(), obs.size());
+        CHECK(m && m->desc.max_players == 10 && m->desc.name.size() == 31 && m->desc.application == game_application());
+        if (m) CHECK(enum_sessions_reply(m->desc) == obs);
+    }
+    {
+        // The name table: the joiner first, then the host's system player and its game player.
+        const auto obs = unhex(kObsSuper);
+        auto m = decode(obs.data(), obs.size());
+        CHECK(m && m->players.size() == 3);
+        if (m && m->players.size() == 3) {
+            CHECK(m->players[1].flags == 0xF && m->players[2].flags == 0xC && m->players[2].system_id == m->players[1].id);
+            CHECK(super_enum_players_reply(m->desc, m->players) == obs);
+            // Player ids: (uniqueness << 16 | index) XOR the session key.
+            CHECK(m->players[1].id == make_player_id(m->desc.reserved1, 0) && m->players[0].id == make_player_id(m->desc.reserved1, 2));
+        }
+    }
+    // The serial frame: the check is CRC-16/ARC (check value 0xBB3D); a damaged head resyncs.
+    {
+        const std::vector<std::uint8_t> nine = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+        const auto f = serial_frame(nine);
+        CHECK(f.size() == 17 && f[0] == 0xAD && f[1] == 0x2B && f[2] == 17 && f[4] == 0x3D && f[5] == 0xBB);
+        std::vector<std::uint8_t> stream = {0x12, 0xAD, 0x2B, 0x99};
+        stream.insert(stream.end(), f.begin(), f.end());
+        auto bad = f;
+        bad[10] ^= 1;  // a damaged message is dropped
+        stream.insert(stream.end(), bad.begin(), bad.end());
+        stream.insert(stream.end(), f.begin(), f.end());
+        std::vector<std::uint8_t> p;
+        int got = 0;
+        while (serial_unframe(stream, p)) got += p == nine ? 1 : 100;
+        CHECK(got == 2 && stream.empty());
+    }
+    // A session: host, a machine joins, both make players, game messages both ways, one leaves.
+    {
+        MemLink link;
+        Session host(std::make_unique<MemProvider>(link, 0)), join(std::make_unique<MemProvider>(link, 1));
+        HostSettings hs;
+        hs.session_name = "Test";
+        hs.password = "pw";
+        std::string err;
+        CHECK(host.host(hs, err));
+        const std::int32_t hp = host.create_player("H", {1, 2, 3});
+        CHECK(hp > 0 || hp < -1);
+        auto settle = [&] {
+            for (int i = 0; i < 10; ++i) {
+                host.pump();
+                join.pump();
+            }
+        };
+        join.find();
+        settle();
+        CHECK(join.sessions().size() == 1 && join.sessions()[0].desc.name == "Test" && (join.sessions()[0].desc.flags & kPasswordRequired));
+        // A wrong password is refused, the right one taken.
+        join.join(join.sessions()[0], "no");
+        settle();
+        CHECK(join.state() == Session::State::Failed && join.result() == kErrInvalidPassword);
+        Session join2(std::make_unique<MemProvider>(link, 1));
+        join2.find();
+        for (int i = 0; i < 10; ++i) {
+            host.pump();
+            join2.pump();
+        }
+        join2.join(join2.sessions()[0], "pw");
+        for (int i = 0; i < 10; ++i) {
+            host.pump();
+            join2.pump();
+        }
+        CHECK(join2.state() == Session::State::Joined);
+        CHECK(join2.create_player("J", {4}) == 0);
+        for (int i = 0; i < 10; ++i) {
+            host.pump();
+            join2.pump();
+        }
+        net::SessionEvent e;
+        std::int32_t jp = 0, seen_h = 0;
+        while (join2.next_event(e))
+            if (e.kind == net::SessionEvent::Kind::PlayerCreated) (e.local ? jp : seen_h) = e.id;
+        CHECK(jp != 0 && seen_h == hp && join2.player_name(hp) == "H");
+        std::int32_t host_saw = 0;
+        while (host.next_event(e))
+            if (e.kind == net::SessionEvent::Kind::PlayerCreated && !e.local) host_saw = e.id;
+        CHECK(host_saw == jp && host.player_name(jp) == "J");
+        host.send(hp, 0, {7, 7});
+        join2.send(jp, hp, {8});
+        for (int i = 0; i < 10; ++i) {
+            host.pump();
+            join2.pump();
+        }
+        net::Message m;
+        CHECK(join2.receive(m) && m.from == hp && m.to == 0 && m.bytes == std::vector<std::uint8_t>({7, 7}));
+        CHECK(host.receive(m) && m.from == jp && m.to == hp && m.bytes == std::vector<std::uint8_t>({8}));
+        join2.destroy_player(jp);
+        for (int i = 0; i < 10; ++i) {
+            host.pump();
+            join2.pump();
+        }
+        bool gone = false;
+        while (host.next_event(e)) gone = gone || (e.kind == net::SessionEvent::Kind::PlayerDestroyed && e.id == jp);
+        CHECK(gone && !host.player(static_cast<std::uint32_t>(jp)));
+    }
+}
+
 int main() {
+    test_dplay();
     test_bitstream();
     test_codec();
     test_frames();

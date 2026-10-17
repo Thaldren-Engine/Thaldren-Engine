@@ -71,6 +71,10 @@ target_compile_options(sim PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 # Network play: wire format, frames, transports, the battle's network side and the battle room.
 add_library(net STATIC
     engine/net/src/codec.cpp
+    engine/net/src/dplay_serial.cpp
+    engine/net/src/dplay_session.cpp
+    engine/net/src/dplay_tcpip.cpp
+    engine/net/src/dplay_wire.cpp
     engine/net/src/frames.cpp
     engine/net/src/lobby.cpp
     engine/net/src/net_battle.cpp
@@ -128,6 +132,11 @@ endif()
 add_executable(net_play ta_compat/tools/net_play.cpp)
 target_link_libraries(net_play PRIVATE ta_compat net)
 target_compile_options(net_play PRIVATE ${WARN_FLAGS})
+
+# Network games over the original's session protocol (with the original program or ourselves).
+add_executable(dplay_play ta_compat/tools/dplay_play.cpp)
+target_link_libraries(dplay_play PRIVATE ta_compat net)
+target_compile_options(dplay_play PRIVATE ${WARN_FLAGS})
 
 add_executable(fpu_profile_check tools/fpu_profile_check.cpp)
 target_link_libraries(fpu_profile_check PRIVATE sim)

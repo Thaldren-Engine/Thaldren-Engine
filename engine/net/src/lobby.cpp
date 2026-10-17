@@ -22,6 +22,9 @@ std::vector<std::uint8_t> encode_side_record(const RoomPlayer& p) {
     put16(&r[0x8B], p.screen_w);
     put16(&r[0x8D], p.screen_h);
     r[0x8F] = p.map_ready ? 1 : 0;
+    // The record's player: the original's receiver finds the record's owner by this id (packet
+    // 0x20 +0x91, 0x453D40), not by the message's sender (0x4517B0 and 0x456310 write it).
+    put32(&r[0x90], static_cast<std::uint32_t>(p.net_id));
     r[0x94] = p.kind;
     r[0x95] = p.side;
     r[0x96] = p.logo;
@@ -230,7 +233,7 @@ int BattleRoom::add_computer(std::uint8_t side) {
         RoomPlayer& p = players_[static_cast<std::size_t>(s)];
         if (p.net_id) continue;
         p = RoomPlayer{};
-        p.net_id = net_id_ + 0x1000 + s;  // the host's session creates the computer players
+        p.net_id = computer_id(s);  // the host's session creates the computer players
         p.name = "Computer " + std::to_string(s + 1);
         p.kind = 2;
         p.side = side;
@@ -286,7 +289,7 @@ int BattleRoom::add_computer_at(int slot, std::uint8_t side) {
     if (!host_ || slot < 0 || slot > 9 || players_[static_cast<std::size_t>(slot)].net_id) return -1;
     RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
     p = RoomPlayer{};
-    p.net_id = net_id_ + 0x1000 + slot;
+    p.net_id = computer_id(slot);
     p.name = "Computer " + std::to_string(slot + 1);
     p.kind = 2;
     p.side = side;
@@ -322,6 +325,7 @@ bool BattleRoom::remove_computer(int slot) {
     put32(st + 1, static_cast<std::uint32_t>(p.net_id));
     st[5] = room::kLeft;
     send_all(net_id_, st, 6);
+    transport_.destroy_player(p.net_id);
     p = RoomPlayer{};
     dirty_ = true;
     return true;
@@ -414,6 +418,7 @@ void BattleRoom::broadcast_records() {
         std::memcpy(pk + 1, r.data(), r.size());
         send_all(net_id_, pk, 186);
     }
+    if (host_) publish_session_info();
     if (host_) {
         u8 pk[41] = {packet::kSlotTable};
         // A blocked slot goes as -1 (the original's state 4).
@@ -440,6 +445,7 @@ void BattleRoom::broadcast_records() {
 void BattleRoom::frame(std::uint32_t clock, sim::Lcg15* crt_rand) {
     clock_ = clock;
     transport_.pump();
+    session_events();
     const FrameReceiver::ReadFn read = [this](std::int32_t& f, std::int32_t& t, std::vector<std::uint8_t>& m) {
         Message msg;
         if (!transport_.receive(msg)) return false;
@@ -463,6 +469,12 @@ void BattleRoom::frame(std::uint32_t clock, sim::Lcg15* crt_rand) {
         }
         dirty_ = false;
         broadcast_records();
+    }
+    // 0x4517B0 ends a join with 0x4526C0(0): the newcomer asks the host for logo 0 (the host
+    // answers with the first free one, 0x18). The original's host grants no logo otherwise.
+    if (!host_ && !logo_asked_ && local_slot_ >= 0 && host_id_ != 0 && me().logo == 0xFF) {
+        logo_asked_ = true;
+        set_logo(0);
     }
     if (!started_) sync_tick();
     if (started_ && !loaded_) loading_tick(crt_rand);
@@ -627,6 +639,10 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
     case packet::kSideRecord: {
         RoomPlayer r = decode_side_record(p + 1);
         r.net_id = from;
+        {  // the session's directory names the player (the original shows the session's names)
+            const std::string n = transport_.player_name(from);
+            if (!n.empty()) r.name = n;
+        }
         if (fs < 0) {
             if (!host_) break;  // the host seats newcomers; others wait for the slot table
             // Join gate: a closed or started game takes nobody new ("Can't add another player").
@@ -833,7 +849,10 @@ bool BattleRoom::can_start() const {
     for (const RoomPlayer& p : players_) {
         if (!p.net_id) continue;
         if (p.kind == 1) ++humans;
-        if (p.kind == 1 && p.net_id != net_id_ && (!p.ready() || !p.map_ready)) return false;
+        // 0x456760 asks every playing record for its ready bit only (the original's clients never
+        // set their map byte +0x8F in the room: seen with the original program as a client; a
+        // client without the map clears its own ready bit instead, 0x448C70).
+        if (p.kind == 1 && p.net_id != net_id_ && !p.ready()) return false;
         if (p.logo == 0xFF) return false;  // the battle start waits for every logo (0x497180)
     }
     for (const PeerChecks& c : peers_)
@@ -902,6 +921,98 @@ sim::BattleStart BattleRoom::battle_start() const {
     b.start_energy = static_cast<float>(self.energy) * 100.0f;
     b.start_metal = static_cast<float>(self.metal) * 100.0f;
     return b;
+}
+
+// ---- sessions with their own player directory (net/dplay_session.h)
+
+void BattleRoom::session_events() {
+    SessionEvent e;
+    while (transport_.next_event(e)) {
+        switch (e.kind) {
+        case SessionEvent::Kind::PlayerCreated: {
+            if (e.local || !host_ || slot_of(e.id) >= 0) break;
+            // 0x453D40, the session's "player created" message on the host: the newcomer's data
+            // (21 bytes: the password typed, then the words 0 and 0x50) must match, else it is
+            // sent away (status 8, another version); a closed game sends it away too (status 3).
+            u8 reason = 0;
+            if (players_[0].options & room::kClosed) reason = 3;
+            else if (e.data.size() != 21 || get16(e.data.data() + 0x11) != 0 || get16(e.data.data() + 0x13) != 0x50) reason = 8;
+            if (reason) {
+                u8 st[6] = {packet::kStatus};
+                put32(st + 1, static_cast<std::uint32_t>(e.id));
+                st[5] = reason;
+                send_one(net_id_, e.id, st, 6);
+                break;
+            }
+            // 0x450A10: seated in the first free slot with the session's name.
+            for (int s = 0; s < 10; ++s) {
+                RoomPlayer& q = players_[static_cast<std::size_t>(s)];
+                if (q.net_id || blocked_[static_cast<std::size_t>(s)]) continue;
+                q = RoomPlayer{};
+                q.net_id = e.id;
+                q.name = !e.short_name.empty() ? e.short_name : e.long_name;
+                q.kind = 1;
+                q.logo = 0xFF;
+                q.map = players_[0].map;
+                q.last_heard = clock_;
+                grant_logo(e.id, static_cast<u8>(s));
+                dirty_ = true;
+                break;
+            }
+            break;
+        }
+        case SessionEvent::Kind::PlayerDestroyed: {
+            const int s = slot_of(e.id);
+            if (s < 0) break;
+            if (!host_ && (players_[static_cast<std::size_t>(s)].flags & room::kHost) && !started_) out_reason_ = 10;  // the creator left
+            players_[static_cast<std::size_t>(s)] = RoomPlayer{};
+            if (on_player_left) on_player_left(s);
+            dirty_ = true;
+            break;
+        }
+        case SessionEvent::Kind::Lost:
+            if (!host_) {
+                refused_ = true;
+                out_reason_ = 10;
+                error_ = "the session was lost";
+            }
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+std::int32_t BattleRoom::computer_id(int slot) {
+    // The original's host makes a session player for each computer player (0x451220), named
+    // "AI:" and the record's name (COMPUTER), with its human player's data.
+    std::vector<u8> data(21, 0);
+    data[0x13] = 0x50;
+    const std::int32_t id = transport_.create_player("AI:COMPUTER", data);
+    return id > 0 ? id : net_id_ + 0x1000 + slot;
+}
+
+void BattleRoom::publish_session_info() {
+    // 0x451090 / 0x451180: the session's name is the game's name (16 characters) and the map's
+    // (15), space padded; its four application words are the host's record bytes +0x99..+0xA8
+    // (memory and options, CD and ping, energy and metal, unit limit and version). Option bit
+    // 0x10 closes the session to newcomers.
+    const RoomPlayer& h = players_[0];
+    const std::vector<std::uint8_t> r = encode_side_record(h);
+    std::string name(31, ' ');
+    for (std::size_t i = 0; i < 16 && i < h.game_name.size() && h.game_name[i]; ++i) name[i] = h.game_name[i];
+    for (std::size_t i = 0; i < 15 && i < h.map.size() && h.map[i]; ++i) name[16 + i] = h.map[i];
+    std::uint32_t user[4];
+    for (int i = 0; i < 4; ++i) user[i] = get32(r.data() + 0x99 + 4 * i);
+    // 0x451090: the option word's low four bits carry the number of players (GS+0x2A3C).
+    std::uint32_t count = 0;
+    for (const RoomPlayer& q : players_)
+        if (q.net_id) ++count;
+    user[0] = (user[0] & ~0x000F0000u) | ((count & 0xFu) << 16);
+    if (name == published_name_ && std::equal(user, user + 4, published_user_)) return;
+    published_name_ = name;
+    std::copy(user, user + 4, published_user_);
+    transport_.set_session_info(name, user, (h.options & 0x10u) != 0);
 }
 
 } // namespace net

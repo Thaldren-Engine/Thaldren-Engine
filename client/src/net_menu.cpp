@@ -54,9 +54,11 @@ std::int32_t make_net_id() {
 
 class RoomScreen final : public Screen {
 public:
-    RoomScreen(const NetMenuConfig& cfg, std::unique_ptr<net::Transport> t, bool host)
+    // `net_id`: the player's id in the transport's session (0: one of our own, chosen here).
+    RoomScreen(const NetMenuConfig& cfg, std::unique_ptr<net::Transport> t, bool host, std::int32_t net_id = 0, const std::string& game_name = {})
         : cfg_(cfg), transport_(std::move(t)), session_(std::make_shared<net::NetSession>(*transport_)),
-          room_(std::make_unique<net::BattleRoom>(*session_, host, make_net_id(), cfg.player_name)) {
+          room_(std::make_unique<net::BattleRoom>(*session_, host, net_id ? net_id : make_net_id(), cfg.player_name)) {
+        if (host && !game_name.empty()) room_->set_game_name(game_name);
         // This machine's C runtime rand(): the host's start position shuffle draws it (an input
         // from the clock, as the menus leave it).
         crt_rand_.set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -281,6 +283,11 @@ private:
 }  // namespace
 
 std::unique_ptr<Screen> make_multiplayer_menu(FrontEnd&, const NetMenuConfig& config) { return std::make_unique<ConnectScreen>(config); }
+
+std::unique_ptr<Screen> make_room_screen(const NetMenuConfig& config, std::unique_ptr<net::Transport> transport, bool host, std::int32_t net_id,
+                                         const std::string& game_name) {
+    return std::make_unique<RoomScreen>(config, std::move(transport), host, net_id, game_name);
+}
 
 void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config) {
     hooks.multiplayer_menu = [config](FrontEnd& fe) { return make_multiplayer_menu(fe, config); };

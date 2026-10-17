@@ -16,7 +16,13 @@
 #include <random>
 #include <sstream>
 
+#include <thread>
+
 #include "client/canvas.h"
+#include "client/net_menu.h"
+#include "net/dplay_serial.h"
+#include "net/dplay_session.h"
+#include "net/dplay_tcpip.h"
 #include "net/protocol.h"
 #include "render/raster.h"
 #include "ta/tdf.h"
@@ -502,13 +508,18 @@ void show_net_message(FrontEnd& fe, MenuArt& art, const std::string& text, int w
 }
 
 // ------------------------------------------------------------------ shared state of the part
-// The engine's transports, listed as the original lists its session service's providers.
+// The session service's providers as the original lists them (the system's provider list in the
+// order seen with the original program: serial, modem, TCP/IP; no IPX on current systems), here
+// run by the engine's own implementation of the protocol (net/dplay_session.h).
+enum class ProviderKind { Serial, Modem, Tcpip };
 struct Provider {
     std::string name;
-    bool udp = true;
+    ProviderKind kind = ProviderKind::Tcpip;
 };
 const std::vector<Provider>& providers() {
-    static const std::vector<Provider> p = {{"Internet TCP/IP Connection (UDP)", true}, {"Internet TCP/IP Connection (TCP)", false}};
+    static const std::vector<Provider> p = {{"Serial Connection For DirectPlay", ProviderKind::Serial},
+                                            {"Modem Connection For DirectPlay", ProviderKind::Modem},
+                                            {"Internet TCP/IP Connection For DirectPlay", ProviderKind::Tcpip}};
     return p;
 }
 
@@ -517,6 +528,13 @@ struct NetPart {
     MenuArt& art;
     client::NetMenuConfig cfg;
     int provider = 0;
+    // The session (the original's session protocol over the chosen provider) and what was found.
+    std::unique_ptr<net::dplay::Session> session;
+    std::vector<net::dplay::FoundSession> found;
+    std::string port = "COM1", phone;  // serial / modem
+    std::uint32_t baud = 115200;
+    bool answer = false;               // modem: wait for a call instead of dialing
+    bool loopback = false;             // TCP/IP on this machine only (setting NetLoopback; tests)
     std::string address;      // the host's address (empty: this machine)
     std::string nickname;     // the player's name (the original's GS+0x2BD2)
     std::string password;     // GS+0x2BE3
@@ -609,11 +627,126 @@ void SelProv::on_press(FrontEnd& fe, Widget& w) {
     }
 }
 
+// ------------------------------------------------------------------ the session (engine side)
+// Opens the chosen provider (TCP/IP at the typed address, the serial port, the modem's port).
+bool open_provider(NetPart& part, std::string& error) {
+    part.session.reset();
+    std::unique_ptr<net::dplay::Provider> p;
+    const ProviderKind kind = providers()[static_cast<std::size_t>(part.provider)].kind;
+    if (kind == ProviderKind::Tcpip) {
+        net::dplay::TcpipOptions o;
+        o.address = part.address;
+        if (part.loopback) o.bind_ip = net::dplay::kLoopback;
+        p = net::dplay::tcpip_provider(o, error);
+    } else {
+        net::dplay::SerialOptions o;
+        o.port = part.port;
+        o.baud = part.baud;
+        o.modem = kind == ProviderKind::Modem;
+        o.answer = part.answer;
+        o.phone = part.phone;
+        p = net::dplay::serial_provider(o, error);
+    }
+    if (!p) return false;
+    part.session = std::make_unique<net::dplay::Session>(std::move(p));
+    return true;
+}
+
+// Asks for the games (0x4C9E50: the session service enumerates for 1.5 s; a modem first dials).
+void find_games(NetPart& part) {
+    part.found.clear();
+    if (!part.session) return;
+    using clock = std::chrono::steady_clock;
+    const auto limit = clock::now() + std::chrono::seconds(45);
+    while (!part.session->provider().ready() && clock::now() < limit && part.session->error().empty()) {
+        part.session->pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    part.session->find();
+    const auto until = clock::now() + std::chrono::milliseconds(1500);
+    while (clock::now() < until) {
+        part.session->pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    part.found = part.session->sessions();
+}
+
+// ------------------------------------------------------------------ serial (SERIAL.GUI)
+// 0x442560 (handler 0x4423C0): PORTS (COM1..COM4, the registry's SERPORT picked), SPEEDS (115200,
+// 57600, 38400, 19200, 14400, 9600; SERBAUD); HOST waits on the cable for a game of its own, JOIN
+// asks the cable for games; one stop bit, no parity, hardware flow control (0x441C30).
+class SerialAsk : public NetScreen {
+public:
+    explicit SerialAsk(std::shared_ptr<NetPart> part) : NetScreen(part->art, part->art.layout("SERIAL")), part_(part) {
+        if (ListState* L = list("PORTS")) L->items = {"COM1", "COM2", "COM3", "COM4"};
+        if (ListState* L = list("SPEEDS")) L->items = {"115200", "57600", "38400", "19200", "14400", "9600"};
+        boxed_ = true;
+    }
+    void enter(FrontEnd& fe) override {
+        if (entered_) return;
+        entered_ = true;
+        if (ListState* L = list("PORTS")) L->selected = std::clamp(fe.settings().get_int("SERPORT", 0), 0, 3);
+        if (ListState* L = list("SPEEDS")) L->selected = std::clamp(fe.settings().get_int("SERBAUD", 0), 0, 5);
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_screen_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        if (widgets_.empty()) return;
+        const Widget& h = widgets_.front();
+        stock_panel(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override;
+
+private:
+    std::shared_ptr<NetPart> part_;
+    bool entered_ = false;
+};
+
+// ------------------------------------------------------------------ modem (MODEM.GUI)
+// 0x443100 (handler 0x442A30): NUMBER (the number to dial; the address book ACCOUNTS of the
+// registry's MODEMACCOUNTS / MODEMNUMBERS), MODEMS (the system's modems: here the ports a modem
+// answers Hayes commands on), HOST answers a call, JOIN dials.
+class ModemAsk : public NetScreen {
+public:
+    explicit ModemAsk(std::shared_ptr<NetPart> part) : NetScreen(part->art, part->art.layout("MODEM")), part_(part) {
+        if (ListState* L = list("MODEMS")) L->items = {"COM1", "COM2", "COM3", "COM4"};
+        if (EditState* e = edit("NUMBER")) e->max_chars = 40;
+        focus_edit("NUMBER");
+        boxed_ = true;
+    }
+    void enter(FrontEnd& fe) override {
+        if (entered_) return;
+        entered_ = true;
+        set_edit("NUMBER", fe.settings().get_text("MODEMNUMBER", ""));
+        if (ListState* L = list("MODEMS")) L->selected = std::clamp(fe.settings().get_int("MODEMPORT", 0), 0, 3);
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_screen_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        if (widgets_.empty()) return;
+        const Widget& h = widgets_.front();
+        stock_panel(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override;
+
+private:
+    std::shared_ptr<NetPart> part_;
+    bool entered_ = false;
+};
+
 void SelProv::choose(FrontEnd& fe, int row) {
     if (row < 0 || row >= static_cast<int>(providers().size())) return;
     sfx(fe, art_, "BigButton");
     part_->provider = row;
-    fe.push(std::make_unique<TcpAsk>(part_));
+    switch (providers()[static_cast<std::size_t>(row)].kind) {
+    case ProviderKind::Serial: fe.push(std::make_unique<SerialAsk>(part_)); break;
+    case ProviderKind::Modem: fe.push(std::make_unique<ModemAsk>(part_)); break;
+    case ProviderKind::Tcpip: fe.push(std::make_unique<TcpAsk>(part_)); break;
+    }
 }
 
 // ------------------------------------------------------------------ the game list (SELGAME.GUI)
@@ -746,6 +879,70 @@ namespace {
 
 std::shared_ptr<void> as_void(const std::shared_ptr<NetPart>& p) { return std::static_pointer_cast<void>(p); }
 
+// A game list entry from a session's description: its name (16 places of game name, 15 of map
+// name) and the host's record bytes +0x99..+0xA8 in its four application words.
+GameEntry entry_of(const net::dplay::FoundSession& f) {
+    GameEntry g;
+    const std::string& n = f.desc.name;
+    g.name = n.substr(0, std::min<std::size_t>(16, n.size()));
+    g.map = n.size() > 16 ? n.substr(16) : std::string();
+    while (!g.name.empty() && g.name.back() == ' ') g.name.pop_back();
+    g.max_players = static_cast<int>(f.desc.max_players);
+    g.memory = static_cast<std::uint16_t>(f.desc.user[0]);
+    g.options = static_cast<std::uint16_t>(f.desc.user[0] >> 16);
+    g.cd = static_cast<std::uint16_t>(f.desc.user[1]);
+    g.ping = static_cast<std::uint16_t>(f.desc.user[1] >> 16);
+    g.energy = static_cast<std::uint16_t>(f.desc.user[2]);
+    g.metal = static_cast<std::uint16_t>(f.desc.user[2] >> 16);
+    g.unit_limit = static_cast<std::uint16_t>(f.desc.user[3]);
+    g.major = static_cast<std::uint8_t>(f.desc.user[3] >> 16);
+    g.minor = static_cast<std::uint8_t>(f.desc.user[3] >> 24);
+    g.password = (f.desc.flags & net::dplay::kPasswordRequired) != 0 || (g.cd & 1) != 0;
+    return g;
+}
+
+std::vector<GameEntry> found_entries(const NetPart& part) {
+    std::vector<GameEntry> out;
+    for (const auto& f : part.found) out.push_back(entry_of(f));
+    return out;
+}
+
+// The player's data in the session (0x451220): the password typed, then the words 0 and 0x50.
+std::vector<std::uint8_t> session_player_data(const std::string& password) {
+    std::vector<std::uint8_t> d(21, 0);
+    std::memcpy(d.data(), password.data(), std::min<std::size_t>(password.size(), 16));
+    d[0x13] = 0x50;
+    return d;
+}
+
+// Into the battle room over the session (tests without a session: the 1:1 room from a file).
+void enter_room(FrontEnd& fe, std::shared_ptr<NetPart> part, bool host) {
+    if (part->test || !part->session) {
+        fe.push(net_screens_detail::make_lounge(as_void(part), host, std::string()));
+        return;
+    }
+    using clock = std::chrono::steady_clock;
+    net::dplay::Session& s = *part->session;
+    std::int32_t id = s.create_player(part->nickname, session_player_data(part->password));
+    if (id == 0) {  // a joining machine waits for the host's id
+        const auto until = clock::now() + std::chrono::seconds(10);
+        net::SessionEvent e;
+        while (!id && clock::now() < until) {
+            s.pump();
+            while (s.next_event(e))
+                if (e.kind == net::SessionEvent::Kind::PlayerCreated && e.local) id = e.id;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+    if (id <= 0) {
+        show_net_message(fe, part->art, "Direct Play failed to add new player");
+        return;
+    }
+    client::NetMenuConfig cfg = part->cfg;
+    cfg.player_name = part->nickname;
+    fe.push(client::make_room_screen(cfg, std::move(part->session), host, id, part->game_name));
+}
+
 void TcpAsk::ok(FrontEnd& fe) {
     sfx(fe, art_, "Smlbutton");
     const EditState* e = edit("ADDRESS");
@@ -753,13 +950,76 @@ void TcpAsk::ok(FrontEnd& fe) {
     fe.settings().set_text("TCPADDR", part_->address);
     fe.pop();
     // The game list at that address (the original: the session service's games found there).
-    std::vector<GameEntry> games;
-    fe.push(make_selgame(part_, std::move(games)));
+    std::string err;
+    if (!part_->test && open_provider(*part_, err)) find_games(*part_);
+    fe.push(make_selgame(part_, found_entries(*part_)));
+}
+
+void SerialAsk::on_press(FrontEnd& fe, Widget& w) {
+    if (is(w, "PREV") || is(w, "CANCEL")) {
+        sfx(fe, art_, "Previous");
+        fe.pop();
+        return;
+    }
+    if (!is(w, "HOST") && !is(w, "JOIN")) return;
+    sfx(fe, art_, "Smlbutton");
+    static const std::uint32_t speeds[] = {115200, 57600, 38400, 19200, 14400, 9600};
+    const int port = list("PORTS") ? list("PORTS")->selected : 0, speed = list("SPEEDS") ? list("SPEEDS")->selected : 0;
+    fe.settings().set_int("SERPORT", port);
+    fe.settings().set_int("SERBAUD", speed);
+    part_->port = "COM" + std::to_string(port + 1);
+    part_->baud = speeds[std::clamp(speed, 0, 5)];
+    const bool host = is(w, "HOST");
+    fe.pop();
+    std::string err;
+    if (!part_->test && !open_provider(*part_, err)) {
+        show_net_message(fe, art_, err);
+        return;
+    }
+    if (host) {
+        fe.push(std::make_unique<NewMulti>(part_));
+        return;
+    }
+    if (!part_->test) find_games(*part_);
+    fe.push(make_selgame(part_, found_entries(*part_)));
+}
+
+void ModemAsk::on_press(FrontEnd& fe, Widget& w) {
+    if (is(w, "PREV") || is(w, "CANCEL")) {
+        sfx(fe, art_, "Previous");
+        fe.pop();
+        return;
+    }
+    if (!is(w, "HOST") && !is(w, "JOIN")) return;
+    sfx(fe, art_, "Smlbutton");
+    const EditState* n = edit("NUMBER");
+    part_->phone = n ? n->text : std::string();
+    const int port = list("MODEMS") ? list("MODEMS")->selected : 0;
+    fe.settings().set_text("MODEMNUMBER", part_->phone);
+    fe.settings().set_int("MODEMPORT", port);
+    part_->port = "COM" + std::to_string(port + 1);
+    part_->answer = is(w, "HOST");
+    fe.pop();
+    std::string err;
+    if (!part_->test && !open_provider(*part_, err)) {
+        show_net_message(fe, art_, err);
+        return;
+    }
+    if (part_->answer) {
+        fe.push(std::make_unique<NewMulti>(part_));
+        return;
+    }
+    if (!part_->test) find_games(*part_);
+    fe.push(make_selgame(part_, found_entries(*part_)));
 }
 
 void SelGame::on_press(FrontEnd& fe, Widget& w) {
     if (is(w, "UPDATE")) {
         sfx(fe, art_, "Multi");
+        if (!part_->test && part_->session) {
+            find_games(*part_);
+            games_ = found_entries(*part_);
+        }
         fill();
     } else if (is(w, "PREVMENU")) {
         sfx(fe, art_, "Previous");
@@ -798,7 +1058,21 @@ void SelGame::join(FrontEnd& fe, bool watch) {
     if (const EditState* p = edit("PASSWORD")) part_->password = p->text;
     sfx(fe, art_, watch ? "Multi" : "BigButton");
     fe.settings().set_text("Nickname", part_->nickname);
-    fe.push(net_screens_detail::make_lounge(as_void(part_), false, std::string()));
+    if (!part_->test && part_->session && row < static_cast<int>(part_->found.size())) {
+        // 0x4517B0: open the session (join), then this machine's player.
+        net::dplay::Session& s = *part_->session;
+        s.join(part_->found[static_cast<std::size_t>(row)], part_->password);
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (s.state() == net::dplay::Session::State::Joining && std::chrono::steady_clock::now() < until) {
+            s.pump();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (s.state() != net::dplay::Session::State::Joined) {
+            show_net_message(fe, art_, s.result() == net::dplay::kErrInvalidPassword ? "Incorrect password" : "Unable to join the game");
+            return;
+        }
+    }
+    enter_room(fe, part_, false);
 }
 
 void NewMulti::next(FrontEnd& fe) {
@@ -808,7 +1082,26 @@ void NewMulti::next(FrontEnd& fe) {
     if (const EditState* e = edit("PASSWORD")) part_->password = e->text;
     fe.settings().set_text("Nickname", part_->nickname);
     fe.pop();
-    fe.push(net_screens_detail::make_lounge(as_void(part_), true, std::string()));
+    if (!part_->test) {
+        // 0x451540: the session is opened as its host (TCP/IP: a fresh one on every address).
+        std::string err;
+        if (!part_->session) {
+            part_->address.clear();
+            if (!open_provider(*part_, err)) {
+                show_net_message(fe, art_, err);
+                return;
+            }
+        }
+        net::dplay::HostSettings hs;
+        hs.session_name = part_->game_name;
+        hs.password = part_->password;
+        if (!part_->session->host(hs, err)) {
+            show_net_message(fe, art_, err);
+            part_->session.reset();
+            return;
+        }
+    }
+    enter_room(fe, part_, true);
 }
 
 std::unique_ptr<client::Screen> make_selgame(std::shared_ptr<NetPart> part, std::vector<GameEntry> games) {
@@ -902,6 +1195,7 @@ void install_net_screens(client::FrontEndHooks& hooks, MenuArt& art, const clien
         art.vfs().scan();  // the original rescans the archives when MULTI is pressed (0x425E0B)
         auto part = std::make_shared<NetPart>(art, config);
         part->nickname = fe.settings().get_text("Nickname", "");
+        part->loopback = fe.settings().get_int("NetLoopback", 0) != 0;
         return std::make_unique<SelProv>(part);
     };
 }

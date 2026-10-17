@@ -1087,10 +1087,15 @@ DWORD WINAPI safety_monitor(LPVOID) {
             },
             reinterpret_cast<LPARAM>(&f));
         bad = bad || f.found;
+        // A firewall question about the game's sockets (a window of the system on the user's
+        // screen): stop at once (its sockets are meant to stay on the loopback address).
+        const bool firewall = FindWindowA(nullptr, "Windows Security Alert") != nullptr;
+        bad = bad || firewall;
         if (bad && g_process) {
             InterlockedExchange(&g_safety_stop, 1);
             TerminateProcess(g_process, 0x5AFE);
-            std::fprintf(stderr, "SAFETY STOP: %s\n", f.found ? "a game window appeared on the user's desktop" : "the display mode changed");
+            std::fprintf(stderr, "SAFETY STOP: %s\n",
+                         firewall ? "a firewall question appeared" : f.found ? "a game window appeared on the user's desktop" : "the display mode changed");
             return 1;
         }
         Sleep(50);
@@ -1205,6 +1210,400 @@ DWORD WINAPI menu_driver(LPVOID) {
     return 0;
 }
 
+// --- Scripted menus (--menu <file>) -----------------------------------------------------------
+//
+// One command per line, run in order by a driver thread placed on the game's hidden desktop:
+//   wait <ms>                  pause
+//   key <k>                    a key press (one character, or ENTER ESC TAB SPACE UP DOWN LEFT
+//                              RIGHT BACK HOME END F1..F12) to the game's windows
+//   type <text>                characters (WM_CHAR) to the game's windows
+//   click <x> <y>              left button press and release at the game's window coordinates
+//   frame <name>               the game's frame as a BMP (needs --frames <dir>)
+//   dialog_wait <ms>           wait until a dialog box of the game exists
+//   dialog_dump                log the dialog's controls (class, id, text)
+//   dialog_text <id> <text>    set the text of the dialog's control with that id (0: first edit)
+//   dialog_ok                  press the dialog's OK (IDOK)
+//   dialog_cancel              press the dialog's Cancel (IDCANCEL)
+//   until_file <path> <ms>     wait until a file exists (to step together with another program)
+//   touch <path>               create a file (tells another program a step is done)
+//   until_battle <ms>          wait until the battle starts loading
+//   quit                       end the game
+// Network games (--net-trace) also log every game message the original sends.
+std::vector<std::string> g_menu_lines;
+// Loaded modules (base, name) for the "threads" command, and the threads asked about.
+std::map<DWORD, std::string> g_modules;
+volatile LONG g_threads_wanted = 0;
+volatile LONG g_menu_quit = 0;
+HWND g_dialog = nullptr;
+
+void menu_log(const std::string& what) {
+    std::fprintf(g_out, "{\"ev\":\"menu\",\"t\":%llu,\"what\":\"%s\"}\n", static_cast<unsigned long long>(GetTickCount64()), json_escape(what).c_str());
+    std::fflush(g_out);
+}
+
+UINT key_code(const std::string& k, WPARAM& ch) {
+    ch = 0;
+    static const std::pair<const char*, UINT> named[] = {{"ENTER", VK_RETURN}, {"ESC", VK_ESCAPE}, {"TAB", VK_TAB},   {"SPACE", VK_SPACE},
+                                                         {"UP", VK_UP},        {"DOWN", VK_DOWN},   {"LEFT", VK_LEFT}, {"RIGHT", VK_RIGHT},
+                                                         {"BACK", VK_BACK},    {"HOME", VK_HOME},   {"END", VK_END}};
+    for (const auto& [n, vk] : named)
+        if (k == n) {
+            if (vk == VK_RETURN) ch = '\r';
+            if (vk == VK_ESCAPE) ch = 27;
+            if (vk == VK_SPACE) ch = ' ';
+            if (vk == VK_BACK) ch = 8;
+            return vk;
+        }
+    if (k.size() >= 2 && k[0] == 'F' && std::isdigit(static_cast<unsigned char>(k[1]))) return VK_F1 + static_cast<UINT>(std::atoi(k.c_str() + 1) - 1);
+    if (k.size() == 1) {
+        const char c = k[0];
+        ch = static_cast<WPARAM>(static_cast<unsigned char>(c));
+        const SHORT v = VkKeyScanA(c);
+        return static_cast<UINT>(v & 0xFF);
+    }
+    return 0;
+}
+
+HWND find_dialog() {
+    WindowSearch s;
+    EnumDesktopWindows(g_desktop, find_windows, reinterpret_cast<LPARAM>(&s));
+    return s.dialog;
+}
+
+std::vector<HWND> game_windows() {
+    WindowSearch s;
+    EnumDesktopWindows(g_desktop, find_windows, reinterpret_cast<LPARAM>(&s));
+    return s.game;
+}
+
+BOOL CALLBACK dump_control(HWND w, LPARAM) {
+    char cls[64] = {}, text[256] = {};
+    GetClassNameA(w, cls, sizeof cls);
+    DWORD_PTR r = 0;
+    SendMessageTimeoutA(w, WM_GETTEXT, sizeof text, reinterpret_cast<LPARAM>(text), SMTO_ABORTIFHUNG, 1000, &r);
+    menu_log(std::string("control class=") + cls + " id=" + std::to_string(GetDlgCtrlID(w)) + " text=" + text);
+    return TRUE;
+}
+
+struct EditSearch {
+    int id;
+    HWND found;
+};
+BOOL CALLBACK find_edit(HWND w, LPARAM lp) {
+    auto* e = reinterpret_cast<EditSearch*>(lp);
+    char cls[64] = {};
+    GetClassNameA(w, cls, sizeof cls);
+    if ((e->id == 0 && (_stricmp(cls, "Edit") == 0 || _stricmp(cls, "ComboBox") == 0)) || (e->id != 0 && GetDlgCtrlID(w) == e->id)) {
+        e->found = w;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+DWORD WINAPI menu_script_driver(LPVOID) {
+    // On the game's desktop, so messages and window searches reach its windows.
+    SetThreadDesktop(g_desktop);
+    for (const std::string& raw : g_menu_lines) {
+        if (g_menu_quit || !g_process) break;
+        std::string line = raw;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        const std::size_t sp = line.find(' ');
+        const std::string cmd = line.substr(0, sp);
+        const std::string arg = sp == std::string::npos ? std::string() : line.substr(sp + 1);
+        menu_log(line);
+        if (cmd == "wait") {
+            Sleep(static_cast<DWORD>(std::atoi(arg.c_str())));
+        } else if (cmd == "key") {
+            WPARAM ch = 0;
+            const UINT vk = key_code(arg, ch);
+            for (HWND w : game_windows()) {
+                PostMessageA(w, WM_ACTIVATE, WA_ACTIVE, 0);
+                post_key(w, vk, ch);
+            }
+            Sleep(150);
+        } else if (cmd == "erase") {
+            // <n> backspace characters (clears a text field the game filled from its settings)
+            for (int k = std::atoi(arg.c_str()); k > 0; --k) {
+                for (HWND w : game_windows()) PostMessageA(w, WM_CHAR, 8, 1);
+                Sleep(20);
+            }
+        } else if (cmd == "type") {
+            // Characters only: the game's text fields take the key presses' characters too.
+            for (char c : arg) {
+                for (HWND w : game_windows()) PostMessageA(w, WM_CHAR, static_cast<WPARAM>(static_cast<unsigned char>(c)), 1);
+                Sleep(60);
+            }
+        } else if (cmd == "click") {
+            int x = 0, y = 0;
+            std::sscanf(arg.c_str(), "%d %d", &x, &y);
+            const LPARAM xy = MAKELPARAM(x, y);
+            for (HWND w : game_windows()) {
+                PostMessageA(w, WM_MOUSEMOVE, 0, xy);
+                Sleep(80);
+                PostMessageA(w, WM_LBUTTONDOWN, MK_LBUTTON, xy);
+                Sleep(120);
+                PostMessageA(w, WM_LBUTTONUP, 0, xy);
+            }
+            Sleep(150);
+        } else if (cmd == "frame") {
+            if (!g_frames_dir.empty()) dump_frame(g_frames_dir + "\\" + arg + ".bmp");
+        } else if (cmd == "dialog_wait") {
+            const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(std::atoi(arg.c_str()));
+            while (!(g_dialog = find_dialog()) && GetTickCount64() < until && g_process) Sleep(100);
+            menu_log(g_dialog ? "dialog found" : "no dialog");
+        } else if (cmd == "dialog_dump") {
+            if ((g_dialog = find_dialog())) {
+                char title[256] = {};
+                GetWindowTextA(g_dialog, title, sizeof title);
+                menu_log(std::string("dialog title=") + title);
+                EnumChildWindows(g_dialog, dump_control, 0);
+            }
+        } else if (cmd == "dialog_text") {
+            const std::size_t s2 = arg.find(' ');
+            EditSearch e{std::atoi(arg.substr(0, s2).c_str()), nullptr};
+            const std::string text = s2 == std::string::npos ? std::string() : arg.substr(s2 + 1);
+            if ((g_dialog = find_dialog())) EnumChildWindows(g_dialog, find_edit, reinterpret_cast<LPARAM>(&e));
+            if (e.found) {
+                DWORD_PTR r = 0;
+                SendMessageTimeoutA(e.found, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text.c_str()), SMTO_ABORTIFHUNG, 1000, &r);
+            }
+            menu_log(e.found ? "text set" : "no such control");
+        } else if (cmd == "dialog_ok" || cmd == "dialog_cancel") {
+            if ((g_dialog = find_dialog())) PostMessageA(g_dialog, WM_COMMAND, cmd == "dialog_ok" ? IDOK : IDCANCEL, 0);
+        } else if (cmd == "until_file") {
+            char path[512] = {};
+            int ms = 0;
+            std::sscanf(arg.c_str(), "%511s %d", path, &ms);
+            const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(ms);
+            while (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < until && g_process) Sleep(100);
+        } else if (cmd == "touch") {
+            if (FILE* f = std::fopen(arg.c_str(), "w")) std::fclose(f);
+        } else if (cmd == "until_battle") {
+            const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(std::atoi(arg.c_str()));
+            while (!g_battle_loading && GetTickCount64() < until && g_process) Sleep(100);
+        } else if (cmd == "threads") {
+            // Where every thread of the game is: its instruction and the return addresses on its
+            // stack that fall in a loaded module.
+            const std::map<DWORD, HANDLE> threads = g_threads;
+            const std::map<DWORD, std::string> mods = g_modules;
+            auto where = [&](DWORD a) {
+                auto it = mods.upper_bound(a);
+                if (it == mods.begin()) return std::string("?");
+                --it;
+                char b[64];
+                std::snprintf(b, sizeof b, "+%lx", a - it->first);
+                return it->second + b;
+            };
+            for (const auto& [tid, h] : threads) {
+                SuspendThread(h);
+                CONTEXT c{};
+                c.ContextFlags = CONTEXT_FULL;
+                GetThreadContext(h, &c);
+                std::string line = "thread " + std::to_string(tid) + " at " + where(c.Eip) + " stack:";
+                std::uint32_t st[256] = {};
+                read_block(c.Esp, st, sizeof st);
+                int shown = 0;
+                for (std::uint32_t v : st) {
+                    if (shown >= 14) break;
+                    auto it = mods.upper_bound(v);
+                    if (it == mods.begin() || v < 0x10000) continue;
+                    --it;
+                    if (v - it->first > 0x400000) continue;
+                    line += " " + where(v);
+                    ++shown;
+                }
+                ResumeThread(h);
+                menu_log(line);
+            }
+        } else if (cmd == "quit") {
+            InterlockedExchange(&g_menu_quit, 1);
+            if (g_process) TerminateProcess(g_process, 0);
+            break;
+        }
+    }
+    menu_log("script done");
+    return 0;
+}
+
+// --- Network games -----------------------------------------------------------------------------
+//
+// The original's session service listens on every address of the machine; on this machine that
+// would make the system ask the user (a window on the user's screen) whether to allow it. Every
+// socket the game binds to "any address" is bound to the loopback address instead (a breakpoint
+// on the socket library's bind), so the game can only meet programs on this machine.
+DWORD g_bind_addr = 0;
+DWORD g_sock_base = 0;
+// The game's own send routine (0x4C97B0: session object, from, to, bytes, size): its messages.
+constexpr DWORD kBpNetSend = 0x004C97B0;
+// Just after its receive call (0x4C9840): EAX the result; the message's sender and addressee at
+// session object +0x4B5 / +0x4B9; the buffer and its size's address are the routine's arguments.
+constexpr DWORD kBpNetReceived = 0x004C9881;
+bool g_net_trace = false;
+
+void find_bind() {
+    HMODULE ws = LoadLibraryA("ws2_32.dll");
+    if (!ws) return;
+    g_sock_base = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(ws));
+    g_bind_addr = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(GetProcAddress(ws, "bind")));
+}
+
+void on_bind(CONTEXT& ctx) {
+    std::uint32_t name = 0, len = 0, sock = 0;
+    read_u32(ctx.Esp + 4, sock);
+    read_u32(ctx.Esp + 8, name);
+    read_u32(ctx.Esp + 12, len);
+    std::uint8_t sa[16] = {};
+    if (!name || len < 16 || !read_block(name, sa, 16)) return;
+    const unsigned family = sa[0] | (sa[1] << 8), port = (sa[2] << 8) | sa[3];
+    const std::uint32_t addr = static_cast<std::uint32_t>(sa[4] | (sa[5] << 8) | (sa[6] << 16) | (sa[7] << 24));
+    bool changed = false;
+    // Any address but the loopback one (the session service also binds to each network
+    // interface's own address for its router discovery).
+    if (family == 2 && addr != 0x0100007Fu) {
+        const std::uint8_t loop[4] = {127, 0, 0, 1};
+        SIZE_T n = 0;
+        changed = WriteProcessMemory(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(name + 4)), loop, 4, &n) && n == 4;
+    }
+    std::fprintf(g_out, "{\"ev\":\"bind\",\"socket\":%u,\"family\":%u,\"port\":%u,\"addr\":%u,\"to_loopback\":%d}\n", sock, family, port, addr,
+                 changed ? 1 : 0);
+    std::fflush(g_out);
+}
+
+void on_net_send(CONTEXT& ctx) {
+    std::uint32_t from = 0, to = 0, data = 0, size = 0, guaranteed = 0;
+    read_u32(ctx.Esp + 8, from);
+    read_u32(ctx.Esp + 12, to);
+    read_u32(ctx.Esp + 16, data);
+    read_u32(ctx.Esp + 20, size);
+    read_u32(0x0050A780, guaranteed);
+    std::vector<std::uint8_t> b(size < 4096 ? size : 4096);
+    if (!b.empty()) read_block(data, b.data(), b.size());
+    std::string hex;
+    char h[4];
+    for (std::uint8_t c : b) {
+        std::snprintf(h, sizeof h, "%02x", c);
+        hex += h;
+    }
+    std::fprintf(g_out, "{\"ev\":\"net_send\",\"t\":%llu,\"from\":%d,\"to\":%d,\"guaranteed\":%u,\"size\":%u,\"bytes\":\"%s\"}\n",
+                 static_cast<unsigned long long>(GetTickCount64()), static_cast<std::int32_t>(from), static_cast<std::int32_t>(to), guaranteed ? 1u : 0u,
+                 size, hex.c_str());
+    std::fflush(g_out);
+}
+
+// --- A serial cable to another program (--serial-pipe NAME) -------------------------------------
+//
+// The game's serial and modem session providers open a COM port. With this option the port is
+// the named pipe \\.\pipe\NAME instead (another program serves it): the opening is redirected,
+// and the port set-up calls answer as a port would (success; the bytes waiting are the pipe's;
+// a character event whenever asked). Reads and writes go to the pipe unchanged.
+std::string g_serial_pipe;
+struct CommStub {
+    const char* name;
+    int args;
+    DWORD addr;
+};
+CommStub g_comm[] = {{"CreateFileA", 7, 0},     {"SetupComm", 3, 0},     {"PurgeComm", 2, 0},     {"SetCommState", 2, 0},
+                     {"GetCommState", 2, 0},    {"SetCommTimeouts", 2, 0}, {"SetCommMask", 2, 0},  {"ClearCommError", 3, 0},
+                     {"WaitCommEvent", 3, 0},   {"EscapeCommFunction", 2, 0}};
+DWORD g_pipe_name_buf = 0;
+std::map<std::uint32_t, HANDLE> g_pipe_handles;  // the game's handle -> ours
+
+void find_comm() {
+    HMODULE k = GetModuleHandleA("kernel32.dll");
+    for (CommStub& c : g_comm) c.addr = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(GetProcAddress(k, c.name)));
+}
+
+void arm_comm() {
+    for (CommStub& c : g_comm)
+        if (c.addr) add_bp(c.addr);
+    const std::string name = "\\\\.\\pipe\\" + g_serial_pipe;
+    g_pipe_name_buf = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(VirtualAllocEx(g_process, nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)));
+    SIZE_T n = 0;
+    WriteProcessMemory(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(g_pipe_name_buf)), name.c_str(), name.size() + 1, &n);
+}
+
+// Returns true when the call was answered here (the routine is skipped).
+bool on_comm(CONTEXT& ctx) {
+    const CommStub* c = nullptr;
+    for (const CommStub& s : g_comm)
+        if (s.addr == ctx.Eip) c = &s;
+    if (!c) return false;
+    std::uint32_t a[8] = {};
+    for (int k = 0; k < c->args; ++k) read_u32(ctx.Esp + 4 + 4 * static_cast<DWORD>(k), a[k]);
+    const std::string fn = c->name;
+    if (fn == "CreateFileA") {
+        std::string path = read_cstr(a[0]);
+        std::string up = path;
+        for (char& ch : up) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        if (up.rfind("COM", 0) == 0 || up.rfind("\\\\.\\COM", 0) == 0) {
+            write_u32(ctx.Esp + 4, g_pipe_name_buf);
+            std::fprintf(g_out, "{\"ev\":\"serial_open\",\"port\":\"%s\",\"pipe\":\"%s\"}\n", json_escape(path).c_str(), json_escape(g_serial_pipe).c_str());
+            std::fflush(g_out);
+        }
+        return false;  // the real routine opens the pipe
+    }
+    std::uint32_t ret = 0;
+    read_u32(ctx.Esp, ret);
+    if (fn == "ClearCommError") {
+        HANDLE& mine = g_pipe_handles[a[0]];
+        if (!mine) DuplicateHandle(g_process, reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(a[0])), GetCurrentProcess(), &mine, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        DWORD avail = 0;
+        if (mine) PeekNamedPipe(mine, nullptr, 0, nullptr, &avail, nullptr);
+        static DWORD last_avail = 0;
+        if (avail != last_avail) {
+            std::fprintf(g_out, "{\"ev\":\"serial_waiting\",\"bytes\":%lu}\n", avail);
+            std::fflush(g_out);
+            last_avail = avail;
+        }
+        if (a[1]) write_u32(a[1], 0);
+        if (a[2]) {
+            write_u32(a[2], 0);
+            write_u32(a[2] + 4, avail);
+            write_u32(a[2] + 8, 0);
+        }
+    } else if (fn == "WaitCommEvent") {
+        HANDLE& mine = g_pipe_handles[a[0]];
+        if (!mine) DuplicateHandle(g_process, reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(a[0])), GetCurrentProcess(), &mine, 0, FALSE, DUPLICATE_SAME_ACCESS);
+        DWORD avail = 0;
+        if (mine) PeekNamedPipe(mine, nullptr, 0, nullptr, &avail, nullptr);
+        if (!avail) Sleep(3);
+        if (a[1]) write_u32(a[1], 1);  // EV_RXCHAR
+    } else if (fn == "GetCommState") {
+        if (a[1]) {
+            std::uint8_t dcb[28] = {28};
+            SIZE_T n = 0;
+            WriteProcessMemory(g_process, reinterpret_cast<LPVOID>(static_cast<std::uintptr_t>(a[1])), dcb, sizeof dcb, &n);
+        }
+    }
+    ctx.Eax = 1;
+    ctx.Esp += 4 + 4 * static_cast<DWORD>(c->args);
+    ctx.Eip = ret;
+    return true;
+}
+
+void on_net_received(CONTEXT& ctx) {
+    if (ctx.Eax != 0) return;  // nothing waiting (or an error)
+    std::uint32_t net = 0, buf = 0, size_ptr = 0, size = 0, from = 0, to = 0;
+    read_u32(ctx.Esp + 8, net);
+    read_u32(ctx.Esp + 12, buf);
+    read_u32(ctx.Esp + 16, size_ptr);
+    read_u32(size_ptr, size);
+    read_u32(net + 0x4B5, from);
+    read_u32(net + 0x4B9, to);
+    std::vector<std::uint8_t> b(size < 4096 ? size : 4096);
+    if (!b.empty()) read_block(buf, b.data(), b.size());
+    std::string hex;
+    char h[4];
+    for (std::uint8_t c : b) {
+        std::snprintf(h, sizeof h, "%02x", c);
+        hex += h;
+    }
+    std::fprintf(g_out, "{\"ev\":\"net_recv\",\"t\":%llu,\"from\":%d,\"to\":%d,\"size\":%u,\"bytes\":\"%s\"}\n",
+                 static_cast<unsigned long long>(GetTickCount64()), static_cast<std::int32_t>(from), static_cast<std::int32_t>(to), size, hex.c_str());
+    std::fflush(g_out);
+}
+
 // Returns true when the capture should stop.
 bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
     const DWORD addr = ctx.Eip;
@@ -1212,6 +1611,26 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
     read_u32(ctx.Esp, ret);
     read_u32(ctx.Esp + 4, arg0);
 
+    if (addr == g_bind_addr && g_bind_addr) {
+        on_bind(ctx);
+        return false;
+    }
+    if (addr == kBpNetSend && g_net_trace) {
+        on_net_send(ctx);
+        return false;
+    }
+    if (addr == kBpNetReceived && g_net_trace) {
+        on_net_received(ctx);
+        return false;
+    }
+    if (!g_serial_pipe.empty()) {
+        bool comm = false;
+        for (const CommStub& s : g_comm) comm = comm || s.addr == addr;
+        if (comm) {
+            on_comm(ctx);
+            return false;
+        }
+    }
     switch (addr) {
     case kBpArchiveOpen: {
         char path[264] = {};
@@ -1462,6 +1881,21 @@ bool parse_args(int argc, char** argv, Options& opt) {
             }
         }
         else if (a == "--local-resources" && (v = next())) g_local_resources = static_cast<std::int32_t>(parse_u32(v));
+        else if (a == "--menu" && (v = next())) {
+            FILE* f = std::fopen(v, "r");
+            if (!f) {
+                std::fprintf(stderr, "cannot read the menu script %s\n", v);
+                return false;
+            }
+            char buf[1024];
+            while (std::fgets(buf, sizeof buf, f)) {
+                std::string l = buf;
+                while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+                g_menu_lines.push_back(l);
+            }
+            std::fclose(f);
+        } else if (a == "--net-trace") g_net_trace = true;
+        else if (a == "--serial-pipe" && (v = next())) g_serial_pipe = v;
         else {
             std::fprintf(stderr, "unknown or incomplete argument: %s\n", a.c_str());
             return false;
@@ -1520,6 +1954,8 @@ int main(int argc, char** argv) {
     }
     g_process = pi.hProcess;
     g_game_pid = pi.dwProcessId;
+    find_bind();
+    if (!g_serial_pipe.empty()) find_comm();
     CreateThread(nullptr, 0, safety_monitor, nullptr, 0, nullptr);
     // Watchdog: the game is ended after --timeout seconds whatever happens.
     g_deadline = GetTickCount64() + static_cast<ULONGLONG>(opt.timeout_s) * 1000u;
@@ -1537,6 +1973,7 @@ int main(int argc, char** argv) {
             g_threads[ev.dwThreadId] = ev.u.CreateProcessInfo.hThread;
             const auto base = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(ev.u.CreateProcessInfo.lpBaseOfImage));
             std::fprintf(g_out, "{\"ev\":\"process\",\"pid\":%lu,\"image_base\":%lu}\n", ev.dwProcessId, base);
+            g_modules[base] = "TotalA.exe";
             if (base != 0x00400000) {
                 std::fprintf(stderr, "unexpected image base 0x%08lX\n", base);
                 stop = true;
@@ -1566,6 +2003,15 @@ int main(int argc, char** argv) {
                     add_bp(kBpDxCheck);
                     add_bp(kBpSoundNotice);
                     CreateThread(nullptr, 0, menu_driver, nullptr, 0, nullptr);
+                } else if (!g_menu_lines.empty()) {
+                    g_pid = ev.dwProcessId;
+                    add_bp(kBpDxCheck);
+                    add_bp(kBpSoundNotice);
+                    CreateThread(nullptr, 0, menu_script_driver, nullptr, 0, nullptr);
+                }
+                if (g_net_trace) {
+                    add_bp(kBpNetSend);
+                    add_bp(kBpNetReceived);
                 }
             }
             if (ev.u.CreateProcessInfo.hFile) CloseHandle(ev.u.CreateProcessInfo.hFile);
@@ -1578,6 +2024,29 @@ int main(int argc, char** argv) {
             g_threads.erase(ev.dwThreadId);
             break;
         case LOAD_DLL_DEBUG_EVENT:
+            // The socket library: every bind to "any address" goes to the loopback address.
+            if (g_bind_addr && static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(ev.u.LoadDll.lpBaseOfDll)) == g_sock_base) {
+                add_bp(g_bind_addr);
+                std::fprintf(g_out, "{\"ev\":\"socket_library\",\"bind\":%lu}\n", g_bind_addr);
+            } else {
+                // The socket library somewhere else than in this program: its binds could not be
+                // moved to the loopback address, so the game is ended at once.
+                const DWORD b = static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(ev.u.LoadDll.lpBaseOfDll));
+                std::uint32_t lfanew = 0, exp = 0, name = 0;
+                if (read_u32(b + 0x3C, lfanew) && read_u32(b + lfanew + 0x78, exp) && exp && read_u32(b + exp + 0xC, name)) {
+                    const std::string dll = read_cstr(b + name);
+                    g_modules[b] = dll;
+                    if (_stricmp(dll.c_str(), "ws2_32.dll") == 0) {
+                        std::fprintf(g_out, "{\"ev\":\"socket_library_moved\",\"base\":%lu}\n", b);
+                        TerminateProcess(g_process, 0xB1D);
+                    }
+                    // The serial / modem provider: its port goes to the pipe from now on.
+                    if (!g_serial_pipe.empty() && _stricmp(dll.c_str(), "dpmodemx.dll") == 0 && !g_pipe_name_buf) {
+                        arm_comm();
+                        std::fprintf(g_out, "{\"ev\":\"serial_provider\",\"base\":%lu}\n", b);
+                    }
+                }
+            }
             if (ev.u.LoadDll.hFile) CloseHandle(ev.u.LoadDll.hFile);
             break;
         case EXIT_PROCESS_DEBUG_EVENT:
