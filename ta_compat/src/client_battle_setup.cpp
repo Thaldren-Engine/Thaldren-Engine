@@ -183,13 +183,14 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
     return true;
 }
 
-bool ClientWorld::load(const std::string& game_dir, const SkirmishSetup& setup, std::string& error) {
+bool ClientWorld::load(const std::string& game_dir, const SkirmishSetup& setup, std::string& error,
+                       const std::function<void(float, const std::string&)>& progress) {
     Vfs v;
     v.mount_game_dir(game_dir);
     v.scan();  // every battle start follows a rescan in the original (see ClientWorld::load below)
     BattleRequest req = to_battle_request(v, setup);
     setup_ = setup;
-    return load(game_dir, req, setup.human, error);
+    return load(game_dir, req, setup.human, error, progress);
 }
 
 bool ClientWorld::load(const std::string& game_dir, const BattleRequest& request, int human, std::string& error,

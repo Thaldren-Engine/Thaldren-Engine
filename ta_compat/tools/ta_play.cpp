@@ -32,11 +32,15 @@
 //                       message:WIDTH:TEXT (the inputs of gui_harness's commands of those names)
 //   --loading-test FILE tests: writes loading screen frames for the states in FILE and exits
 //                       (the format is described where it is read; compare: gui_harness loadframe:)
+//   --loading-trace     tests (with a direct battle): prints the loader's loading-screen reports
+//   --pointer-selftest  tests: checks the window front ends' pointer and focus rules and exits
 //   --dump-build-pages DIR  tests: writes every builder's build pages (listing and pictures, for
 //                       each viewing side) to DIR and exits (compare: gui_harness buildpages:)
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -195,6 +199,7 @@ int main(int argc, char** argv) {
     std::string settings_path = own_folder(argc > 0 ? argv[0] : nullptr) + "\\settings.txt";
     front.title = "Total Annihilation";
     std::string end_screen_file, saves_dir, dump_pages_dir, loading_test_file;
+    bool loading_trace = false;
     std::vector<std::string> net_screens;
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -214,6 +219,10 @@ int main(int argc, char** argv) {
             continue;
         }
         if (a == "--pointer-selftest") return pointer_selftest();
+        if (a == "--loading-trace") {  // tests: print the loader's loading-screen reports
+            loading_trace = true;
+            continue;
+        }
         if (a == "--saves") {
             saves_dir = next();
             continue;
@@ -452,7 +461,16 @@ int main(int argc, char** argv) {
 
     auto world = std::make_unique<ta::ClientWorld>();
     std::string err;
-    if (!world->load(game_dir, setup, err)) {
+    std::function<void(float, const std::string&)> trace;
+    if (loading_trace) {
+        // Tests: the loader's reports as the loading screen hears them (rows, map line), timed.
+        const auto t0 = std::chrono::steady_clock::now();
+        trace = [t0](float f, const std::string& stage) {
+            const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+            std::printf("load report %6lld ms: %s %d\n", ms, stage.c_str(), static_cast<int>(f * 100.0f));
+        };
+    }
+    if (!world->load(game_dir, setup, err, trace)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
