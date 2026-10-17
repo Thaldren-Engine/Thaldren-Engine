@@ -28,6 +28,18 @@
 //   buildpages:DIR (after "battle", with --grey and the battle palettes) writes every
 //   builder's build pages for both viewing sides (compare: ta_play --dump-build-pages DIR).
 //   --grey sets display flag 0x100 as the game does (grayed gadgets through the grey table).
+//   Keys (docs/RE_MEMORY.md "Client", "Menu keys"): press:KEY[:MODS] delivers one keystroke as
+//   the window procedure gets it (WM_KEYDOWN / WM_SYSKEYDOWN to 0x4C1D50, the WM_CHAR that
+//   TranslateMessage makes to the key queue; MODS: none, shift, ctrl, alt joined by '+', held
+//   through GetAsyncKeyState's import pointed at a table); frame runs one front-end frame
+//   (0x499890: its own keys, the interface pass, then the state routine: the menus' states take
+//   one more key off the queue, the battle room's runs the room's frame); report prints the top
+//   layout's state (key mode, quick-key flag, focus, the field taking keys, every gadget's kind,
+//   quick key and text). sweep:KEYS:MODS re-opens the screen opened by the commands before it
+//   for each key (comma list or "all") and modifier set and prints one OUTCOME line per trial
+//   (the gadgets the layout's handler was called with, focus / field / text / stage changes, a
+//   screen change). Multiplayer screens: selprov[:..], tcp[:ADDR], serial, modem, selgame:FILE,
+//   newmulti, msgbox:W:TEXT, lounge:FILE.
 //   The battle loading screen (0x497F40): [maptype:N] [loadmap:NAME] | lounge:FILE, clock:T,
 //   loadscreen (its set-up and first frame), loadframe:T,TE,U,A,D,E[:READY[:BITS]],
 //   loadplayer:SLOT,PERCENT,READY; frames written as <out>load_<n>.bmp (compare: ta_play
@@ -261,6 +273,229 @@ bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& b
 
 std::string lounge_map;  // the room file's map (the host chooses it after the room opens)
 u32 g_rand_state = 0;     // srand: the shared rand() state word (0: rand() not replaced)
+
+// ---------------------------------------------------------------------------------------------
+// Keystrokes as Windows delivers them, and the front end's frame that takes them.
+//
+// The window procedure (0x4B5CC0) hands WM_KEYDOWN to 0x4C1D50 (virtual key, 0), WM_SYSKEYDOWN
+// (Alt held, or F10) to 0x4C1D50 (virtual key, 1) and WM_CHAR straight to the key queue
+// (0x4C1B20); WM_SYSCHAR goes to the default procedure (nothing reaches the game). The message
+// loop's TranslateMessage makes the WM_CHAR from the key down; here ToAscii does that with the
+// modifiers held. The modifiers themselves are read with GetAsyncKeyState (0x4C1B80 and the
+// Ctrl test in 0x4C1D50), whose import is pointed at a table the harness sets.
+constexpr u32 kGuiGetAsyncKeyStateIat = 0x004FC350;
+u32 g_keytable = 0;     // 256 bytes: nonzero = the virtual key is held
+u32 g_press_log = 0;    // the layout handler's record: [0] count, [1..8] the gadget pressed (GUI +0x60) per call
+std::vector<std::pair<u32, u32>> g_handler_thunks;  // (original handler, thunk)
+
+bool key_table_install(harness::DbgRemote& r) {
+    if (g_keytable) return true;
+    g_keytable = r.alloc(256);
+    std::vector<std::uint8_t> c = {0x8B, 0x44, 0x24, 0x04, 0x25, 0xFF, 0x00, 0x00, 0x00, 0x0F, 0xB6, 0x80};
+    for (int i = 0; i < 4; ++i) c.push_back(static_cast<std::uint8_t>(g_keytable >> (8 * i)));
+    c.insert(c.end(), {0xC1, 0xE0, 0x0F, 0xC2, 0x04, 0x00});
+    const u32 code = r.alloc(64, PAGE_EXECUTE_READWRITE);
+    r.write(code, c.data(), c.size());
+    return r.w32(kGuiGetAsyncKeyStateIat, code);
+}
+
+// The modifiers held: any of "shift", "ctrl", "alt" joined by '+', or "none".
+struct Mods {
+    bool shift = false, ctrl = false, alt = false;
+};
+Mods parse_mods(const std::string& m) {
+    Mods o;
+    o.shift = m.find("shift") != std::string::npos;
+    o.ctrl = m.find("ctrl") != std::string::npos;
+    o.alt = m.find("alt") != std::string::npos;
+    return o;
+}
+void set_mods(harness::DbgRemote& r, const Mods& m) {
+    key_table_install(r);
+    std::uint8_t t[256] = {};
+    if (m.shift) t[VK_SHIFT] = t[VK_LSHIFT] = 1;
+    if (m.ctrl) t[VK_CONTROL] = t[VK_LCONTROL] = 1;
+    if (m.alt) t[VK_MENU] = t[VK_LMENU] = 1;
+    r.write(g_keytable, t, sizeof t);
+}
+
+// A key's name -> its virtual key (0: unknown).
+u32 key_vk(const std::string& k) {
+    if (k.size() == 1) {
+        const char c = k[0];
+        if (c >= 'a' && c <= 'z') return static_cast<u32>(c - 'a' + 'A');
+        if (c >= 'A' && c <= 'Z') return static_cast<u32>(c);
+        if (c >= '0' && c <= '9') return static_cast<u32>(c);
+    }
+    static const struct {
+        const char* n;
+        u32 vk;
+    } names[] = {{"enter", VK_RETURN}, {"esc", VK_ESCAPE},  {"tab", VK_TAB},      {"space", VK_SPACE},    {"bksp", VK_BACK},     {"left", VK_LEFT},
+                 {"up", VK_UP},        {"right", VK_RIGHT}, {"down", VK_DOWN},    {"home", VK_HOME},      {"end", VK_END},       {"pgup", VK_PRIOR},
+                 {"pgdn", VK_NEXT},    {"ins", VK_INSERT},  {"del", VK_DELETE},   {"pause", VK_PAUSE},    {"minus", 0xBD},       {"equals", 0xBB},
+                 {"comma", 0xBC},      {"period", 0xBE},    {"slash", 0xBF},      {"semicolon", 0xBA},    {"quote", 0xDE},       {"lbracket", 0xDB},
+                 {"rbracket", 0xDD},   {"backslash", 0xDC}, {"grave", 0xC0}};
+    for (const auto& n : names)
+        if (k == n.n) return n.vk;
+    if (k.size() > 1 && k[0] == 'f' && k[1] >= '1' && k[1] <= '9') return VK_F1 + static_cast<u32>(std::atoi(k.c_str() + 1)) - 1;
+    return 0;
+}
+
+// One keystroke (key down; the key's release is not a message the game reads) with the modifiers
+// held, delivered as the window procedure receives it. Returns the codes that reached the queue.
+std::vector<u32> press_key(harness::DbgRemote& r, u32 vk, const Mods& m) {
+    set_mods(r, m);
+    const u32 disp = 0x0051F320;
+    auto queued = [&]() {
+        std::vector<u32> v;
+        const u32 cap = r.r32(disp + 0xF2);
+        u32 rd = r.r32(disp + 0x172);
+        const u32 wr = r.r32(disp + 0x16E);
+        for (int guard = 0; rd != wr && guard < 64 && cap; ++guard) {
+            v.push_back(r.r32(disp + 0xF6 + rd * 4));
+            rd = (rd + 1) % cap;
+        }
+        return v;
+    };
+    const std::size_t before = queued().size();
+    const bool sys = m.alt || vk == VK_F10;
+    r.call(0x004C1D50, 0, {vk, sys ? 1u : 0u});
+    if (!sys) {
+        BYTE ks[256] = {};
+        if (m.shift) ks[VK_SHIFT] = ks[VK_LSHIFT] = 0x80;
+        if (m.ctrl) ks[VK_CONTROL] = ks[VK_LCONTROL] = 0x80;
+        WORD ch = 0;
+        const int n = ToAscii(vk, MapVirtualKeyA(vk, 0), ks, &ch, 0);
+        if (n == 1) r.call(0x004C1B20, 0, {static_cast<u32>(ch & 0xFF)});
+    }
+    std::vector<u32> all = queued();
+    return std::vector<u32>(all.begin() + static_cast<std::ptrdiff_t>(std::min(before, all.size())), all.end());
+}
+
+// Wraps the top layout's handler so each call records the gadget pressed (GUI +0x60).
+void watch_handler(harness::DbgRemote& r, u32 gui) {
+    if (!g_press_log) g_press_log = r.alloc(64);
+    const u32 top = r.r32(gui + 0x18);
+    if (!top) return;
+    const u32 h = r.r32(top + 8);
+    if (!h) return;
+    for (const auto& t : g_handler_thunks)
+        if (t.second == h) return;
+    u32 thunk = 0;
+    for (const auto& t : g_handler_thunks)
+        if (t.first == h) thunk = t.second;
+    if (!thunk) {
+        std::vector<std::uint8_t> c;
+        auto put = [&](u32 v) {
+            for (int i = 0; i < 4; ++i) c.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        };
+        c.push_back(0xA1);  // mov eax, [gui + 0x60]
+        put(gui + 0x60);
+        c.insert(c.end(), {0x8B, 0x0D});  // mov ecx, [count]
+        put(g_press_log);
+        c.insert(c.end(), {0x83, 0xE1, 0x07});  // and ecx, 7
+        c.insert(c.end(), {0x89, 0x04, 0x8D});  // mov [log + 4 + ecx * 4], eax
+        put(g_press_log + 4);
+        c.insert(c.end(), {0xFF, 0x05});  // inc dword [count]
+        put(g_press_log);
+        thunk = r.alloc(64, PAGE_EXECUTE_READWRITE);
+        c.push_back(0xE9);  // jmp handler
+        put(h - (thunk + static_cast<u32>(c.size()) + 4));
+        r.write(thunk, c.data(), c.size());
+        g_handler_thunks.push_back({h, thunk});
+    }
+    r.w32(top + 8, thunk);
+}
+
+// The top layout's gadget names (index 1..n) and the state a key can change.
+struct GuiState {
+    u32 top = 0;
+    std::string layout;
+    std::vector<std::string> names;
+    std::vector<int> kinds;
+    std::vector<std::string> texts;  // text fields (kind 3) only
+    std::vector<int> stages;         // gadget +0x138 (pressed / switch stage), +0x137 (stage count index)
+    int focus = -1, active = -1, mstate = 0, sstate = 0, rstate = 0;
+};
+GuiState gui_state(harness::DbgRemote& r, u32 gui, u32 gs) {
+    GuiState st;
+    st.top = r.r32(gui + 0x18);
+    st.active = static_cast<int>(r.r32(gui + 0x64));
+    st.mstate = static_cast<int>(r.r32(gs + 0x2BBE) & 0xFF);
+    st.sstate = static_cast<int>(r.r32(gs + 0x2BBF) & 0xFF);
+    st.rstate = static_cast<int>(r.r32(gs + 0x2BC0) & 0xFF);
+    if (!st.top) return st;
+    const u32 gad = r.r32(st.top + 4);
+    st.focus = static_cast<int>(r.r32(st.top + 0x20));
+    char nm[17] = {};
+    if (!gad) return st;
+    r.read(gad + 2, nm, 16);
+    st.layout = nm;
+    const int n = static_cast<int>(static_cast<std::int16_t>(r.r32(gad + 0xB6) & 0xFFFF));
+    st.names.assign(static_cast<std::size_t>(n + 1), "");
+    st.kinds.assign(static_cast<std::size_t>(n + 1), 0);
+    st.texts.assign(static_cast<std::size_t>(n + 1), "");
+    st.stages.assign(static_cast<std::size_t>(n + 1), 0);
+    for (int k = 1; k <= n && k < 400; ++k) {
+        const u32 a = gad + static_cast<u32>(k) * 0x15B;
+        char name[17] = {};
+        r.read(a + 2, name, 16);
+        st.names[k] = name;
+        st.kinds[k] = static_cast<int>(r.r32(a) & 0xFF);
+        if (st.kinds[k] == 3) {
+            char t[0x81] = {};
+            r.read(a + 0xB6, t, 0x80);
+            st.texts[k] = t;
+        }
+        st.stages[k] = static_cast<int>(r.r32(a + 0x137) & 0xFFFFFF);
+    }
+    return st;
+}
+std::string gname(const GuiState& st, int idx) {
+    if (idx < 0) return "-";
+    if (idx < static_cast<int>(st.names.size())) return st.names[static_cast<std::size_t>(idx)];
+    return "#" + std::to_string(idx);
+}
+// What changed between two states (and the gadgets the handler was called with).
+std::string gui_outcome(harness::DbgRemote& r, const GuiState& a, const GuiState& b) {
+    std::string o;
+    const u32 calls = g_press_log ? r.r32(g_press_log) : 0;
+    for (u32 k = 0; k < calls && k < 8; ++k) {
+        const int idx = static_cast<int>(r.r32(g_press_log + 4 + k * 4));
+        if (idx != -1) o += " press:" + gname(a, idx);
+    }
+    const bool same = b.top == a.top && b.layout == a.layout;
+    if (!same) o += " screen:" + a.layout + "->" + (b.top ? b.layout : std::string("none"));
+    if (b.rstate != a.rstate) o += " request:" + std::to_string(a.rstate) + "->" + std::to_string(b.rstate);
+    if (same) {
+        if (b.focus != a.focus) o += " focus:" + gname(a, a.focus) + "->" + gname(b, b.focus);
+        if (b.active != a.active) o += " active:" + gname(a, a.active) + "->" + gname(b, b.active);
+        for (std::size_t k = 1; k < a.texts.size() && k < b.texts.size(); ++k)
+            if (a.texts[k] != b.texts[k]) o += " text:" + a.names[k] + "=\"" + b.texts[k] + "\"";
+        for (std::size_t k = 1; k < a.stages.size() && k < b.stages.size(); ++k)
+            if (a.stages[k] != b.stages[k] && a.kinds[k] != 3) {
+                char buf[64];
+                std::snprintf(buf, sizeof buf, " state:%s=%06X", a.names[k].c_str(), static_cast<unsigned>(b.stages[k]));
+                o += buf;
+            }
+    }
+    return o.empty() ? " nothing" : o;
+}
+void gui_report(harness::DbgRemote& r, u32 gui, u32 gs, const char* tag) {
+    const GuiState st = gui_state(r, gui, gs);
+    std::printf("%s: layout %s (%08X) keymode %u gui+A2 %u quickkeys(+CC6) %u focus %s active %s lastkey %02X state %d/%d/%d\n", tag, st.layout.c_str(),
+                st.top, st.top ? r.r32(st.top + 0x18) : 0, r.r32(gui + 0xA2), r.r32(gui + 0xCC6), gname(st, st.focus).c_str(), gname(st, st.active).c_str(),
+                st.top ? r.r32(st.top + 0x36) & 0xFF : 0, st.mstate, st.sstate, st.rstate);
+    const u32 gad = st.top ? r.r32(st.top + 4) : 0;
+    for (std::size_t k = 1; k < st.names.size(); ++k) {
+        const u32 a = gad + static_cast<u32>(k) * 0x15B;
+        const u32 qk = r.r32(a + (st.kinds[k] == 5 ? 0x147u : 0x13Au)) & 0xFF, active = r.r32(a + 0x29) & 0xFF, grey = r.r32(a + 0x13C) & 1;
+        char link[17] = {};
+        if (st.kinds[k] == 5) r.read(a + 0x117 + 0x1F, link, 16);
+        std::printf("  %2zu kind %d %-16s active %u grey %u quickkey %02X%s%s%s\n", k, st.kinds[k], st.names[k].c_str(), active, grey, qk,
+                    st.kinds[k] == 3 ? (" text \"" + st.texts[k] + "\"").c_str() : "", link[0] ? " link " : "", link);
+    }
+}
 
 // The battle room's inputs, one item per line (# comments); the same file drives the client's
 // battle room (ta_play --lounge FILE):
@@ -575,8 +810,153 @@ int main(int argc, char** argv) {
     std::printf("front end set up (game state 0x%08X)\n", g.gs());
     const std::string out = argv[2];
     const u32 gs = g.gs();
-    for (const std::string& s : screens) {
+    // The front end's frame (0x499890) ends with the state function (GS+0x391F5); here a routine
+    // that does what the menus' states do with keys: the multiplayer connection and game list
+    // states (and the single-player menus' state) take one key off the queue each frame after the
+    // interface pass; the battle room's state runs the room's frame (0x44A680) instead.
+    const u32 frame_mode = r.alloc(16);  // [0] take a key, [4] the routine to call (0: none)
+    {
+        std::vector<std::uint8_t> c = {0x80, 0x3D};
+        auto put = [&](u32 v) {
+            for (int i = 0; i < 4; ++i) c.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+        };
+        const u32 code = r.alloc(64, PAGE_EXECUTE_READWRITE);
+        put(frame_mode);
+        c.push_back(0x00);
+        c.insert(c.end(), {0x74, 0x05, 0xE8});  // je +5; call take
+        put(0x004C1AB0 - (code + static_cast<u32>(c.size()) + 4));
+        c.insert(c.end(), {0xA1});  // mov eax, [routine]
+        put(frame_mode + 4);
+        c.insert(c.end(), {0x85, 0xC0, 0x74, 0x02, 0xFF, 0xD0, 0xC3});  // test; je; call eax; ret
+        r.write(code, c.data(), c.size());
+        r.w32(gs + 0x391F5, code);
+    }
+    auto set_frame_mode = [&](bool take, u32 routine) {
+        r.w32(frame_mode, take ? 1u : 0u);
+        r.w32(frame_mode + 4, routine);
+    };
+    set_frame_mode(true, 0);
+    bool quiet = false;                   // sweep trials: no pictures
+    std::vector<std::string> setup_cmds;  // the commands that opened the screen being swept
+    std::string trial_key, trial_mods;
+    u32 sweep_states = 0;  // the front end's state bytes (GS+0x2BBE..0x2BC0) when the sweep began
+    GuiState trial_before;
+    for (std::size_t si = 0; si < screens.size(); ++si) {
+        const std::string s = screens[si];
         bool ok = true;
+        if (s.rfind("@trial:", 0) == 0) {
+            // A sweep trial's start: every layout closed, the key queue empty, the screen opened anew.
+            const std::string t = s.substr(7);
+            const auto c = t.find(':');
+            trial_key = t.substr(0, c);
+            trial_mods = c == std::string::npos ? "none" : t.substr(c + 1);
+            for (int k = 0; k < 16 && r.r32(g.gui() + 0x18); ++k) r.call(0x004A9660, 0, {g.gui()});
+            r.w32(0x0051F320 + 0x172, r.r32(0x0051F320 + 0x16E));
+            r.w8(gs + 0x2BBE, static_cast<std::uint8_t>(sweep_states));
+            r.w8(gs + 0x2BBF, static_cast<std::uint8_t>(sweep_states >> 8));
+            r.w8(gs + 0x2BC0, static_cast<std::uint8_t>(sweep_states >> 16));
+            set_mods(r, Mods{});
+            quiet = true;
+            continue;
+        } else if (s == "@press") {
+            // A sweep trial's key: one keystroke, one frame, the outcome on one line.
+            quiet = false;
+            watch_handler(r, g.gui());
+            trial_before = gui_state(r, g.gui(), gs);
+            if (g_press_log) r.w32(g_press_log, 0);
+            const std::vector<u32> codes = press_key(r, key_vk(trial_key), parse_mods(trial_mods));
+            set_mods(r, parse_mods(trial_mods));
+            r.call(0x00499890, 0, {});
+            set_mods(r, Mods{});
+            const GuiState after = gui_state(r, g.gui(), gs);
+            std::string q;
+            for (u32 v : codes) {
+                char b[8];
+                std::snprintf(b, sizeof b, "%s%02X", q.empty() ? "" : ",", v);
+                q += b;
+            }
+            std::printf("OUTCOME %s %s %s [%s]%s\n", trial_before.layout.c_str(), trial_key.c_str(), trial_mods.c_str(), q.c_str(),
+                        gui_outcome(r, trial_before, after).c_str());
+            continue;
+        } else if (s.rfind("sweep:", 0) == 0) {
+            // sweep:KEYS:MODS — for each key (comma list, or "all": a..z, 0..9, enter, esc, tab,
+            // space, bksp and the arrows) and each modifier set (comma list of none, shift, alt,
+            // ctrl, joined with '+'), the screen opened anew by the commands given before the
+            // sweep, the keystroke delivered as Windows does and one front-end frame run; prints
+            // "OUTCOME <layout> <key> <mods> [queued codes] <what happened>".
+            const std::string t = s.substr(6);
+            const auto c = t.find(':');
+            std::string keys = t.substr(0, c), mods = c == std::string::npos ? "none" : t.substr(c + 1);
+            if (keys == "all") {
+                keys.clear();
+                for (char ch = 'a'; ch <= 'z'; ++ch) keys += std::string(1, ch) + ",";
+                for (char ch = '0'; ch <= '9'; ++ch) keys += std::string(1, ch) + ",";
+                keys += "enter,esc,tab,space,bksp,left,up,right,down";
+            }
+            auto split = [](const std::string& v) {
+                std::vector<std::string> o;
+                for (std::size_t a = 0; a <= v.size();) {
+                    std::size_t e = v.find(',', a);
+                    if (e == std::string::npos) e = v.size();
+                    if (e > a) o.push_back(v.substr(a, e - a));
+                    a = e + 1;
+                }
+                return o;
+            };
+            std::vector<std::string> add;
+            for (const std::string& m : split(mods))
+                for (const std::string& k : split(keys)) {
+                    add.push_back("@trial:" + k + ":" + m);
+                    add.insert(add.end(), setup_cmds.begin(), setup_cmds.end());
+                    add.push_back("@press");
+                }
+            sweep_states = r.r32(gs + 0x2BBE) & 0xFFFFFF;
+            screens.insert(screens.begin() + static_cast<std::ptrdiff_t>(si + 1), add.begin(), add.end());
+            continue;
+        } else if (s.rfind("mods:", 0) == 0) {
+            set_mods(r, parse_mods(s.substr(5)));
+            continue;
+        } else if (s.rfind("press:", 0) == 0) {
+            // press:KEY[:MODS] — one keystroke as Windows delivers it (see press_key); prints the
+            // codes that reached the key queue. The modifiers stay held until "mods:none".
+            const std::string t = s.substr(6);
+            const auto c = t.find(':');
+            const std::string k = t.substr(0, c);
+            const Mods m = parse_mods(c == std::string::npos ? "none" : t.substr(c + 1));
+            std::string q;
+            for (u32 v : press_key(r, key_vk(k), m)) {
+                char b[8];
+                std::snprintf(b, sizeof b, " %02X", v);
+                q += b;
+            }
+            std::printf("%s: queued%s\n", s.c_str(), q.empty() ? " nothing" : q.c_str());
+            continue;
+        } else if (s == "frame") {
+            // One front-end frame (0x499890: its own keys, the interface pass, the state routine).
+            watch_handler(r, g.gui());
+            const GuiState a = gui_state(r, g.gui(), gs);
+            if (g_press_log) r.w32(g_press_log, 0);
+            ok = r.call(0x00499890, 0, {});
+            const GuiState b = gui_state(r, g.gui(), gs);
+            std::printf("frame: %s,%s\n", ok ? "ok" : "failed", gui_outcome(r, a, b).c_str());
+            continue;
+        } else if (s == "report") {
+            gui_report(r, g.gui(), gs, "report");
+            continue;
+        }
+        // The front end's state (GS+0x2BBE, its sub-state +0x2BBF and the requested one +0x2BC0) as
+        // the menu flow has it while the screen is up: 0x0F connection, 0x14 a provider's
+        // settings, 0x10 game list, 0x11 battle room; sub-state 1 (the screen's frames).
+        auto set_states = [&](std::uint8_t m) {
+            r.w8(gs + 0x2BBE, m);
+            r.w8(gs + 0x2BBF, 1);
+            r.w8(gs + 0x2BC0, 1);
+        };
+        if (s.rfind("selprov", 0) == 0) set_frame_mode(true, 0), set_states(0x0F);
+        else if (s.rfind("tcp", 0) == 0 || s == "serial" || s == "modem") set_frame_mode(false, 0), set_states(0x14);
+        else if (s.rfind("selgame:", 0) == 0 || s == "newmulti") set_frame_mode(true, 0), set_states(0x10);
+        else if (s.rfind("lounge:", 0) == 0) set_frame_mode(false, 0x0044A680), set_states(0x11);
+        if (!quiet && s.rfind("sweep", 0) != 0) setup_cmds.push_back(s);
         // Menus (640 x 480).
         if (s == "main") ok = r.call(kMainMenu, 0, {});
         else if (s == "single") ok = r.call(kSinglePlayer, 0, {});
@@ -1197,6 +1577,20 @@ int main(int argc, char** argv) {
             if (addr.empty()) r.stub(0x0042F980, 0, 0xC);
             else stub_copy(r, 0x0042F980, v, 2, -1, 0, 1, 0xC);
             ok = r.call(0x004421F0, 0, {});
+        } else if (s == "serial") {
+            // The serial connection's settings (SERIAL.GUI, 0x442560): the session service's
+            // set-up does nothing, the registry's SERPORT / SERBAUD are not there.
+            r.stub(0x004CA490, 0, 4);
+            r.stub(0x0042F980, 0, 0xC);
+            ok = r.call(0x00442560, 0, {});
+        } else if (s == "modem") {
+            // The modem connection's settings (MODEM.GUI, 0x443100): the session service's
+            // address query fails (no modem list: the screen as it opens without one).
+            r.stub(0x004CA490, 0, 4);
+            r.stub(0x004CA900, 0x80004005u, 8);
+            r.stub(0x004CA940, 0, 4);
+            r.stub(0x0042F980, 0, 0xC);
+            ok = r.call(0x00443100, 0, {});
         } else if (s.rfind("selgame:", 0) == 0) {
             // selgame:FILE: the game list (SELGAME.GUI, 0x443CB0) with the session service's games
             // answered from FILE (lines "game NAME;MAP;MAX;PLAYERS;OPTIONS;MEMORY;CD;PING;ENERGY;METAL;
@@ -1419,6 +1813,7 @@ int main(int argc, char** argv) {
             const u32 top = r.r32(g.gui() + 0x18);
             if (top) r.call(0x004A81E0, 0, {g.gui(), r.r32(top + 0x10) | 0x40});
         }
+        if (quiet) continue;
         Frame f;
         if (!ok || !g.grab(f)) {
             std::printf("%s: not drawn\n", s.c_str());
