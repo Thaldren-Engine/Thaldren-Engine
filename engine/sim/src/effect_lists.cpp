@@ -163,6 +163,7 @@ FxEmitter make(FxKind kind, int list, u32 tick, i32 duration) {
 }
 
 bool smoke(FxContext& c, const std::array<i32, 3>& pos, i32 clamp, i32 period, i32 hold, i32 duration, bool second, int list) {
+    if (c.fx.spawning_off) return false;
     FxEmitter e = make(FxKind::Smoke, list, c.tick, duration);
     e.origin = pos;
     e.period = period;
@@ -197,6 +198,7 @@ bool fx_smoke_emitter(FxContext& c, const std::array<i32, 3>& pos, i32 period, i
 bool fx_muzzle_smoke(FxContext& c, const std::array<i32, 3>& pos, int list) { return smoke(c, pos, 3, 1, 0x1E, 0, false, list); }
 
 bool fx_steam(FxContext& c, const std::array<i32, 3>& pos, int list) {
+    if (c.fx.spawning_off) return false;
     FxEmitter e = make(FxKind::Steam, list, c.tick, 0x96);
     e.origin = pos;
     e.period = 5;
@@ -207,6 +209,7 @@ bool fx_steam(FxContext& c, const std::array<i32, 3>& pos, int list) {
 
 bool fx_flame(FxContext& c, const std::array<i32, 3>& from, const std::array<i32, 3>& to, i32 param, i32 duration, int list) {
     (void)to;  // the flames' path is a picture
+    if (c.fx.spawning_off) return false;
     if (duration == 0) {  // the set-up divides by the duration
         c.fx.fault = "flame of zero duration (division by zero)";
         return false;
@@ -226,6 +229,7 @@ bool fx_flame_jittered(FxContext& c, const std::array<i32, 3>& pos, int list) {
 
 bool fx_wake(FxContext& c, const std::array<i32, 3>& from, const std::array<i32, 3>& to, i32 size, bool rising, int list) {
     (void)rising;  // colours only
+    if (c.fx.spawning_off) return false;
     FxEmitter e = make(FxKind::Wake, list, c.tick, 1);
     e.origin = from;
     e.period = size;
@@ -245,6 +249,7 @@ bool fx_wake(FxContext& c, const std::array<i32, 3>& from, const std::array<i32,
 }
 
 bool fx_dots(FxContext& c, const std::array<i32, 3>& from, const std::array<i32, 3>& to, i32 duration, int list) {
+    if (c.fx.spawning_off) return false;
     FxEmitter e = make(FxKind::Dots, list, c.tick, duration);
     e.origin = from;
     const std::array<i32, 3> d = {static_cast<i32>(static_cast<u32>(to[0]) - static_cast<u32>(from[0])),

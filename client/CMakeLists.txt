@@ -43,6 +43,8 @@ add_library(ta_compat_client STATIC
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_menus.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_screens.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_scene.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/console_commands.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/console_table.cpp
 )
 target_link_libraries(ta_compat_client PUBLIC client ta_compat_render)
 target_compile_options(ta_compat_client PRIVATE ${WARN_FLAGS})

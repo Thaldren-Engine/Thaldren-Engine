@@ -46,7 +46,8 @@ int run_client(GameClient& client, Content& content, const FrontOptions& options
 
 // Parses a script file: one event per line, "<frame> <event> <args...>" with events
 // move X Y | down X Y BUTTON | up X Y BUTTON | click X Y BUTTON (down and up) |
-// key K | keyup K | shift/ctrl/alt modifiers as a trailing "+shift" etc.
+// key K | keyup K | type TEXT (the rest of the line typed key by key) |
+// shift/ctrl/alt modifiers as a trailing "+shift" etc.
 // K is a character or one of left right up down pause escape enter f1..f12.
 bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std::string& error);
 

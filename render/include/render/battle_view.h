@@ -164,6 +164,9 @@ struct BattleScene {
     LookTables tables;                            // mixing, shade and water tables for unit looks
     int sea_level = 0;
     const FogOfWar* fog = nullptr;                // drawn over everything (none: no fog)
+    // The dithered fog option: out-of-sight cells get every other pixel (by screen position
+    // and scroll parity) set to 0 instead of being greyed.
+    bool dithered_fog = false;
     // The C runtime random state when the frame is drawn: lightning shots draw from a copy of
     // it (the original's draw calls rand(); the renderer never advances the simulation's).
     std::uint32_t crt_rand_state = 0;

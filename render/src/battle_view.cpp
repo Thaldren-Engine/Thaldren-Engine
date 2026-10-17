@@ -472,6 +472,60 @@ void draw_projectile(const BattleScene& s, const ProjectileInstance& p, DrawList
 int div32(int v) { return v / 32; }
 int mod32(int v) { return v % 32; }
 
+// The dithered fog's out-of-sight cell (the original's 0x4BFF20): within the cell clipped to
+// the view, each row sets every other pixel to 0 — those whose x + y + parity is even — the
+// unaligned start pixel by pixel, the middle four pixels at a time, the end pixel by pixel.
+// The middle runs to the end rounded up to four, so when the clipped end x is 1 or 2 past a
+// multiple of four the row's last group also sets one or two pixels past the cell.
+void dither_cell(DrawList& out, const ClipRect& clip, int x, int y, int parity, int screen_w, int screen_h) {
+    const int cx0 = std::max(x, clip.x0), cy0 = std::max(y, clip.y0);
+    const int cx1 = std::min(x + 31, clip.x1), cy1 = std::min(y + 31, clip.y1);
+    if (cx0 > cx1 || cy0 > cy1) return;
+    const int a = (cx0 + 3) & ~3, b = (cx1 + 3) & ~3;
+    const int right = std::max(std::max(a, b) + 4, cx1 + 1);
+    Sprite8 sp;
+    sp.width = right - cx0;
+    sp.height = cy1 - cy0 + 1;
+    sp.key = 1;
+    sp.pixels.assign(static_cast<std::size_t>(sp.width) * static_cast<std::size_t>(sp.height), 1);
+    for (int yy = cy0; yy <= cy1; ++yy) {
+        std::uint8_t* row = sp.pixels.data() + static_cast<std::size_t>(yy - cy0) * static_cast<std::size_t>(sp.width);
+        auto set = [&](int px) {
+            if (px >= cx0 && px < right) row[px - cx0] = 0;
+        };
+        for (int p = cx0 + ((cx0 + yy + parity) & 1); p < a; p += 2) set(p);
+        const bool even = ((yy + parity) & 1) == 0;
+        int e = a;
+        for (; e < b; e += 4) {
+            set(even ? e : e + 1);
+            set(even ? e + 2 : e + 3);
+        }
+        const int limit = e + (cx1 - b);
+        for (int p = even ? e : e + 1; p <= limit; p += 2) set(p);
+    }
+    out.blit(out.keep(std::move(sp)), cx0, cy0, ClipRect{0, 0, screen_w - 1, screen_h - 1}, false);
+}
+
+// The dithered fog's edge frame (the original's 0x4B88D0): where the frame has a non-key pixel
+// and x + y + parity is even, the screen pixel is set to 0.
+void dither_frame(DrawList& out, const ClipRect& clip, const Sprite8& frame, int x, int y, int parity) {
+    Sprite8 sp;
+    sp.width = frame.width;
+    sp.height = frame.height;
+    sp.x_offset = frame.x_offset;
+    sp.y_offset = frame.y_offset;
+    sp.key = 1;
+    sp.pixels.assign(frame.pixels.size(), 1);
+    const int left = x - frame.x_offset, top = y - frame.y_offset;
+    for (int j = 0; j < frame.height; ++j)
+        for (int i = 0; i < frame.width; ++i) {
+            const bool solid = !frame.has_key || frame.at(i, j) != frame.key;
+            if (solid && ((left + i + top + j + parity) & 1) == 0)
+                sp.pixels[static_cast<std::size_t>(j) * static_cast<std::size_t>(frame.width) + static_cast<std::size_t>(i)] = 0;
+        }
+    out.blit(out.keep(std::move(sp)), x, y, clip, false);
+}
+
 // The fog grid over the view and its drawing (the original's 0x4843C0 / 0x4848E0).
 void draw_fog(const BattleScene& s, DrawList& out) {
     const FogOfWar& f = *s.fog;
@@ -532,6 +586,7 @@ void draw_fog(const BattleScene& s, DrawList& out) {
     const int ox = c.origin_x + (mx > 15 ? 16 : -16) - mx;
     const int oz = c.origin_y + (mz > 15 ? 16 : -16) - mz;
     const int phase = div32(c.scroll_x + 16) + div32(c.scroll_y + 16);
+    const int parity = (c.scroll_x + c.scroll_y) & 1;
     out.remap = f.gray_table;
     const Sprite8* black_cell = nullptr;
     const Sprite8* grey_cell = nullptr;
@@ -551,7 +606,11 @@ void draw_fog(const BattleScene& s, DrawList& out) {
                 out.blit(black_cell, x, y, clip, false);
                 continue;
             }
-            if (v[1] != 0 && f.gray_table) {
+            if (v[1] != 0 && s.dithered_fog) {
+                if (v[1] == 0xF) dither_cell(out, clip, x, y, parity, c.screen_width, c.screen_height);
+                else if (f.gray[seq] && static_cast<std::size_t>(v[1] - 1) < f.gray[seq]->size())
+                    dither_frame(out, clip, (*f.gray[seq])[static_cast<std::size_t>(v[1] - 1)], x, y, parity);
+            } else if (v[1] != 0 && f.gray_table) {
                 if (v[1] == 0xF) {
                     if (!grey_cell) {
                         Sprite8 g;

@@ -53,6 +53,9 @@ struct EffectLists {
     static constexpr std::size_t kCap = 400;  // a list longer than this drops its oldest first
     std::array<std::vector<FxEmitter>, kLists> lists;
     bool blocked = false;                // the pool refuses objects (the original's blocked flag)
+    // The effects switch (0x51E608, a typed command toggles it): while on, every spawner and
+    // the nano streams make nothing (burning debris still draws its four numbers first).
+    bool spawning_off = false;
     // Frame counts of the sequences the particles use (from the effect art).
     std::int32_t smoke1_frames = 0, smoke2_frames = 0, flame_frames = 0;
     std::string fault;                   // set where the original would divide by zero

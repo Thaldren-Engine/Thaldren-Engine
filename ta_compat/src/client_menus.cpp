@@ -16,6 +16,7 @@
 #include "sim/battle.h"
 #include "sim/economy.h"
 #include "sim/victory.h"
+#include "ta/console_commands.h"
 #include "ta/gaf.h"
 #include "ta/net_setup.h"
 #include "ta/unitdefs.h"
@@ -576,8 +577,12 @@ std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_
             }
     }
     o.fog = request.start.fog_of_war || request.start.explore;
+    // Cheat commands: always in skirmish, never in campaigns, network games as the host's
+    // "cheat codes" option says (the caller's options carry it).
+    o.cheats = request.start.provider == 2 || (request.start.provider == 3 && options.cheats);
     s->client_ = std::make_unique<client::GameClient>(s->world_->battle(), s->world_->content(), o);
     s->world_->attach(s->client_.get());
+    install_console_commands(*s->client_, *s->world_);
     SkirmishSession* raw = s.get();
     s->world_->on_activity = [raw](std::int32_t amount) {
         if (raw->combat_activity) raw->combat_activity(amount);
@@ -601,7 +606,8 @@ client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* fe) {
         const int human = r.start.local_player;
         client::Settings none;
         // The user's settings (screen size, speeds, interface type) as the front end passes them.
-        const client::ClientOptions opt = client_options(r.settings ? *r.settings : (fe ? fe->settings() : none), 640, 480);
+        client::ClientOptions opt = client_options(r.settings ? *r.settings : (fe ? fe->settings() : none), 640, 480);
+        opt.cheats = r.cheats;
         return SkirmishSession::start(dir, req, human, opt, progress, error, r.wrap_outside, r.attach);
     };
     cfg.unit_checks = [&art]() -> net::UnitChecks {

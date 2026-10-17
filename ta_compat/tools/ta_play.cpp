@@ -43,6 +43,7 @@
 #include "client/music.h"
 #include "ta/client_campaign.h"
 #include "ta/client_menus.h"
+#include "ta/console_commands.h"
 #include "ta/client_world.h"
 
 int main(int argc, char** argv) {
@@ -176,8 +177,10 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
+    opt.cheats = true;  // a skirmish: cheat commands allowed
     client::GameClient game(world->battle(), world->content(), opt);
     world->attach(&game);
+    const auto commands = ta::install_console_commands(game, *world);
     const auto at = world->start_position(0);
     game.center_on({at[0] << 16, 0, at[1] << 16});
     const int rc = client::run_client(game, world->content(), front);

@@ -32,6 +32,8 @@ struct NetGameRequest {
     std::function<void(sim::Battle&)> attach;
     // The user's settings (client options of the battle: screen, speeds, interface type).
     const Settings* settings = nullptr;
+    // The host's "cheat codes" option (side record option word bit 13): cheat commands allowed.
+    bool cheats = false;
 };
 
 struct NetMenuConfig {

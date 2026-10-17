@@ -54,6 +54,14 @@ struct ClientOptions {
     bool alt_groups = false;         // the alternate group keys (Alt+digit selects)
     bool clock = false;              // the game clock on the top bar (option)
     int sound_mode = 1;              // 0 off, 1 mono (world sounds centred), 2 3D (placed around the view's centre)
+    // Typed commands (chat lines starting with '+', docs/RE_MEMORY.md "Console commands").
+    bool cheats = false;             // cheat commands allowed (skirmish; network games whose host allows them)
+    bool debug_commands = false;     // the debug commands unlocked (by a command)
+    int view = -1;                   // the viewed player (-1: the human player)
+    bool dithered_fog = false;       // fog drawn as a checkerboard instead of greyed (setting DitheredFog)
+    bool radar_everything = false;   // the minimap shows every unit (cheat)
+    bool show_ranges = false;        // weapon range circles (not drawn yet)
+    bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
 };
 
 struct SoundEvent {
@@ -86,6 +94,17 @@ public:
     // The chat line (Enter): a typed line goes here when Enter is pressed again.
     std::function<void(const std::string&)> on_chat;
     bool chatting() const { return chat_; }
+    // Typed commands: a chat line starting with '+' (after leading spaces) runs the rest as a
+    // command line with the allowed permission bits (1 options, 2 cheats, 4 debug); returns the
+    // bits of the command that ran (0: none). The line is then sent as chat like any other.
+    std::function<std::uint32_t(const std::string& line, std::uint32_t allowed)> on_command;
+    // Types a chat line as if entered (scripted runs and tests).
+    void enter_chat_line(const std::string& text);
+    // The pointer's map point (the original keeps it at GS+0x2CAA, 0x498DA0): the pointer
+    // clamped to the battle view (or its minimap point) turned into a terrain point.
+    sim::Vec3i cursor_world() const;
+    // The viewed player (the human player unless a command chose another).
+    int viewed_player() const { return opt_.view >= 0 ? opt_.view : opt_.player; }
     // The battle and options, for the front end (in-game menus, end of the battle).
     sim::Battle& battle() { return b_; }
     ClientOptions& options_mut() { return opt_; }
@@ -234,6 +253,7 @@ private:
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;
     std::string chat_text_;
+    std::string last_command_;  // the last command line (debug: '\' runs it again)
     bool mdrag_ = false;                        // dragging the view with the middle button
     int mdrag_x_ = 0, mdrag_y_ = 0;
     int hover_feature_ = -1;

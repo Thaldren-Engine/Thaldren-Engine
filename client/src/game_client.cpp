@@ -10,6 +10,7 @@
 #include <cstdlib>
 
 #include "sim/features.h"
+#include "sim/mission_goals.h"
 #include "sim/missions.h"
 #include "sim/orders.h"
 #include "sim/targeting.h"
@@ -929,17 +930,50 @@ void GameClient::set_game_speed(int speed) {
     message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
 }
 
+void GameClient::enter_chat_line(const std::string& typed) {
+    // The original's talk line (0x493BF0): leading spaces go; a line starting with '+' runs the
+    // rest as a command line, allowed bits 1 (options), plus 2 when cheats are allowed, all
+    // three once the debug commands are unlocked. A cheat that ran sends the line to everyone.
+    // Whatever is left is then sent (and shown) as a chat line, the '+' included.
+    std::size_t p = 0;
+    while (p < typed.size() && typed[p] == ' ') ++p;
+    const std::string line = typed.substr(p);
+    if (!line.empty() && line[0] == '+') {
+        std::uint32_t allowed = opt_.debug_commands ? 7u : 1u;
+        if (opt_.cheats) allowed |= 2u;
+        last_command_ = line.substr(1, 0x4F);
+        if (on_command) on_command(last_command_, allowed);
+    }
+    if (line.empty()) return;
+    if (on_chat) on_chat(line);
+    else message(line);
+}
+
+sim::Vec3i GameClient::cursor_world() const {
+    // The pointer on the minimap stands for the map point at its share of the map's scroll
+    // range (map size less 32 and 128 units); elsewhere it is clamped to the battle view.
+    int px, py;
+    if (prepared_ && mouse_x_ >= mm_x_ && mouse_x_ < mm_x_ + mm_w_ && mouse_y_ >= mm_y_ && mouse_y_ < mm_y_ + mm_h_) {
+        px = (mouse_x_ - mm_x_) * (map_width_px() - 32) / std::max(1, mm_w_);
+        py = (mouse_y_ - mm_y_) * (map_height_px() - 128) / std::max(1, mm_h_);
+    } else {
+        const render::ClipRect r = view_rect();
+        px = scroll_x_ + std::clamp(mouse_x_, r.x0, r.x1) - r.x0;
+        py = scroll_y_ + std::clamp(mouse_y_, r.y0, r.y1) - r.y0;
+    }
+    const std::array<std::int32_t, 3> t = sim::screen_to_terrain(b_, px, py);
+    return {t[0], t[1], t[2]};
+}
+
 void GameClient::key_down(const InputEvent& e) {
     const int k = e.key;
     // The chat line takes every key while it is open.
     if (chat_) {
         if (k == keys::kEnter) {
             chat_ = false;
-            if (!chat_text_.empty()) {
-                if (on_chat) on_chat(chat_text_);
-                else message(chat_text_);
-            }
+            const std::string line = chat_text_;
             chat_text_.clear();
+            enter_chat_line(line);
         } else if (k == keys::kEscape) {
             chat_ = false;
             chat_text_.clear();
@@ -1051,6 +1085,12 @@ void GameClient::key_down(const InputEvent& e) {
     }
     if (k == 'n') {
         next_unit();
+        return;
+    }
+    if (k == '\\' && !e.ctrl) {
+        // With the debug commands unlocked, '\' runs the last command line again, every
+        // permission allowed.
+        if (opt_.debug_commands && on_command) on_command(last_command_, 0xFFFFFFFFu);
         return;
     }
     // Quick keys of the shown panel's buttons.

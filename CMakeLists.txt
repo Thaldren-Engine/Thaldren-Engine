@@ -24,6 +24,7 @@ add_library(sim STATIC
     engine/sim/src/bitstream.cpp
     engine/sim/src/commands.cpp
     engine/sim/src/commands_core.cpp
+    engine/sim/src/console.cpp
     engine/sim/src/effects.cpp
     engine/sim/src/effect_lists.cpp
     engine/sim/src/features.cpp
