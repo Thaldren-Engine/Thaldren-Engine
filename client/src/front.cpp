@@ -80,6 +80,16 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
             e.type = InputEvent::Type::MouseMove;
             e.x = num(2), e.y = num(3);
             out.push_back({frame, e});
+        } else if (ev == "wmove") {
+            // wmove X Y W H [SCALE]: the system pointer at window pixel (X, Y) of a W x H window
+            // (may lie outside it) — what the window front ends make of a motion event.
+            const int scale = w.size() > 6 ? std::max(1, num(6)) : 1;
+            InputEvent m = pointer_motion(static_cast<float>(num(2)), static_cast<float>(num(3)), scale, num(4) / scale, num(5) / scale, num(4), num(5));
+            m.shift = e.shift, m.ctrl = e.ctrl, m.alt = e.alt;
+            out.push_back({frame, m});
+        } else if (ev == "leave") {
+            e.type = InputEvent::Type::PointerLeave;
+            out.push_back({frame, e});
         } else if (ev == "down" || ev == "up" || ev == "click") {
             e.x = num(2), e.y = num(3), e.button = w.size() > 4 ? num(4) : 1;
             InputEvent m = e;
@@ -258,27 +268,59 @@ void fit_window_to_frame(SDL_Window* window, int frame_w, int frame_h, int scale
 
 void confine_pointer(SDL_Window* window, const SDL_Event* ev) {
     if (!window) return;
-    auto focused = [&] {
-        const SDL_WindowFlags f = SDL_GetWindowFlags(window);
-        return (f & SDL_WINDOW_INPUT_FOCUS) && !(f & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN));
-    };
-    if (!ev) {
-        SDL_SetWindowMouseGrab(window, focused());
-        return;
+    const SDL_WindowFlags f = SDL_GetWindowFlags(window);
+    bool focused = (f & SDL_WINDOW_INPUT_FOCUS) != 0;
+    bool shown = !(f & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN));
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(window, &ww, &wh);
+    // Where the system pointer is: the event's own position for mouse events, else asked.
+    bool inside = false;
+    if (ev && ev->type == SDL_EVENT_MOUSE_MOTION) {
+        inside = ev->motion.x >= 0 && ev->motion.y >= 0 && ev->motion.x < static_cast<float>(ww) && ev->motion.y < static_cast<float>(wh);
+    } else if (ev && ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        inside = ev->button.x >= 0 && ev->button.y >= 0 && ev->button.x < static_cast<float>(ww) && ev->button.y < static_cast<float>(wh);
+    } else if (ev && ev->type == SDL_EVENT_WINDOW_MOUSE_LEAVE) {
+        inside = false;
+    } else {
+        float gx = 0, gy = 0;
+        int wx = 0, wy = 0;
+        SDL_GetGlobalMouseState(&gx, &gy);
+        SDL_GetWindowPosition(window, &wx, &wy);
+        inside = gx >= static_cast<float>(wx) && gy >= static_cast<float>(wy) && gx < static_cast<float>(wx + ww) && gy < static_cast<float>(wy + wh);
     }
-    switch (ev->type) {
-    case SDL_EVENT_WINDOW_FOCUS_GAINED:
-    case SDL_EVENT_WINDOW_RESTORED:
-    case SDL_EVENT_WINDOW_SHOWN:
+    if (ev) switch (ev->type) {
+        // (The window's flags may not say so yet when these come.)
+        case SDL_EVENT_WINDOW_FOCUS_LOST: focused = false; break;
+        case SDL_EVENT_WINDOW_MINIMIZED:
+        case SDL_EVENT_WINDOW_HIDDEN: shown = false; break;
+        default: break;
+        }
+    const bool want = pointer_held(focused, shown, inside);
+    if (want != SDL_GetWindowMouseGrab(window)) SDL_SetWindowMouseGrab(window, want);
+}
+
+bool pointer_event(SDL_Window* window, const SDL_Event& ev, int scale, int frame_w, int frame_h, InputEvent& out) {
+    int ww = frame_w * scale, wh = frame_h * scale;
+    if (window) SDL_GetWindowSize(window, &ww, &wh);
+    switch (ev.type) {
+    case SDL_EVENT_MOUSE_MOTION: {
+        const InputEvent m = pointer_motion(ev.motion.x, ev.motion.y, scale, frame_w, frame_h, ww, wh);
+        out.type = m.type;
+        out.x = m.x;
+        out.y = m.y;
+        return true;
+    }
+    case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+        out.type = InputEvent::Type::PointerLeave;
+        return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
-        if (focused()) SDL_SetWindowMouseGrab(window, true);
-        break;
-    case SDL_EVENT_WINDOW_FOCUS_LOST:
-    case SDL_EVENT_WINDOW_MINIMIZED:
-    case SDL_EVENT_WINDOW_HIDDEN:
-        SDL_SetWindowMouseGrab(window, false);
-        break;
-    default: break;
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        out.type = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? InputEvent::Type::MouseDown : InputEvent::Type::MouseUp;
+        out.x = std::clamp(static_cast<int>(ev.button.x) / std::max(1, scale), 0, frame_w - 1);
+        out.y = std::clamp(static_cast<int>(ev.button.y) / std::max(1, scale), 0, frame_h - 1);
+        out.button = ev.button.button == SDL_BUTTON_LEFT ? 1 : ev.button.button == SDL_BUTTON_RIGHT ? 3 : 2;
+        return true;
+    default: return false;
     }
 }
 
@@ -341,17 +383,9 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             case SDL_EVENT_QUIT:
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED: e.type = InputEvent::Type::Quit; break;
             case SDL_EVENT_MOUSE_MOTION:
-                e.type = InputEvent::Type::MouseMove;
-                e.x = std::clamp(static_cast<int>(ev.motion.x) / scale, 0, w - 1);
-                e.y = std::clamp(static_cast<int>(ev.motion.y) / scale, 0, h - 1);
-                break;
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                e.type = ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN ? InputEvent::Type::MouseDown : InputEvent::Type::MouseUp;
-                e.x = std::clamp(static_cast<int>(ev.button.x) / scale, 0, w - 1);
-                e.y = std::clamp(static_cast<int>(ev.button.y) / scale, 0, h - 1);
-                e.button = ev.button.button == SDL_BUTTON_LEFT ? 1 : ev.button.button == SDL_BUTTON_RIGHT ? 3 : 2;
-                break;
+            case SDL_EVENT_MOUSE_BUTTON_UP: pointer_event(win, ev, scale, w, h, e); break;
             case SDL_EVENT_KEY_DOWN:
             case SDL_EVENT_KEY_UP:
                 e.type = ev.type == SDL_EVENT_KEY_DOWN ? InputEvent::Type::KeyDown : InputEvent::Type::KeyUp;
@@ -415,6 +449,18 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
 #endif
 
 } // namespace
+
+InputEvent pointer_motion(float x, float y, int scale, int frame_w, int frame_h, int win_w, int win_h) {
+    InputEvent e;
+    if (x < 0 || y < 0 || x >= static_cast<float>(win_w) || y >= static_cast<float>(win_h)) {
+        e.type = InputEvent::Type::PointerLeave;
+        return e;
+    }
+    e.type = InputEvent::Type::MouseMove;
+    e.x = std::clamp(static_cast<int>(x) / std::max(1, scale), 0, frame_w - 1);
+    e.y = std::clamp(static_cast<int>(y) / std::max(1, scale), 0, frame_h - 1);
+    return e;
+}
 
 int run_client(GameClient& client, Content& content, const FrontOptions& options) {
     if (options.headless) return run_headless(client, content, options);

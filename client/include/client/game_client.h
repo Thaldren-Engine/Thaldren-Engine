@@ -32,7 +32,9 @@ constexpr int kLeft = 0x100, kRight = 0x101, kUp = 0x102, kDown = 0x103, kPause 
 struct InputEvent {
     // Text: one typed character (key = its code) as the platform composes it from the keys and the
     // keyboard layout; KeyDown still comes for the key itself.
-    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text } type = Type::MouseMove;
+    // PointerLeave: the system pointer left the picture (only possible while the window does not
+    // hold it): no pointer is drawn and none is at an edge until the next mouse event.
+    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text, PointerLeave } type = Type::MouseMove;
     int x = 0, y = 0;  // frame coordinates (mouse events)
     int button = 0;    // 1 left, 2 middle, 3 right
     int key = 0;       // keys:: or a character
@@ -392,6 +394,7 @@ private:
     int mdrag_x_ = 0, mdrag_y_ = 0;
     int hover_feature_ = -1;
     bool pointer_hidden_ = false;
+    bool pointer_off_ = false;  // the system pointer is outside the picture (PointerLeave)
     // Drawing resources made once.
     void prepare_drawing();
     bool prepared_ = false;

@@ -49,6 +49,10 @@
 #include <windows.h>
 #endif
 
+#ifdef CLIENT_HAVE_SDL
+#include <SDL3/SDL.h>
+#endif
+
 #include "client/front.h"
 #include "client/game_client.h"
 #include "client/music.h"
@@ -74,6 +78,94 @@ std::string own_folder(const char* argv0) {
 #endif
     const auto cut = s.find_last_of("\\/");
     return cut == std::string::npos ? std::string(".") : s.substr(0, cut);
+}
+
+// Tests (--pointer-selftest): the window front ends' pointer rules driven through a sequence of
+// what the system does (focus, minimise, the system pointer's moves inside and outside the
+// window), and SDL mouse events converted as the event loops do. Prints each check; returns 0
+// when all pass. (The hold itself is the platform's; no window is opened here.)
+int pointer_selftest() {
+    int failed = 0, checks = 0;
+    auto check = [&](bool ok, const char* what) {
+        ++checks;
+        if (!ok) ++failed;
+        std::printf("%s %s\n", ok ? "ok  " : "FAIL", what);
+    };
+    using T = client::InputEvent::Type;
+    const int W = 640, H = 480;
+    // What the client shows: the pointer (x, y) or off the picture.
+    struct Shown {
+        bool off = false;
+        int x = 0, y = 0;
+    } p;
+    auto feed = [&](const client::InputEvent& e) {
+        if (e.type == T::PointerLeave) p.off = true;
+        else if (e.type == T::MouseMove) p = {false, e.x, e.y};
+    };
+    auto motion = [&](int x, int y) { feed(client::pointer_motion(static_cast<float>(x), static_cast<float>(y), 1, W, H, W, H)); };
+    auto inside = [&](int x, int y) { return x >= 0 && y >= 0 && x < W && y < H; };
+    // 1. In the window with the focus: held, the pointer where the system pointer is.
+    motion(300, 200);
+    check(client::pointer_held(true, true, inside(300, 200)) && !p.off && p.x == 300 && p.y == 200, "focused, inside: held, pointer at (300, 200)");
+    // 2. Alt+Tab: free at once; the pointer stays where the system pointer is (no event, no warp).
+    check(!client::pointer_held(false, true, inside(300, 200)) && p.x == 300 && p.y == 200, "focus lost: free, pointer unchanged");
+    // 3. The system pointer moves over the unfocused window: the pointer follows it.
+    motion(300, 479);
+    check(!p.off && p.x == 300 && p.y == 479, "unfocused, inside: the pointer follows (300, 479)");
+    // 4. It leaves the window: the pointer is off the picture (not left on the edge).
+    motion(300, 600);
+    check(p.off, "unfocused, outside: pointer off the picture");
+    // 5. Focus back with the system pointer outside: not held (never pulled in), still off; the
+    //    motion the platform reports at the focus change is outside too.
+    motion(900, 600);
+    check(!client::pointer_held(true, true, inside(900, 600)) && p.off, "focus back, outside: not held, pointer still off");
+    // 6. It comes into the window: held from there, the pointer where it came in.
+    motion(630, 470);
+    check(client::pointer_held(true, true, inside(630, 470)) && !p.off && p.x == 630 && p.y == 470, "comes in: held, pointer at (630, 470)");
+    // 7. Out and back with the system pointer moved inside meanwhile: the pointer is where it is
+    //    now (the platform's motion at the focus change), not where it was.
+    check(!client::pointer_held(false, true, true), "Alt+Tab again: free");
+    motion(100, 100);
+    check(client::pointer_held(true, true, inside(100, 100)) && !p.off && p.x == 100 && p.y == 100,
+          "focus back, inside: held at once, pointer at the system pointer (100, 100)");
+    // 8. Minimised / hidden: free; restored with the pointer inside: held.
+    check(!client::pointer_held(true, false, true) && client::pointer_held(true, true, true), "minimised: free; restored: held");
+    // 9. Scaled windows: window pixels to frame pixels.
+    {
+        const client::InputEvent e = client::pointer_motion(641.0f, 401.0f, 2, W, H, 2 * W, 2 * H);
+        check(e.type == T::MouseMove && e.x == 320 && e.y == 200, "scale 2: (641, 401) -> (320, 200)");
+        const client::InputEvent f = client::pointer_motion(1280.0f, 10.0f, 2, W, H, 2 * W, 2 * H);
+        check(f.type == T::PointerLeave, "scale 2: x 1280 is outside");
+    }
+#ifdef CLIENT_HAVE_SDL
+    // 10. SDL events as the event loops convert them (no window: its size is the frame's).
+    {
+        SDL_Event ev{};
+        client::InputEvent e;
+        ev.type = SDL_EVENT_MOUSE_MOTION;
+        ev.motion.x = -5.0f;
+        ev.motion.y = 100.0f;
+        check(client::pointer_event(nullptr, ev, 1, W, H, e) && e.type == T::PointerLeave, "SDL motion at x -5: PointerLeave");
+        ev.motion.x = 639.0f;
+        ev.motion.y = 0.0f;
+        check(client::pointer_event(nullptr, ev, 1, W, H, e) && e.type == T::MouseMove && e.x == 639 && e.y == 0, "SDL motion at (639, 0): move");
+        ev = SDL_Event{};
+        ev.type = SDL_EVENT_WINDOW_MOUSE_LEAVE;
+        check(client::pointer_event(nullptr, ev, 1, W, H, e) && e.type == T::PointerLeave, "SDL window mouse leave: PointerLeave");
+        ev = SDL_Event{};
+        ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+        ev.button.button = SDL_BUTTON_RIGHT;
+        ev.button.x = 1279.0f;
+        ev.button.y = 959.0f;
+        check(client::pointer_event(nullptr, ev, 2, W, H, e) && e.type == T::MouseDown && e.button == 3 && e.x == 639 && e.y == 479,
+              "SDL right button at (1279, 959), scale 2: down at (639, 479)");
+        ev = SDL_Event{};
+        ev.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+        check(!client::pointer_event(nullptr, ev, 1, W, H, e), "SDL focus gained: no pointer event of its own");
+    }
+#endif
+    std::printf("pointer self-test: %d of %d checks passed\n", checks - failed, checks);
+    return failed ? 1 : 0;
 }
 
 }  // namespace
@@ -121,6 +213,7 @@ int main(int argc, char** argv) {
             loading_test_file = next();
             continue;
         }
+        if (a == "--pointer-selftest") return pointer_selftest();
         if (a == "--saves") {
             saves_dir = next();
             continue;
