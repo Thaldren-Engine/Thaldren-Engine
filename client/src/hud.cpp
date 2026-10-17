@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <set>
 
 #include "client/canvas.h"
@@ -151,6 +152,7 @@ void GameClient::prepare_drawing() {
 
 render::DrawList GameClient::draw() {
     if (!prepared_) prepare_drawing();
+    update_top_bar();
     const int w = opt_.width, h = opt_.height;
     render::BattleScene scene;
     scene.camera.screen_width = w;
@@ -162,6 +164,18 @@ render::DrawList GameClient::draw() {
     if (c_.fill_scene) c_.fill_scene(scene, opt_.player, frame_counter_);
     if (!opt_.fog) scene.fog = nullptr;
     add_selection_outlines(scene);
+    // The top bar's art is drawn right after the terrain (its pieces may reach into the view's
+    // first rows; units, shots and effects draw over them there): its own piece at x 129, then
+    // (wider screens) the bottom bar's piece repeated.
+    scene.after_terrain = [this, w, h](render::DrawList& out) {
+        if (!side_) return;
+        const render::ClipRect all{0, 0, w - 1, bar_redrawn_ ? h - 1 : 31};
+        for (int x = 129; side_->panel_top && x < w;) {
+            const render::Sprite8* s = x == 129 || !side_->panel_bottom ? side_->panel_top : side_->panel_bottom;
+            out.blit(s, x + s->x_offset, s->y_offset, all, true);
+            x += std::max(1, s->width);
+        }
+    };
     scene.before_fog = [this, &scene, w, h](render::DrawList& out) {
         draw_queued_orders(out, scene.camera);
         if (opt_.damage_bars) {
@@ -190,12 +204,7 @@ render::DrawList GameClient::draw() {
     // Interface art: the side panel, the top and bottom bars (repeated across wider screens).
     if (side_) {
         if (side_->panel_side) list.blit(side_->panel_side, side_->panel_side->x_offset, side_->panel_side->y_offset, screen, true);
-        // The top bar: its own piece first, then (wider screens) the bottom bar's piece repeated.
-        for (int x = 129; side_->panel_top && x < w;) {
-            const render::Sprite8* s = x == 129 || !side_->panel_bottom ? side_->panel_top : side_->panel_bottom;
-            list.blit(s, x + s->x_offset, s->y_offset, screen, true);
-            x += std::max(1, s->width);
-        }
+        // (The top bar's art: drawn after the terrain, see scene.after_terrain.)
         for (int x = 129; side_->panel_bottom && x < w; x += std::max(1, side_->panel_bottom->width))
             list.blit(side_->panel_bottom, x + side_->panel_bottom->x_offset, h - 32 + side_->panel_bottom->y_offset, screen, true);
     }
@@ -383,14 +392,10 @@ void GameClient::draw_console(render::Image8& o) {
     }
 }
 
-void GameClient::draw_top_bar(render::Image8& o) {
-    if (!side_ || !side_->font) return;
-    const Font& f = *side_->font;
-    const render::ClipRect all = o.bounds();
+void GameClient::update_top_bar() {
+    // Once per drawn frame, before anything is drawn.
     const sim::PlayerSlot& me = b_.players[static_cast<std::size_t>(opt_.player)];
     const sim::PlayerEconomy& ec = b_.player_economy[static_cast<std::size_t>(opt_.player)];
-    // The viewed player's colour logo in LOGO (right after the bar's art).
-    draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(opt_.player) % c_.player_colour.size()], side_->logo, 0);
     // The stored amounts shown move an eighth of the way to the real value each frame.
     const float stored[2] = {me.energy_stored, me.metal_stored};
     const float cap[2] = {ec.energy_storage, ec.metal_storage};
@@ -416,6 +421,27 @@ void GameClient::draw_top_bar(render::Image8& o) {
         bar_timer_ += 30;
         bar_rates_ = {ec.energy_income, ec.energy_usage, ec.metal_income, ec.metal_usage};
     }
+    // The original redraws the bar (art included) only when what it shows changed; the bar's own
+    // rows keep it in between, but the art's rows inside the view (from row 32) are drawn over by
+    // the terrain every frame, so they show the art only in frames that redrew the bar.
+    const std::array<float, 9> copy = {static_cast<float>(opt_.player), shown_[0], bar_rates_[0], bar_rates_[1], shown_[1],
+                                       bar_rates_[2], bar_rates_[3], cap[0], cap[1]};
+    bar_redrawn_ = !bar_copy_valid_ || std::memcmp(copy.data(), bar_copy_.data(), sizeof copy) != 0;
+    bar_copy_ = copy;
+    bar_copy_valid_ = true;
+}
+
+void GameClient::draw_top_bar(render::Image8& o) {
+    if (!side_ || !side_->font) return;
+    const Font& f = *side_->font;
+    const render::ClipRect all = o.bounds();
+    const sim::PlayerSlot& me = b_.players[static_cast<std::size_t>(opt_.player)];
+    const sim::PlayerEconomy& ec = b_.player_economy[static_cast<std::size_t>(opt_.player)];
+    // The viewed player's colour logo in LOGO (right after the bar's art).
+    draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(opt_.player) % c_.player_colour.size()], side_->logo, 0);
+    // (The shown amounts and rates of this frame: update_top_bar.)
+    const float stored[2] = {me.energy_stored, me.metal_stored};
+    const float cap[2] = {ec.energy_storage, ec.metal_storage};
     struct Res {
         const Region *bar, *num, *max, *zero, *produced, *consumed;
         std::uint8_t colour;

@@ -168,6 +168,9 @@ struct BattleScene {
     // Interface marks the frame draws after the units and effects but before the fog (the
     // queued orders); appended to the list at that point when set.
     std::function<void(DrawList&)> before_fog;
+    // Interface art the frame draws right after the terrain (the top bar, whose pieces may
+    // reach into the view's first rows, where units and effects then draw over them).
+    std::function<void(DrawList&)> after_terrain;
     // The C runtime random state when the frame is drawn: lightning shots draw from a copy of
     // it (the original's draw calls rand(); the renderer never advances the simulation's).
     std::uint32_t crt_rand_state = 0;

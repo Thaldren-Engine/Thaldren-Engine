@@ -1012,6 +1012,50 @@ int main(int argc, char** argv) {
         gc.set_pointer_hidden(true);
     }
 
+    // --hud with FH_EDGE: the path marker's frames blitted across the view's left edge by the
+    // original's frame blit (0x4B7F90, into the frame with the view's clip) and by the renderer.
+    if (opt.hud && std::getenv("FH_EDGE")) {
+        std::vector<u8> cf;
+        ta::GafDirectory dir;
+        if (vfs.read("anims\\CURSORS.GAF", cf) && ta::gaf_read_directory(cf, dir)) {
+            const int si = ta::gaf_find_sequence(dir, "pathicon");
+            const u32 seq = si >= 0 ? o.gaf("anims\\CURSORS.GAF", cf) + Original::gaf_entry(cf, si) : 0;
+            const auto* frames = world.content().cursors.by_number[21];
+            long long bad = 0, tried = 0;
+            for (int f = 0; seq && frames && f < static_cast<int>(frames->size()); ++f) {
+                const u32 fr = r.r32(seq + 0x28 + 8u * static_cast<u32>(f));
+                for (int x = 100; x < 160; ++x) {
+                    std::vector<u8> bgp(static_cast<std::size_t>(W * H), 0x55);
+                    r.write(o.frame, bgp.data(), bgp.size());
+                    // the view's clip on the frame's context
+                    const i32 clip[4] = {128, 32, W - 1, H - 33};
+                    r.write(o.ctx + 0x1C, clip, sizeof clip);
+                    o.call(0x004B7F90, 0, {o.ctx, fr, static_cast<u32>(x), 100u});
+                    std::vector<u8> got(static_cast<std::size_t>(W * H));
+                    r.read(o.frame, got.data(), got.size());
+                    render::Image8 mine(W, H, 0x55);
+                    render::blit(mine, render::ClipRect{128, 32, W - 1, H - 33}, (*frames)[static_cast<std::size_t>(f)], x, 100);
+                    ++tried;
+                    long long d = 0;
+                    for (std::size_t i = 0; i < got.size(); ++i) d += got[i] != mine.pixels[i];
+                    if (d && bad < 5) std::printf("edge: frame %d at x %d: %lld pixels differ\n", f, x, d);
+                    bad += d != 0;
+                }
+            }
+            std::printf("edge check: %lld of %lld blits differ\n", bad, tried);
+        }
+    }
+    // --hud: rows the top bar's art covers (its pieces may reach below row 31 into the view; the
+    // view check leaves them out, the placement and Shift checks compare them).
+    // Likewise the columns the side panel's art covers (the client's whole frame has it there;
+    // the original's frame draw leaves the side panel to the interface).
+    int top_rows = 32, side_cols = 128;
+    if (opt.hud && static_cast<std::size_t>(co.side) < world.content().sides.size()) {
+        const client::SideLayout& L = world.content().sides[static_cast<std::size_t>(co.side)];
+        for (const render::Sprite8* a : {L.panel_top, L.panel_bottom})
+            if (a) top_rows = std::max(top_rows, a->height);
+        if (L.panel_side) side_cols = std::max(side_cols, L.panel_side->width);
+    }
     Stats st;
     int written = 0;
     for (int sc = 0; sc < opt.scenes; ++sc) {
@@ -1603,7 +1647,7 @@ int main(int argc, char** argv) {
         // Compare the battle view.
         long long diff = 0, n = 0;
         render::Image8 dimg(W, H, 0);
-        for (int y = 32; y <= H - 33; ++y)
+        for (int y = opt.hud ? top_rows : 32; y <= H - 33; ++y)
             for (int x = 128; x < W; ++x) {
                 const std::size_t i = static_cast<std::size_t>(y * W + x);
                 ++n;
@@ -1658,10 +1702,10 @@ int main(int argc, char** argv) {
             st.pixels += bd;
             differs(bd);
 
-            // The top bar: rows 0..31 right of the side panel.
+            // The top bar: its rows right of the side panel.
             long long td = 0, tn = 0;
             render::Image8 timg(W, H, 0);
-            for (int y = 0; y < 32; ++y)
+            for (int y = 0; y < 32; ++y)  // (rows 32.. under the art: the scene's extra shots are on the original's side only)
                 for (int x = 129; x < W; ++x) {
                     const std::size_t i = static_cast<std::size_t>(y * W + x);
                     ++tn;
@@ -1712,7 +1756,7 @@ int main(int argc, char** argv) {
                 long long d = 0;
                 changed = 0;
                 for (int y = 32; y <= H - 33; ++y)
-                    for (int x = 128; x < W; ++x) {
+                    for (int x = side_cols; x < W; ++x) {
                         const std::size_t i = static_cast<std::size_t>(y * W + x);
                         if (o0[i] == o1[i] && c0.pixels[i] == c1.pixels[i]) continue;
                         ++changed;

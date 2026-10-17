@@ -145,6 +145,7 @@ public:
         bar_rates_ = s.rates;
         bar_timer_ = s.timer;
         bar_timer_set_ = s.timer_set;
+        bar_copy_valid_ = false;  // (the next frame redraws the bar)
     }
     // The pointer's animation: the look shown and its frame (tests); a new look (not the one
     // shown) starts at its first frame.
@@ -219,6 +220,12 @@ private:
     // Drawing.
     void draw_overlay(render::Image8& o, std::vector<std::uint8_t>& written);
     void draw_top_bar(render::Image8& o);
+    void update_top_bar();
+    // The bar's copy of what it showed last (player, shown energy, its rates, shown metal, its
+    // rates, storages) and whether this frame changed it (the bar was drawn anew).
+    std::array<float, 9> bar_copy_{};
+    bool bar_copy_valid_ = false;
+    bool bar_redrawn_ = true;
     void draw_bottom_bar(render::Image8& o);
     void draw_minimap(render::Image8& o);
     void draw_unit_marks(render::Image8& o);

@@ -177,12 +177,16 @@ int command_selected_kind(sim::Battle& b, int player, std::uint8_t kind, std::in
 }
 
 int command_build(sim::Battle& b, int player, std::uint16_t type, const WorldPos& pos, bool queued) {
+    // Every selected unit of the player whose type is a builder (type flag 0x40) gets the build
+    // order: VTOL_MobileBuild for flying types (0x800), else MobileBuild (as the placement click
+    // gives it, 0x419670).
     int given = 0;
     for (std::size_t i = 1; i < b.units.size(); ++i) {
-        if (!selected_of(b, i, player) || !b.ticks[i].has_motion) continue;
-        const std::uint16_t t = b.ticks[i].type_index;
-        if (t >= b.types.size() || !b.types[t].construction.has_build_options) continue;
-        sim::command::issue_or_cancel(b, sim::mission::kMobileBuild, queued, b.units[i], nullptr, &pos, type, 0);
+        if (!selected_of(b, i, player)) continue;
+        const sim::UnitTickTypeInfo* tt = b.ticks[i].tick_type;
+        if (!tt || !(tt->type_flags & sim::mission_type_flags::kBuilder)) continue;
+        const std::uint8_t kind = (tt->type_flags & sim::mission_type_flags::kCanFly) ? sim::mission::kAirMobileBuild : sim::mission::kMobileBuild;
+        sim::command::issue_or_cancel(b, kind, queued, b.units[i], nullptr, &pos, type, 0);
         ++given;
     }
     return given;
