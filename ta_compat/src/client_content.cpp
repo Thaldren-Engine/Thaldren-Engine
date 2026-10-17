@@ -50,19 +50,20 @@ std::uint8_t nearest(const render::Palette& pal, int r, int g, int b) {
     return static_cast<std::uint8_t>(best);
 }
 
-void model_box(const Model3doPiece* p, std::array<std::int32_t, 3> at, std::array<std::int32_t, 3>& lo, std::array<std::int32_t, 3>& hi,
-               bool& first) {
-    for (; p; p = p->sibling.get()) {
-        const std::array<std::int32_t, 3> o{at[0] + p->offset[0], at[1] + p->offset[1], at[2] + p->offset[2]};
-        for (const auto& v : p->vertices)
-            for (int k = 0; k < 3; ++k) {
-                const std::int32_t c = o[static_cast<std::size_t>(k)] + v[static_cast<std::size_t>(k)];
-                if (first || c < lo[static_cast<std::size_t>(k)]) lo[static_cast<std::size_t>(k)] = c;
-                if (first || c > hi[static_cast<std::size_t>(k)]) hi[static_cast<std::size_t>(k)] = c;
-            }
-        if (!p->vertices.empty()) first = false;
-        model_box(p->child.get(), o, lo, hi, first);
-    }
+// The box the selection outline and the pointer's pick test use (the original's model bounds
+// routine called without its walk over the other pieces): the root piece alone. The box starts
+// as the point 0 (so it always holds the unit's origin) and takes in the root piece's vertices
+// moved by its offset, only when the piece has more than two vertices.
+void model_box(const Model3doPiece* root, std::array<std::int32_t, 3>& lo, std::array<std::int32_t, 3>& hi) {
+    lo = {0, 0, 0};
+    hi = {0, 0, 0};
+    if (!root || root->vertices.size() <= 2) return;
+    for (const auto& v : root->vertices)
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int32_t c = root->offset[k] + v[k];
+            if (c > hi[k]) hi[k] = c;
+            if (c < lo[k]) lo[k] = c;
+        }
 }
 
 } // namespace
@@ -363,6 +364,8 @@ bool ClientWorld::build_content(std::string& error) {
         };
         for (const auto& [k, name] : looks) c.cursors.looks[static_cast<std::size_t>(k)] = sequence(cur, name);
         c.radar_dots = sequence("anims\\FX.GAF", "radlogo");
+        c.team_logos = sequence("textures\\logos.GAF", "32xlogos");
+        for (std::size_t p = 0; p < c.player_colour.size(); ++p) c.player_colour[p] = request_.start.players[p].colour;
         if (const auto* q = sequence("anims\\FX.GAF", "radlogohigh")) c.radar_dot_hover = &q->front();
         if (const auto* q = sequence("anims\\IGTITLES.GAF", "igpaused")) c.paused_sign = &q->front();
     }
@@ -403,6 +406,39 @@ bool ClientWorld::build_content(std::string& error) {
             const TdfSection* s = a.root ? a.root->child(sec) : nullptr;
             return s ? sample(s->get_string("sound", 64, "")) : -1;
         };
+        // The status line's text by mission kind: the display name of each entry of the
+        // original's mission table (0x00512344; the entries' first field, read from the static
+        // tables the table is built from), by the entries' lookup names. English: the
+        // translation table leaves them as they are.
+        {
+            static const std::pair<const char*, const char*> kStatus[] = {
+                {"", "Ready"}, {"Activate", "Activate"}, {"AirStrike", "Airstrike"}, {"AirToAir", "Engaging target"},
+                {"AirToGround", "Engaging target"}, {"AirToGroundHover", "Engaging target"}, {"Attack_Chase", "Attacking"},
+                {"Attack_Kamikaze", "Attacking"}, {"Attack_NoMove", "Attacking"}, {"AttackSpecial", "Annihilating"},
+                {"AttackUType", "Attacking"}, {"BeCarried", "Being transported"}, {"BuildingBuild", "Nanolathing"},
+                {"BuildWeapon", "Nanolathing"}, {"Capture", "Capturing"}, {"Cloak_Off", "Decloaking"}, {"Cloak_On", "Cloaking"},
+                {"Deactivate", "Deactivate"}, {"Follow_Ground", "Guarding"}, {"GetBuilt", "Under construction"},
+                {"Ground_Pickup", "Loading"}, {"Ground_Unload", "Unloading"}, {"Guard_NoMove", "Ready"}, {"HelpBuild", "Nanolathing"},
+                {"MakeSelectable", "Unit is available"}, {"MobileBuild", "Nanolathing"}, {"Move_Ground", "Moving"},
+                {"Paralyze", "Paralyzed"}, {"Park", "Parking"}, {"Patrol", "Patrolling"}, {"QMove", "Ready with orders"},
+                {"QPatrol", "Ready with orders"}, {"Reclaim", "Reclaiming"}, {"ReclaimUnit", "Reclaiming"},
+                {"RepairPatrol", "Repair patrol"}, {"RepairUnit", "Repairing"}, {"RepairUnitNoMove", "Repairing"},
+                {"Resurrect", "Resurrecting"}, {"SelfDestruct", "SELF DESTRUCT ENGAGED"}, {"SelfDestructFG", "SELF DESTRUCT ENGAGED"},
+                {"SelfRepair", "Repairing"}, {"Standby", "Standby"}, {"Standby_Mine", "Standby"}, {"Standing_FireOrder", "Acknowledged"},
+                {"Standing_MoveOrder", "Acknowledged"}, {"Stop", "Stopping"}, {"Suppress", "Suppressing fire"},
+                {"Teleport", "Teleporting"}, {"VTOL_Evade", "Evading"}, {"VTOL_Follow", "Guarding"}, {"VTOL_GetRepaired", "Under repair"},
+                {"VTOL_HelpBuild", "Nanolathing"}, {"VTOL_LandIfCan", "Seeking to land"}, {"VTOL_Landing", "Landing"},
+                {"VTOL_MobileBuild", "Nanolathing"}, {"VTOL_Move", "Moving"}, {"VTOL_Patrol", "Patrolling"}, {"VTOL_Pickup", "Loading"},
+                {"VTOL_Reclaim", "Reclaiming"}, {"VTOL_ReclaimUnit", "Reclaiming"}, {"VTOL_RepairPatrol", "Repair patrol"},
+                {"VTOL_RepairUnit", "Repairing"}, {"VTOL_SeekAttack", "Seeking to attack"}, {"VTOL_SeekGuard", "Seeking to guard"},
+                {"VTOL_Standby", "Standby"}, {"VTOL_Unload", "Unloading"}, {"Wait", "Waiting"}, {"WaitForAttack", "Waiting for attack"},
+            };
+            const std::vector<std::string> kinds = UnitDefContext::default_mission_names();
+            c.mission_status.assign(kinds.size(), std::string());
+            for (std::size_t k = 0; k < kinds.size(); ++k)
+                for (const auto& [lookup, text] : kStatus)
+                    if (kinds[k] == lookup) c.mission_status[k] = text;
+        }
         auto& u = c.ui_sounds;
         u.immediate = ui("IMMEDIATEORDERS");
         u.orders_tab = ui("ORDERSBUTTON");
@@ -463,6 +499,9 @@ bool ClientWorld::build_content(std::string& error) {
         look.pick_max = {d.model_max_x, d.model_max_y, d.model_max_z};
         look.pick_rank = ((static_cast<std::int64_t>(d.model_size_y) * 0x8000 >> 16) + d.model_size_z) * static_cast<std::int64_t>(d.model_size_x) >> 16;
         look.description = d.description;
+        look.unit_name = d.unit_name;
+        look.cost_metal = d.build_cost_metal;
+        look.cost_energy = d.build_cost_energy;
         for (const std::string& cm : commanders)
             if (stricmp_c(cm, d.unit_name) == 0) look.commander = true;
         look.sounds.fill(-1);
@@ -491,8 +530,7 @@ bool ClientWorld::build_content(std::string& error) {
         for (const auto& [key, cat] : defs_.categories.all())
             if (k < 512 && (cat.second[k >> 5] & (1u << (k & 31)))) look.categories.push_back(upper(cat.first));
         if (types_[k] && types_[k]->ok) {
-            bool first = true;
-            model_box(types_[k]->root.get(), {0, 0, 0}, look.box_min, look.box_max, first);
+            model_box(types_[k]->root.get(), look.box_min, look.box_max);
         }
         // Build menu pages: <unitname>1..N.GUI, then the download entries' pages and slots.
         std::vector<client::Panel>& pages = look.build_pages;
@@ -605,7 +643,8 @@ bool ClientWorld::build_content(std::string& error) {
         fog_.gray_table = &gray_table_;
     }
     // Features' names and reclaim values (hover info), the victory and defeat signs.
-    for (const FeatureDefRecord& r : lb_->feature_defs.records()) c.features.push_back({r.description.empty() ? r.name : r.description, 0, 0});
+    // The bottom bar shows a feature's description (the original's +0x80 text, also when empty).
+    for (const FeatureDefRecord& r : lb_->feature_defs.records()) c.features.push_back({r.description, 0, 0, r.flags});
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };

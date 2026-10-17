@@ -113,6 +113,9 @@ public:
     int selected_count() const;
     std::uint16_t hover_unit() const { return hover_; }
     const ClientOptions& options() const { return opt_; }
+    // The selection outlines of the selected units in a battle view scene (draw() does this;
+    // tests that build the scene themselves call it).
+    void add_selection_outlines(render::BattleScene& scene) const;
 
 private:
     // Geometry.

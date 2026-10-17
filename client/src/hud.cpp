@@ -3,13 +3,19 @@
 // (spec: docs/RE_MEMORY.md, "Client").
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <set>
 
 #include "client/canvas.h"
 #include "client/game_client.h"
+#include "render/battle_view.h"
+#include "render/raster.h"
 #include "sim/economy.h"
+#include "sim/orders.h"
+#include "sim/weapon_slot.h"
+#include "sim/x87_trig.h"
 #include "sim/sight.h"
 #include "sim/victory.h"
 #include "sim/unit_tick.h"
@@ -41,6 +47,21 @@ render::Sprite8 scaled(const render::Sprite8& src, int w, int h) {
         for (int x = 0; x < w; ++x)
             s.pixels[static_cast<std::size_t>(y * w + x)] = src.at(x * src.width / std::max(w, 1), y * src.height / std::max(h, 1));
     return s;
+}
+
+// A player's colour logo stretched into a bar's logo box (the box's corners, rows moved by dy):
+// the frame's corners (0, 0), (w, 0), (w, h), (0, h) mapped onto the box's, the texels copied
+// (the key too), clipped to the frame.
+void draw_logo(render::Image8& o, const std::vector<render::Sprite8>* logos, int colour, const Region& r, int dy) {
+    if (!logos || logos->empty()) return;
+    const render::Sprite8& s = (*logos)[static_cast<std::size_t>(colour) % logos->size()];
+    render::RasterTarget t;
+    t.pixels = o.pixels.data();
+    t.pitch = o.width;
+    t.clip = o.bounds();
+    const render::RasterVertex v[4] = {{r.x1, r.y1 + dy, 0}, {r.x2, r.y1 + dy, 0}, {r.x2, r.y2 + dy, 0}, {r.x1, r.y2 + dy, 0}};
+    const int uv[4][2] = {{0, 0}, {s.width, 0}, {s.width, s.height}, {0, s.height}};
+    render::textured_quad_uv(t, v, uv, s);
 }
 
 } // namespace
@@ -75,6 +96,7 @@ void GameClient::prepare_drawing() {
                 for (std::uint8_t p : f.pixels) used.insert(p);
     };
     add_frames(c_.radar_dots);
+    add_frames(c_.team_logos);
     if (c_.radar_dot_hover)
         for (std::uint8_t p : c_.radar_dot_hover->pixels) used.insert(p);
     for (int k = 255; k >= 0; --k)
@@ -96,6 +118,7 @@ render::DrawList GameClient::draw() {
     scene.camera.scroll_y = scroll_y_;
     if (c_.fill_scene) c_.fill_scene(scene, opt_.player, frame_counter_);
     if (!opt_.fog) scene.fog = nullptr;
+    add_selection_outlines(scene);
     // The units drawn this frame (picking, double clicks, notices).
     on_screen_.clear();
     for (const render::UnitInstance& ui : scene.units) {
@@ -162,6 +185,38 @@ render::DrawList GameClient::draw() {
     return list;
 }
 
+void GameClient::add_selection_outlines(render::BattleScene& scene) const {
+    // Every selected unit (flag 0x10, whoever owns it) of the view gets the outline of its
+    // model's box (the root piece's bounds, see the importer) at the box's lowest y: the four
+    // corners turned by the unit's three angles, placed like the pick test's corners, joined in
+    // interface colour 10. The original draws it in the unit's turn, just before the unit.
+    if (!opt_.selection_boxes) return;
+    for (render::UnitInstance& ui : scene.units) {
+        if (!ui.unit) continue;
+        const sim::Unit& u = *ui.unit;
+        if (!(u.flags & kSelected) || u.id >= b_.ticks.size()) continue;
+        const std::uint16_t t = b_.ticks[u.id].type_index;
+        if (t == 0 || t >= c_.types.size()) continue;
+        const UnitTypeLook& look = c_.types[t];
+        const auto& mn = look.box_min;
+        const auto& mx = look.box_max;
+        const std::int32_t corners[4][3] = {{mn[0], mn[1], mn[2]}, {mx[0], mn[1], mn[2]}, {mx[0], mn[1], mx[2]}, {mn[0], mn[1], mx[2]}};
+        const std::int16_t angles[3] = {u.pitch, static_cast<std::int16_t>(u.heading), u.bank};
+        const std::uint32_t ox = static_cast<std::uint32_t>(u.pos[0]) - static_cast<std::uint32_t>(scene.camera.scroll_x) * 0x10000u;
+        const std::uint32_t oz = static_cast<std::uint32_t>(u.pos[2]) - static_cast<std::uint32_t>(scene.camera.scroll_y) * 0x10000u;
+        for (int k = 0; k < 4; ++k) {
+            std::int32_t r[3];
+            sim::x87::rotate_point_3d(corners[k], r, angles);
+            ui.outline_xy[static_cast<std::size_t>(2 * k)] = static_cast<std::int16_t>((static_cast<std::uint32_t>(r[0]) + ox) >> 16) + 128;
+            ui.outline_xy[static_cast<std::size_t>(2 * k + 1)] =
+                static_cast<std::int16_t>((oz - static_cast<std::uint32_t>(r[2])) >> 16) -
+                (static_cast<std::int16_t>((static_cast<std::uint32_t>(r[1]) + static_cast<std::uint32_t>(u.pos[1])) >> 16) >> 1) + 32;
+        }
+        ui.outline = true;
+        ui.outline_colour = c_.hud[10];
+    }
+}
+
 void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
     draw_unit_marks(o);
     draw_console(o);
@@ -194,7 +249,7 @@ void GameClient::draw_clock_and_units(render::Image8& o) {
     const std::uint32_t s = b_.game_tick() / 30;
     char buf[64];
     std::snprintf(buf, sizeof buf, "Game Time: %02u:%02u:%02u", s / 3600, (s / 60) % 60, s % 60);
-    draw_text(o, o.bounds(), f, buf, 130, opt_.height - 34 - f.height + f.raise, c_.hud[15]);
+    draw_text(o, o.bounds(), f, buf, 130, opt_.height - 34 - f.height, c_.hud[15]);
 }
 
 void GameClient::draw_chat(render::Image8& o) {
@@ -231,27 +286,7 @@ void GameClient::draw_unit_marks(render::Image8& o) {
         const sim::Unit& u = b_.units[s.id];
         const sim::UnitTickState& t = b_.ticks[s.id];
         if (t.type_index == 0 || t.owner != opt_.player) continue;
-        // Selection outline: the model's base rectangle turned with the unit.
-        if ((u.flags & kSelected) && opt_.selection_boxes && t.type_index < c_.types.size()) {
-            const UnitTypeLook& look = c_.types[t.type_index];
-            const double a = u.heading * (6.283185307179586 / 65536.0);
-            const double ca = std::cos(a), sa = std::sin(a);
-            const double xs[4] = {static_cast<double>(look.box_min[0]), static_cast<double>(look.box_max[0]),
-                                  static_cast<double>(look.box_max[0]), static_cast<double>(look.box_min[0])};
-            const double zs[4] = {static_cast<double>(look.box_min[2]), static_cast<double>(look.box_min[2]),
-                                  static_cast<double>(look.box_max[2]), static_cast<double>(look.box_max[2])};
-            int px[4], py[4];
-            for (int k = 0; k < 4; ++k) {
-                const double rx = xs[k] * ca + zs[k] * sa, rz = -xs[k] * sa + zs[k] * ca;
-                const std::int32_t wx = u.pos[0] + static_cast<std::int32_t>(rx);
-                const std::int32_t wz = u.pos[2] - static_cast<std::int32_t>(rz);
-                const std::int32_t wy = u.pos[1] + look.box_min[1];
-                px[k] = static_cast<std::int16_t>(static_cast<std::uint32_t>(wx - (scroll_x_ << 16)) >> 16) + 128;
-                py[k] = static_cast<std::int16_t>(static_cast<std::uint32_t>(wz - (scroll_y_ << 16)) >> 16) -
-                        (static_cast<std::int16_t>(static_cast<std::uint32_t>(wy) >> 16) >> 1) + 32;
-            }
-            for (int k = 0; k < 4; ++k) render::draw_line(o, view, px[k], py[k], px[(k + 1) % 4], py[(k + 1) % 4], c_.hud[10]);
-        }
+        // (The selection outline is drawn with the unit itself: add_selection_outlines.)
         // Health bar (option, or units in a group) and the group number.
         if ((opt_.damage_bars || u.group != 0) && u.hit_points > 0 && u.type && u.type->max_damage > 0) {
             const int x = s.x, y = s.y + 10;
@@ -262,7 +297,7 @@ void GameClient::draw_unit_marks(render::Image8& o) {
             const std::uint8_t col = u.hit_points > 2 * third ? c_.hud[10] : u.hit_points > third ? c_.hud[14] : c_.hud[12];
             fill_rect(o, view, x - 16, y - 1, x - 16 + len, y + 1, col);
             if (u.group != 0 && side_ && side_->font)
-                draw_text(o, view, *side_->font, std::string(1, static_cast<char>('0' + u.group % 10)), x, y + 4 + side_->font->raise,
+                draw_text(o, view, *side_->font, std::string(1, static_cast<char>('0' + u.group % 10)), x, y + 4,
                           c_.hud[15]);
         }
     }
@@ -285,6 +320,8 @@ void GameClient::draw_top_bar(render::Image8& o) {
     const render::ClipRect all = o.bounds();
     const sim::PlayerSlot& me = b_.players[static_cast<std::size_t>(opt_.player)];
     const sim::PlayerEconomy& ec = b_.player_economy[static_cast<std::size_t>(opt_.player)];
+    // The viewed player's colour logo in LOGO (right after the bar's art).
+    draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(opt_.player) % c_.player_colour.size()], side_->logo, 0);
     // The stored amounts shown move an eighth of the way to the real value each frame.
     const float stored[2] = {me.energy_stored, me.metal_stored};
     const float cap[2] = {ec.energy_storage, ec.metal_storage};
@@ -315,14 +352,14 @@ void GameClient::draw_top_bar(render::Image8& o) {
             const int x2 = r.bar->x1 + static_cast<int>((r.bar->x2 - r.bar->x1) * std::clamp(r.shown / r.cap, 0.0f, 1.0f));
             if (r.shown > 0.0f) fill_rect(o, all, r.bar->x1, r.bar->y1, x2, r.bar->y2, r.colour);
         }
-        draw_text(o, all, f, fmti("%lld", static_cast<long long>(r.shown)), r.num->x1, r.num->y1 + f.raise, c_.hud[15]);
-        draw_text(o, all, f, "0", r.zero->x1, r.zero->y1 + f.raise, c_.hud[15]);
+        draw_text(o, all, f, fmti("%lld", static_cast<long long>(r.shown)), r.num->x1, r.num->y1, c_.hud[15]);
+        draw_text(o, all, f, "0", r.zero->x1, r.zero->y1, c_.hud[15]);
         const std::string mx = fmti("%lld", static_cast<long long>(r.cap));
-        draw_text(o, all, f, mx, r.max->x1 - f.text_width(mx), r.max->y1 + f.raise, c_.hud[15]);
+        draw_text(o, all, f, mx, r.max->x1 - f.text_width(mx), r.max->y1, c_.hud[15]);
         const std::string inc = r.income <= 99999.0f ? fmt("%.1f", r.income) : fmti("%lldK", static_cast<long long>(r.income / 1000));
-        draw_text(o, all, f, inc, r.produced->x1, r.produced->y1 + f.raise, c_.hud[10]);
+        draw_text(o, all, f, inc, r.produced->x1, r.produced->y1, c_.hud[10]);
         const std::string use = r.usage >= -99999.0f ? fmt("%.1f", r.usage) : fmti("%lldK", static_cast<long long>(r.usage / 1000));
-        draw_text(o, all, f, use, r.consumed->x1, r.consumed->y1 + f.raise, c_.hud[12]);
+        draw_text(o, all, f, use, r.consumed->x1, r.consumed->y1, c_.hud[12]);
     }
 }
 
@@ -331,66 +368,113 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     const Font& f = *side_->font;
     const render::ClipRect all = o.bounds();
     const int dy = opt_.height - 480;  // the side description's rows are for a 480-row screen
-    // The unit under the pointer, else the only selected one.
-    std::uint16_t id = hover_;
-    if (!id && selected_count() == 1)
-        for (std::size_t i = 1; i < b_.units.size(); ++i)
-            if (b_.ticks[i].type_index != 0 && b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected)) id = static_cast<std::uint16_t>(i);
-    if ((!id || b_.ticks[id].type_index == 0) && hover_feature_ >= 0 && static_cast<std::size_t>(hover_feature_) < b_.features.size()) {
-        // A feature under the pointer: its name and what reclaiming it yields.
-        const sim::FeatureTypeInfo& ft = b_.features[static_cast<std::size_t>(hover_feature_)];
-        std::string n = static_cast<std::size_t>(hover_feature_) < c_.features.size() ? c_.features[static_cast<std::size_t>(hover_feature_)].name : std::string();
-        char buf[64];
-        std::snprintf(buf, sizeof buf, " M:%d E:%d", static_cast<int>(ft.metal), static_cast<int>(ft.energy));
-        n += buf;
-        draw_text(o, all, f, n, side_->unit_name.x1 - f.text_width(n) / 2, side_->unit_name.y1 + dy + f.raise, 0x53);
+    auto centred = [&](const std::string& s, const Region& r) {
+        draw_text(o, all, f, s, r.x1 - f.text_width(s) / 2, r.y1 + dy, 0x53);
+    };
+    auto bar = [&](const Region& r, int value, int max) {
+        // Filled for value / max (value clamped to 0..max) in [10], the rest in [4].
+        const int v = std::clamp(value, 0, std::max(max, 0));
+        const int x2 = max != 0 ? (r.x2 - r.x1) * v / max + r.x1 : r.x1;
+        fill_rect(o, all, r.x1, r.y1 + dy, x2, r.y2 + dy, c_.hud[10]);
+        if (x2 != r.x2) fill_rect(o, all, x2 + 1, r.y1 + dy, r.x2, r.y2 + dy, c_.hud[4]);
+    };
+    auto whole = [](float v) { return static_cast<int>(v); };  // the original's float -> int (truncation)
+
+    // A build button under the pointer comes first: "<name>  M:<metal cost> E:<energy cost>" on
+    // the NAME line and the type's description on the DESCRIPTION line (not for a CORBUILD).
+    if (const Panel* p = current_panel())
+        for (const Button& btn : p->buttons) {
+            if (mouse_x_ < btn.x || mouse_x_ >= btn.x + btn.w || mouse_y_ < btn.y || mouse_y_ >= btn.y + btn.h) continue;
+            if (btn.action != Action::BuildUnit || !btn.unit_type || btn.unit_type >= c_.types.size()) return;
+            const UnitTypeLook& look = c_.types[btn.unit_type];
+            std::string un = look.unit_name;
+            for (char& ch : un) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+            if (un == "CORBUILD") return;
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "%s  M:%d E:%d", look.name.c_str(), whole(look.cost_metal), whole(look.cost_energy));
+            draw_text(o, all, f, buf, side_->name.x1, side_->name.y1 + dy, 0x53);
+            draw_text(o, all, f, look.description, side_->description.x1, side_->description.y1 + dy, 0x53);
+            return;
+        }
+
+    // Else the unit under the pointer (the pointer's pick of this frame; nothing when the pointer
+    // is over no unit), else the feature under it.
+    const std::uint16_t id = hover_;
+    if (!id || b_.ticks[id].type_index == 0) {
+        if (id || hover_feature_ < 0 || static_cast<std::size_t>(hover_feature_) >= b_.features.size()) return;
+        // A feature: its description and what reclaiming it yields (" M:%d", " E:%d", each only
+        // when not zero), left-aligned on the NAME line; flag 0x200: the description alone;
+        // flag 0x400: nothing.
+        const std::size_t k = static_cast<std::size_t>(hover_feature_);
+        const sim::FeatureTypeInfo& ft = b_.features[k];
+        const Content::FeatureLook* fl = k < c_.features.size() ? &c_.features[k] : nullptr;
+        const std::uint16_t fflags = fl ? fl->flags : 0;
+        if (fflags & 0x400) return;
+        std::string n = fl ? fl->name : std::string();
+        if (!(fflags & 0x200)) {
+            char m[32] = "", e[32] = "";
+            if (!(ft.metal == 0.0f || ft.metal != ft.metal)) std::snprintf(m, sizeof m, " M:%d", whole(ft.metal));
+            if (!(ft.energy == 0.0f || ft.energy != ft.energy)) std::snprintf(e, sizeof e, " E:%d", whole(ft.energy));
+            n += std::string(" ") + m + e;
+        }
+        draw_text(o, all, f, n, side_->name.x1, side_->name.y1 + dy, 0x53);
         return;
     }
-    if (!id || b_.ticks[id].type_index == 0) return;
     const sim::Unit& u = b_.units[id];
     const sim::UnitTickState& t = b_.ticks[id];
     const bool mine = t.owner == opt_.player;
+    // Units the viewed player does not see are an "Unidentified object".
     if (!mine && b_.settings.fog_of_war && !b_.unit_seen_by(opt_.player, u)) {
-        const std::string s = "Unidentified object";
-        draw_text(o, all, f, s, side_->unit_name.x1 - f.text_width(s) / 2, side_->unit_name.y1 + dy + f.raise, 0x53);
+        centred("Unidentified object", side_->unit_name);
         return;
     }
-    const std::string name = t.type_index < c_.types.size() ? c_.types[t.type_index].name : std::string();
-    draw_text(o, all, f, name, side_->unit_name.x1 - f.text_width(name) / 2, side_->unit_name.y1 + dy + f.raise, 0x53);
-    // Health.
-    if (u.type && u.type->max_damage > 0) {
-        const Region& r = side_->damage_bar;
-        const int maxd = static_cast<int>(u.type->max_damage);
-        const int hp = std::clamp<int>(u.hit_points, 0, maxd);
-        const int x2 = (r.x2 - r.x1) * hp / maxd + r.x1;
-        fill_rect(o, all, r.x1, r.y1 + dy, x2, r.y2 + dy, c_.hud[10]);
-        if (x2 != r.x2) fill_rect(o, all, x2 + 1, r.y1 + dy, r.x2, r.y2 + dy, c_.hud[4]);
-    }
+    centred(t.type_index < c_.types.size() ? c_.types[t.type_index].name : std::string(), side_->unit_name);
+    // Health: own units, and others unless their type hides it (type flag 0x4000).
+    auto hides_health = [&](const sim::UnitTickState& tt) { return tt.tick_type && (tt.tick_type->type_flags & 0x4000u); };
+    if (u.type && (mine || !hides_health(t))) bar(side_->damage_bar, u.hit_points, static_cast<int>(u.type->max_damage));
+    // The owner's colour logo in LOGO2.
+    draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(t.owner) % c_.player_colour.size()], side_->logo2, dy);
     if (mine) {
-        draw_text(o, all, f, fmt("+%.1f", t.metal_make_prev), side_->unit_metal_make.x1, side_->unit_metal_make.y1 + dy + f.raise, c_.hud[10]);
-        draw_text(o, all, f, fmt("+%.0f", t.energy_make_prev), side_->unit_energy_make.x1, side_->unit_energy_make.y1 + dy + f.raise,
+        draw_text(o, all, f, fmt("+%.1f", t.metal_make_prev), side_->unit_metal_make.x1, side_->unit_metal_make.y1 + dy, c_.hud[10]);
+        draw_text(o, all, f, fmt("+%.0f", t.energy_make_prev), side_->unit_energy_make.x1, side_->unit_energy_make.y1 + dy,
                   c_.hud[10]);
-        draw_text(o, all, f, fmt("-%.1f", t.metal_use_prev), side_->unit_metal_use.x1, side_->unit_metal_use.y1 + dy + f.raise, c_.hud[12]);
-        draw_text(o, all, f, fmt("-%.0f", t.energy_use_prev), side_->unit_energy_use.x1, side_->unit_energy_use.y1 + dy + f.raise,
+        draw_text(o, all, f, fmt("-%.1f", t.metal_use_prev), side_->unit_metal_use.x1, side_->unit_metal_use.y1 + dy, c_.hud[12]);
+        draw_text(o, all, f, fmt("-%.0f", t.energy_use_prev), side_->unit_energy_use.x1, side_->unit_energy_use.y1 + dy,
                   c_.hud[12]);
-        if (t.kill_count > 0) {
-            const std::string k = std::to_string(t.kill_count) + " kills" + (t.kill_count >= 5 ? " - Veteran" : "");
-            draw_text(o, all, f, k, side_->damage_bar.x1, side_->damage_bar.y2 + 2 + dy + f.raise, c_.hud[15]);
+        // Kills of armed units (unit flag bit 31): "1 kill", "<n> kills", from 5 "<n> kills - Veteran".
+        if (t.kill_count > 0 && (u.flags & 0x80000000u)) {
+            const std::string k = std::to_string(t.kill_count) + (t.kill_count == 1 ? " kill" : " kills") + (t.kill_count >= 5 ? " - Veteran" : "");
+            draw_text(o, all, f, k, side_->damage_bar.x1, side_->damage_bar.y2 + 2 + dy, c_.hud[15]);
         }
-        // What it works on or fights: the head order's target.
-        const sim::Unit* target = u.orders ? u.orders->target.unit : nullptr;
-        if (target && b_.ticks[target->id].type_index != 0 && b_.ticks[target->id].type_index < c_.types.size()) {
-            const std::string tn = c_.types[b_.ticks[target->id].type_index].name;
-            draw_text(o, all, f, tn, side_->unit_name2.x1 - f.text_width(tn) / 2, side_->unit_name2.y1 + dy + f.raise, 0x53);
-            if (target->type && target->type->max_damage > 0) {
-                const Region& r = side_->damage_bar2;
-                const int maxd = static_cast<int>(target->type->max_damage);
-                const int hp = std::clamp<int>(target->hit_points, 0, maxd);
-                const int x2 = (r.x2 - r.x1) * hp / maxd + r.x1;
-                fill_rect(o, all, r.x1, r.y1 + dy, x2, r.y2 + dy, c_.hud[10]);
-                if (x2 != r.x2) fill_rect(o, all, x2 + 1, r.y1 + dy, r.x2, r.y2 + dy, c_.hud[4]);
-            }
+        // The unit's status: what its head order does ("Standby", "Moving", "Nanolathing", ...;
+        // the text of mission kind 0 without orders), centred on the status line's x1.
+        if (!c_.mission_status.empty()) {
+            const std::size_t kind = u.orders ? u.orders->kind : 0u;
+            centred(c_.mission_status[kind < c_.mission_status.size() ? kind : 0], side_->mission_text);
         }
+    }
+    // The second line: a stockpile weapon being built (the first secondary order with flag
+    // 0x80000: "Weapon" and its progress, param 2 x 100 / the slot's reload time, own units),
+    // else the head order's target (own units; when the viewed player sees it).
+    int building = 0;
+    for (const sim::MissionOrder* so = u.secondary_orders; so; so = so->next)
+        if (so->flags & 0x80000u) {
+            const int slot = so->param0;
+            const sim::WeaponType* wt = slot >= 0 && slot < 3 ? u.weapons[static_cast<std::size_t>(slot)].type : nullptr;
+            if (wt && wt->reload_time) building = static_cast<int>(static_cast<std::uint32_t>(so->param2) * 100u) / static_cast<int>(wt->reload_time);
+            break;
+        }
+    if (building == 0) {
+        const sim::Unit* target = mine && u.orders ? u.orders->target.unit : nullptr;
+        if (!target || b_.ticks[target->id].type_index == 0 || b_.ticks[target->id].type_index >= c_.types.size()) return;
+        const sim::UnitTickState& tt = b_.ticks[target->id];
+        if (tt.owner != opt_.player && b_.settings.fog_of_war && !b_.unit_seen_by(opt_.player, *target)) return;
+        centred(c_.types[tt.type_index].name, side_->unit_name2);
+        if (target->type && (tt.owner == opt_.player || !hides_health(tt)))
+            bar(side_->damage_bar2, target->hit_points, static_cast<int>(target->type->max_damage));
+    } else if (mine) {
+        centred("Weapon", side_->unit_name2);
+        bar(side_->damage_bar2, std::min(building, 100), 100);
     }
 }
 

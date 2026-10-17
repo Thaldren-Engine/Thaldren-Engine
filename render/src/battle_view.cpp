@@ -150,6 +150,16 @@ LookUnit look_unit(const BattleScene& s, const UnitInstance& ui) {
 // not cached and the units on board drawn straight onto the frame.
 void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
     const sim::Unit& u = *ui.unit;
+    if (ui.outline) {
+        // The selection outline comes first (under the unit), whatever else is drawn of it.
+        const ClipRect vc = s.camera.view_clip();
+        const auto& p = ui.outline_xy;
+        for (int k = 0; k < 4; ++k) {
+            const int n = (k + 1) % 4;
+            out.line(p[static_cast<std::size_t>(2 * k)], p[static_cast<std::size_t>(2 * k + 1)], p[static_cast<std::size_t>(2 * n)],
+                     p[static_cast<std::size_t>(2 * n + 1)], ui.outline_colour, vc);
+        }
+    }
     if (u.carrier || !ui.model) return;  // carried units are drawn with their carrier
     const Camera& c = s.camera;
     const ClipRect clip = c.view_clip();
