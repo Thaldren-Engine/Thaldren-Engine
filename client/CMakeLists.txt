@@ -48,6 +48,7 @@ add_library(ta_compat_client STATIC
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_campaign.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_content.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_menus.cpp
+    ${CMAKE_SOURCE_DIR}/ta_compat/src/client_net_screens.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_screens.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/client_scene.cpp
     ${CMAKE_SOURCE_DIR}/ta_compat/src/console_commands.cpp

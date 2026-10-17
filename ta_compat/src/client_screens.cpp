@@ -1697,4 +1697,12 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     };
 }
 
+// For the multiplayer screens (client_net_screens.cpp): the options menu, the stock panel and
+// the dimming under a dialog.
+std::unique_ptr<client::Screen> make_options_screen(MenuArt& art) { return std::make_unique<OptionsMenu>(art, false); }
+void stock_panel(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h) {
+    draw_back_tile(art, out, clip, x0, y0, w, h);
+}
+void dim_screen_rect(client::FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1) { dim_rect(fe, out, x0, y0, x1, y1); }
+
 }  // namespace ta

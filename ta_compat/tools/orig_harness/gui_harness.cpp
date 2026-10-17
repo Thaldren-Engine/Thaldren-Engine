@@ -211,6 +211,157 @@ private:
     int w_ = 640, h_ = 480;
 };
 
+// Replaces a routine (stdcall, `pop` bytes of arguments) by one that copies `bytes` (kept in the
+// child) to the buffer its argument number `dst_arg` (1-based) points at, stores `count` at
+// [argument 1 + count_off] when count_off >= 0, and returns `result`. The multiplayer screens'
+// session-service enumerations (providers, games) answer with prepared tables this way.
+bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& bytes, int dst_arg, int count_off, u32 count, u32 result,
+               std::uint16_t pop) {
+    const u32 src = bytes.empty() ? 0 : r.alloc(bytes.size());
+    if (!bytes.empty()) r.write(src, bytes.data(), bytes.size());
+    std::vector<std::uint8_t> c = {0x56, 0x57, 0x8B, 0x7C, 0x24, static_cast<std::uint8_t>(8 + 4 * dst_arg), 0xBE};
+    auto put = [&](u32 v) {
+        for (int i = 0; i < 4; ++i) c.push_back(static_cast<std::uint8_t>(v >> (8 * i)));
+    };
+    put(src);
+    c.push_back(0xB9);
+    put(static_cast<u32>(bytes.size()));
+    c.insert(c.end(), {0xF3, 0xA4});
+    if (count_off >= 0) {
+        c.insert(c.end(), {0x8B, 0x44, 0x24, 0x0C, 0xC7, 0x80});
+        put(static_cast<u32>(count_off));
+        put(count);
+    }
+    c.insert(c.end(), {0x5F, 0x5E, 0xB8});
+    put(result);
+    c.push_back(0xC2);
+    c.push_back(static_cast<std::uint8_t>(pop));
+    c.push_back(static_cast<std::uint8_t>(pop >> 8));
+    const u32 code = r.alloc(c.size() + 16, PAGE_EXECUTE_READWRITE);
+    if (!r.write(code, c.data(), c.size())) return false;
+    // A jump from the routine to the code.
+    std::uint8_t j[5] = {0xE9};
+    const u32 rel = code - (at + 5);
+    std::memcpy(j + 1, &rel, 4);
+    return r.write(at, j, 5);
+}
+
+// The battle room's inputs, one item per line (# comments); the same file drives the client's
+// battle room (ta_play --lounge FILE):
+//   local SLOT                  this machine's player slot
+//   map NAME                    the map (every side record names it; the host's decides)
+//   player SLOT CONTROLLER KIND SIDE LOGO FLAGS OPTIONS MEMORY CD PING TEAM NAME...
+//       CONTROLLER 1 this machine's human, 2 a computer player run here, 3 another machine's,
+//       4 a blocked slot; KIND the side record's +0x94 (1 human, 2 computer); LOGO 255 none;
+//       FLAGS +0x97 (1 host); OPTIONS the option word +0x9B; MEMORY +0x99; CD +0x9D; PING the
+//       player record's latency; TEAM the ally team (5 none)
+//   resources ENERGY METAL UNITLIMIT   (hundreds; every side record)
+//   allied SLOT OTHER V / alliedby SLOT OTHER V   the alliance bytes (+0x108 / +0x113)
+//   chat TEXT                   a line of the room's chat (in order)
+//   players N                   the session's player count (default: the humans)
+bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
+    FILE* fp = std::fopen(path.c_str(), "rb");
+    if (!fp) return false;
+    std::vector<std::string> lines;
+    char buf[1024];
+    while (std::fgets(buf, sizeof buf, fp)) {
+        std::string l = buf;
+        if (const auto c = l.find('#'); c != std::string::npos) l.resize(c);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r' || l.back() == ' ')) l.pop_back();
+        if (!l.empty()) lines.push_back(l);
+    }
+    std::fclose(fp);
+    const u32 gs = g.gs();
+    // Every record empty, each with a side record of its own.
+    std::vector<std::uint8_t> zero(0x14B, 0);
+    u32 side[10];
+    for (u32 p = 0; p < 10; ++p) {
+        const u32 rec = gs + 0x1B63 + p * 0x14B;
+        r.write(rec, zero.data(), zero.size());
+        side[p] = r.alloc(0x100);
+        r.w32(rec + 0x27, side[p]);
+        r.w32(rec + 4, p + 1);
+        r.w8(side[p] + 0x96, 0xFF);
+        r.w8(side[p] + 0xA7, 3);
+        r.w8(side[p] + 0xA8, 1);
+        r.w8(rec + 0x13F, 5);
+    }
+    std::string map;
+    int humans = 0, players = -1;
+    std::vector<std::string> chat;
+    for (const std::string& l : lines) {
+        char key[32] = {};
+        if (std::sscanf(l.c_str(), "%31s", key) != 1) continue;
+        const std::string k = key;
+        const char* rest = l.c_str() + k.size();
+        while (*rest == ' ') ++rest;
+        if (k == "local") r.w8(gs + 0x2A42, static_cast<std::uint8_t>(std::atoi(rest)));
+        else if (k == "map") map = rest;
+        else if (k == "chat") chat.push_back(rest);
+        else if (k == "players") players = std::atoi(rest);
+        else if (k == "resources") {
+            unsigned e = 10, m = 10, lim = 250;
+            std::sscanf(rest, "%u %u %u", &e, &m, &lim);
+            for (u32 p = 0; p < 10; ++p) {
+                r.w16(side[p] + 0xA1, static_cast<std::uint16_t>(e));
+                r.w16(side[p] + 0xA3, static_cast<std::uint16_t>(m));
+                r.w16(side[p] + 0xA5, static_cast<std::uint16_t>(lim));
+            }
+        } else if (k == "allied" || k == "alliedby") {
+            int a = 0, b = 0, v = 0;
+            if (std::sscanf(rest, "%d %d %d", &a, &b, &v) == 3 && a >= 0 && a < 10 && b >= 0 && b < 10)
+                r.w8(gs + 0x1B63 + static_cast<u32>(a) * 0x14B + (k == "allied" ? 0x108u : 0x113u) + static_cast<u32>(b), static_cast<std::uint8_t>(v));
+        } else if (k == "player") {
+            int slot, controller, kind, sidev, logo, flags, mem, cd, ping, team, used = 0;
+            unsigned options;
+            if (std::sscanf(rest, "%d %d %d %d %d %i %i %d %i %d %d %n", &slot, &controller, &kind, &sidev, &logo, &flags, &options, &mem, &cd, &ping,
+                            &team, &used) < 11 ||
+                slot < 0 || slot > 9)
+                continue;
+            const std::string name = rest + used;
+            const u32 rec = gs + 0x1B63 + static_cast<u32>(slot) * 0x14B, sr = side[slot];
+            r.w32(rec, 1);
+            r.w8(rec + 0x73, static_cast<std::uint8_t>(controller));
+            r.w32(rec + 0x14, static_cast<u32>(ping));
+            r.w8(rec + 0x13F, static_cast<std::uint8_t>(team));
+            r.write(rec + 0x2B, name.c_str(), std::min<std::size_t>(name.size() + 1, 0x1E));
+            r.w8(sr + 0x94, static_cast<std::uint8_t>(kind));
+            r.w8(sr + 0x95, static_cast<std::uint8_t>(sidev));
+            r.w8(sr + 0x96, static_cast<std::uint8_t>(logo));
+            r.w8(sr + 0x97, static_cast<std::uint8_t>(flags));
+            r.w16(sr + 0x99, static_cast<std::uint16_t>(mem));
+            r.w16(sr + 0x9B, static_cast<std::uint16_t>(options));
+            r.w16(sr + 0x9D, static_cast<std::uint16_t>(cd));
+            if (kind == 1) ++humans;
+        }
+    }
+    for (u32 p = 0; p < 10; ++p) r.write(side[p], map.c_str(), map.size() + 1);
+    r.w16(gs + 0x2A3C, static_cast<std::uint16_t>(players >= 0 ? players : humans));
+    // The map chosen in the game's map list (the multiplayer list).
+    const u32 schema = r.r32(gs + 0x391E9);
+    if (schema) r.w32(schema, 3);  // a network game
+    if (schema && !map.empty()) r.call(0x00435A20, schema, {r.str(map)});
+    if (schema) {
+        char sel[64] = {};
+        r.read(schema + 0xA14, sel, 63);
+        std::printf("lounge: map chosen \"%s\", size word %08X\n", sel, r.r32(schema + 0xA04));
+    }
+    // The network's sends, the session's description, the network input and the CD check.
+    r.stub(0x00450F90, 0, 0);
+    r.stub(0x00451180, 0, 0);
+    r.stub(0x004C9890, 0, 0x1C);
+    r.stub(0x00453D40, 0, 0);
+    r.stub(0x00456310, 0, 0);
+    r.stub(0x00453010, 0, 8);
+    r.stub(0x0046C620, 0, 4);
+    r.stub(0x0041D6A0, 1, 4);
+    // The chat lines through the console (no sound), as the room's own lines arrive.
+    if (!r.r32(gs + 0x37F27)) r.w32(gs + 0x37F27, 10);
+    for (const std::string& c : chat) r.call(0x00463CA0, 0, {r.str(c), 0, 0, 10});
+    std::printf("lounge set-up: map %s, %d humans, schema %08X\n", map.c_str(), humans, schema);
+    return true;
+}
+
 // The end-of-battle statistics' inputs, one item per line (# comments):
 //   tick N              the game step the battle ended at
 //   killmul F / timemul F   the map's score factors (its [GlobalHeader] killmul, timemul)
@@ -535,8 +686,10 @@ int main(int argc, char** argv) {
             u32 idx = 0xFFFFFFFFu;
             if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str(s.substr(7))}, &idx);
             if (idx != 0xFFFFFFFFu)
-                std::printf("%s: kind %u, +0x1F %d, +0x23 %d\n", s.c_str(), r.r32(gadgets + idx * 0x15B) & 0xFF, static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x1F)),
-                            static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x23)));
+                std::printf("%s: kind %u, +0x1F %d, +0x23 %d, +0x138 %u, +0x13A %u, +0x13C %u, active %u\n", s.c_str(), r.r32(gadgets + idx * 0x15B) & 0xFF,
+                            static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x1F)), static_cast<int>(r.r32(gadgets + idx * 0x15B + 0x23)),
+                            r.r32(gadgets + idx * 0x15B + 0x138) & 0xFFFF, r.r32(gadgets + idx * 0x15B + 0x13A) & 0xFF, r.r32(gadgets + idx * 0x15B + 0x13C) & 0xFFFF,
+                            r.r32(gadgets + idx * 0x15B + 0x29) & 0xFF);
             continue;
         } else if (s == "lightinfo") {
             // Debugging: the display's light table (0xC8) and its level-15 row's first entries, and
@@ -661,6 +814,128 @@ int main(int argc, char** argv) {
             // The interface clock (0x4B6340, ticks) held at a value.
             r.stub(0x004B6340, static_cast<u32>(std::strtoul(s.c_str() + 6, nullptr, 10)), 0);
             continue;
+        } else if (s.rfind("selprov", 0) == 0) {
+            // selprov[:NAME|NAME...]: the connection screen (SELPROV.GUI, 0x444580) with the session
+            // service's provider list answered by the names given (none: an empty list); the
+            // registry's extra services (0x45B490) none; the session object released (nothing).
+            std::vector<std::uint8_t> names;
+            u32 n = 0;
+            if (s.size() > 8)
+                for (std::size_t a = 8; a <= s.size();) {
+                    std::size_t e = s.find('|', a);
+                    if (e == std::string::npos) e = s.size();
+                    // The descriptions follow each other, each ended by a zero.
+                    names.insert(names.end(), s.begin() + static_cast<std::ptrdiff_t>(a), s.begin() + static_cast<std::ptrdiff_t>(e));
+                    names.push_back(0);
+                    ++n;
+                    a = e + 1;
+                }
+            r.stub(0x004C9B70, 0, 4);
+            r.stub(0x0045B490, 0, 4);
+            stub_copy(r, 0x004CA250, names, 4, 0x4E5, n, 1, 0x14);
+            ok = r.call(0x00444580, 0, {});
+        } else if (s.rfind("tcp", 0) == 0 && (s.size() == 3 || s[3] == ':')) {
+            // tcp[:ADDRESS]: the TCP/IP address question (TCP.GUI, 0x4421F0) over the connection
+            // screen, the registry's TCPADDR answered with ADDRESS (none: not there).
+            const std::string addr = s.size() > 4 ? s.substr(4) : std::string();
+            std::vector<std::uint8_t> v(addr.begin(), addr.end());
+            v.push_back(0);
+            r.stub(0x004CA490, 0, 4);
+            if (addr.empty()) r.stub(0x0042F980, 0, 0xC);
+            else stub_copy(r, 0x0042F980, v, 2, -1, 0, 1, 0xC);
+            ok = r.call(0x004421F0, 0, {});
+        } else if (s.rfind("selgame:", 0) == 0) {
+            // selgame:FILE: the game list (SELGAME.GUI, 0x443CB0) with the session service's games
+            // answered from FILE (lines "game NAME;MAP;MAX;PLAYERS;OPTIONS;MEMORY;CD;PING;ENERGY;METAL;
+            // UNITLIMIT;MAJOR;MINOR", energy and metal in hundreds; "nick NAME"; "password TEXT").
+            std::vector<std::uint8_t> table;
+            u32 n = 0;
+            std::string nick, password;
+            if (FILE* fp = std::fopen(s.c_str() + 8, "rb")) {
+                char line[512];
+                while (std::fgets(line, sizeof line, fp)) {
+                    std::string l = line;
+                    while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+                    if (l.rfind("nick ", 0) == 0) nick = l.substr(5);
+                    else if (l.rfind("password ", 0) == 0) password = l.substr(9);
+                    if (l.rfind("game ", 0) != 0) continue;
+                    std::vector<std::string> f;
+                    for (std::size_t a = 5;;) {
+                        const std::size_t e = l.find(';', a);
+                        f.push_back(l.substr(a, e == std::string::npos ? std::string::npos : e - a));
+                        if (e == std::string::npos) break;
+                        a = e + 1;
+                    }
+                    if (f.size() < 13) continue;
+                    auto num = [&](std::size_t k) { return static_cast<u32>(std::strtoul(f[k].c_str(), nullptr, 0)); };
+                    std::uint8_t e[0x54] = {};
+                    const u32 u1 = (num(5) & 0xFFFF) | (num(4) & 0xFFFF) << 16, u2 = (num(6) & 0xFFFF) | (num(7) & 0xFFFF) << 16,
+                              u3 = (num(8) & 0xFFFF) | (num(9) & 0xFFFF) << 16, u4 = (num(10) & 0xFFFF) | (num(11) & 0xFF) << 16 | (num(12) & 0xFF) << 24;
+                    const u32 mx = num(2);
+                    std::memcpy(e + 4, &u1, 4);
+                    std::memcpy(e + 8, &u2, 4);
+                    std::memcpy(e + 0xC, &u3, 4);
+                    std::memcpy(e + 0x10, &u4, 4);
+                    std::memcpy(e + 0x14, &mx, 4);
+                    // The session's name: the game's name in 16 places, the map's in 15, spaces filling.
+                    char nm[32];
+                    std::memset(nm, ' ', 31);
+                    nm[31] = 0;
+                    std::memcpy(nm, f[0].c_str(), std::min<std::size_t>(f[0].size(), 16));
+                    std::memcpy(nm + 16, f[1].c_str(), std::min<std::size_t>(f[1].size(), 15));
+                    std::memcpy(e + 0x18, nm, 32);
+                    // The players' count lives in the option word's low four bits.
+                    e[6] = static_cast<std::uint8_t>((e[6] & 0xF0) | (num(3) & 0xF));
+                    table.insert(table.end(), e, e + 0x54);
+                    ++n;
+                }
+                std::fclose(fp);
+            }
+            r.write(gs + 0x2BD2, nick.c_str(), std::min<std::size_t>(nick.size() + 1, 0x11));
+            r.write(gs + 0x2BE3, password.c_str(), std::min<std::size_t>(password.size() + 1, 0xB));
+            stub_copy(r, 0x004C9E50, table, 2, 0x4E9, n, n, 0xC);
+            ok = r.call(0x00443CB0, 0, {});
+            std::printf("selgame: %u games\n", n);
+        } else if (s.rfind("lounge:", 0) == 0) {
+            // lounge:FILE: the battle room (LOUNGE2.GUI, 0x449BB0, then its frame 0x44A680) with the
+            // players' records and the chat from FILE (see lounge_setup); the network's sends and
+            // the session description do nothing.
+            ok = lounge_setup(r, g, s.substr(7));
+            if (ok) ok = r.call(0x00449BB0, 0, {});
+            if (ok) ok = r.call(0x0044A680, 0, {});
+            std::printf("lounge: %s, start %s\n", ok ? "set up" : "failed", "");
+        } else if (s.rfind("nick:", 0) == 0 || s.rfind("gamename:", 0) == 0 || s.rfind("password:", 0) == 0) {
+            // The player's name (GS+0x2BD2), the new game's name (GS+0x2BC1), the password (GS+0x2BE3).
+            const auto c = s.find(':');
+            const std::string v = s.substr(c + 1);
+            const u32 at = s[0] == 'n' ? 0x2BD2u : s[0] == 'g' ? 0x2BC1u : 0x2BE3u;
+            r.write(gs + at, v.c_str(), std::min<std::size_t>(v.size() + 1, 0x11));
+            continue;
+        } else if (s == "newmulti") {
+            // The new game question (NEWMULTI.GUI, 0x441080).
+            ok = r.call(0x00441080, 0, {});
+        } else if (s.rfind("msgbox:", 0) == 0) {
+            // msgbox:WIDTH:TEXT: the message box (0x4ABD90) as the multiplayer screens open it
+            // (width WIDTH, OK shown, the box fitted to the text).
+            const std::string t = s.substr(7);
+            const auto c = t.find(':');
+            ok = r.call(0x004ABD90, 0, {g.gui(), r.str(t.substr(c + 1)), static_cast<u32>(std::atoi(t.c_str())), 1, 1});
+        } else if (s == "colours") {
+            // Debugging: the interface colour table (gui +0x8B2) and the start of the palette
+            // GS+0x143A7 and of the GUI's palette copy (gui +0xB2).
+            std::uint8_t t[32] = {}, pal[12] = {}, gp[12] = {};
+            r.read(g.gui() + 0x8B2, t, sizeof t);
+            r.read(gs + 0x143A7, pal, sizeof pal);
+            r.read(g.gui() + 0xB2, gp, sizeof gp);
+            std::printf("colours:");
+            for (int k = 0; k < 21; ++k) std::printf(" %d", t[k]);
+            std::printf("\n  GS+0x143A7: %u %u %u / %u %u %u / %u %u %u; gui+0xB2: %u %u %u / %u %u %u / %u %u %u\n", pal[0], pal[1], pal[2], pal[4], pal[5], pal[6],
+                        pal[8], pal[9], pal[10], gp[0], gp[1], gp[2], gp[4], gp[5], gp[6], gp[8], gp[9], gp[10]);
+            continue;
+        } else if (s == "loungeframe") {
+            // One more frame of the battle room (the chat scrolls a line a frame).
+            ok = r.call(0x0044A680, 0, {});
+            continue;
         } else if (s == "ingame") ok = r.call(kGameMenu, 0, {});
         else if (s == "prefs") ok = r.call(kOptionsMenu, 0, {});
         else if (s == "exitmenu") ok = r.call(0x004608B0, 0, {});
@@ -680,7 +955,7 @@ int main(int argc, char** argv) {
             std::printf("%s: not drawn\n", s.c_str());
             continue;
         }
-        const std::string name = s + (bw != 640 || bh != 480 ? "_" + std::to_string(bw) : "");
+        const std::string name = s.substr(0, s.find(':')) + (bw != 640 || bh != 480 ? "_" + std::to_string(bw) : "");
         write_bmp(out + name + ".bmp", f);
         std::printf("%s: %dx%d -> %s%s.bmp\n", s.c_str(), f.w, f.h, out.c_str(), name.c_str());
     }
