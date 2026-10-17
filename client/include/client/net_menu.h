@@ -64,6 +64,9 @@ public:
     void surrender() override;
     bool network() const override { return true; }
     std::vector<PlayerStats> stats() override { return inner_->stats(); }
+    bool end_table(EndTable& t) override { return inner_->end_table(t); }
+    std::string battle_name() const override { return inner_->battle_name(); }
+    int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(FrontEnd& fe, BattleOutcome o) override { return inner_->after_battle(fe, o); }
     net::NetBattle& net() { return *net_; }
 

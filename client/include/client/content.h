@@ -205,9 +205,13 @@ struct Content {
     InterfaceSounds ui_sounds;
     std::vector<Sample> samples;                  // sound table
     std::vector<ShotLook> shots;                  // by weapon index
-    // Minimap: the map picture (any size; scaled to fit), radar dots by colour, the dot of
-    // the unit under the pointer.
+    // Minimap: the map's source picture (the map file's own, as stored, or one sampled from
+    // the tiles at twice the minimap's size; the minimap halves its top-left part), the grey
+    // remap of out-of-sight parts, radar dots by colour, the dot of the unit under the pointer,
+    // the nuke mark by colour.
     const render::Sprite8* minimap_picture = nullptr;
+    std::array<std::uint8_t, 256> minimap_grey{};
+    const std::vector<render::Sprite8>* nuke_dots = nullptr;
     const std::vector<render::Sprite8>* radar_dots = nullptr;
     const render::Sprite8* radar_dot_hover = nullptr;
     const Font* small_font = nullptr;

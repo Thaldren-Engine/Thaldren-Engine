@@ -23,9 +23,11 @@
 //   mode (GS+0x2CC3); shot:NAME writes the composited screen.
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -185,6 +187,10 @@ public:
     // Composites the open GUI layouts onto the screen surface and reads it.
     bool grab(Frame& f) {
         if (!r_.call(kBlitGuiRoot, 0, {gui(), 0, 0})) return false;
+        return grab_raw(f);
+    }
+    // Reads the screen surface as it is (what the last frame presented).
+    bool grab_raw(Frame& f) {
         const u32 surf = r_.r32(kDisplay + kDcOverride);
         u32 hdr[4] = {};
         if (!surf || !r_.read(surf, hdr, sizeof hdr)) return false;
@@ -205,6 +211,112 @@ private:
     int w_ = 640, h_ = 480;
 };
 
+// The end-of-battle statistics' inputs, one item per line (# comments):
+//   tick N              the game step the battle ended at
+//   killmul F / timemul F   the map's score factors (its [GlobalHeader] killmul, timemul)
+//   won 0|1             the local player won (end flags 0x10)
+//   local N             the local player's slot
+//   type N              the game type (2 skirmish)
+//   player SLOT COLOUR CONTROLLER STATE CREATED PRESENT WATCH KILLS LOSSES EPROD MPROD EWASTE MWASTE NAME...
+// The same file drives the client's end screen (ta_play --end-screen).
+bool end_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
+    FILE* fp = std::fopen(path.c_str(), "rb");
+    if (!fp) return false;
+    std::string text;
+    char buf[4096];
+    for (std::size_t n; (n = std::fread(buf, 1, sizeof buf, fp)) > 0;) text.append(buf, n);
+    std::fclose(fp);
+    const u32 gs = g.gs();
+    u32 tick = 0, won = 0, type = 2, local = 0;
+    float km = 0.0f, tm = 0.0f;
+    std::vector<std::uint8_t> zero(0x14B, 0);
+    u32 infos = r.alloc(10 * 0x100);
+    for (u32 p = 0; p < 10; ++p) {
+        const u32 rec = gs + 0x1B63 + p * 0x14B;
+        r.write(rec, zero.data(), zero.size());
+        r.w32(rec + 0x27, infos + p * 0x100);
+    }
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t e = text.find('\n', at);
+        if (e == std::string::npos) e = text.size();
+        std::string line = text.substr(at, e - at);
+        at = e + 1;
+        if (const auto c = line.find('#'); c != std::string::npos) line.resize(c);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        char key[32] = {};
+        if (std::sscanf(line.c_str(), "%31s", key) != 1) continue;
+        const std::string k = key;
+        const char* rest = line.c_str() + k.size();
+        if (k == "tick") tick = static_cast<u32>(std::strtoul(rest, nullptr, 10));
+        else if (k == "killmul") km = static_cast<float>(std::atof(rest));
+        else if (k == "timemul") tm = static_cast<float>(std::atof(rest));
+        else if (k == "won") won = static_cast<u32>(std::atoi(rest));
+        else if (k == "local") local = static_cast<u32>(std::atoi(rest));
+        else if (k == "type") type = static_cast<u32>(std::atoi(rest));
+        else if (k == "player") {
+            int slot, colour, controller, state, present, watch, kills, losses, used = 0;
+            unsigned created;
+            double ep, mp, ew, mw;
+            if (std::sscanf(rest, "%d %d %d %d %u %d %d %d %d %lf %lf %lf %lf %n", &slot, &colour, &controller, &state, &created, &present, &watch, &kills,
+                            &losses, &ep, &mp, &ew, &mw, &used) < 13 ||
+                slot < 0 || slot > 9)
+                continue;
+            const std::string name = rest + used;
+            const u32 rec = gs + 0x1B63 + static_cast<u32>(slot) * 0x14B, info = infos + static_cast<u32>(slot) * 0x100;
+            r.w32(rec, controller ? 1u : 0u);
+            r.w8(rec + 0x73, static_cast<std::uint8_t>(controller));
+            r.w8(rec + 0x146, static_cast<std::uint8_t>(state));
+            r.w32(rec + 0x140, created);
+            r.w8(rec + 0x22, present ? 0 : 1);
+            r.w8(info + 0x9B, watch ? 0x40 : 0);
+            r.w8(info + 0x96, static_cast<std::uint8_t>(colour));
+            r.w16(rec + 0xFC, static_cast<std::uint16_t>(kills));
+            r.w16(rec + 0xFE, static_cast<std::uint16_t>(losses));
+            r.write(rec + 0xAC, &ep, 8);
+            r.write(rec + 0xB4, &mp, 8);
+            r.write(rec + 0xCC, &ew, 8);
+            r.write(rec + 0xD4, &mw, 8);
+            r.write(rec + 0x2B, name.c_str(), std::min<std::size_t>(name.size() + 1, 0x1E));
+        }
+    }
+    r.w32(gs + 0x38A47, tick);
+    r.w8(gs + 0x2A42, static_cast<std::uint8_t>(local));
+    u32 schema = r.r32(gs + 0x391E9);
+    if (!schema) {
+        schema = r.alloc(0x2000);
+        r.w32(gs + 0x391E9, schema);
+    }
+    r.w32(schema, type);
+    r.write(schema + 0xD54, &km, 4);
+    r.write(schema + 0xD58, &tm, 4);
+    std::uint16_t ef = 0;
+    r.read(gs + 0x3923B, &ef, 2);
+    ef = static_cast<std::uint16_t>(won ? (ef | 0x10) : (ef & ~0x10));
+    r.write(gs + 0x3923B, &ef, 2);
+    if (!r.call(0x0041DC20, 0, {})) return false;
+    for (u32 k = 0; k < 10; ++k) {
+        const u32 row = gs + 0x38DD9 + k * 0x3A;
+        char name[0x1F] = {};
+        r.read(row, name, 0x1E);
+        if (!name[0]) continue;
+        std::int32_t v[7];
+        r.read(row + 0x1E, v, sizeof v);
+        std::printf("end row %u: %s: %d %d %d %d %d %d %d\n", k, name, v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+    }
+    std::int32_t mx[7];
+    r.read(gs + 0x3918F, mx, sizeof mx);
+    std::printf("end maxima: %d %d %d %d %d %d %d\n", mx[0], mx[1], mx[2], mx[3], mx[4], mx[5], mx[6]);
+    // The state machine at its statistics state (a skirmish's way there), the network
+    // packet pass doing nothing, the clock held.
+    r.stub(0x00453D40, 0, 0);
+    r.stub(0x004B6340, 1000, 0);
+    r.w32(gs + 0x39057, 5);
+    if (!r.call(0x0041F7F0, 0, {})) return false;
+    std::printf("end screen set up: state %u\n", r.r32(gs + 0x39057));
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -215,7 +327,7 @@ int main(int argc, char** argv) {
     }
     std::vector<std::string> screens;
     int bw = 640, bh = 480;
-    std::string battle_pal, battle_guipal;
+    std::string battle_pal, battle_guipal, battle_shade;
     int game_type = -1;
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
@@ -225,6 +337,9 @@ int main(int argc, char** argv) {
             // palettes\PALETTE.PAL and palettes\GUIPAL.PAL as files (the battle's colours).
             battle_pal = argv[++i];
             battle_guipal = argv[++i];
+        } else if (a == "--shade" && i + 1 < argc) {
+            // palettesPALETTE.SHD as a file: the battle's shade table on the display (dimmed screens).
+            battle_shade = argv[++i];
         } else if (a == "--res" && i + 1 < argc) {
             const std::string v = argv[++i];
             bw = std::atoi(v.c_str());
@@ -380,11 +495,72 @@ int main(int argc, char** argv) {
                     r.write(rg, gpal.data(), gpal.size());
                     r.call(0x004AC7D0, 0, {g.gui(), rp, rg});
                     r.write(0x0051F320 + 0x214, pal.data(), pal.size());
+                    if (!battle_shade.empty()) {
+                        if (FILE* fp = std::fopen(battle_shade.c_str(), "rb")) {
+                            std::vector<std::uint8_t> shd(0x2000, 0);
+                            const std::size_t n = std::fread(shd.data(), 1, shd.size(), fp);
+                            std::fclose(fp);
+                            if (n == shd.size()) r.write(r.r32(0x0051F320 + 0xC4), shd.data(), shd.size());
+                        }
+                    }
                 } else {
                     std::printf("battle palettes not read\n");
                 }
             }
             std::printf("battle screen %dx%d\n", bw, bh);
+            continue;
+        } else if (s.rfind("missionname:", 0) == 0) {
+            // The map's mission name (map info +0xA14; the restart dialog shows it).
+            u32 schema = r.r32(gs + 0x391E9);
+            if (!schema) {
+                schema = r.alloc(0x2000);
+                r.w32(gs + 0x391E9, schema);
+            }
+            const std::string t = s.substr(12);
+            r.write(schema + 0xA14, t.c_str(), t.size() + 1);
+            continue;
+        } else if (s == "shadeinfo") {
+            // Debugging: the display's shade table (dimmed screens) and a few of its level-8 entries.
+            const u32 t = r.r32(0x0051F320 + 0xC4);
+            std::uint8_t row[256] = {};
+            if (t) r.read(t + 8 * 256, row, sizeof row);
+            std::printf("shade table %08X: level 8: 175->%u 230->%u 255->%u 66->%u\n", t, row[175], row[230], row[255], row[66]);
+            continue;
+        } else if (s.rfind("endmsn:", 0) == 0) {
+            // The end of a battle's statistics (after "battle"): the players' records from a
+            // spec file, the original's statistics pass (0x41DC20, its rows printed), then the
+            // end-of-battle state machine (0x41F7F0) entered at its statistics state at clock
+            // tick 1000 (see end_spec below).
+            if (!end_setup(r, g, s.substr(7))) std::printf("%s: failed\n", s.c_str());
+            continue;
+        } else if (s.rfind("endrun:", 0) == 0) {
+            // endrun:FIRST,LAST[,SHOT...]: frames FIRST..LAST of the state machine, frame f at
+            // clock tick 1000 + T(f + 1), T(n) = (n * 1000 / 30) * 30 / 1000 (the client's headless clock: frame
+            // f here is its frame f + 1, its frame 0 the set-up); the screen as presented after the
+            // frames listed is written as <out>end_<f>.bmp.
+            std::vector<int> v;
+            for (const char* q = s.c_str() + 7; *q;) {
+                v.push_back(std::atoi(q));
+                while (*q && *q != ',') ++q;
+                if (*q == ',') ++q;
+            }
+            if (v.size() < 2) continue;
+            for (int f = v[0]; f <= v[1]; ++f) {
+                const u32 tick = 1000u + static_cast<u32>(static_cast<std::uint64_t>(f + 1) * 1000u / 30u * 30u / 1000u);
+                r.stub(0x004B6340, tick, 0);
+                if (!r.call(0x0041F7F0, 0, {})) {
+                    std::printf("endrun: frame %d failed\n", f);
+                    break;
+                }
+                if (std::find(v.begin() + 2, v.end(), f) != v.end()) {
+                    Frame fr;
+                    if (g.grab_raw(fr)) {
+                        write_bmp(out + "end_" + std::to_string(f) + ".bmp", fr);
+                        std::printf("endrun: frame %d (tick %u, state %u, column %u) -> %send_%d.bmp\n", f, tick, r.r32(gs + 0x39057), r.r32(gs + 0x3906B),
+                                    out.c_str(), f);
+                    }
+                }
+            }
             continue;
         } else if (s == "ingame") ok = r.call(kGameMenu, 0, {});
         else if (s == "prefs") ok = r.call(kOptionsMenu, 0, {});

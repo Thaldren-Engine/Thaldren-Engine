@@ -77,9 +77,14 @@ int GameClient::map_width_px() const { return b_.map.width * 16; }
 int GameClient::map_height_px() const { return b_.map.height * 16; }
 
 void GameClient::clamp_scroll() {
+    // (0x41C3C0) Negative -> 0, else at most the scroll extent less the view (which is
+    // negative for a map smaller than the view: the original lets the scroll go there).
     const int vw = opt_.width - 128, vh = opt_.height - 64;
-    scroll_x_ = std::max(0, std::min(scroll_x_, map_width_px() - vw));
-    scroll_y_ = std::max(0, std::min(scroll_y_, map_height_px() - vh));
+    const int lx = scroll_width() - vw, ly = scroll_height() - vh;
+    if (scroll_x_ < 0) scroll_x_ = 0;
+    else if (scroll_x_ > lx) scroll_x_ = lx;
+    if (scroll_y_ < 0) scroll_y_ = 0;
+    else if (scroll_y_ > ly) scroll_y_ = ly;
 }
 
 void GameClient::set_scroll(int x, int y) {
@@ -229,19 +234,12 @@ void GameClient::scroll_step(std::uint32_t dt_ticks) {
 
 void GameClient::minimap_jump(int x, int y) {
     // The minimap point becomes the view's centre, which ends unit tracking (0x41D0F0).
+    // (The point's share of the map's scroll extent, less half the view.)
     tracked_ = 0;
-    const int mw = map_width_px(), mh = map_height_px();
-    if (mw <= 0 || mh <= 0) return;
-    const int size = 126;
-    int w = size, h = size, ox = 0, oy = 0;
-    if (mw < mh) {
-        w = mw * size / mh;
-        ox = (size - w) / 2;
-    } else {
-        h = mh * size / mw;
-        oy = (size - h) / 2;
-    }
-    set_scroll((x - ox) * mw / std::max(w, 1) - (opt_.width - 128) / 2, (y - oy) * mh / std::max(h, 1) - (opt_.height - 64) / 2);
+    const int sw = scroll_width(), sh = scroll_height();
+    if (sw <= 0 || sh <= 0) return;
+    const MinimapBox m = minimap_box(sw, sh);
+    set_scroll((x - m.x) * sw / std::max(m.w, 1) - (opt_.width - 128) / 2, (y - m.y) * sh / std::max(m.h, 1) - (opt_.height - 64) / 2);
 }
 
 // ---- sounds and messages ---------------------------------------------------------------------
@@ -725,11 +723,14 @@ bool GameClient::on_minimap(int x, int y) {
 }
 
 sim::Vec3i GameClient::minimap_world(int x, int y) {
-    // The map point a minimap pixel stands for, on the ground.
-    const int wx = std::clamp((x - mm_x_) * map_width_px() / std::max(1, mm_w_), 0, std::max(0, map_width_px() - 1));
-    const int wz = std::clamp((y - mm_y_) * map_height_px() / std::max(1, mm_h_), 0, std::max(0, map_height_px() - 1));
-    const int h = b_.map.cells.empty() ? 0 : b_.map.cells[static_cast<std::size_t>((wz >> 4) * b_.map.width + (wx >> 4))].height;
-    return {wx << 16, h << 16, wz << 16};
+    // The map point a minimap pixel stands for (0x498D00): its share of the map's scroll
+    // extent (whole units, 16-bit), at the terrain's height there.
+    const std::int16_t wx = static_cast<std::int16_t>(scroll_width() * (x - mm_x_) / std::max(1, mm_w_));
+    const std::int16_t wz = static_cast<std::int16_t>(scroll_height() * (y - mm_y_) / std::max(1, mm_h_));
+    const std::int16_t h = static_cast<std::int16_t>(b_.height_map().sample(wx, wz));
+    return {static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(wx)) << 16),
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(h)) << 16),
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint16_t>(wz)) << 16)};
 }
 
 void GameClient::give_order(Action mode, const InputEvent& e) {

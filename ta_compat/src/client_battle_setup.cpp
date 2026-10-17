@@ -47,6 +47,16 @@ struct ClientWorld::Outside : sim::QuietBattleOutside {
             if (s >= 0) w->client_->on_sound(static_cast<std::uint16_t>(s), {x << 20, 0, z << 20});
         }
     }
+    // The minimap's work inside the step (players' stage).
+    void player_stage_rest(int p) override {
+        if (w->client_) w->client_->minimap_player_stage(p);
+    }
+    void player_sensor_turn(int p) override {
+        if (w->client_) w->client_->minimap_sensor_turn(p);
+    }
+    void players_stage_end() override {
+        if (w->client_) w->client_->minimap_step_end();
+    }
     // Combat involving the local player (the music's battle/peace switch).
     void stats_activity(std::int32_t kind) override {
         if (w->on_activity) w->on_activity(kind);

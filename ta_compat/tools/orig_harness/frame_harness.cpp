@@ -414,6 +414,10 @@ struct Options {
     // (compared within the view) and the bottom bar of the unit under the pointer (compared
     // over the bottom bar's rows).
     bool hud = false;
+    // --minimap: the minimap too: the original's own minimap routines (picture 0x466780 via
+    // 0x4669B0, fog picture 0x466C20, marks 0x466DC0, the view's rectangle 0x41C3C0 and the
+    // blit 0x466B00) onto a pattern, against the client's (compared over the whole screen).
+    bool minimap = false;
 };
 
 struct Stats {
@@ -444,6 +448,7 @@ int main(int argc, char** argv) {
         else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
+        else if (a == "--minimap") opt.minimap = true;
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
         else if (positional == 2) opt.out_dir = argv[k], ++positional;
@@ -620,6 +625,13 @@ int main(int argc, char** argv) {
         put_at<i32>(db, 0x172, d.model_max_z);
         put_at<u32>(db, 0x1FA, d.max_damage);
         put_at<u32>(db, 0x241, d.type_flags);
+        // (--minimap: the radar, sonar and jammer reaches and the abilities)
+        put_at<i16>(db, 0x202, d.sight_distance);
+        put_at<i16>(db, 0x204, d.radar_distance);
+        put_at<i16>(db, 0x206, d.sonar_distance);
+        put_at<i16>(db, 0x20A, d.radar_distance_jam);
+        put_at<i16>(db, 0x20C, d.sonar_distance_jam);
+        put_at<u32>(db, 0x245, d.can_do_flags);
         r.write(udefs + static_cast<u32>(k) * kDefSize, db.data(), db.size());
     }
     auto unit_type = [&](std::size_t k) -> bool {
@@ -663,6 +675,7 @@ int main(int argc, char** argv) {
             w[0x10D] = d.color;
             w[0x10E] = d.color2;
             put_at<u32>(w, 0x111, d.flags);
+            put_at<i32>(w, 0xE0, d.coverage);  // (--minimap: interceptors' coverage rings)
             r.write(wdefs + static_cast<u32>(slot) * 0x115, w.data(), w.size());
         }
     }
@@ -1060,6 +1073,42 @@ int main(int argc, char** argv) {
             if (a) top_rows = std::max(top_rows, a->height);
         if (L.panel_side) side_cols = std::max(side_cols, L.panel_side->width);
     }
+    // --minimap: the map's scroll extent, its stored picture (when the map file has one; else
+    // the original samples the tiles), and the battle loading's minimap set-up (0x4669B0).
+    u32 mm_list = 0;
+    if (opt.minimap) {
+        r.w32(gs + 0x1422B, static_cast<u32>(mw * 16 - 32));
+        r.w32(gs + 0x1422F, static_cast<u32>(mh * 16 - 128));
+        r.w32(gs + 0x1423B, static_cast<u32>((W - 128) / 16));  // the view in 16-pixel cells (the map loading sets them)
+        r.w32(gs + 0x1423F, static_cast<u32>((H - 64) / 16));
+        r.w32(r.r32(gs + gTileInfo), static_cast<u32>(world.tiles_.tiles.size()));
+        if (!r.r32(gs + 0x0C)) r.w32(gs + 0x0C, o.display);
+        u32 pic = 0;
+        const render::Sprite8* src = world.content().minimap_picture;
+        std::vector<u8> tnt_hdr(60, 0);
+        if (world.tnt_.size() >= 48) std::memcpy(tnt_hdr.data(), world.tnt_.data(), std::min<std::size_t>(60, world.tnt_.size()));
+        if (src && (get_at<u32>(tnt_hdr, 44) & 1)) {
+            const u32 px = o.alloc(static_cast<u32>(src->pixels.size()) + 16);
+            r.write(px, src->pixels.data(), src->pixels.size());
+            std::vector<u8> hdr(0x20, 0);
+            put_at<u16>(hdr, 0, static_cast<u16>(src->width));
+            put_at<u16>(hdr, 2, static_cast<u16>(src->height));
+            put_at<u32>(hdr, 0x10, px);
+            pic = o.alloc(0x20);
+            r.write(pic, hdr.data(), hdr.size());
+        }
+        r.w32(gs + 0x1426B, pic);
+        mm_list = o.alloc(static_cast<u32>(b.units.size()) * 10 + 64);
+        r.w32(gs + 0x14363, mm_list);
+        if (!o.call(0x004669B0, 0, {})) {
+            std::printf("minimap: the original's set-up failed\n");
+            opt.minimap = false;
+        } else {
+            std::printf("minimap: %s picture, box %d,%d %dx%d\n", pic ? "stored" : "sampled", static_cast<i16>(r.r32(gs + 0x142E7)),
+                        static_cast<i16>(r.r32(gs + 0x142E9)), static_cast<i16>(r.r32(gs + 0x142EB)), static_cast<i16>(r.r32(gs + 0x142ED)));
+        }
+    }
+    long long mm_scenes = 0, mm_same = 0, mm_pixels = 0;
     Stats st;
     int written = 0;
     for (int sc = 0; sc < opt.scenes; ++sc) {
@@ -1648,6 +1697,7 @@ int main(int argc, char** argv) {
         }
         std::vector<u8> theirs(static_cast<std::size_t>(W * H));
         r.read(o.frame, theirs.data(), theirs.size());
+        const sim::ProjectileTable scene_shots = b.projectiles;  // (--minimap: the extra shots on the minimap too)
         b.projectiles = saved_shots;
 
         // Compare the battle view.
@@ -1932,6 +1982,107 @@ int main(int argc, char** argv) {
             b.player_economy[0] = saved_ec;
             b.players[0] = saved_slot;
         }
+        if (opt.minimap) {
+            // The minimap's reads of the units as they are now (flags, damage blink timer,
+            // activation, weapon slots with their stockpiles), the shots of the battle (the extra
+            // ones are gone), the pointer's unit and the blink phase.
+            auto w8 = [&](u32 at, u8 v) { r.write(at, &v, 1); };
+            for (std::size_t i = 1; i < b.units.size(); ++i) {
+                if (!b.ticks[i].type_index) continue;
+                const sim::Unit& u = b.units[i];
+                const u32 at = units_at + static_cast<u32>(i) * kUnitSize;
+                r.w32(at + 0x110, u.flags);
+                w8(at + 0xFA, b.ticks[i].damaged_timer);
+                w8(at + 0x10E, u.activate_flags);
+                for (u32 k = 0; k < 3; ++k) {
+                    const sim::WeaponSlot& s = u.weapons[k];
+                    r.w32(at + 4 + 0x1C * k + 0xC, s.type ? wdefs + static_cast<u32>(s.type->index) * 0x115 : 0u);
+                    w8(at + 4 + 0x1C * k + 0x1A, s.stockpile);
+                }
+            }
+            // (the scene's shots, the extra ones included: the original's table still has them)
+            // (an extra nuclear shot without an owner would fault in the original's marks pass,
+            // which reads its owner's player: then only the battle's own shots)
+            const sim::ProjectileTable kept_shots = b.projectiles;
+            bool ownerless_nuke = false;
+            for (i32 q = 0; q < scene_shots.count; ++q) {
+                const sim::Projectile& p = scene_shots.slots[static_cast<std::size_t>(q)];
+                if (p.weapon && (p.weapon->flags & 0x60000000u) && (!p.owner || p.owner_slot > 9)) ownerless_nuke = true;
+            }
+            if (!ownerless_nuke) b.projectiles = scene_shots;
+            r.w32(gs + 0x141F3, static_cast<u32>(std::min<i32>(b.projectiles.count, 300)));
+            const u16 hv = gc.hover_unit();
+            r.write(gs + 0x2CBA, &hv, 2);
+            u16 opts = 0;
+            r.read(gs + gGameOptions, &opts, 2);
+            opts = static_cast<u16>(opts & ~0x200);
+            r.write(gs + gGameOptions, &opts, 2);
+            u16 mmf = 0;
+            r.read(gs + 0x142F1, &mmf, 2);
+            mmf = static_cast<u16>((mmf & ~1u) | (gc.minimap_blink() ? 1u : 0u) | 4u);
+            r.write(gs + 0x142F1, &mmf, 2);
+            r.w32(gs + gScrollX, static_cast<u32>(sx));
+            r.w32(gs + gScrollY, static_cast<u32>(sy));
+            // The original: fog picture, marks, the view's rectangle (scroll clamp), the blit.
+            const u32 mm_px = o.alloc(static_cast<u32>(W * H)), mm_hdr = o.alloc(0x20), mm_ctx = o.alloc(0x100);
+            std::vector<u8> bg2(static_cast<std::size_t>(W * H));
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) bg2[static_cast<std::size_t>(y * W + x)] = static_cast<u8>((x / 4 + y / 4) & 1 ? 0xC5 : 0x50);
+            r.write(mm_px, bg2.data(), bg2.size());
+            std::uint8_t fh2[0x18] = {};
+            const u16 w16 = static_cast<u16>(W), h16 = static_cast<u16>(H);
+            std::memcpy(fh2, &w16, 2);
+            std::memcpy(fh2 + 2, &h16, 2);
+            std::memcpy(fh2 + 0x10, &mm_px, 4);
+            r.write(mm_hdr, fh2, sizeof fh2);
+            bool mm_ok = o.call(kMakeContext, 0, {mm_ctx, mm_hdr}) && o.call(0x00466C20, 0, {}) && o.call(0x00466DC0, 0, {}) &&
+                         o.call(0x0041C3C0, 0, {}) && o.call(0x00466B00, 0, {mm_ctx});
+            if (!mm_ok) {
+                std::printf("  minimap: the original's routines failed\n");
+            } else {
+                std::vector<u8> om(static_cast<std::size_t>(W * H));
+                r.read(mm_px, om.data(), om.size());
+                const int osx = static_cast<int>(r.r32(gs + gScrollX)), osy = static_cast<int>(r.r32(gs + gScrollY));
+                if (opt.verbose)
+                    std::printf("  minimap: view rectangle %d,%d %d,%d (view cells %u x %u)\n", static_cast<int>(r.r32(gs + 0x142CB)),
+                                static_cast<int>(r.r32(gs + 0x142CF)), static_cast<int>(r.r32(gs + 0x142D3)), static_cast<int>(r.r32(gs + 0x142D7)),
+                                r.r32(gs + 0x1423B), r.r32(gs + 0x1423F));
+                gc.minimap_refresh();
+                render::Image8 cm(W, H);
+                cm.pixels = bg2;
+                gc.draw_minimap_onto(cm);
+                long long md = 0;
+                render::Image8 mdi(W, H, 0);
+                for (std::size_t q = 0; q < om.size(); ++q)
+                    if (om[q] != cm.pixels[q]) {
+                        ++md;
+                        mdi.pixels[q] = 0xFF;
+                    }
+                // The radar dot list (unit id, x, y) the pointer's minimap pick uses.
+                const u32 n = r.r32(gs + 0x1436B);
+                int dots = 0, selected = 0;
+                for (std::size_t i = 1; i < b.units.size(); ++i)
+                    if (b.ticks[i].type_index && (b.units[i].flags & 0x10u)) ++selected;
+                (void)dots;
+                ++mm_scenes;
+                mm_pixels += md;
+                if (!md && osx == gc.scroll_x() && osy == gc.scroll_y()) ++mm_same;
+                std::printf("  minimap: %u marks listed, %d selected units, %d shots, blink %d, scroll %d,%d (client %d,%d): %lld of %lld pixels differ\n", n,
+                            selected, static_cast<int>(b.projectiles.count), gc.minimap_blink() ? 1 : 0, osx, osy, gc.scroll_x(), gc.scroll_y(), md,
+                            static_cast<long long>(W) * H);
+                differs(md);
+                if (!opt.out_dir.empty() && (md || opt.verbose) && written < 40) {
+                    ++written;
+                    render::Image8 a(W, H);
+                    a.pixels = om;
+                    const std::string base = opt.out_dir + "/minimap_" + std::to_string(opt.seed) + "_" + std::to_string(sc);
+                    render::write_bmp(base + "_orig.bmp", a, world.palette_);
+                    render::write_bmp(base + "_client.bmp", cm, world.palette_);
+                    render::write_bmp(base + "_diff.bmp", mdi, world.palette_);
+                }
+            }
+            b.projectiles = kept_shots;
+        }
         if (opt.verbose) {
             std::uint16_t w[4];
             r.read(o.probe, w, 8);
@@ -1967,5 +2118,6 @@ int main(int argc, char** argv) {
     }
     std::printf("scenes %d: identical %d, different %d (%lld pixels), failures %d\n", st.scenes, st.identical, st.scenes - st.identical, st.pixels,
                 st.failures);
+    if (opt.minimap) std::printf("minimap: %lld scenes, %lld identical (pixels and scroll), %lld pixels differ\n", mm_scenes, mm_same, mm_pixels);
     return st.scenes == st.identical && !st.failures ? 0 : 1;
 }

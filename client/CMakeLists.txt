@@ -5,11 +5,13 @@ add_library(client STATIC
     src/audio_decode.cpp
     src/canvas.cpp
     src/commands.cpp
+    src/end_table.cpp
     src/front.cpp
     src/front_end.cpp
     src/game_client.cpp
     src/hud.cpp
     src/menu.cpp
+    src/minimap.cpp
     src/music.cpp
     src/queued_orders.cpp
     src/settings.cpp

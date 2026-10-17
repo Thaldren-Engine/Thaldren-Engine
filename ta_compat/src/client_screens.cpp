@@ -966,28 +966,204 @@ private:
 };
 
 // ------------------------------------------------------------------ in-game menus
-class ExitMenu : public LayoutScreen {
+// A screen's stock panel when its description names no picture (0x4B0230 with commongui's
+// "BackTile", its frames' offsets cleared): the nine frames tile the w x h rectangle as a framed
+// box: rows of the first frame's height (the top row frames 0-2, middle rows 3-5, the last
+// row 6-8, which lies flush with the bottom), columns of its width (left, middle repeated, the
+// right one flush with the right edge).
+void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h) {
+    const auto* t = art.sequence("anims\\commongui.GAF", "BackTile");
+    if (!t || t->empty()) return;
+    const render::Sprite8& f0 = t->front();
+    if (t->size() < 2) {
+        render::blit(out, clip, f0, x0 + f0.x_offset, y0 + f0.y_offset);
+        return;
+    }
+    const int fw = f0.width, fh = f0.height;
+    if (fw <= 0 || fh <= 0) return;
+    for (int y = 0; y < h;) {
+        const int row = y == 0 ? 0 : (h - fh + 1 <= y ? 6 : 3);
+        if (h < fh + y) y = h - fh;
+        for (int x = 0; x < w;) {
+            int col;
+            if (fw + x < w) {
+                col = x != 0 ? 1 : 0;
+            } else {
+                col = 2;
+                x = w - fw;
+            }
+            const std::size_t k = static_cast<std::size_t>(row + col);
+            if (k < t->size()) {
+                const render::Sprite8& s = (*t)[k];
+                render::blit(out, clip, s, x0 + x + s.x_offset, y0 + y + s.y_offset);
+            }
+            x += fw;
+        }
+        y += fh;
+    }
+}
+
+// A screen dimmed under a dialog (open flag 0x800): its rectangle through shade level 8.
+void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1) {
+    const std::vector<std::uint8_t>& shade = fe.menu_content().shade;
+    if (shade.size() < 0x2000) return;
+    x0 = std::max(x0, 0);
+    y0 = std::max(y0, 0);
+    x1 = std::min(x1, out.width - 1);
+    y1 = std::min(y1, out.height - 1);
+    for (int y = y0; y <= y1; ++y)
+        for (int x = x0; x <= x1; ++x) {
+            std::uint8_t& p = out.row(y)[x];
+            p = shade[8 * 256 + p];
+        }
+}
+
+// The confirmation (YESORNO.GUI, 0x460680; opened centred right of the side panel): the
+// question, Yes and No, No focused. Yes leaves the battle for the main menu (kind 0: "Exit to
+// Menu", no statistics) or ends the program (kind 2: "Exit Game"); No closes it.
+class YesOrNo : public LayoutScreen {
 public:
-    explicit ExitMenu(MenuArt& art) : LayoutScreen(art.layout("EXITMENU")) {}
+    YesOrNo(MenuArt& art, int kind) : LayoutScreen(art.layout("YESORNO")), art_(art), kind_(kind) {
+        open_centred_ = -2;
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
+        if (Widget* w = widget("TITLE"))
+            w->text = kind == 0 ? "Surrender this battle and return to main menu?" : "Surrender this battle and exit to Windows?";
+        for (std::size_t i = 1; i < widgets_.size(); ++i)
+            if (is(widgets_[i], "CHOICE2")) focus_choice_ = static_cast<int>(i);
+    }
     bool see_through() const override { return true; }
 
 protected:
     void draw_under(FrontEnd& fe, render::Image8& out) override {
+        if (focus_choice_ >= 0) focus_gadget_ = focus_choice_;  // (set when the screen opens)
+        focus_choice_ = -1;
         const Widget& h = widgets_.front();
-        client::fill_rect(out, out.bounds(), ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1, fe.menu_content().box_colour);
-        client::outline_rect(out, out.bounds(), ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1, fe.menu_content().frame_colour);
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+        (void)fe;
     }
     void on_press(FrontEnd& fe, Widget& w) override {
-        if (is(w, "MAINMENU")) {
-            // Leaving counts as giving up: the end screens follow.
-            if (fe.session()) fe.session()->surrender();
-            fe.end_battle(client::BattleOutcome::Quit);
-        } else if (is(w, "EXITGAME")) {
-            fe.quit();
+        if (is(w, "CHOICE1")) {
+            if (kind_ == 2) fe.quit();
+            else fe.to_main_menu();
+        } else if (is(w, "CHOICE2")) {
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    int kind_ = 0;
+    int focus_choice_ = -1;
+};
+
+// The restart dialog (RESTART.GUI over DRESTART, 0x4604A0; opened centred right of the side
+// panel): the battle's name, the computer players' difficulty, Cancel and Restart (the same
+// battle from its start with that difficulty).
+class RestartDialog : public LayoutScreen {
+public:
+    RestartDialog(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("RESTART")) {
+        open_centred_ = -2;
+        // DRESTART's top-left part in the box, its palette not put on the display (0x4288D0 with
+        // no flags).
+        background_in_box_ = true;
+        if (Widget* w = widget("Difficulty")) w->stage = std::clamp(s.difficulty(), 0, std::max(0, w->stages - 1));
+        name_ = s.battle_name();
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8&) override {
+        if (named_) return;
+        named_ = true;
+        // The name word-wrapped to the label's width in the small font (0x4AC4C0: at the end of
+        // a word, when the line so far is at least as wide, it breaks at the last space or
+        // hyphen before, which the break replaces); the first line goes to MISSIONNAME, the
+        // second to MISSIONNAME1.
+        const client::Font* f = fe.menu_content().small_font ? fe.menu_content().small_font : fe.menu_content().font;
+        Widget* w1 = widget("MISSIONNAME");
+        if (!w1 || !f) return;
+        const int width = w1->w;
+        std::string out;
+        std::size_t line_start = 0;
+        const std::string& t = name_;
+        for (std::size_t i = 0; i < t.size(); ++i) {
+            out.push_back(t[i]);
+            const char next = i + 1 < t.size() ? t[i + 1] : '\0';
+            if ((next == ' ' || next == '\n' || next == '-') && f->text_width(out.substr(line_start)) >= width) {
+                std::size_t k = out.size() - 1, j = i;
+                while (k > line_start && t[j] != ' ' && t[j] != '-') {
+                    out.pop_back();
+                    --k;
+                    --j;
+                }
+                out.back() = '\n';
+                line_start = out.size();
+                i = j;
+            }
+        }
+        const std::size_t nl = out.find('\n');
+        w1->text = out.substr(0, nl);
+        if (nl != std::string::npos)
+            if (Widget* w2 = widget("MISSIONNAME1")) w2->text = out.substr(nl + 1, out.find('\n', nl + 1) - nl - 1);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        client::BattleSession* s = fe.session();
+        if (is(w, "RESTART")) {
+            const Widget* d = widget("Difficulty");
+            client::BattleLauncher l = s ? s->restart_launcher(d ? d->stage : 1) : client::BattleLauncher();
+            if (l) fe.restart_battle(std::move(l));
+            else fe.pop();
         } else if (is(w, "CANCEL")) {
             fe.pop();
         }
     }
+
+private:
+    std::string name_;
+    bool named_ = false;
+};
+
+// The exit menu (EXITMENU.GUI, 0x4608B0, opened with flags 0x1800: centred right of the side
+// panel, the game menu under it dimmed): the stock panel, Exit to Menu, Exit Game, Cancel, and
+// in skirmishes and campaigns Restart (captioned "Restart", a new quick key). Exit to Menu and
+// Exit Game ask first (YESORNO); Restart opens the restart dialog.
+class ExitMenu : public LayoutScreen {
+public:
+    ExitMenu(MenuArt& art, client::BattleSession* s, render::ClipRect under) : LayoutScreen(art.layout("EXITMENU")), art_(art), under_(under) {
+        open_centred_ = -2;
+        if (Widget* w = widget("RESTART")) {
+            const bool offered = s && !s->network();
+            w->active = offered;
+            if (offered) set_caption(*w, "Restart");
+        }
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "MAINMENU") || is(w, "EXITGAME")) {
+            const int kind = is(w, "MAINMENU") ? 0 : 2;
+            fe.pop();
+            if (art_.layout("YESORNO")) fe.push(std::make_unique<YesOrNo>(art_, kind));
+        } else if (is(w, "RESTART")) {
+            client::BattleSession* s = fe.session();
+            fe.pop();
+            if (s && art_.layout("RESTART")) fe.push(std::make_unique<RestartDialog>(art_, *s));
+        } else if (is(w, "CANCEL")) {
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    render::ClipRect under_;
 };
 
 class GameMenu : public LayoutScreen {
@@ -1027,7 +1203,12 @@ protected:
         else if (is(w, "SAVEGAME") && s && fe.hooks().save_game_menu) fe.push(fe.hooks().save_game_menu(fe, *s));
         else if (is(w, "LOADGAME") && fe.hooks().load_game_menu) fe.push(fe.hooks().load_game_menu(fe, s));
         else if (is(w, "PREFS")) fe.push(std::make_unique<OptionsMenu>(art_, true));
-        else if (is(w, "EXIT") && art_.layout("EXITMENU")) fe.push(std::make_unique<ExitMenu>(art_));
+        else if (is(w, "EXIT") && art_.layout("EXITMENU")) {
+            // (the exit menu opens over this one, which keeps its focus, dimmed: gui_harness)
+            focus_gadget_ = focus_before_press_;
+            const Widget& h = widgets_.front();
+            fe.push(std::make_unique<ExitMenu>(art_, s, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        }
     }
 
 private:
@@ -1072,111 +1253,304 @@ private:
 };
 
 // ------------------------------------------------------------------ end of the battle (ENDMSN.GUI)
-// The outcome picture with the victory or defeat title, one row per player (colour, name)
-// and seven statistics bars that grow one column at a time (kills, losses, energy and
-// metal produced, energy and metal wasted, score); a click shows them all at once.
+// The statistics screen (0x41F0A0 / 0x41E420 / 0x41F400, run by the end state machine
+// 0x41F7F0): ENDMSN.GUI over its picture with the victory or defeat title, one row per player
+// shown (a colour box with the name over it, then seven bars: kills, losses, energy and metal
+// produced, excess energy and metal, score) whose columns are switched on one every ten clock
+// ticks and grow by a fifteenth of their value; a key shows them all. Only "Main Menu" is on,
+// at y 416. Spec: docs/RE_MEMORY.md, "Client", "End of a battle".
+struct EndBar {
+    int x = 0, y = 0;
+    std::int32_t value = 0, max = 1;
+    float step = 1.0f;
+    std::int32_t shown = 0;
+    bool active = false, animating = true;
+    std::int64_t deadline = -1;  // the next step's time (the first comes at once)
+};
+
 class BattleOver : public LayoutScreen {
 public:
-    BattleOver(MenuArt& art, client::BattleSession& s, client::BattleOutcome o) : LayoutScreen(art.layout("ENDMSN")), art_(art), outcome_(o) {
-        stats_ = s.stats();
+    BattleOver(MenuArt& art, const client::EndTable& table, const std::array<std::uint8_t, 256>& hud, bool network)
+        : LayoutScreen(art.layout("ENDMSN")), art_(art), table_(table), network_(network) {
+        // Only the main menu button, moved to y 416 (outside campaigns).
         for (Widget& w : widgets_) w.active = false;
         if (Widget* m = widget("MainMenu")) {
             m->active = true;
             m->y = 0x1a0;
         }
-        title_ = o == client::BattleOutcome::Victory ? art.sequence("anims\\IGTITLES.GAF", "igvictory")
-                                                     : art.sequence("anims\\IGTITLES.GAF", "igdefeat");
-        colours_ = art.sequence("textures\\logos.gaf", "32xlogos");
-        for (std::size_t c = 0; c < 7; ++c) {
-            double mx = 0;
-            for (const auto& p : stats_) mx = std::max(mx, value(p, static_cast<int>(c)));
-            max_[c] = mx;
+        if (!widgets_.empty()) widgets_.front().active = true;
+        if (!layout()) return;
+        title_ = table.won && !table.watching ? art.sequence("anims\\IGTITLES.GAF", "igvictory") : art.sequence("anims\\IGTITLES.GAF", "igdefeat");
+        logos_ = art.sequence("textures\\logos.gaf", "32xlogos");
+        bar_fill_ = hud[4];
+        bar_back_ = hud[8];
+        static const int cols[7] = {0x70, 0xba, 0x104, 0x14e, 0x198, 0x1e2, 0x22c};
+        int y = 0x5d;
+        for (const client::EndRow& r : table_.rows) {
+            for (int c = 0; c < 7; ++c) {
+                EndBar b;
+                b.x = cols[c];
+                b.y = y;
+                b.value = r.values[static_cast<std::size_t>(c)];
+                b.max = table_.maxima[static_cast<std::size_t>(c)];
+                // A fifteenth of the value per step (single precision), at least 1.
+                const float s = static_cast<float>(static_cast<double>(b.value) * static_cast<double>(1.0f / 15.0f * 1.0f));
+                b.step = s <= 1.0f ? 1.0f : s;
+                bars_.push_back(b);
+            }
+            row_y_.push_back(y);
+            y += 0x14;
         }
+        shown_ = bars_;
+    }
+    // The battle's last frame and its palette: the end begins by darkening it (the state
+    // machine's first states, 0x41F7F0 0-4: a frame for the switch, ten steps one tick apart
+    // after the first tick, each putting the whole screen through shade levels 13, 12, .. 4 in
+    // turn, two more frames, then a black frame while the statistics screen is set up).
+    void begin_fade(render::Image8 last, const render::Palette& palette) {
+        last_ = std::move(last);
+        battle_palette_ = palette;
+        phase_ = 0;
+    }
+    const render::Palette* palette() const override {
+        if (phase_ >= 0 && phase_ <= 5) return &battle_palette_;
+        return LayoutScreen::palette();
+    }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        if (phase_ >= 0 && phase_ <= 5) {
+            if (last_.width == out.width && last_.height == out.height) out.pixels = last_.pixels;
+            return;
+        }
+        if (phase_ == 6) {  // the set-up frame: the screen cleared
+            std::fill(out.pixels.begin(), out.pixels.end(), std::uint8_t{0});
+            return;
+        }
+        LayoutScreen::draw(fe, out);
     }
     void frame(FrontEnd& fe, std::uint32_t now) override {
-        const std::uint32_t t = now * 30 / 1000;
-        if (!start_) start_ = t + 1;
-        // Each column fills over ten ticks, then the next starts (with its sound).
-        while (column_ < 7 && t >= start_ + static_cast<std::uint32_t>(column_ + 1) * 10) {
-            ++column_;
-            fe.play_sound(art_.sound(column_ == 7 ? "EndGameScore" : "EndGameStatBar"));
+        const std::uint32_t t = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
+        if (phase_ >= 0 && phase_ <= 5) {
+            switch (phase_) {
+            case 2:  // ten fade steps, the first after the next tick
+                fade_left_ = 10;
+                fade_deadline_ = static_cast<std::int64_t>(t) + 1;
+                phase_ = 3;
+                return;
+            case 3:
+                if (fade_left_ == 0) {
+                    phase_ = 4;
+                    return;
+                }
+                if (static_cast<std::int64_t>(t) > fade_deadline_) {
+                    const std::vector<std::uint8_t>& shade = fe.menu_content().shade;
+                    if (shade.size() >= 0x2000) {
+                        const std::size_t row = static_cast<std::size_t>(fade_left_ + 3) * 256;
+                        for (std::uint8_t& p : last_.pixels) p = shade[row + p];
+                    }
+                    fade_deadline_ = static_cast<std::int64_t>(t) + 1;
+                    --fade_left_;
+                }
+                return;
+            case 5:  // the statistics screen's set-up
+                set_up_ = true;
+                phase_ = 6;
+                return;
+            default:  // 0 the battle's last pass, 1 the switch to the end states, 4 one more state
+                ++phase_;
+                return;
+            }
         }
-        ticks_ = t >= start_ ? t - start_ : 0;
+        if (phase_ == 6) phase_ = 7;
+        if (!set_up_) {
+            set_up_ = true;  // the state machine's set-up frame
+            return;
+        }
+        if (done_) return;
+        // Bars still off or growing: the interface pass (each growing bar whose time has come
+        // takes its step; the next step one tick later), the frame shown, then the columns.
+        bool pending = false;
+        for (const EndBar& b : bars_) pending = pending || !b.active || b.shown < b.value;
+        if (!pending) {
+            done_ = true;
+            return;
+        }
+        for (EndBar& b : bars_) {
+            if (!b.active || !b.animating || b.shown >= b.value || static_cast<std::int64_t>(t) <= b.deadline) continue;
+            b.shown += static_cast<std::int32_t>(b.step);
+            if (b.shown > b.value) {
+                b.shown = b.value;
+                b.animating = false;
+            }
+            b.deadline = static_cast<std::int64_t>(t) + 1;
+        }
+        shown_ = bars_;
+        const bool all = key_ && !network_;
+        key_ = false;
+        if (static_cast<std::int64_t>(t) <= deadline_ && !all) return;
+        if (all) {
+            for (EndBar& b : bars_) b.active = true;
+            fe.play_sound(art_.sound("ActivateAllStatBars"));
+        }
+        if (column_ < 7) {
+            for (std::size_t k = static_cast<std::size_t>(column_); k < bars_.size(); k += 7) bars_[k].active = true;
+            fe.play_sound(art_.sound(column_ == 6 ? "EndGameScore" : "EndGameStatBar"));
+        }
+        deadline_ = static_cast<std::int64_t>(t) + 10;
+        ++column_;
     }
 
 protected:
-    static double value(const client::PlayerStats& p, int c) {
-        switch (c) {
-        case 0: return p.units_killed;
-        case 1: return p.units_lost;
-        case 2: return p.energy_produced;
-        case 3: return p.metal_produced;
-        case 4: return p.energy_wasted;
-        case 5: return p.metal_wasted;
-        default: return 0;  // score: not built
-        }
-    }
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type == client::InputEvent::Type::MouseDown && column_ < 7) {
-            column_ = 7;
-            fe.play_sound(art_.sound("ActivateAllStatBars"));
-            return;
+        // A key the interface does not take shows every bar at once (while they are coming).
+        if (e.type == client::InputEvent::Type::KeyDown && set_up_ && !done_) {
+            const Widget* m = widget("MainMenu");
+            if (!(m && m->quickkey && m->quickkey == e.key)) {
+                key_ = true;
+                return;
+            }
         }
         LayoutScreen::handle(fe, e);
     }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        // The title, put on the screen's own surface at half the screen's width, 28 down.
+        if (title_ && !title_->empty()) render::blit(out, clip(), title_->front(), ox_ + out.width / 2, oy_ + 0x1c);
+    }
     void draw_over(FrontEnd& fe, render::Image8& out) override {
         const auto& mc = fe.menu_content();
-        if (title_ && !title_->empty()) {
-            const render::Sprite8& s = title_->front();
-            render::blit(out, out.bounds(), s, out.width / 2, 28);
-        }
-        static const int cols[7] = {0x70, 0xba, 0x104, 0x14e, 0x198, 0x1e2, 0x22c};
-        int y = 0x5d;
-        for (const auto& p : stats_) {
-            if (colours_ && !colours_->empty()) {
-                const render::Sprite8& s = (*colours_)[static_cast<std::size_t>(p.colour) % colours_->size()];
-                const render::ClipRect c{16, y, 16 + 90, y + 20};
-                for (int x = 16; x < 16 + 91; x += s.width) render::blit(out, c, s, x + s.x_offset, y + s.y_offset);
+        const render::ClipRect c = clip();
+        for (std::size_t r = 0; r < row_y_.size(); ++r) {
+            const int y = oy_ + row_y_[r];
+            // The colour box: the player's logo frame stretched over 91 x 21 (texels 1 .. size-1).
+            if (logos_ && !logos_->empty()) {
+                const render::Sprite8& s = (*logos_)[std::min<std::size_t>(static_cast<std::size_t>(table_.rows[r].colour), logos_->size() - 1)];
+                const int x0 = ox_ + 0x10, x1 = x0 + 0x5b - 1, y1 = y + 0x15 - 1;
+                const render::RasterVertex v[4] = {{x0, y, 0}, {x1, y, 0}, {x1, y1, 0}, {x0, y1, 0}};
+                const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+                render::RasterTarget rt;
+                rt.pixels = out.pixels.data();
+                rt.pitch = out.width;
+                rt.clip = c;
+                render::textured_quad_uv(rt, v, uv, s);
             }
-            if (mc.font) client::draw_text(out, out.bounds(), *mc.font, p.name, 18, y + (20 - mc.font->height) / 2, mc.text_colour, -1, 88);
-            for (int c = 0; c < 7; ++c) {
-                const int x = cols[c];
-                client::outline_rect(out, out.bounds(), x, y, x + 0x43 - 1, y + 0x12 - 1, mc.frame_colour);
-                if (c > column_) continue;
-                const double v = value(p, c), mx = max_[static_cast<std::size_t>(c)];
-                double shown = v;
-                if (c == column_ && column_ < 7) {
-                    // Grows by a fifteenth of the value per tick (at least 1).
-                    const double rate = std::max(1.0, v / 15.0);
-                    shown = std::min(v, rate * static_cast<double>(ticks_ - static_cast<std::uint32_t>(c) * 10));
-                }
-                const int len = mx > 0 ? static_cast<int>((0x43 - 2) * shown / mx) : 0;
-                if (len > 0) client::fill_rect(out, out.bounds(), x + 1, y + 1, x + len, y + 0x12 - 2, art_.gui_colour(*palette_or(fe), 10));
-                if (mc.small_font)
-                    client::draw_text(out, out.bounds(), *mc.small_font, std::to_string(static_cast<long long>(shown)), x + 3,
-                                      y + (0x12 - mc.small_font->height) / 2, mc.text_colour);
+            // The name: the small font, centred in 90 pixels, halfway down the row, its glyphs
+            // lit through light level 15 (the label's colour value).
+            if (const client::Font* lf = mc.small_font ? mc.small_font : mc.font) {
+                const std::string& n = table_.rows[r].name;
+                const int ly = y + (0x14 - lf->height) / 2;
+                const int tx = ox_ + 0x10 + 0x5a / 2 - lf->text_width(n) / 2;
+                draw_lit_text(out, c, *lf, n, tx, ly, 0x5a, mc.light, 15);
             }
-            y += 0x14;
+            for (std::size_t k = 0; k < 7; ++k) {
+                const EndBar& b = shown_[r * 7 + k];
+                if (b.active) draw_bar(fe, out, b);
+            }
         }
-    }
-    const render::Palette* palette_or(FrontEnd& fe) const {
-        const render::Palette* p = palette();
-        return p ? p : &fe.menu_content().palette;
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         if (is(w, "MainMenu")) fe.to_main_menu();
     }
 
 private:
+    render::ClipRect clip() const {
+        const Widget& h = widgets_.front();
+        return {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+    }
+    // Text whose glyph pixels go through a light level (0x4B8310's remap: light[level][p]); the
+    // glyphs that fit in `width` from the left (a glyph wider than what is left ends it).
+    static void draw_lit_text(render::Image8& out, const render::ClipRect& c, const client::Font& f, const std::string& s, int x, int y, int width,
+                              const std::vector<std::uint8_t>& light, int level) {
+        for (const unsigned char ch : s) {
+            const client::Glyph& g = f.glyphs[ch];
+            if (ch < 0x20 || !g.present) continue;
+            if (width >= 0 && width < g.width) return;
+            const int rows = g.rows > 0 ? g.rows : f.height;
+            if (ch != ' ')
+                for (int r = 0; r < rows; ++r)
+                    for (int k = 0; k < g.width; ++k) {
+                        const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                        if (at >= g.ink.size() || !g.ink[at]) continue;
+                        std::uint8_t v = g.colours.empty() ? 15 : g.colours[at];
+                        if (light.size() >= 0x2000) v = light[static_cast<std::size_t>(level) * 256 + v];
+                        client::put_pixel(out, c, x + g.left + k, y + g.top + r, v);
+                    }
+            if (width >= 0 && (width -= g.width) < 0) return;
+            x += g.width;
+        }
+    }
+    // One bar (0x4A4660): a raised box (x .. x + w, y .. y + h: filled with interface colour
+    // 20, two-pixel edges in 0 top / left and 17 bottom / right), inside it (2 pixels in) the
+    // background colour, then the filled part from the left: trunc(shown / max x (w - 4)) + 1
+    // columns, and the number shown centred in the standard font.
+    void draw_bar(FrontEnd& fe, render::Image8& out, const EndBar& b) {
+        const render::ClipRect c = clip();
+        const int x0 = ox_ + b.x, y0 = oy_ + b.y, x1 = x0 + 0x43, y1 = y0 + 0x12;
+        const std::uint8_t c0 = colour(0), c17 = colour(17), c20 = colour(20);
+        client::fill_rect(out, c, x0, y0, x1, y1, c20);
+        auto line = [&](int ax, int ay, int bx, int by, std::uint8_t col) { render::draw_line(out, c, ax, ay, bx, by, col); };
+        line(x0, y0, x1, y0, c0);
+        line(x0, y0 + 1, x1 - 1, y0 + 1, c0);
+        line(x0, y0, x0, y1, c0);
+        line(x0 + 1, y0, x0 + 1, y1 - 1, c0);
+        line(x1, y0 + 1, x1, y1, c17);
+        line(x1 - 1, y0 + 2, x1 - 1, y1, c17);
+        line(x0 + 1, y1, x1, y1, c17);
+        line(x0 + 2, y1 - 1, x1, y1 - 1, c17);
+        client::fill_rect(out, c, x0 + 2, y0 + 2, x1 - 2, y1 - 2, bar_back_);
+        const double f = static_cast<double>(b.shown) / static_cast<double>(b.max) * static_cast<double>(0x43 - 4);
+        // (the game's conversion: truncated to 64 bits, the low half kept)
+        const int len = f > -9223372036854775808.0 && f < 9223372036854775808.0
+                            ? static_cast<int>(static_cast<std::uint32_t>(static_cast<std::uint64_t>(static_cast<std::int64_t>(f))))
+                            : 0;
+        client::fill_rect(out, c, x0 + 2, y0 + 2, x0 + 2 + len, y1 - 2, bar_fill_);
+        const auto& mc = fe.menu_content();
+        if (const client::Font* f2 = mc.small_font ? mc.small_font : mc.font) {
+            const std::string n = std::to_string(b.shown);
+            const int tx = x0 + 0x43 / 2 - f2->text_width(n) / 2, ty = y0 + 0x12 / 2 - f2->height / 2;
+            client::draw_text(out, c, *f2, n, tx, ty + f2->raise, 15);
+        }
+    }
+
     MenuArt& art_;
-    client::BattleOutcome outcome_;
-    std::vector<client::PlayerStats> stats_;
-    std::array<double, 7> max_{};
+    client::EndTable table_;
+    bool network_ = false;
+    std::vector<EndBar> bars_, shown_;  // the bars, and as the last frame showed them
+    std::vector<int> row_y_;
     const std::vector<render::Sprite8>* title_ = nullptr;
-    const std::vector<render::Sprite8>* colours_ = nullptr;
-    std::uint32_t start_ = 0, ticks_ = 0;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+    std::uint8_t bar_fill_ = 0, bar_back_ = 0;
+    bool set_up_ = false, done_ = false, key_ = false;
+    std::int64_t deadline_ = -1;  // the next column's time (the first comes at once)
     int column_ = 0;
+    // The fade (phase -1: none; 0-5 the battle's last frame, 6 the cleared set-up frame).
+    render::Image8 last_;
+    render::Palette battle_palette_{};
+    int phase_ = -1, fade_left_ = 0;
+    std::int64_t fade_deadline_ = 0;
 };
+
+// A session's end table (from its statistics when it has no table of its own).
+client::EndTable end_table_of(client::BattleSession& s, client::BattleOutcome o) {
+    client::EndTable t;
+    if (s.end_table(t)) return t;
+    std::array<client::EndPlayer, 10> in{};
+    const std::vector<client::PlayerStats> st = s.stats();
+    for (std::size_t i = 0; i < st.size() && i < in.size(); ++i) {
+        client::EndPlayer& p = in[i];
+        p.active = true;
+        p.controller = 1;
+        p.colour = st[i].colour;
+        p.kills = static_cast<std::int16_t>(st[i].units_killed);
+        p.losses = static_cast<std::int16_t>(st[i].units_lost);
+        p.energy_produced = st[i].energy_produced;
+        p.metal_produced = st[i].metal_produced;
+        p.energy_wasted = st[i].energy_wasted;
+        p.metal_wasted = st[i].metal_wasted;
+        p.name = st[i].name;
+    }
+    t = client::end_table(in, s.battle().game_tick(), 0.0f, 0.0f);
+    t.won = o == client::BattleOutcome::Victory;
+    return t;
+}
 
 // ------------------------------------------------------------------ loading screen
 // The load picture; "Map: <name>" centred near the bottom; six stage rows (textures,
@@ -1209,6 +1583,13 @@ void draw_loading(MenuArt& art, const std::string& map, render::Image8& out, flo
 
 }  // namespace
 
+std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table) {
+    if (!art.layout("ENDMSN")) return nullptr;
+    std::array<std::uint8_t, 256> hud{};
+    for (int k = 0; k < 256; ++k) hud[static_cast<std::size_t>(k)] = art.gui_colour(art.content().palette, k);
+    return std::make_unique<BattleOver>(art, table, hud, false);
+}
+
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup) {
     setup.content = &art.content();
     setup.music = music;
@@ -1221,7 +1602,12 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     };
     setup.battle_over = [&art](FrontEnd&, client::BattleSession& s, client::BattleOutcome o) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ENDMSN")) return nullptr;
-        return std::make_unique<BattleOver>(art, s, o);
+        auto bo = std::make_unique<BattleOver>(art, end_table_of(s, o), s.content().hud, s.network());
+        // The battle's last frame (without the pointer) for the fade.
+        client::GameClient& c = s.client();
+        c.set_pointer_hidden(true);
+        bo->begin_fade(render::execute(c.draw(), s.content().blend), s.content().palette);
+        return bo;
     };
     setup.game_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ARMOPT")) return nullptr;

@@ -70,6 +70,13 @@ struct SoundEvent {
     int volume = 256;    // 0..256
 };
 
+// The minimap's place in its 126 x 126 square for a map whose scroll extent is sw x sh
+// pixels: the map's aspect kept, the short side centred.
+struct MinimapBox {
+    int x = 0, y = 0, w = 126, h = 126;
+};
+MinimapBox minimap_box(int sw, int sh);
+
 class GameClient {
 public:
     GameClient(sim::Battle& battle, Content& content, const ClientOptions& options);
@@ -129,6 +136,24 @@ public:
     void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
     void message(const std::string& text, bool highlight = false);
     void selection_changed() { panel_dirty_ = true; }
+    // The minimap's work inside a battle step (the battle's outside forwards it): after a
+    // player's sight updates the viewed player's radar marks are drawn anew (player_stage),
+    // in the viewed player's 30-step turn its fog picture is rebuilt (sensor_turn), and every
+    // step ends with the blink counter (step_end). Without these calls draw() does both.
+    void minimap_player_stage(int player);
+    void minimap_sensor_turn(int player);
+    void minimap_step_end();
+    // The minimap as the frame shows it (its picture at its place, the view's rectangle over
+    // it), onto `o` (draw() does this; tests compare it).
+    void draw_minimap_onto(render::Image8& o);
+    // Tests: the minimap's fog picture and marks made anew from the battle as it is now, and
+    // the blink phase its marks use.
+    void minimap_refresh() {
+        if (!prepared_) prepare_drawing();
+        minimap_composite();
+        minimap_redraw();
+    }
+    bool minimap_blink() const { return ((mm_blink_calls_ / 8) & 1) != 0; }
 
     // State, for front ends and tests.
     int scroll_x() const { return scroll_x_; }
@@ -339,8 +364,19 @@ private:
     // Drawing resources made once.
     void prepare_drawing();
     bool prepared_ = false;
-    render::Sprite8 minimap_;        // the map picture scaled into the 126 x 126 square
+    // The minimap (its spec: docs/RE_MEMORY.md "Client", "Minimap"): the map picture halved
+    // into the square (mm_w_ x mm_h_ at mm_x_, mm_y_), the viewed player's fog picture of it,
+    // and that copy with the radar marks (redrawn every step).
+    render::Image8 mm_picture_, mm_mapped_, mm_final_;
     int mm_x_ = 0, mm_y_ = 0, mm_w_ = 126, mm_h_ = 126;
+    bool mm_hooked_ = false;          // the battle's steps redraw it (else every frame does)
+    bool mm_mapped_valid_ = false;
+    std::uint32_t mm_blink_calls_ = 0;  // steps ended since the battle's drawing data was made
+    void minimap_build_picture();
+    void minimap_composite();
+    void minimap_redraw();
+    int scroll_width() const;   // the map's scroll extent in pixels (width x 16 - 32)
+    int scroll_height() const;  // (height x 16 - 128)
     std::uint8_t overlay_key_ = 0;   // an index the interface layer never draws
 };
 

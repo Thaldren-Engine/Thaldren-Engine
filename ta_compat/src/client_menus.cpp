@@ -105,6 +105,8 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
             }
     vfs_.read("palettes\\PALETTE.LHT", content_.light);
     if (content_.light.size() < 0x2000) content_.light.clear();
+    vfs_.read("palettes\\PALETTE.SHD", content_.shade);
+    if (content_.shade.size() < 0x2000) content_.shade.clear();
     content_.click_sound = sound("SmallButton");
     content_.error_sound = sound("NOTOKTOBUILD");
     content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
@@ -577,6 +579,10 @@ std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_
                                                         const std::function<sim::BattleOutside&(sim::BattleOutside&)>& wrap,
                                                         const std::function<void(sim::Battle&)>& attach) {
     auto s = std::unique_ptr<SkirmishSession>(new SkirmishSession);
+    s->dir_ = game_dir;
+    s->human_ = human;
+    s->options_ = options;
+    s->network_start_ = static_cast<bool>(wrap) || static_cast<bool>(attach);
     s->world_ = std::make_unique<ClientWorld>();
     s->world_->net_wrap = wrap;
     s->world_->net_attach = attach;
@@ -648,6 +654,79 @@ client::BattleOutcome SkirmishSession::outcome() {
 }
 
 void SkirmishSession::surrender() { surrendered_ = true; }
+
+int SkirmishSession::difficulty() const { return world_ ? world_->request().start.ai_difficulty : 1; }
+
+std::string SkirmishSession::battle_name() const {
+    // The map's [GlobalHeader] missionname (map info +0xA14).
+    if (!world_) return {};
+    std::vector<std::uint8_t> ota;
+    if (!world_->vfs_.read("maps\\" + world_->request().map + ".ota", ota)) return {};
+    const TdfParseResult parsed = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
+    const TdfSection* h = parsed.root ? parsed.root->child("GlobalHeader") : nullptr;
+    return h ? h->get_string("missionname", 0x100, "") : std::string();
+}
+
+client::BattleLauncher SkirmishSession::restart_launcher(int difficulty) {
+    // The same request (map, players, options) again with the difficulty chosen; the inputs the
+    // original takes from its clocks are taken anew, and the C runtime's rand() goes on from
+    // where the battle left it (one rand() for the whole program in the original).
+    if (network_start_ || !world_) return {};
+    BattleRequest req = world_->request();
+    req.start.ai_difficulty = difficulty;
+    req.start.battle_rng_seed = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+    req.start.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
+    req.start.crt_rand_state = world_->battle().crt_rand.state();
+    const std::string dir = dir_;
+    const int human = human_;
+    const client::ClientOptions opt = options_;
+    return [dir, req, human, opt](const client::LoadProgress& progress, std::string& error) -> std::unique_ptr<client::BattleSession> {
+        return SkirmishSession::start(dir, req, human, opt, progress, error);
+    };
+}
+
+bool SkirmishSession::end_table(client::EndTable& t) {
+    // The players' records at the end (the original's statistics pass, 0x41DC20) and the map's
+    // score factors: [GlobalHeader] killmul and timemul of its OTA (map info +0xD54 / +0xD58).
+    sim::Battle& b = world_->battle();
+    const auto& req = world_->request();
+    std::array<client::EndPlayer, 10> in{};
+    for (int p = 0; p < 10; ++p) {
+        const sim::PlayerSlot& s = b.players[static_cast<std::size_t>(p)];
+        const sim::PlayerEconomy& e = b.player_economy[static_cast<std::size_t>(p)];
+        client::EndPlayer& o = in[static_cast<std::size_t>(p)];
+        o.active = s.active;
+        o.controller = s.controller;
+        o.state = s.state;
+        o.units_created = s.units_created;
+        o.watching = b.settings.player_sight[static_cast<std::size_t>(p)].watching;
+        o.colour = req.start.players[static_cast<std::size_t>(p)].colour;
+        o.kills = static_cast<std::int16_t>(s.units_killed);
+        o.losses = static_cast<std::int16_t>(s.units_lost);
+        o.energy_produced = e.energy_produced;
+        o.metal_produced = e.metal_produced;
+        o.energy_wasted = e.energy_wasted;
+        o.metal_wasted = e.metal_wasted;
+        o.name = req.start.players[static_cast<std::size_t>(p)].name;
+        if (o.name.empty()) o.name = (req.start.players[static_cast<std::size_t>(p)].kind == sim::PlayerKind::Computer ? "Computer " : "Player ") + std::to_string(p + 1);
+    }
+    float kill_mul = 0.0f, time_mul = 0.0f;
+    {
+        std::vector<std::uint8_t> ota;
+        if (world_->vfs_.read("maps\\" + req.map + ".ota", ota)) {
+            const TdfParseResult parsed = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
+            if (const TdfSection* h = parsed.root ? parsed.root->child("GlobalHeader") : nullptr) {
+                kill_mul = static_cast<float>(h->get_float("killmul", 0.0));
+                time_mul = static_cast<float>(h->get_float("timemul", 0.0));
+            }
+        }
+    }
+    t = client::end_table(in, b.game_tick(), kill_mul, time_mul);
+    const int me = b.settings.local_player;
+    t.won = (b.end_game.flags & sim::end_game_flags::kWon) != 0;
+    t.watching = me >= 0 && me < 10 && b.players[static_cast<std::size_t>(me)].active && b.settings.player_sight[static_cast<std::size_t>(me)].watching;
+    return true;
+}
 
 std::vector<client::PlayerStats> SkirmishSession::stats() {
     std::vector<client::PlayerStats> out;
