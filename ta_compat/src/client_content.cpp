@@ -286,6 +286,8 @@ bool ClientWorld::build_content(std::string& error) {
     // (hattfont12) whenever it is loaded, whatever font gadget the description names.
     fonts_.push_back(picture_font(gaf("anims\\hattfont12.GAF")));
     const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
+    c.picture_font = caption_font;
+    c.console_font = font("COMIX");
     // Buttons from a GUI file's gadgets: the gadget's name is the art's sequence name.
     auto unit_index = [&](const std::string& name) -> std::uint16_t {
         for (std::size_t k = 1; k < defs_.units.size(); ++k)
@@ -851,7 +853,6 @@ bool ClientWorld::build_content(std::string& error) {
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };
-    c.start_messages.push_back("Skirmish on " + setup_.map);
     return true;
 }
 

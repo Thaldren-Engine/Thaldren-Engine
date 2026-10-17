@@ -92,6 +92,7 @@ struct Original {
     u32 key_state = 0, vis_table = 0, cache = 0, scratch = 0, rand_state = 0, probe = 0;
     int w = 0, h = 0;
     bool keep_bottom_bar = false;  // --hud: the original's bottom bar runs inside its frame
+    bool keep_console = false;     // --hud: and its console
     u32 host_next = 0;  // our own allocations (above the original's bump allocator)
     std::map<std::string, u32> gafs;                 // GAF file -> remote copy
     std::map<const render::ModelTexture*, u32> texture_seqs;
@@ -152,6 +153,7 @@ struct Original {
         const std::pair<u32, u8> skipped[] = {{kBottomBar, 4}, {kGui, 12}, {kConsole, 4}};
         for (const auto& [fn, bytes] : skipped) {
             if (fn == kBottomBar && keep_bottom_bar) continue;  // --hud: the bottom bar is compared too
+            if (fn == kConsole && keep_console) continue;       // --hud: and the console
             (void)bytes;
             const u32 at = stubs + static_cast<u32>(s.size());
             s.insert(s.end(), {0xC2, bytes, 0x00});
@@ -492,6 +494,7 @@ int main(int argc, char** argv) {
     // ---- Original ----
     Original o;
     o.keep_bottom_bar = opt.hud;
+    o.keep_console = opt.hud;
     if (!o.start(argv[1], opt.width, opt.height)) {
         std::printf("cannot start the original\n");
         return 1;
@@ -930,6 +933,44 @@ int main(int argc, char** argv) {
                 if (i >= 0) r.w32(gs + 0x148DB, o.gaf("textures\\logos.gaf", lg) + Original::gaf_entry(lg, i));
             }
             std::printf("hud: colour logos %s\n", r.r32(gs + 0x148DB) ? "loaded" : "missing");
+        }
+        // The console (0x464060): the interface's picture font as the GUI's current font
+        // (GS+0x519+0x14: a handle whose fourth word is the font's sequence; its glyphs' y
+        // offsets lowered by the 'I' glyph's height, as the front end's font loader 0x4AEDD0
+        // does), the console font (fonts\COMIX.FNT at GS+0x391F9, the front end's 0x42A320), the
+        // filter mode 3 (GS+0x37EFE, the front end's set-up); the "MessageArrived" sound returns.
+        {
+            std::vector<u8> pf, fnt;
+            if (vfs.read("anims\\hattfont12.GAF", pf) && pf.size() > 16) {
+                const u32 seq = o.gaf("anims\\hattfont12.GAF", pf) + Original::gaf_entry(pf, 0);
+                const u32 handle = o.alloc(0x20);
+                r.w32(handle + 0xC, seq);
+                std::uint16_t frames = 0;
+                r.read(seq, &frames, 2);
+                std::int16_t ih = 0;
+                if (frames > 0x49) r.read(r.r32(seq + 0x28 + 8 * 0x49) + 2, &ih, 2);
+                for (u32 k = 0; k < frames; ++k) {
+                    const u32 fr = r.r32(seq + 0x28 + 8 * k);
+                    if (!fr) continue;
+                    std::int16_t yo = 0;
+                    r.read(fr + 6, &yo, 2);
+                    yo = static_cast<std::int16_t>(yo - ih);
+                    r.write(fr + 6, &yo, 2);
+                }
+                r.w32(gs + 0x519 + 0x14, handle);
+                r.w32(0x0051FBA4, gs + 0x519);  // the GUI system the text routines ask for their font
+            }
+            if (vfs.read("fonts\\COMIX.FNT", fnt)) {
+                const u32 at = o.alloc(static_cast<u32>(fnt.size()) + 16);
+                r.write(at, fnt.data(), fnt.size());
+                r.w32(gs + 0x391F9, at);
+            }
+            r.w32(gs + 0x37EFE, 3);
+            const u8 ret8[3] = {0xC2, 0x08, 0x00};
+            const u32 ret_at = r.alloc(16, PAGE_EXECUTE_READWRITE);
+            r.write(ret_at, ret8, 3);
+            r.patch_jump(0x0047F1A0, ret_at);
+            std::printf("hud: console fonts %s / %s\n", r.r32(gs + 0x519 + 0x14) ? "loaded" : "missing", r.r32(gs + 0x391F9) ? "loaded" : "missing");
         }
         for (int p = 0; p < 10; ++p) {
             const u8 side = static_cast<u8>(p < static_cast<int>(setup.players.size()) ? setup.players[static_cast<std::size_t>(p)].side : 0);
@@ -1621,6 +1662,9 @@ int main(int argc, char** argv) {
             for (int x = 0; x < W; ++x) bg[static_cast<std::size_t>(y * W + x)] = static_cast<u8>((x / 8 + y / 8) & 1 ? 0xC5 : 0x50);
         r.write(o.frame, bg.data(), bg.size());
         if (opt.hud) {
+            // The console empty on both sides (its own comparison is below).
+            gc.console().next = gc.console().oldest = 0;
+            r.w32(gs + 0x2A3E, 0);
             // Selection boxes on (option bit 2); the bottom bar: the unit under the pointer, no
             // build button and no feature under it, no debug view, and its last-drawn state
             // forgotten (it redraws only when that changes).
@@ -1985,6 +2029,109 @@ int main(int argc, char** argv) {
                     b.units[i].flags = f;
                     r.w32(units_at + static_cast<u32>(i) * kUnitSize + 0x110, f);
                 }
+            }
+            // The console: random lines added by the original's routine (0x463CA0) and the
+            // client's (kinds 1, 2, 4, 8, senders, characters 1..255, any length), random line
+            // counts and screen chat, the oldest lines expired at random later steps (0x463EF0);
+            // the rings compared, then the pixels the console changes in either frame.
+            {
+                const std::uint32_t tick0 = b.game_tick();
+                const int lines_shown = rnd(0, 4) == 0 ? rnd(0, 30) : 10;
+                const bool screen_chat = rnd(0, 3) != 0;
+                const int scroll = rnd(0, 20);
+                gc.options_mut().text_lines = lines_shown;
+                gc.options_mut().text_seconds = scroll;
+                gc.options_mut().screen_chat = screen_chat;
+                r.w32(gs + 0x37F27, static_cast<u32>(lines_shown));
+                r.w32(gs + 0x37F23, static_cast<u32>(scroll));
+                r.w32(gs + 0x37F02, screen_chat ? 1u : 0u);
+                // Start from an empty ring with random leftover flag bits in its slots.
+                std::vector<u8> ring(30 * 0x48, 0);
+                for (int k = 0; k < 30; ++k) {
+                    const u8 f = static_cast<u8>(rnd(0, 7) == 0 ? 0x20 : 0);
+                    ring[static_cast<std::size_t>(k) * 0x48 + 0x47] = f;
+                    gc.console().lines[static_cast<std::size_t>(k)] = {};
+                    gc.console().lines[static_cast<std::size_t>(k)].kind = f;
+                }
+                r.write(gs + 0x12EF, ring.data(), ring.size());
+                const int start = rnd(0, 29);
+                { const u16 v16 = static_cast<u16>(start); r.write(gs + 0x2A3E, &v16, 2); }
+                { const u16 v16 = static_cast<u16>(start); r.write(gs + 0x2A40, &v16, 2); }
+                gc.console().next = gc.console().oldest = static_cast<std::uint16_t>(start);
+                const u32 text_at = o.alloc(0x100);
+                const int adds = rnd(0, 45);
+                int expired = 0;
+                std::uint32_t tick = tick0;
+                for (int a = 0; a < adds; ++a) {
+                    std::string t;
+                    const int len = rnd(0, 6) == 0 ? rnd(0, 90) : rnd(1, 40);
+                    for (int c = 0; c < len; ++c) {
+                        const int kind = rnd(0, 19);
+                        t.push_back(static_cast<char>(kind == 0 ? rnd(1, 31) : kind == 1 ? rnd(128, 255) : rnd(32, 126)));
+                    }
+                    static const u8 kinds[4] = {1, 2, 4, 8};
+                    const u8 kind = kinds[rnd(0, 3)];
+                    const u8 player = static_cast<u8>(rnd(0, 2) == 0 ? rnd(0, 9) : 10);
+                    const u16 param = static_cast<u16>(rnd(0, 0xFFFF));
+                    tick += static_cast<std::uint32_t>(rnd(0, 3) == 0 ? rnd(0, 400) : 0);
+                    b.unit_env().game_tick = tick;
+                    r.w32(gs + 0x38A47, tick);
+                    std::vector<u8> tb(t.begin(), t.end());
+                    tb.push_back(0);
+                    r.write(text_at, tb.data(), tb.size());
+                    o.call(0x00463CA0, 0, {text_at, kind, param, player});
+                    gc.message(t, kind, player, param);
+                    if (rnd(0, 4) == 0) {
+                        u32 gone = 0;
+                        o.call(0x00463EF0, 0, {}, &gone);
+                        expired += gc.expire_console() ? 1 : 0;
+                    }
+                }
+                // The rings compared.
+                std::vector<u8> oring(30 * 0x48);
+                r.read(gs + 0x12EF, oring.data(), oring.size());
+                const u32 onext = r.r32(gs + 0x2A3E) & 0xFFFF, oold = r.r32(gs + 0x2A40) & 0xFFFF;
+                int ring_diff = (onext != gc.console().next) + (oold != gc.console().oldest);
+                for (int k = 0; k < 30; ++k) {
+                    const u8* e = &oring[static_cast<std::size_t>(k) * 0x48];
+                    const auto& l = gc.console().lines[static_cast<std::size_t>(k)];
+                    u32 lt = 0;
+                    std::memcpy(&lt, e + 0x40, 4);
+                    u16 lp = 0;
+                    std::memcpy(&lp, e + 0x44, 2);
+                    if (std::memcmp(e, l.text.data(), 64) != 0 || lt != l.tick || lp != l.param || e[0x46] != l.player || e[0x47] != l.kind) ++ring_diff;
+                }
+                // Frames without and with the console.
+                const u16 cur_next = static_cast<u16>(onext);
+                { const u16 v16 = static_cast<u16>(oold); r.write(gs + 0x2A3E, &v16, 2); }
+                const auto saved_next = gc.console().next;
+                gc.console().next = gc.console().oldest;
+                std::vector<u8> o0, o1;
+                const render::Image8 c0 = client_frame();
+                bool ok3 = original_frame(o0);
+                r.write(gs + 0x2A3E, &cur_next, 2);
+                gc.console().next = saved_next;
+                const render::Image8 c1 = client_frame();
+                ok3 = ok3 && original_frame(o1);
+                if (!ok3) {
+                    std::printf("  hud: console: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 cimg(W, H, 0);
+                    long long changed = 0;
+                    const long long cd = delta(o0, o1, c0, c1, changed, cimg);
+                    std::printf("  hud: console (%d lines added, %d expired, %d shown at most, screen chat %d): rings %s; %lld of %lld changed pixels differ\n",
+                                adds, expired, lines_shown, screen_chat ? 1 : 0, ring_diff ? "DIFFER" : "equal", cd, changed);
+                    if (cd) dump("console", o1, c1, cimg);
+                    if (changed && std::getenv("FH_SHOTS")) dump("consoleok", o1, c1, cimg);
+                    st.pixels += cd + ring_diff;
+                    differs(cd + ring_diff);
+                }
+                // Back to an empty console and the battle's step.
+                b.unit_env().game_tick = tick0;
+                r.w32(gs + 0x38A47, tick0);
+                r.w32(gs + 0x2A3E, 0);
+                gc.console().next = gc.console().oldest = 0;
             }
             b.player_economy[0] = saved_ec;
             b.players[0] = saved_slot;

@@ -50,6 +50,7 @@ struct ClientOptions {
     bool damage_bars = false;        // health bars over own units (the original's default: off)
     bool selection_boxes = true;
     int text_lines = 10, text_seconds = 10;  // console (the original's defaults)
+    bool screen_chat = true;                 // every console line shown (off: notices, chat, players' notes)
     bool fog = true;                 // draw the viewed player's fog of war
     int unit_chat = 10;              // unit speech level 0..10 (Off 0, Medium 5, Full 10): notices of priority > 10 - level speak
     int unit_chat_text = 5;          // the same for their console text
@@ -136,7 +137,28 @@ public:
     void on_speech(sim::Unit& unit, std::uint32_t id);
     void on_under_attack(sim::Unit& unit);
     void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
-    void message(const std::string& text, bool highlight = false, bool beep = false);
+    // A console line (0x463CA0): kind 2 the game's own notes, 1 unit notices (param: the unit),
+    // 4 chat, 8 other players' notes; player: the sender's player record (10: none, no logo,
+    // no "MessageArrived" beep).
+    enum MessageKind : std::uint8_t { kUnitNotice = 1, kGameNote = 2, kChat = 4, kPlayerNote = 8 };
+    static constexpr std::uint8_t kNoPlayer = 10;
+    void message(const std::string& text, std::uint8_t kind = kGameNote, std::uint8_t player = kNoPlayer, std::uint16_t param = 0);
+    // The console's line ring as the original keeps it (tests).
+    struct ConsoleLine {
+        std::array<char, 64> text{};
+        std::uint32_t tick = 0;
+        std::uint16_t param = 0;
+        std::uint8_t player = 0;
+        std::uint8_t kind = 0;  // low four bits: the kind; bit 0x20: marked (drawn in colour 10)
+    };
+    struct ConsoleRing {
+        std::array<ConsoleLine, 30> lines{};
+        std::uint16_t next = 0, oldest = 0;
+    };
+    ConsoleRing& console() { return console_; }
+    // The oldest line goes when it came more than (text_seconds + 1) seconds of game steps ago
+    // (0x463EF0, once at the end of each pass that ran steps); true when one went.
+    bool expire_console();
     void selection_changed() { panel_dirty_ = true; }
     // The minimap's work inside a battle step (the battle's outside forwards it): after a
     // player's sight updates the viewed player's radar marks are drawn anew (player_stage),
@@ -349,12 +371,7 @@ private:
     std::vector<UnitScreen> mm_dots_;    // radar dots drawn on the minimap in the last frame
     std::uint32_t last_click_ms_ = 0;
     std::uint16_t last_click_unit_ = 0;
-    struct Line {
-        std::string text;
-        std::uint32_t tick;
-        bool highlight;
-    };
-    std::deque<Line> console_;
+    ConsoleRing console_;
     std::vector<SoundEvent> sounds_;
     std::array<float, 8> shown_{};   // eased top-bar values: energy, metal stored; storages (unused), incomes
     bool quit_ = false;

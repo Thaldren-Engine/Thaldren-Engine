@@ -464,13 +464,50 @@ void GameClient::draw_unit_bars(render::Image8& o) {
 }
 
 void GameClient::draw_console(render::Image8& o) {
-    if (!side_ || !side_->font) return;
-    const int lines = std::min<int>(opt_.text_lines, static_cast<int>(console_.size()));
+    // 0x464060. The lines shown: from the next line to write, back by at most text_lines - 1
+    // lines (stopping at the oldest), up to the newest. Each from (138, 52), one console font
+    // height apart (only drawn lines move the row on); with screen chat off only unit notices,
+    // chat and other players' notes show. A line with a sender first gets the sender's colour
+    // logo stretched over a square of 0.8 font heights at (138, y) and its text starts 1.5 squares
+    // right of 138. The text: the picture font's glyphs (characters from 0x20 that have one;
+    // a space only moves on), else the console font in interface colour 15 (10 when marked).
+    const Font* fnt = c_.console_font ? c_.console_font : (side_ ? side_->font : nullptr);
+    if (opt_.text_lines == 0 || !fnt) return;
+    int first = console_.next;
+    for (int k = 1; k < opt_.text_lines; ++k) {
+        if (first == console_.oldest) break;
+        if (--first < 0) first = 29;
+    }
+    const int h = fnt->height & 0xFF;
     int y = 52;
-    for (int k = static_cast<int>(console_.size()) - lines; k < static_cast<int>(console_.size()); ++k) {
-        const Line& l = console_[static_cast<std::size_t>(k)];
-        draw_text(o, view_rect(), *side_->font, l.text, 138, y + side_->font->raise, l.highlight ? c_.hud[10] : c_.hud[15]);
-        y += side_->font->height;
+    for (int i = first; i != console_.next; i = i == 29 ? 0 : i + 1) {
+        const ConsoleLine& l = console_.lines[static_cast<std::size_t>(i)];
+        const int kind = l.kind & 0x0F;
+        if (!opt_.screen_chat && kind != kUnitNotice && kind != kChat && kind != kPlayerNote) continue;
+        int x = 138;
+        if (l.player != kNoPlayer) {
+            const int s = static_cast<int>(static_cast<double>(h) * 0.8);
+            draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(l.player) % c_.player_colour.size()], Region{138, y, 138 + s, y + s}, 0);
+            x = static_cast<int>(138.0 - static_cast<double>(s) * -1.5);
+        }
+        const std::string_view text(l.text.data(), strnlen(l.text.data(), l.text.size()));
+        if (c_.picture_font) {
+            const Font& f = *c_.picture_font;
+            for (unsigned char ch : text) {
+                const Glyph& g = f.glyphs[ch];
+                if (ch < 0x20 || !g.present) continue;
+                if (ch != ' ')
+                    for (int r = 0; r < g.rows; ++r)
+                        for (int k = 0; k < g.width; ++k) {
+                            const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                            if (g.ink[at]) put_pixel(o, o.bounds(), x + g.left + k, y + g.top + r, g.colours[at]);
+                        }
+                x += g.width;
+            }
+        } else {
+            bar_text(o, *fnt, std::string(text), x, y, (l.kind & 0x20) ? c_.hud[10] : c_.hud[15]);
+        }
+        y += h;
     }
 }
 

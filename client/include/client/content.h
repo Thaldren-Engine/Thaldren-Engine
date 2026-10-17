@@ -278,6 +278,11 @@ struct Content {
         const Font* font = nullptr;
     };
     ChatLine chat;
+    // The console's fonts: its lines are spaced (and their senders' logos sized) by the console
+    // font, and drawn in the interface's picture font when it is loaded (the glyphs keep their
+    // own colours), else in the console font.
+    const Font* console_font = nullptr;
+    const Font* picture_font = nullptr;
     std::vector<std::uint8_t> shade_levels;  // the shade table (32 levels x 256; a layout dimmed under a dialog)
     std::vector<std::uint8_t> light_levels;  // the light table (32 levels x 256; the focused text field's text)
     // Builds the battle view of the viewing player (projection, culling and draw order are

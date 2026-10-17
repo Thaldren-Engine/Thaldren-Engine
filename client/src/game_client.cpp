@@ -209,9 +209,9 @@ int GameClient::frame(std::uint32_t now_ms) {
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
     for (int k = 0; k < steps; ++k) step_battle(b_);
     end_frame(b_);  // once per frame, after the frame's steps (even none)
-    // Console lines expire one per frame, each (text_seconds + 1) seconds after it came.
-    if (!console_.empty() && console_.front().tick + static_cast<std::uint32_t>(opt_.text_seconds + 1) * 30u < b_.game_tick())
-        console_.pop_front();
+    // Console lines expire one per pass that ran steps (0x463EF0 at the end of the step routine):
+    // the oldest goes when it came more than (text_seconds + 1) seconds of game steps ago.
+    if (steps > 0) expire_console();
     scroll_step(dt);
     // The tracked unit keeps the view centred on it.
     if (tracked_) {
@@ -340,7 +340,7 @@ struct GameClient::NoticeHost : NoticeQueue::Host {
     bool unit_alive(std::uint16_t unit) override { return (c.b_.units[unit].flags & 0x10000000u) != 0; }
     void show(std::uint16_t unit, const std::string& text) override {
         const std::uint16_t t = c.b_.ticks[unit].type_index;
-        if (t < c.c_.types.size()) c.message(c.c_.types[t].name + ": " + text);
+        if (t < c.c_.types.size()) c.message(c.c_.types[t].name + ": " + text, kUnitNotice, kNoPlayer, unit);
     }
 };
 
@@ -379,13 +379,31 @@ void GameClient::on_under_attack(sim::Unit& u) {
         if (s.id == u.id) return;
     on_speech(u, 2);
 }
-void GameClient::message(const std::string& text, bool highlight, bool beep) {
-    if (text.empty()) return;
-    // (0x463CA0: a message from another player beeps "MessageArrived" while the console shows
-    // lines at all.)
-    if (beep && opt_.text_lines != 0) play_ui(c_.ui_sounds.message);
-    console_.push_back({text.substr(0, 64), b_.game_tick(), highlight});
-    while (console_.size() > 30) console_.pop_front();
+bool GameClient::expire_console() {
+    if (console_.next == console_.oldest) return false;
+    if (!(console_.lines[console_.oldest].tick + static_cast<std::uint32_t>(opt_.text_seconds + 1) * 30u < b_.game_tick())) return false;
+    if (++console_.oldest == 30) console_.oldest = 0;
+    return true;
+}
+
+void GameClient::message(const std::string& text, std::uint8_t kind, std::uint8_t player, std::uint16_t param) {
+    // 0x463CA0: nothing without text or while the console shows no lines. The ring holds 30
+    // lines; when the line after the next to write, counted modulo the number of lines shown
+    // (not 30), is the oldest, the oldest goes. The text keeps 63 characters; the slot's flag
+    // bits above the kind stay what they were.
+    if (text.empty() || text[0] == 0 || opt_.text_lines == 0) return;
+    if ((console_.next + 1) % opt_.text_lines == console_.oldest)
+        if (++console_.oldest == 30) console_.oldest = 0;
+    ConsoleLine& l = console_.lines[console_.next];
+    l.text.fill(0);
+    for (std::size_t k = 0; k < 63 && k < text.size() && text[k]; ++k) l.text[k] = text[k];
+    l.tick = b_.game_tick();
+    l.kind = static_cast<std::uint8_t>((l.kind & 0xF0) | (kind & 0x0F));
+    l.param = param;
+    l.player = player;
+    if (++console_.next == 30) console_.next = 0;
+    // A line with a sender beeps "MessageArrived".
+    if (player != kNoPlayer) play_ui(c_.ui_sounds.message);
 }
 
 // ---- selection ---------------------------------------------------------------------------------
@@ -1064,7 +1082,7 @@ void GameClient::enter_chat_line(const std::string& typed) {
     }
     if (line.empty()) return;
     if (on_chat) on_chat(line);
-    else message(line);
+    else message(line, kChat);
 }
 
 sim::Vec3i GameClient::cursor_world() const {
