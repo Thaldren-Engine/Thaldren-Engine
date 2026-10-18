@@ -664,7 +664,16 @@ bool open_provider(NetPart& part, std::string& error) {
         p = net::dplay::serial_provider(o, error);
     }
     if (!p) return false;
-    part.session = std::make_unique<net::dplay::Session>(std::move(p));
+    std::function<void(const std::string&)> log;
+    if (const char* path = std::getenv("TA_DPLAY_LOG")) {
+        // Tests: every session message, one line each (dplay_play decode reads it).
+        auto f = std::make_shared<std::ofstream>(path, std::ios::app);
+        log = [f](const std::string& l) {
+            *f << l << "\n";
+            f->flush();
+        };
+    }
+    part.session = std::make_unique<net::dplay::Session>(std::move(p), log);
     return true;
 }
 

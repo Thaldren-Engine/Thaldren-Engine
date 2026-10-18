@@ -356,12 +356,12 @@ void launch_network_battle(FrontEnd& fe, const NetMenuConfig& cfg, NetLaunch L) 
             room->data_loaded();
             const auto limit = clock::now() + std::chrono::minutes(5);
             while (!room->loaded() && !room->refused() && clock::now() < limit) {
+                // One pass a loading-screen frame (the original draws one, then sleeps 200 ms):
+                // its "loaded" (0x15) and progress (0x2A) go out once a frame, not more.
                 if (frame_due()) {
                     net_frame();
                     show_players(false);
                     progress(1.0f, "network");
-                } else {
-                    room->frame(now_ticks(), crt.get());
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }

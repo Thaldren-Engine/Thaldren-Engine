@@ -1,0 +1,12 @@
+﻿# Our client hosting through its 1:1 menus and live LOUNGE2 room, the original (offscreen capture) joining: packets the original sent and got
+orig sends: 989 messages; packets by type: 00:40 02:41 06:82 07:408 09:1 11:1 15:3 17:1 1a:29205 1f:1 20:40 21:6 24:40 28:18 2a:61 2c:2130 86:1
+orig gets: 1206 messages; packets by type: 01:24 02:41 05:1 06:408 07:82 08:1 09:1 11:1 15:1 18:2 1a:279 1e:1 20:24 22:6 24:24 26:24 2a:388 2c:2902 34:1 86:1
+chat lines:
+  orig gets: <Ours> hello from our host
+start / positions / loaded (first ones):
+  orig gets  from -1444933283 to -1444933281: [frame -38] 20(map "Canal Crossing" ready 1 id a9e0115d kind 1 side 0 logo 0 flags 01 options 77
+  orig gets  from -1444933283 to -1444933281: [frame -1] 1e(01)
+  orig sends from -1444933281 to -1444933283: [frame -1] 07 07 07 07 1f(5f11e0a9) 07
+  orig sends from -1444933281 to 0: [frame -123] 15()
+  orig sends from -1444933281 to 0: [frame -125] 15()
+  orig gets  from -1444933283 to -1444933281: [frame -426] 15()

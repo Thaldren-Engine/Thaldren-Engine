@@ -39,7 +39,10 @@
 //   for each key (comma list or "all") and modifier set and prints one OUTCOME line per trial
 //   (the gadgets the layout's handler was called with, focus / field / text / stage changes, a
 //   screen change). Multiplayer screens: selprov[:..], tcp[:ADDR], serial, modem, selgame:FILE,
-//   newmulti, msgbox:W:TEXT, lounge:FILE.
+//   newmulti, msgbox:W:TEXT, lounge:FILE (also a live room's "focus NAME" / "keys 0" lines),
+//   loungeframe (one more room frame). The build restrictions: unitdefs (the original's unit
+//   enumeration, before lounge:), restrict (0x44C7E0 over the room), restrictframe (its frame
+//   routine: one unit picture each two clock ticks). Debugging: memx:EXPR[:N], callx:ADDR:SELF:ARGS.
 //   The battle loading screen (0x497F40): [maptype:N] [loadmap:NAME] | lounge:FILE, clock:T,
 //   loadscreen (its set-up and first frame), loadframe:T,TE,U,A,D,E[:READY[:BITS]],
 //   loadplayer:SLOT,PERCENT,READY; frames written as <out>load_<n>.bmp (compare: ta_play
