@@ -80,6 +80,9 @@ public:
     virtual bool see_through() const { return false; }
     // The palette the screen is shown with (null: the one below, else the game palette).
     virtual const render::Palette* palette() const { return nullptr; }
+    // Open alone over a battle, it leaves the keys to the battle's own key handling (a bar that
+    // takes the pointer only); Tab still reaches it.
+    virtual bool battle_keys() const { return false; }
 };
 
 // ---------------------------------------------------------------- battles

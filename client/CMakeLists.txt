@@ -68,6 +68,12 @@ target_compile_options(ta_play PRIVATE ${WARN_FLAGS})
 if(MSVC)
     target_link_options(ta_play PRIVATE /MAP)  # function addresses for crash reports
 endif()
+# Every in-battle menu path leaves the battle running (skirmish and network game; needs the game).
+if(WIN32 AND TA_GAME_DIR)
+    add_test(NAME battle_menus_keep_battle
+             COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tools/battle_menus_check.ps1"
+                     -Exe "$<TARGET_FILE:ta_play>" -Game "${TA_GAME_DIR}")
+endif()
 
 # Whole-frame comparison with the original's frame draw (32-bit builds only: it calls the
 # original executable's routines in a suspended process, ta_compat/tools/orig_harness).

@@ -1446,6 +1446,10 @@ class TabMenu : public LayoutScreen {
 public:
     explicit TabMenu(MenuArt& art) : LayoutScreen(art.layout("TABMENU")), art_(art) {}
     bool see_through() const override { return true; }
+    // The battle's key handler (0x495E90) runs while the bar is open (only the game menu stops
+    // it): Tab closes the bar (0x495010), F2 opens the game menu over it, Esc and the other keys
+    // are the battle's; the bar's quick keys and its escdefault never see a key.
+    bool battle_keys() const override { return true; }
     void enter(FrontEnd& fe) override {
         // Tab opening (and closing) the bar sounds "SmallButton".
         if (!opened_) sfx(fe, art_, "SmallButton");
