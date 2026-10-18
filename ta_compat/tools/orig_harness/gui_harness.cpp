@@ -39,7 +39,10 @@
 //   for each key (comma list or "all") and modifier set and prints one OUTCOME line per trial
 //   (the gadgets the layout's handler was called with, focus / field / text / stage changes, a
 //   screen change). Multiplayer screens: selprov[:..], tcp[:ADDR], serial, modem, selgame:FILE,
-//   newmulti, msgbox:W:TEXT, lounge:FILE.
+//   newmulti, msgbox:W:TEXT, lounge:FILE (also a live room's "focus NAME" / "keys 0" lines),
+//   loungeframe (one more room frame). The build restrictions: unitdefs (the original's unit
+//   enumeration, before lounge:), restrict (0x44C7E0 over the room), restrictframe (its frame
+//   routine: one unit picture each two clock ticks). Debugging: memx:EXPR[:N], callx:ADDR:SELF:ARGS.
 //   The battle loading screen (0x497F40): [maptype:N] [loadmap:NAME] | lounge:FILE, clock:T,
 //   loadscreen (its set-up and first frame), loadframe:T,TE,U,A,D,E[:READY[:BITS]],
 //   loadplayer:SLOT,PERCENT,READY; frames written as <out>load_<n>.bmp (compare: ta_play
@@ -51,6 +54,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -272,6 +276,10 @@ bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& b
 }
 
 std::string lounge_map;  // the room file's map (the host chooses it after the room opens)
+// The room file's focus (a live room's last pressed gadget: "focus NAME") and whether the chat
+// line still takes the keys ("keys 0": no field does).
+std::string lounge_focus;
+bool lounge_keys = true;
 u32 g_rand_state = 0;     // srand: the shared rand() state word (0: rand() not replaced)
 
 // ---------------------------------------------------------------------------------------------
@@ -562,6 +570,8 @@ bool lounge_setup(harness::DbgRemote& r, Gui& g, const std::string& path) {
         else if (k == "map") map = rest;
         else if (k == "chat") chat.push_back(rest);
         else if (k == "players") players = std::atoi(rest);
+        else if (k == "focus") lounge_focus = rest;
+        else if (k == "keys") lounge_keys = std::atoi(rest) != 0;
         else if (k == "res") {
             // res SLOT W H: a player's screen size (the local player's comes from its display mode).
             int sl = 0, w = 0, h = 0;
@@ -1657,7 +1667,27 @@ int main(int argc, char** argv) {
             // players' records and the chat from FILE (see lounge_setup); the network's sends and
             // the session description do nothing.
             ok = lounge_setup(r, g, s.substr(7));
+            // A joining machine's room opens before the host's record reaches it (the session's
+            // join, then the room; the records come with the room's first frames): its set-up
+            // finds no host record to compare the map checksum with. The host record's version
+            // is held at 0 meanwhile (no checksum compare, as without a host record).
+            u32 host_rec = 0, host_ver = 0;
+            {
+                const u32 local = r.r32(gs + 0x2A42) & 0xFF;
+                const u32 lrec = r.r32(gs + 0x1B63 + local * 0x14B + 0x27);
+                if (ok && lrec && !(r.r32(lrec + 0x97) & 1))
+                    for (u32 p = 0; p < 10; ++p) {
+                        const u32 sr = r.r32(gs + 0x1B63 + p * 0x14B + 0x27);
+                        if (sr && (r.r32(sr + 0x97) & 1) && (r.r32(gs + 0x1B63 + p * 0x14B) != 0)) {
+                            host_rec = sr;
+                            host_ver = r.r32(sr + 0xA7) & 0xFF;
+                            r.w8(sr + 0xA7, 0);
+                            break;
+                        }
+                    }
+            }
             if (ok) ok = r.call(0x00449BB0, 0, {});
+            if (host_rec) r.w8(host_rec + 0xA7, static_cast<std::uint8_t>(host_ver));
             {
                 // The room opens on the list's first map; a host then chooses the file's map (its
                 // record takes the name, as the map choice's handler does).
@@ -1673,6 +1703,17 @@ int main(int argc, char** argv) {
                     u32 sum = 0;
                     if (r.call(0x004373A0, schema, {}, &sum)) r.w32(rec + 0xA9, sum);
                 }
+            }
+            if (ok && (!lounge_focus.empty() || !lounge_keys)) {
+                // A live room's focus: the gadget last pressed holds it (layout +0x20) and, after a
+                // press of anything but the chat line, no field takes the keys (GUI +0x64).
+                const u32 top = r.r32(g.gui() + 0x18);
+                const u32 gadgets = top ? r.r32(top + 4) : 0;
+                u32 idx = 0xFFFFFFFFu;
+                if (gadgets && !lounge_focus.empty()) r.call(0x0049FDF0, 0, {gadgets, r.str(lounge_focus)}, &idx);
+                if (top && idx != 0xFFFFFFFFu) r.w32(top + 0x20, idx);
+                if (!lounge_keys) r.w32(g.gui() + 0x64, 0xFFFFFFFFu);
+                std::printf("lounge: focus %s (%d), keys %d\n", lounge_focus.c_str(), static_cast<int>(idx), lounge_keys ? 1 : 0);
             }
             if (ok) ok = r.call(0x0044A680, 0, {});
             std::printf("lounge: %s, start %s\n", ok ? "set up" : "failed", "");
@@ -1733,6 +1774,121 @@ int main(int argc, char** argv) {
             for (int k = 0; k < 21; ++k) std::printf(" %d", t[k]);
             std::printf("\n  GS+0x143A7: %u %u %u / %u %u %u / %u %u %u; gui+0xB2: %u %u %u / %u %u %u / %u %u %u\n", pal[0], pal[1], pal[2], pal[4], pal[5], pal[6],
                         pal[8], pal[9], pal[10], gp[0], gp[1], gp[2], gp[4], gp[5], gp[6], gp[8], gp[9], gp[10]);
+            continue;
+        } else if (s.rfind("callx:", 0) == 0) {
+            // Debugging: callx:ADDR:SELF:ARG,ARG..  calls a routine (SELF and each ARG a memx
+            // expression; "buf" a fresh 64-byte block printed afterwards) and prints EAX.
+            std::vector<std::string> f;
+            for (std::size_t a = 6;;) {
+                const std::size_t e = s.find(':', a);
+                f.push_back(s.substr(a, e == std::string::npos ? std::string::npos : e - a));
+                if (e == std::string::npos) break;
+                a = e + 1;
+            }
+            auto eval = [&](const std::string& e) {
+                u32 v = 0, num = 0;
+                bool have = false;
+                for (char ch : e + "+") {
+                    if (std::isxdigit(static_cast<unsigned char>(ch))) {
+                        num = num * 16 + static_cast<u32>(std::isdigit(static_cast<unsigned char>(ch)) ? ch - '0' : (std::tolower(ch) - 'a' + 10));
+                        have = true;
+                    } else {
+                        if (have) v += num;
+                        num = 0;
+                        have = false;
+                        if (ch == '*') v = r.r32(v);
+                    }
+                }
+                return v;
+            };
+            if (f.size() < 2) continue;
+            std::vector<u32> args;
+            u32 buf = 0;
+            if (f.size() > 2)
+                for (std::size_t a = 0; a <= f[2].size();) {
+                    const std::size_t e = f[2].find(',', a);
+                    const std::string t = f[2].substr(a, e == std::string::npos ? std::string::npos : e - a);
+                    if (t == "buf") {
+                        buf = r.alloc(64);
+                        std::vector<std::uint8_t> z(64, 0);
+                        r.write(buf, z.data(), z.size());
+                        args.push_back(buf);
+                    } else if (!t.empty()) {
+                        args.push_back(eval(t));
+                    }
+                    if (e == std::string::npos) break;
+                    a = e + 1;
+                }
+            u32 result = 0;
+            const bool done = r.call(eval(f[0]), eval(f[1]), args, &result);
+            std::printf("%s: %s, EAX %08X", s.c_str(), done ? "ok" : "failed", result);
+            if (buf) {
+                std::uint8_t b[32] = {};
+                r.read(buf, b, sizeof b);
+                std::printf(", buf:");
+                for (std::uint8_t x : b) std::printf(" %02X", x);
+            }
+            std::printf("\n");
+            continue;
+        } else if (s.rfind("memx:", 0) == 0) {
+            // Debugging: memx:EXPR[:N] prints N (default 16) bytes at EXPR: hex numbers added
+            // with '+', a '*' reads the 32-bit word at the address so far (e.g. 511DE8*+2A30*).
+            const std::string t = s.substr(5);
+            const auto c = t.find(':');
+            const std::string e = t.substr(0, c);
+            const u32 n = c == std::string::npos ? 16u : static_cast<u32>(std::strtoul(t.c_str() + c + 1, nullptr, 10));
+            u32 v = 0, num = 0;
+            bool have = false;
+            for (char ch : e + "+") {
+                if (std::isxdigit(static_cast<unsigned char>(ch))) {
+                    num = num * 16 + static_cast<u32>(std::isdigit(static_cast<unsigned char>(ch)) ? ch - '0' : (std::tolower(ch) - 'a' + 10));
+                    have = true;
+                } else {
+                    if (have) v += num;
+                    num = 0;
+                    have = false;
+                    if (ch == '*') v = r.r32(v);
+                }
+            }
+            std::vector<std::uint8_t> b(std::min<u32>(n, 256), 0);
+            if (v) r.read(v, b.data(), b.size());
+            std::printf("%s @%08X:", s.c_str(), v);
+            for (std::uint8_t x : b) std::printf(" %02X", x);
+            std::printf("\n");
+            continue;
+        } else if (s.rfind("mem:", 0) == 0) {
+            // Debugging: mem:ADDR[:N] prints N (default 16) bytes at the absolute address ADDR and,
+            // with *ADDR, at the address stored there.
+            std::string a = s.substr(4);
+            const bool deref = !a.empty() && a[0] == '*';
+            if (deref) a = a.substr(1);
+            const auto c = a.find(':');
+            u32 addr = static_cast<u32>(std::strtoul(a.c_str(), nullptr, 16));
+            const u32 n = c == std::string::npos ? 16u : static_cast<u32>(std::strtoul(a.c_str() + c + 1, nullptr, 10));
+            if (deref) addr = r.r32(addr);
+            std::vector<std::uint8_t> b(std::min<u32>(n, 256), 0);
+            if (addr) r.read(addr, b.data(), b.size());
+            std::printf("%s @%08X:", s.c_str(), addr);
+            for (std::uint8_t v : b) std::printf(" %02X", v);
+            std::printf("\n");
+            continue;
+        } else if (s == "unitdefs") {
+            // The unit definitions from the original's own enumeration (0x42A8D0), before a room
+            // (its unit definition exchange object is made from them when the room opens).
+            r.w32(gs + 0x1439B, 0);
+            r.w32(gs + 0x1438F, 0);
+            ok = r.call(0x0042A8D0, 0, {}, nullptr, 120000);
+            std::printf("unitdefs: %s, %u definitions\n", ok ? "ok" : "failed", r.r32(gs + 0x1438F));
+            continue;
+        } else if (s == "restrict") {
+            // The battle room's build restrictions (RESTRICT2.GUI, 0x44C7E0) over the room.
+            ok = r.call(0x0044C7E0, 0, {});
+            std::printf("restrict: %s\n", ok ? "opened" : "failed");
+            continue;
+        } else if (s == "restrictframe") {
+            // One pass of the restrictions' own frame routine (0x44C220: a unit picture every two
+            // ticks, the counts the exchange changed).
+            ok = r.call(0x0044C220, 0, {});
             continue;
         } else if (s == "loungeframe") {
             // One more frame of the battle room (the chat scrolls a line a frame).

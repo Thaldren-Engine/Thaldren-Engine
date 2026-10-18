@@ -126,7 +126,50 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
     outside_ = std::make_unique<Outside>();
     outside_->w = this;
     sim::BattleOutside& out = net_wrap ? net_wrap(*outside_) : static_cast<sim::BattleOutside&>(*outside_);
-    lb_ = load_battle(vfs_, request_, out, error, net_attach ? std::function<void(sim::Battle&)>(net_attach) : std::function<void(sim::Battle&)>());
+    // Every unit type's model, at its definition index (the battle type index).
+    types_.clear();
+    int loaded = 0;
+    auto load_models = [&](const LoadedBattle& lb) {
+        types_.clear();
+        types_.push_back(nullptr);  // index 0: the blank type
+        loaded = 0;
+        const std::size_t ndefs = lb.type_assets.size();
+        for (std::size_t k = 1; k < ndefs; ++k) {
+            row(2, static_cast<int>(k * 100 / ndefs));
+            auto t = std::make_unique<ClientUnitType>();
+            if (lb.type_assets[k]) {
+                t->assets = lb.type_assets[k].get();
+                auto m = load_3do(t->assets->model_file, true);
+                if (m.root) {
+                    t->root = std::move(m.root);
+                    t->model = build_render_model(t->root.get(), textures_);
+                    bind_pose_primitives(t->assets->pose_model, t->model);
+                    t->ok = true;
+                    ++loaded;
+                }
+            }
+            types_.push_back(std::move(t));
+        }
+        row(2, 100);
+        // (The features, movement classes and explosion tables were made inside load_battle.)
+        row(3, 100);
+        row(4, 100);
+        row(5, 100);
+    };
+    // A network game runs its loading handshake once this machine has loaded everything (the
+    // original's loading thread is done first): the models load before the start's hook.
+    BattleRequest req = request_;
+    bool models_loaded = false;
+    if (req.start.net_game && req.prepare_start) {
+        auto handshake = req.prepare_start;
+        req.prepare_start = [&, handshake](LoadedBattle& lb, sim::BattleStart& start) {
+            row(1, 100);
+            load_models(lb);
+            models_loaded = true;
+            handshake(lb, start);
+        };
+    }
+    lb_ = load_battle(vfs_, req, out, error, net_attach ? std::function<void(sim::Battle&)>(net_attach) : std::function<void(sim::Battle&)>());
     if (!lb_) return false;
     if (net_attach) {
         // Network games: the weapon table by index, and the network side again now that the
@@ -143,35 +186,10 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
         error = "bad map file";
         return false;
     }
-    row(1, 100);
+    if (!models_loaded) row(1, 100);
 
-    // Every unit type's model, at its definition index (the battle type index).
     sim::Battle& b = *lb_->battle;
-    types_.clear();
-    types_.push_back(nullptr);  // index 0: the blank type
-    int loaded = 0;
-    const std::size_t ndefs = lb_->type_assets.size();
-    for (std::size_t k = 1; k < ndefs; ++k) {
-        row(2, static_cast<int>(k * 100 / ndefs));
-        auto t = std::make_unique<ClientUnitType>();
-        if (lb_->type_assets[k]) {
-            t->assets = lb_->type_assets[k].get();
-            auto m = load_3do(t->assets->model_file, true);
-            if (m.root) {
-                t->root = std::move(m.root);
-                t->model = build_render_model(t->root.get(), textures_);
-                bind_pose_primitives(t->assets->pose_model, t->model);
-                t->ok = true;
-                ++loaded;
-            }
-        }
-        types_.push_back(std::move(t));
-    }
-    row(2, 100);
-    // (The features, movement classes and explosion tables were made inside load_battle.)
-    row(3, 100);
-    row(4, 100);
-    row(5, 100);
+    if (!models_loaded) load_models(*lb_);
     for (std::size_t k = 1; k < types_.size(); ++k)
         if (types_[k] && types_[k]->ok) model_of_pose_[&types_[k]->assets->pose_model] = &types_[k]->model;
     std::printf("map %s: %dx%d cells; unit types: %d of %zu loaded; players:", request_.map.c_str(), hm_.width(), hm_.height(), loaded,

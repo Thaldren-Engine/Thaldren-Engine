@@ -49,6 +49,7 @@ constexpr std::uint8_t kModifiedExe = 0x27;    // 17: net id: that player's exec
 constexpr std::uint8_t kViewState = 0x28;      // 58: a player's totals for allies' displays
 constexpr std::uint8_t kViewAck = 0x29;        // 3
 constexpr std::uint8_t kViewFlag = 0x2A;       // 2
+constexpr std::uint8_t kLoadProgress = 0x2A;   // 2: loading: the sender's progress in percent (its record +0x20; 0x456DE0)
 constexpr std::uint8_t kUnitStates = 0x2C;     // variable (bytes 1-2), at least 3
 }  // namespace packet
 

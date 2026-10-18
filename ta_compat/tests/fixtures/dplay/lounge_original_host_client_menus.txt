@@ -1,0 +1,15 @@
+﻿# Original host (offscreen capture), our client joining through its 1:1 menus and live LOUNGE2 room: packets the original sent and got
+orig sends: 598 messages; packets by type: 01:32 02:40 05:1 06:74 07:380 08:1 09:1 11:1 15:1 18:1 1a:557 1e:1 20:32 22:2 24:32 26:23 28:19 2a:51 2c:2269 34:1 86:1
+orig gets: 2515 messages; packets by type: 00:22 02:33 05:1 06:380 07:67 09:1 11:1 15:358 17:1 1a:1163 1f:1 20:22 21:2 24:21 28:49 2a:363 2c:2929 86:1
+chat lines:
+  orig gets: <Ours> hello original
+  orig sends: <<the original's nickname>> hello from the original
+start / positions / loaded (first ones):
+  orig sends from 331321128 to 0: [frame -59] 08() 06
+  orig gets  from 331321130 to 331321128: [frame -30] 15()
+  orig gets  from 331321130 to 331321128: [frame -32] 15()
+  orig gets  from 331321130 to 331321128: [frame -34] 15()
+  orig gets  from 331321130 to 331321128: [frame -36] 15()
+  orig gets  from 331321130 to 331321128: [frame -38] 15()
+  orig sends from 331321128 to 331321130: [frame -1] 07 07 1e(00)
+  orig gets  from 331321130 to 331321128: [frame -1] 07 1f(2a8fbf13)

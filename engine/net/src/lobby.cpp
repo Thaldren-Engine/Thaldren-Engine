@@ -234,7 +234,7 @@ int BattleRoom::add_computer(std::uint8_t side) {
         if (p.net_id) continue;
         p = RoomPlayer{};
         p.net_id = computer_id(s);  // the host's session creates the computer players
-        p.name = "Computer " + std::to_string(s + 1);
+        p.name = ("AI:" + players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)].name).substr(0, 16);
         p.kind = 2;
         p.side = side;
         p.options = room::kNonCampaign | room::kReady;
@@ -290,7 +290,9 @@ int BattleRoom::add_computer_at(int slot, std::uint8_t side) {
     RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
     p = RoomPlayer{};
     p.net_id = computer_id(slot);
-    p.name = "Computer " + std::to_string(slot + 1);
+    // 0x451220: the session player of a computer is named "AI:" and this machine's player's name,
+    // 16 characters at most (the other machines show the session's names).
+    p.name = ("AI:" + players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)].name).substr(0, 16);
     p.kind = 2;
     p.side = side;
     p.options = room::kNonCampaign | room::kReady;
@@ -317,13 +319,13 @@ int BattleRoom::add_computer_at(int slot, std::uint8_t side) {
     return slot;
 }
 
-bool BattleRoom::remove_computer(int slot) {
+bool BattleRoom::remove_computer(int slot, std::uint8_t reason) {
     if (!host_ || slot < 0 || slot > 9) return false;
     RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
     if (!p.net_id || p.kind != 2 || !mine(p)) return false;
     u8 st[6] = {packet::kStatus};
     put32(st + 1, static_cast<std::uint32_t>(p.net_id));
-    st[5] = room::kLeft;
+    st[5] = reason;
     send_all(net_id_, st, 6);
     transport_.destroy_player(p.net_id);
     p = RoomPlayer{};
@@ -455,8 +457,26 @@ void BattleRoom::frame(std::uint32_t clock, sim::Lcg15* crt_rand) {
         return true;
     };
     Delivered d;
-    while (receiver_.next(0, sender_.timing().frame_timing, read, d))
+    while (receiver_.next(0, sender_.timing().frame_timing, read, d)) {
         if (!d.packet.empty()) handle(d.from, d.to, d.packet);
+        // The handshake's last packet ends the reading: what follows belongs to the battle
+        // (its first packets can come right behind the host's "loaded").
+        if (started_ && !loaded_ && !defer_handshake_ && (!host_ || positions_made_) && handshake_done()) break;
+    }
+    // 0x44A680 (each room frame that makes the rows): the players are kept together — a player
+    // after a free slot (neither used nor blocked) moves into it, its record with it.
+    if (host_ && !started_)
+        for (int s = 0; s < 10; ++s) {
+            if (players_[static_cast<std::size_t>(s)].net_id || blocked_[static_cast<std::size_t>(s)]) continue;
+            int t = s + 1;
+            while (t < 10 && !players_[static_cast<std::size_t>(t)].net_id) ++t;
+            if (t >= 10) break;
+            std::swap(players_[static_cast<std::size_t>(s)], players_[static_cast<std::size_t>(t)]);
+            std::swap(allied_[static_cast<std::size_t>(s)], allied_[static_cast<std::size_t>(t)]);
+            std::swap(allied_by_[static_cast<std::size_t>(s)], allied_by_[static_cast<std::size_t>(t)]);
+            if (local_slot_ == t) local_slot_ = s;
+            dirty_ = true;
+        }
     if (!started_ && (clock_ >= next_periodic_ || dirty_)) {
         if (clock_ >= next_periodic_) {
             next_periodic_ = clock_ + 60;  // every two seconds (0x456310)
@@ -477,7 +497,69 @@ void BattleRoom::frame(std::uint32_t clock, sim::Lcg15* crt_rand) {
         set_logo(0);
     }
     if (!started_) sync_tick();
-    if (started_ && !loaded_) loading_tick(crt_rand);
+    if (started_ && !loaded_ && !defer_handshake_) loading_tick(crt_rand);
+    sender_.flush(clock_, true, send_fn());
+}
+
+bool BattleRoom::handshake_done() const {
+    for (int s = 0; s < 10; ++s) {
+        const RoomPlayer& p = players_[static_cast<std::size_t>(s)];
+        if (!p.net_id || mine(p)) continue;
+        if (!heard_loaded_[static_cast<std::size_t>(s)] || (host_ && !position_acked_[static_cast<std::size_t>(s)])) return false;
+    }
+    return true;
+}
+
+bool BattleRoom::edit_own(int slot, const std::function<void(RoomPlayer&)>& change) {
+    if (slot < 0 || slot > 9) return false;
+    RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
+    if (!p.net_id || !mine(p)) return false;
+    change(p);
+    if (slot == local_slot_) pending_side_ = p.side;
+    dirty_ = true;
+    return true;
+}
+
+void BattleRoom::set_resources(std::uint16_t energy, std::uint16_t metal, std::uint16_t unit_limit) {
+    if (!host_) return;
+    // 0x44A680 / the sliders: every record of this machine carries them (the host's decide).
+    for (RoomPlayer& p : players_)
+        if (p.net_id && mine(p)) {
+            p.energy = energy;
+            p.metal = metal;
+            p.unit_limit = unit_limit;
+        }
+    dirty_ = true;
+}
+
+void BattleRoom::unready_others() {
+    for (RoomPlayer& p : players_)
+        if (p.net_id && !mine(p)) p.options = static_cast<std::uint16_t>(p.options & ~room::kReady);
+}
+
+bool BattleRoom::synching(int slot) const {
+    if (!host_ || slot < 0 || slot > 9) return false;
+    const RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
+    if (!p.net_id || p.kind != 1 || p.net_id == net_id_) return false;
+    for (const PeerChecks& c : peers_)
+        if (c.id == p.net_id) return !c.counted || c.got < c.expected;
+    return true;  // not greeted yet
+}
+
+void BattleRoom::send_load_progress(std::uint8_t percent) {
+    // 0x497F40 each frame: a probe from each of this machine's players; after the frame
+    // (0x456DE0) each one's record byte +0x20 takes the average and goes to everybody (0x2A).
+    for (RoomPlayer& p : players_) {
+        if (!p.net_id || !mine(p)) continue;
+        u8 probe[1] = {packet::kProbe};
+        send_all(p.net_id, probe, 1);
+    }
+    for (RoomPlayer& p : players_) {
+        if (!p.net_id || !mine(p)) continue;
+        p.load_percent = percent;
+        u8 pk[2] = {packet::kLoadProgress, percent};
+        send_all(p.net_id, pk, 2);
+    }
     sender_.flush(clock_, true, send_fn());
 }
 
@@ -539,13 +621,43 @@ void BattleRoom::judge_unit(std::uint32_t key) {
         }
     }
     verdicts_[key] = enabled;
+    send_answer(key);
+}
+
+void BattleRoom::send_answer(std::uint32_t key) {
+    // 0x46D860: the definition's entry to every peer: key, its "allowed" short (+0x18: 1 unless
+    // the restrictions set it to 0), its verdict (+0x1A: 0 until the definition was compared
+    // with every peer, 0x46D970), and the low 16 bits of its count (-1: no limit).
     u8 pk[14] = {packet::kSync, 3};
     put32(pk + 6, key);
-    pk[10] = enabled ? 1 : 0;
-    pk[11] = 1;
-    put16(pk + 12, players_[0].unit_limit);
+    pk[10] = unit_allowed(key) ? 1 : 0;
+    pk[11] = unit_confirmed(key) ? 1 : 0;
+    put16(pk + 12, static_cast<std::uint16_t>(unit_limit(key)));
     for (const PeerChecks& c : peers_) send_one(net_id_, c.id, pk, 14);
 }
+
+void BattleRoom::set_unit_limit(std::uint32_t key, std::int32_t count) {
+    limits_[key] = count;
+    // 0x46E550: a joining machine only keeps its own copy; the host answers every peer.
+    if (host_) send_answer(key);
+}
+
+void BattleRoom::set_unit_enabled(std::uint32_t key, bool on) {
+    allowed_[key] = on;
+    if (host_) send_answer(key);
+}
+
+bool BattleRoom::unit_allowed(std::uint32_t key) const {
+    const auto a = allowed_.find(key);
+    return a == allowed_.end() || a->second;
+}
+
+bool BattleRoom::unit_confirmed(std::uint32_t key) const {
+    const auto v = verdicts_.find(key);
+    return v != verdicts_.end() && v->second;
+}
+
+bool BattleRoom::unit_enabled(std::uint32_t key) const { return unit_allowed(key) && unit_confirmed(key); }
 
 void BattleRoom::loading_tick(sim::Lcg15* crt_rand) {
     // 0x4568C0, once per pass while loading.
@@ -695,6 +807,7 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         q.ally_team = keep.ally_team;
         q.group = keep.group;
         q.start_position = keep.start_position;
+        q.load_percent = keep.load_percent;
         if (host_) q.logo = keep.logo;  // the host keeps the logos it granted
         break;
     }
@@ -799,7 +912,12 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         if (sub >= 100) break;
         if (!host_) {
             ++sync_heard_;
-            if (sub == 3) verdicts_[get32(p + 6)] = p[10] != 0 && p[11] != 0;
+            if (sub == 3) {
+                // 0x46D6C0: the host's entry replaces this machine's (enabled, confirmed, count).
+                allowed_[get32(p + 6)] = p[10] != 0;
+                verdicts_[get32(p + 6)] = p[11] != 0;
+                limits_[get32(p + 6)] = static_cast<std::int16_t>(get16(p + 12));
+            }
             break;
         }
         auto it = std::find_if(peers_.begin(), peers_.end(), [&](const PeerChecks& c) { return c.id == from; });
@@ -823,6 +941,10 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         break;
     case packet::kLoaded:
         if (started_ && fs >= 0) heard_loaded_[static_cast<std::size_t>(fs)] = true;
+        break;
+    case packet::kLoadProgress:
+        // 0x453D40: the sender's record byte +0x20 (its loading bar).
+        if (fs >= 0) players_[static_cast<std::size_t>(fs)].load_percent = p[1];
         break;
     case packet::kStartPositionSet: {
         const int ts = slot_of(to);
@@ -985,11 +1107,14 @@ void BattleRoom::session_events() {
 
 std::int32_t BattleRoom::computer_id(int slot) {
     // The original's host makes a session player for each computer player (0x451220), named
-    // "AI:" and the record's name (COMPUTER), with its human player's data.
+    // "AI:" and the name of this machine's player (16 characters at most), with its human
+    // player's data.
     std::vector<u8> data(21, 0);
     data[0x13] = 0x50;
-    const std::int32_t id = transport_.create_player("AI:COMPUTER", data);
-    return id > 0 ? id : net_id_ + 0x1000 + slot;
+    const std::string name = ("AI:" + players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)].name).substr(0, 16);
+    const std::int32_t id = transport_.create_player(name, data);
+    // (Session ids are any 32-bit value, XORed with the session's key: 0 and -1 mean none.)
+    return id != 0 && id != -1 ? id : net_id_ + 0x1000 + slot;
 }
 
 void BattleRoom::publish_session_info() {

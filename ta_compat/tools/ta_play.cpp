@@ -38,6 +38,9 @@
 //                       (the format is described where it is read; compare: gui_harness loadframe:)
 //   --loading-trace     tests (with a direct battle): prints the loader's loading-screen reports
 //   --pointer-selftest  tests: checks the window front ends' pointer and focus rules and exits
+//   Environment (tests): TA_ROOM_DUMP=PREFIX writes each state a live battle room draws as a
+//   room file and its frame (PREFIXnnnn.txt / .bmp; compare: gui_harness lounge:), TA_DPLAY_LOG=FILE
+//   logs every message of the session protocol.
 //   --dump-build-pages DIR  tests: writes every builder's build pages (listing and pictures, for
 //                       each viewing side) to DIR and exits (compare: gui_harness buildpages:)
 

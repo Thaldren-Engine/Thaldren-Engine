@@ -182,7 +182,7 @@ int LayoutScreen::hit(int x, int y) {
     // The last drawn widget under the point wins (later entries lie on top).
     for (int i = static_cast<int>(widgets_.size()) - 1; i >= 1; --i) {
         const Widget& w = widgets_[static_cast<std::size_t>(i)];
-        if (!w.active || w.kind == WidgetKind::Label || w.kind == WidgetKind::FontRef || w.kind == WidgetKind::Header) continue;
+        if (!w.active || !w.hot || w.kind == WidgetKind::Label || w.kind == WidgetKind::FontRef || w.kind == WidgetKind::Header) continue;
         if (inside(w, ox_, oy_, x, y)) return i;
     }
     return -1;
@@ -1275,7 +1275,7 @@ void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
     const int ring = hold_depth_ != 0 ? ring_hold_ : focus_gadget_;
     if (!focus_ring_ || ring < 0 || ring >= static_cast<int>(widgets_.size()) || light.size() < 0x2000) return;
     const Widget& w = widgets_[static_cast<std::size_t>(ring)];
-    if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox) return;
+    if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox || !rings(ring)) return;
     const int gx0 = ox_, gy0 = oy_, gx1 = ox_ + widgets_.front().w - 1, gy1 = oy_ + widgets_.front().h - 1;  // the screen's own surface
     auto px = [&](int x, int y, int level) {
         if (x < gx0 || y < gy0 || x > gx1 || y > gy1 || x < 0 || y < 0 || x >= out.width || y >= out.height) return;
