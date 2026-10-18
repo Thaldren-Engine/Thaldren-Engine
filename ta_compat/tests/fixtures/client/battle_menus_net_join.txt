@@ -1,0 +1,24 @@
+# The joining side of battle_menus_net_host.txt: connection screen, TCP/IP, the host's address
+# (127.0.0.1 in the settings), game list, Join, ready; in the battle the tab bar and the game
+# menu, opened and closed by Tab, F2, Esc and their buttons.
+40 key m
+120 key down
+125 key down
+130 key s
+380 key enter
+480 key j
+700 key r +alt
+1000 key tab
+1020 key tab
+1040 key tab
+1060 click 198 462
+1080 key escape
+1100 key escape
+1120 key tab
+1140 key f2
+1160 key o
+1180 key s
+1200 click 148 203
+1220 click 61 434
+1240 key r
+1260 key escape

@@ -1,0 +1,57 @@
+# Every in-battle menu path of a skirmish (640x480); the battle must still run at the end with
+# no menu over it (tools/battle_menus_check.ps1). Single Player, Skirmish, Start.
+5 key s
+15 key s
+25 key s
+# Tab and F2 open the game menu; Esc (its escdefault, Resume) and Resume close it
+100 key tab
+120 key escape
+140 key f2
+160 key r
+# options: the sound page, its buttons and slider (applied at once), Undo, Restore, OK
+180 key f2
+200 key o
+220 key s
+240 click 200 160
+260 click 148 203
+280 click 201 441
+300 click 201 405
+320 click 61 392
+# music page, Cancel
+340 key o
+360 key m
+380 click 61 434
+# interface page: Tab inside the options, Esc (PREV)
+400 key o
+420 key i
+440 key tab
+460 key escape
+# visuals page: F2 and Esc inside the options
+480 key o
+500 key v
+520 key f2
+540 key escape
+# the game menu: Tab, Settings, Help; Exit -> Tab, Esc; Exit -> Cancel
+560 key tab
+570 click 61 290
+580 click 61 332
+600 click 61 373
+620 key tab
+640 key escape
+650 click 61 373
+660 click 384 294
+# Exit -> Exit to Menu -> No
+680 click 61 373
+700 click 384 191
+720 click 457 254
+# Save Game and Load Game menus, closed with Esc
+740 click 61 207
+760 key escape
+780 key f2
+800 click 61 165
+820 key escape
+840 key f2
+# Resume; Esc twice in the battle itself
+860 click 61 434
+880 key escape
+900 key escape

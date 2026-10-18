@@ -1,0 +1,85 @@
+# Every in-battle menu path of a network game, the hosting side (640x480, with
+# battle_menus_net_join.txt on the same machine; tools/battle_menus_check.ps1): the battle must
+# still run at the end with no menu over it.
+# Connection screen, TCP/IP, own address, game list, Start New, OK; the room: slot 2 blocked,
+# then a computer player; ready; Start once the joining player is ready.
+40 key m
+120 key down
+125 key down
+130 key s
+170 key enter
+260 key n
+300 key n
+600 click 50 118
+620 click 50 118
+700 key r +alt
+900 click 570 450
+# the tab bar: Tab opens and closes it; Esc under it is the battle's; F2 opens the game menu
+# over it, Esc (Resume) closes that; Tab closes the bar
+1000 key tab
+1020 key tab
+1040 key tab
+1060 key escape
+1080 key f2
+1100 key escape
+1120 key tab
+# tab bar -> Options Menu (the game menu) -> Options -> sound page: its buttons and slider
+# (applied at once), Undo, Restore, OK
+1140 key tab
+1160 click 198 462
+1180 key o
+1200 key s
+1220 click 200 160
+1240 click 148 203
+1260 click 201 441
+1280 click 201 405
+1300 click 61 392
+# music page, Cancel
+1320 key o
+1340 key m
+1360 click 61 434
+# interface page: Tab inside the options, Esc (PREV)
+1380 key o
+1400 key i
+1420 key tab
+1440 key escape
+# visuals page: F2 and Esc inside the options
+1460 key o
+1480 key v
+1500 key f2
+1520 key escape
+# the game menu: Tab, F2, Settings, Help; Exit -> Tab, Esc; Exit -> Cancel
+1540 key tab
+1550 key f2
+1560 click 61 290
+1570 click 61 332
+1580 click 61 373
+1600 key tab
+1620 key escape
+1630 click 61 373
+1640 click 384 294
+# Exit -> Exit to Menu -> No
+1660 click 61 373
+1680 click 384 191
+1700 click 457 254
+# Save Game and Load Game (grayed in network games), Resume: the bar is back; the grayed
+# Allies button; Esc under the bar; Tab closes it
+1720 click 61 207
+1730 click 61 165
+1740 click 61 434
+1760 click 322 462
+1780 key escape
+1800 key tab
+# F2 straight from the battle: options, the sound slider, Esc (PREV), Esc (Resume)
+1820 key f2
+1840 key o
+1860 key s
+1880 click 148 203
+1900 key escape
+1920 key escape
+# Esc in the battle; the chat line: Tab and Esc while it is open
+1940 key escape
+1960 key enter
+1970 key tab
+1980 key escape
+2000 key escape

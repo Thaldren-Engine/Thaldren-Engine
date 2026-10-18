@@ -71,8 +71,14 @@ public:
     Screen* top() { return stack_.empty() ? nullptr : stack_.back().get(); }
     void pop() override {
         if (!stack_.empty()) trim(stack_.size() - 1);
-        if (session_ && ended_ && stack_.size() <= battle_base_) finish_battle();
-        else if (session_ && stack_.size() < battle_base_) finish_battle();
+        if (session_ && (ended_ ? stack_.size() <= battle_base_ : stack_.size() < battle_base_)) {
+            finish_battle();  // (enters the screen it uncovers)
+            return;
+        }
+        // Back to the battle itself: the screen under it (the skirmish set-up, the battle room)
+        // stays hidden and is not entered again until the battle is over (a battle room takes
+        // being entered after its launch as the end of the battle and closes itself).
+        if (session_ && stack_.size() <= battle_base_) return;
         if (!stack_.empty()) stack_.back()->enter(*this);
     }
     void to_main_menu() override {
@@ -184,12 +190,18 @@ public:
             return;
         }
         if (pending_) return;
-        if (in_battle() && stack_.size() == battle_base_) {
+        // A bar open alone over the battle (the network games' tab bar) leaves the keys to the
+        // battle: its key handling runs whenever the game menu is not open.
+        const bool key_event = e.type == InputEvent::Type::KeyDown || e.type == InputEvent::Type::KeyUp || e.type == InputEvent::Type::Text;
+        const bool bar_open = in_battle() && stack_.size() == battle_base_ + 1 && stack_.back()->battle_keys();
+        if (in_battle() && (stack_.size() == battle_base_ || (bar_open && key_event))) {
             GameClient& c = session_->client();
             // Tab or F2 opens the game menu (the client keeps keys while its chat line is open).
-            // F2 opens the game menu; Tab too, except in network games where it opens the tab bar.
+            // F2 opens the game menu; Tab too, except in network games where it opens the tab bar
+            // and closes it again (F2 opens the game menu over the bar).
             if (e.type == InputEvent::Type::KeyDown && !c.chatting() && (e.key == keys::kTab || e.key == keys::kF1 + 1)) {
-                if (e.key == keys::kTab && session_->network() && s_.tab_menu) push(s_.tab_menu(*this, *session_));
+                if (e.key == keys::kTab && session_->network() && bar_open) stack_.back()->handle(*this, e);
+                else if (e.key == keys::kTab && session_->network() && s_.tab_menu) push(s_.tab_menu(*this, *session_));
                 else if (s_.game_menu) push(s_.game_menu(*this, *session_));
                 return;
             }
@@ -361,6 +373,7 @@ public:
         return static_cast<float>(sum) / (100.0f * kLoadRows);
     }
     LoadingState* loading() override { return loading_ ? &load_ : nullptr; }
+    std::size_t screens_over_battle() const { return session_ ? stack_.size() - battle_base_ : 0; }
 
 private:
     bool in_battle() const { return session_ != nullptr; }
@@ -443,6 +456,10 @@ private:
         battle_base_ = 0;
         if (s_.music) s_.music->set_mood(MusicMood::Silent);
         desk_.forget(s->content().samples);
+        if (log_sounds_) {
+            static const char* const names[] = {"none", "victory", "defeat", "draw", "quit"};
+            std::printf("frame %d: battle left (%s)\n", frame_no_, names[static_cast<int>(o)]);
+        }
         if (ask_session) s->after_battle(*this, o);
         retired_ = std::move(s);  // (gone after the screens closed with it, which may refer to it)
         if (!stack_.empty()) stack_.back()->enter(*this);
@@ -735,6 +752,9 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             }
         }
         std::printf("front end (headless): %d frames, %zu interface sounds\n", f, run.sound_count_);
+        // (tests: whether a battle is still running at the end, and the screens open over it)
+        if (run.session()) std::printf("battle running, %zu screens over it\n", run.screens_over_battle());
+        else std::printf("no battle running\n");
         return 0;
     }
 #ifdef CLIENT_HAVE_SDL
