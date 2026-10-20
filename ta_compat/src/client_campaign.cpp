@@ -154,11 +154,15 @@ public:
     std::string battle_name() const override { return inner_->battle_name(); }
     int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
+    // The exit menu's Restart (0x460340): the same mission again at the dialog's difficulty
+    // (its schema chosen anew), defined after mission_launcher.
+    client::BattleLauncher restart_launcher(int difficulty) override;
     SkirmishSession& inner() { return *inner_; }
     CampaignProgress& progress() { return *progress_; }
     std::shared_ptr<CampaignProgress> progress_ptr() { return progress_; }
     MissionInfo& info() { return info_; }
     const std::string& save_dir() const { return save_dir_; }
+    client::ClientOptions options;  // the client options the battle was started with (Restart)
 
 private:
     std::unique_ptr<SkirmishSession> inner_;
@@ -182,7 +186,41 @@ client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_di
         const BattleRequest req = make_mission_request(art.vfs(), info, rq);
         std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, 0, options, lp, error);
         if (!s) return nullptr;
-        return std::make_unique<MissionSession>(std::move(s), art, save_dir, progress, info);
+        auto m = std::make_unique<MissionSession>(std::move(s), art, save_dir, progress, info);
+        m->options = options;
+        return m;
+    };
+}
+
+client::BattleLauncher MissionSession::restart_launcher(int difficulty) {
+    // The same mission from its start at the difficulty the restart dialog shows; the mission's
+    // file read again for it (its schema per difficulty), the clocks' inputs taken anew and the
+    // program's rand() going on from where the battle left it.
+    progress_->difficulty = difficulty;
+    Campaign c;
+    std::string err;
+    MissionInfo info;
+    if (load_campaign(art_.vfs(), progress_->campaign, c, err) && progress_->mission >= 0 &&
+        progress_->mission < static_cast<int>(c.missions.size()))
+        load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(progress_->mission)].file, difficulty, info, err);
+    if (info.file.empty()) return {};
+    MissionRequest rq;
+    rq.campaign_side = progress_->side;
+    rq.difficulty = difficulty;
+    rq.battle_rng_seed = clock_value();
+    rq.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
+    rq.crt_rand_state = battle().crt_rand.state();
+    MenuArt& art = art_;
+    const std::string save_dir = save_dir_;
+    std::shared_ptr<CampaignProgress> progress = progress_;
+    const client::ClientOptions opt = options;
+    return [&art, save_dir, progress, info, rq, opt](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
+        const BattleRequest req = make_mission_request(art.vfs(), info, rq);
+        std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, 0, opt, lp, error);
+        if (!s) return nullptr;
+        auto m = std::make_unique<MissionSession>(std::move(s), art, save_dir, progress, info);
+        m->options = opt;
+        return m;
     };
 }
 
@@ -1142,7 +1180,11 @@ private:
             std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, human, options, lp, error);
             if (!s) return nullptr;
             s->client().set_scroll(view->camera_x, view->camera_z);
-            if (progress) return std::make_unique<MissionSession>(std::move(s), art, dir, progress);
+            if (progress) {
+                auto m = std::make_unique<MissionSession>(std::move(s), art, dir, progress);
+                m->options = options;
+                return m;
+            }
             return s;
         });
     }
