@@ -406,12 +406,18 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
 }
 
 void GameClient::draw_clock_and_units(render::Image8& o) {
-    // The game clock (option): "Game Time: hh:mm:ss" of game steps at 130, above the bottom bar.
+    // The game clock (option, GS+0x37F2F bit 6; 0x46A1D0 in the battle frame): "Game Time :
+    // hh:mm:ss" (format "%s : %02d:%02d:%02d", the game steps split as the information panel does:
+    // hours unsigned by 108000, minutes and seconds signed by 1800 and 30) at x 130, above the
+    // bottom bar (screen height - 34 - the font height).
     if (!opt_.clock || !side_ || !side_->font) return;
     const Font& f = *side_->font;
-    const std::uint32_t s = b_.game_tick() / 30;
+    const std::uint32_t t = b_.game_tick();
+    const std::uint32_t hours = t / 108000u;
+    const std::int32_t rest = static_cast<std::int32_t>(t - hours * 108000u);
+    const std::int32_t minutes = rest / 1800, seconds = (rest - minutes * 1800) / 30;
     char buf[64];
-    std::snprintf(buf, sizeof buf, "Game Time: %02u:%02u:%02u", s / 3600, (s / 60) % 60, s % 60);
+    std::snprintf(buf, sizeof buf, "%s : %02d:%02d:%02d", "Game Time", static_cast<int>(hours), minutes, seconds);
     draw_text(o, o.bounds(), f, buf, 130, opt_.height - 34 - f.height, c_.hud[15]);
 }
 

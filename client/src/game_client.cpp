@@ -1204,10 +1204,18 @@ void GameClient::right_click_map(const InputEvent& e) {
 }
 
 void GameClient::set_game_speed(int speed) {
+    // 0x490DF0: a line only when the speed changes: "Game Speed Normal", else "%s  %c%d\n" of
+    // "Game Speed", '+' above normal and ' ' below (the number keeps its own minus), and the
+    // speed less 10 (the newline is part of the line).
     speed = std::clamp(speed, 1, 20);
+    const bool changed = speed != static_cast<int>(budget_.game_speed);
     budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(speed);
+    if (!changed) return;
     const int d = speed - 10;
-    message(d == 0 ? "Game Speed Normal" : "Game Speed  " + std::string(d > 0 ? "+" : "-") + std::to_string(std::abs(d)));
+    char line[64];
+    if (d == 0) std::snprintf(line, sizeof line, "%s", "Game Speed Normal");
+    else std::snprintf(line, sizeof line, "%s  %c%d\n", "Game Speed", d > 0 ? '+' : ' ', d);
+    message(line);
 }
 
 void GameClient::enter_chat_line(const std::string& typed) {

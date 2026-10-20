@@ -92,13 +92,6 @@ std::vector<std::string> wrap(const std::string& text, const client::Font* font,
     return lines;
 }
 
-std::string format_time(std::uint32_t steps) {
-    const std::uint32_t s = steps / 30;
-    char buf[32];
-    std::snprintf(buf, sizeof buf, "%u:%02u:%02u", s / 3600, s / 60 % 60, s % 60);
-    return buf;
-}
-
 int side_index(Vfs& vfs, const std::string& side) {
     std::vector<std::uint8_t> sd;
     if (vfs.read("gamedata\\sidedata.tdf", sd)) {
