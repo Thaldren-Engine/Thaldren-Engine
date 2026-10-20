@@ -37,6 +37,7 @@ struct CampaignMission {
 struct Campaign {
     std::string name;  // file name without ".tdf"
     std::string side;  // campaignside
+    bool has_header = false;  // the file has a [HEADER] (campaign lists show only those)
     std::vector<CampaignMission> missions;
 };
 
@@ -71,6 +72,7 @@ struct MissionInfo {
     std::string name, description, brief, narration, hint, glamour, glamour_sound, planet, memory, numplayers;
     std::string brief_text;  // camps\briefs\<brief>.txt (empty when missing)
     std::string use_only;    // camps\useonly file name (empty: no restriction)
+    std::int32_t min_wind = 0, max_wind = 0, gravity = 0;  // minwindspeed, maxwindspeed, gravity (0 when absent)
     bool no_movie = false;
     // Options.
     std::int32_t mapping = 0, line_of_sight = 0;

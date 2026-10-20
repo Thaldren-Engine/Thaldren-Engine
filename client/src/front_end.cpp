@@ -124,6 +124,9 @@ public:
     void play_narration(int sample) override {
         if (sample >= 0) menu_sounds_.push_back({sample, MenuSound::Narration});
     }
+    void play_narration_sample(const Sample* sample) override {
+        if (sample) menu_sounds_.push_back({-1, MenuSound::Narration, sample});
+    }
     void stop_narration() override { menu_sounds_.push_back({-1, MenuSound::StopNarration}); }
     void stop_sounds() override { menu_sounds_.push_back({-1, MenuSound::StopAll}); }
     MusicPlayer* music() override { return s_.music; }
@@ -174,6 +177,11 @@ public:
 
     void handle(const InputEvent& e) {
         if (e.type == InputEvent::Type::Quit) {
+            if (session_ && !ended_ && !pending_ && s_.close_prompt)
+                if (std::unique_ptr<Screen> q = s_.close_prompt(*this, *session_)) {
+                    push(std::move(q));
+                    return;
+                }
             quit_ = true;
             return;
         }
@@ -336,7 +344,7 @@ public:
         const std::vector<Sample>& ms = s_.content->samples;
         const bool fx_on = fx_volume_ != 0 && sound_mode_ != 0;
         for (const MenuSound& m : menu_sounds_) {
-            const Sample* smp = m.sample >= 0 && static_cast<std::size_t>(m.sample) < ms.size() ? &ms[static_cast<std::size_t>(m.sample)] : nullptr;
+            const Sample* smp = m.direct ? m.direct : m.sample >= 0 && static_cast<std::size_t>(m.sample) < ms.size() ? &ms[static_cast<std::size_t>(m.sample)] : nullptr;
             switch (m.kind) {
             case MenuSound::Plain:
             case MenuSound::Loop:
@@ -388,6 +396,7 @@ private:
 
     void add_pointer(render::DrawList& list) {
         if (!draw_pointer_ || pointer_off_) return;
+        if (!stack_.empty() && stack_.back()->hides_pointer() && !in_battle()) return;
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
             if (pointer_.ended) return;
@@ -402,6 +411,15 @@ private:
         play_pending_sounds();
         BattleLauncher l = std::move(pending_);
         pending_ = nullptr;
+        // A battle that ended and is still kept (the campaign's statistics screen, which stays
+        // under the next mission's briefing) is left now, before the next one loads.
+        if (session_ && ended_) {
+            std::unique_ptr<BattleSession> old = std::move(session_);
+            ended_ = false;
+            battle_base_ = 0;
+            desk_.forget(old->content().samples);
+            retired_ = std::move(old);
+        }
         // The loading screen starts with every row at 0 and its highlights off; it is drawn at
         // the first report (the launcher names the map first) and then at most every 200 ms
         // (the original's loading routine draws a frame, then sleeps 200 ms).
@@ -485,6 +503,7 @@ private:
     struct MenuSound {
         int sample = -1;
         enum Kind : std::uint8_t { Plain, Loop, File, Narration, StopNarration, StopAll } kind = Plain;
+        const Sample* direct = nullptr;  // a sound the caller keeps (instead of `sample`)
     };
     std::vector<MenuSound> menu_sounds_;
     int frame_no_ = -1;

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 
 #include "client/audio.h"
 #include "client/canvas.h"
@@ -262,6 +263,54 @@ int MenuArt::sound(const std::string& name) {
     return it == sound_index_.end() ? -1 : it->second;
 }
 
+const client::Font* MenuArt::fnt_font(const std::string& name) {
+    std::vector<std::uint8_t> f;
+    if (!vfs_.read("fonts\\" + name + ".FNT", f)) return nullptr;
+    fonts_.emplace_back();
+    if (!parse_fnt(f, fonts_.back())) {
+        fonts_.pop_back();
+        return nullptr;
+    }
+    return &fonts_.back();
+}
+
+std::vector<int> MenuArt::sequence_times(const std::string& gaf_path, const std::string& name, bool* loop) {
+    // Sequence entry: u16 frames, u16 (its low byte: loops), u32, name[32], then per frame
+    // {u32 offset, u32 duration in ticks}.
+    std::vector<int> times;
+    const auto* g = gaf(gaf_path);
+    if (!g) return times;
+    GafDirectory dir;
+    if (!gaf_read_directory(*g, dir)) return times;
+    const int s = gaf_find_sequence(dir, name);
+    if (s < 0) return times;
+    const std::vector<std::uint8_t>& f = *g;
+    auto u32 = [&](std::size_t at) {
+        return at + 4 <= f.size() ? static_cast<std::uint32_t>(f[at] | f[at + 1] << 8 | f[at + 2] << 16 | static_cast<std::uint32_t>(f[at + 3]) << 24) : 0u;
+    };
+    const std::size_t entry = u32(12 + static_cast<std::size_t>(s) * 4);
+    if (entry + 40 > f.size()) return times;
+    const int n = f[entry] | f[entry + 1] << 8;
+    if (loop) *loop = f[entry + 2] != 0;
+    for (int k = 0; k < n; ++k) times.push_back(static_cast<int>(u32(entry + 40 + static_cast<std::size_t>(k) * 8 + 4)));
+    return times;
+}
+
+std::vector<std::uint8_t> MenuArt::movie(const std::string& name) const {
+    // The original builds "<CD>\Data\<name>.zrb" (on the Steam version the CD is the game
+    // folder itself) and plays it when the file is there (0x426780, 0x41D7B0).
+    std::vector<std::uint8_t> bytes;
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::path(game_dir_) / "Data" / name;
+    const auto size = std::filesystem::file_size(p, ec);
+    if (ec || size == 0) return bytes;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return bytes;
+    bytes.resize(static_cast<std::size_t>(size));
+    if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) bytes.clear();
+    return bytes;
+}
+
 const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
     std::string gui = upper(gui_in);
     if (gui.size() > 4 && gui.compare(gui.size() - 4, 4, ".GUI") == 0) gui.resize(gui.size() - 4);
@@ -379,6 +428,10 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
                 w.w = w.frames->front().width;
                 w.h = w.frames->front().height;
             }
+            // A switch's attributes become "left-aligned caption" (only 0x4000 kept) when the
+            // screen loads (0x4A81E0, after splitting its captions at '|'): NEWGAME's centred
+            // Difficulty switch shows its caption at the left like every other switch.
+            if (w.stages > 0) w.attribs = (w.attribs & 0x4000) | 1;
         } else if (w.kind == WidgetKind::ScrollBar) {
             // Slider art: the SLIDERS sequence (the screen's GAF, else commongui), offsets
             // dropped; frames from 0 for a vertical slider (w <= h), from 10 for a horizontal one:
@@ -627,6 +680,14 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
     o.clock = s.get_int("clock", 0) != 0;
     o.sound_mode = s.get_int("Sound Mode", 1);
     o.fx_volume = s.get_int("fxvol", 27);
+    // the display switches (0x42F9A0: bits of the options word, all on but DitheredFog)
+    o.screen_chat = s.get_int("screenchat", 1) != 0;
+    o.antialias = (s.get_int("Anti-Alias", 1) & 1) != 0;
+    o.shadows = (s.get_int("Shadows", 1) & 1) != 0;
+    o.feature_shadows = (s.get_int("FeatureShadows", 1) & 1) != 0;
+    o.unit_shadows = (s.get_int("VehicleShadows", 1) & 1) != 0;
+    o.shading = (s.get_int("Shading", 1) & 1) != 0;
+    o.dithered_fog = (s.get_int("DitheredFog", 0) & 1) != 0;
     return o;
 }
 

@@ -17,13 +17,16 @@
 //   --speed N           game speed 1..20 (10 normal)
 //   --damage-bars       health bars over own units
 //   --cpu               draw on the CPU (no GPU backend)
-//   --no-sound
+//   --no-sound          (also the original's -s / /s)
 //   --seed N            the battle's random seed
 //   --headless          no window: run --frames N frames at 30 per second with --script FILE
 //                       (see client/front.h) and write --shots a,b,c as <--out PREFIX>NNNN.bmp
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
 //   --no-pointer        frames without the pointer (as the original's screen surface has them)
 //   --realtime          headless: run the frames at wall-clock speed (network games)
+//   --movies / --no-movies  play the movies (the intro at the start, INTRO, credits, the
+//                       campaigns' endings) or not; default: the window plays them, headless
+//                       runs do not (the original plays them only on a full screen)
 //   --saves DIR         the saved games' directory (default <game_dir>\SAVEGAME, the original's)
 //   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
 //                       (the format of gui_harness's endmsn:)
@@ -68,6 +71,7 @@
 #include "client/game_client.h"
 #include "client/music.h"
 #include "render/presenter.h"
+#include "ta/campaign.h"
 #include "ta/client_campaign.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
@@ -184,7 +188,7 @@ int pointer_selftest() {
 int main(int argc, char** argv) {
     // The game folder: the first argument when it isn't an option, else the executable's own
     // folder (the program placed in the game folder, as the original runs).
-    const bool dir_given = argc >= 2 && std::string(argv[1]).rfind("--", 0) != 0;
+    const bool dir_given = argc >= 2 && argv[1][0] != '-' && argv[1][0] != '/';
     const std::string game_dir = dir_given ? std::string(argv[1]) : own_folder(argc > 0 ? argv[0] : nullptr);
     {
         std::ifstream probe(game_dir + "\\TotalA.exe", std::ios::binary);
@@ -207,6 +211,7 @@ int main(int argc, char** argv) {
     front.title = "Total Annihilation";
     std::string end_screen_file, saves_dir, dump_pages_dir, loading_test_file;
     bool loading_trace = false;
+    int movies = -1;  // --movies / --no-movies (default: the window plays them, headless runs not)
     std::vector<std::string> net_screens;
     std::string key_sweep;  // --key-sweep KEYS:MODS
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
@@ -257,6 +262,9 @@ int main(int argc, char** argv) {
         else if (a == "--damage-bars") opt.damage_bars = true;
         else if (a == "--cpu") front.gpu = false;
         else if (a == "--no-sound") front.sound = false;
+        // The original's own switch: -s or /s (any case, the rest of the word ignored; 0x49EE30)
+        // starts without sound.
+        else if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && (a[1] == 's' || a[1] == 'S')) front.sound = false;
         else if (a == "--seed") setup.seed = static_cast<std::uint32_t>(std::strtoul(next().c_str(), nullptr, 0));
         else if (a == "--headless") {
             front.headless = true;
@@ -279,6 +287,8 @@ int main(int argc, char** argv) {
         else if (a == "--gpu-check") front.gpu_check = true;
         else if (a == "--no-pointer") front.draw_pointer = false;
         else if (a == "--realtime") front.realtime = true;
+        else if (a == "--movies") movies = 1;
+        else if (a == "--no-movies") movies = 0;
         else if (a == "--dump-build-pages") {
             dump_pages_dir = next();
             direct = true;
@@ -316,6 +326,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s\n", err.c_str());
             return 1;
         }
+        // Movies need a full screen in the original; the window stands for one, a headless run
+        // has no screen (tests: --movies).
+        art.full_screen = movies >= 0 ? movies != 0 : !front.headless;
         client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
         client::FrontEndSetup fes;
         fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options
@@ -418,6 +431,10 @@ int main(int argc, char** argv) {
             std::uint32_t tick = 0;
             float km = 0.0f, tm = 0.0f;
             int won = 0, local = 0;
+            // (campaign tests: "campaign NAME" — the rest of the line —, "mission N", "results
+            // STRING" (25 characters, '.' for a zero byte), "difficulty N": the campaign's buttons)
+            std::string camp_name, camp_results;
+            int camp_mission = 0, camp_difficulty = 1;
             for (std::string line; std::getline(in, line);) {
                 if (const auto c = line.find('#'); c != std::string::npos) line.resize(c);
                 std::istringstream ls(line);
@@ -428,6 +445,10 @@ int main(int argc, char** argv) {
                 else if (key == "timemul") ls >> tm;
                 else if (key == "won") ls >> won;
                 else if (key == "local") ls >> local;
+                else if (key == "campaign") std::getline(ls >> std::ws, camp_name);
+                else if (key == "mission") ls >> camp_mission;
+                else if (key == "results") ls >> camp_results;
+                else if (key == "difficulty") ls >> camp_difficulty;
                 else if (key == "player") {
                     int slot = 0, colour = 0, controller = 0, state = 0, present = 1, watch = 0, kills = 0, losses = 0;
                     std::uint32_t created = 0;
@@ -462,7 +483,25 @@ int main(int argc, char** argv) {
                             r.values[4], r.values[5], r.values[6]);
             std::printf("end maxima: %d %d %d %d %d %d %d\n", table.maxima[0], table.maxima[1], table.maxima[2], table.maxima[3], table.maxima[4],
                         table.maxima[5], table.maxima[6]);
-            fes.main_menu = [&art, table](client::FrontEnd&) { return ta::make_end_screen(art, table); };
+            if (!camp_name.empty()) {
+                while (!camp_name.empty() && (camp_name.back() == '\r' || camp_name.back() == ' ')) camp_name.pop_back();
+                ta::mount_cd_archives(art.vfs(), art.game_dir());
+                ta::Campaign c;
+                std::string e;
+                auto ce = std::make_shared<ta::CampaignEnd>();
+                if (ta::load_campaign(art.vfs(), camp_name, c, e))
+                    for (const ta::CampaignMission& m : c.missions) ce->missions.push_back(m.name);
+                for (char& ch : camp_results)
+                    if (ch == '.') ch = '\0';
+                ce->results = camp_results;
+                ce->mission = camp_mission;
+                ce->won = won != 0;
+                ce->difficulty = camp_difficulty;
+                ce->buttons = true;
+                fes.main_menu = [&art, table, ce](client::FrontEnd&) { return ta::make_end_screen(art, table, ce.get()); };
+            } else {
+                fes.main_menu = [&art, table](client::FrontEnd&) { return ta::make_end_screen(art, table); };
+            }
             fes.width = opt.width;  // (--res: the screen size the battle had)
             fes.height = opt.height;
         }

@@ -12,9 +12,11 @@ add_library(client STATIC
     src/hud.cpp
     src/menu.cpp
     src/minimap.cpp
+    src/movie.cpp
     src/music.cpp
     src/queued_orders.cpp
     src/settings.cpp
+    src/smacker.cpp
     src/sound_desk.cpp
     src/sound_mixer.cpp
     src/sound_rules.cpp
