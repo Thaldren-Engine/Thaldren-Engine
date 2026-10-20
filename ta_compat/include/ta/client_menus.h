@@ -64,6 +64,12 @@ public:
     // one, headless runs do not (unless asked to: tests).
     std::vector<std::uint8_t> movie(const std::string& name) const;
     bool full_screen = true;
+    // A bit font fonts\<name>.FNT (null when missing).
+    const client::Font* fnt_font(const std::string& name);
+    // A GAF file's sequence by path and name (null when missing), its frames' offsets kept.
+    const std::vector<render::Sprite8>* gaf_sequence(const std::string& gaf_path, const std::string& name) { return sequence(gaf_path, name); }
+    // GAF frame durations of a sequence (ticks; empty when missing).
+    std::vector<int> sequence_times(const std::string& gaf_path, const std::string& name);
 
 private:
     const std::vector<std::uint8_t>* gaf(const std::string& path);

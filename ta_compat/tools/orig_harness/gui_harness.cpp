@@ -982,6 +982,36 @@ int main(int argc, char** argv) {
         else if (s == "options") ok = r.call(kOptionsMenu, 0, {});
         else if (s == "skirmish") ok = r.call(kSkirmish, 0, {});
         else if (s == "selmap") ok = r.call(0x0047AAF0, 0, {});
+        else if (s == "newgame" || s == "anymission") {
+            // The new campaign screen (0x478240(0)) or the any-mission one (0x478240(1)), after the
+            // archive rescan the single player menu runs first.
+            r.call(0x0041D4C0, 0, {});
+            ok = r.call(0x00478240, 0, {s == "anymission" ? 1u : 0u});
+        } else if (s.rfind("campaign:", 0) == 0) {
+            // campaign:NAME:N[:SIDE] — the map info holds campaign NAME (0x435110) and its mission
+            // N (0x435C00) as the new campaign screen's Start leaves them; SIDE (0 Arm, 1 Core) the
+            // registry side and the local record's side byte; the narration's sound stubbed.
+            const std::string t = s.substr(9);
+            const auto c1 = t.find(':');
+            const std::string name = t.substr(0, c1);
+            int n = 0, side = -1;
+            if (c1 != std::string::npos) std::sscanf(t.c_str() + c1 + 1, "%d:%d", &n, &side);
+            r.call(0x0041D4C0, 0, {});
+            if (side >= 0) {
+                r.w32(gs + 0x37EF2, static_cast<u32>(side));
+                const u32 rec = r.r32(gs + 0x1B8A + (r.r32(gs + 0x2A42) & 0xFF) * 0x14B);
+                if (rec) r.w8(rec + 0x95, static_cast<std::uint8_t>(side));
+            }
+            r.stub(0x0047F090, 0, 0xC);
+            const u32 mi = r.r32(gs + 0x391E9);
+            u32 res = 0;
+            ok = mi && r.call(0x00435110, mi, {r.str(name)}) && r.call(0x00435C00, mi, {static_cast<u32>(n)}, &res);
+            std::printf("%s: map info %08X, mission loaded %u\n", s.c_str(), mi, res);
+            continue;
+        } else if (s == "msnbrief") {
+            // The mission briefing (0x478E80) for the map info's mission.
+            ok = r.call(0x00478E80, 0, {});
+        }
         else if (s == "sounds" || s == "soundsrt") ok = r.call(0x0045DE30, 0, {});
         else if (s == "music" || s == "musicrt") ok = r.call(0x0045D7C0, 0, {});
         else if (s == "speeds" || s == "speedsrt") ok = r.call(0x0045ED50, 0, {});
