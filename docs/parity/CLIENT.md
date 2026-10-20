@@ -41,8 +41,8 @@ summary at the end gives the counts after this round.
 | 1.17 | Damage bars and group digits | `0x46A430` | BUILT+VERIFIED | frame_harness `--hud` |
 | 1.18 | Drag box, placement outline | frame, `0x4197D0` | BUILT+VERIFIED | frame_harness `--hud` |
 | 1.19 | Shift-held queued orders view | `0x48CC30` | BUILT+VERIFIED | frame_harness `--hud` |
-| 1.20 | Camera follow (tracking eases half the distance a step, 320 at most; F3 / `n` / view jumps through the eased target) | `0x41CA10`, `0x41C7C0`, `0x41C8E0` | PARTIAL | client re-centres at once every frame; the eased target is not modelled |
-| 1.21 | Screen shake | `0x41C6F0` (in the camera stage) | MISSING | the simulation computes the offsets (`sim/sky`), the client never moves the view |
+| 1.20 | Camera follow (tracking eases half the distance a step, 320 at most; F3 / `n` / view jumps through the eased target) | `0x41CA10`, `0x41C7C0`, `0x41C8E0` | BUILT+VERIFIED | frame_harness `--camera`: 600 random states, two maps and screen sizes, identical (2026-10-20) |
+| 1.21 | Screen shake | `0x41C6F0` (in the camera stage) | BUILT-UNVERIFIED | the simulation's offsets (flow_harness) added in the camera stage's order (eased, shaken, clamped) |
 | 1.22 | Gamma (option slider, `+gamma`) | display palette | MISSING | settings kept, palette not changed |
 | 1.23 | `+contour` lines | `0x418310` → `0x4181D0` / `0x417F60` | MISSING | the command stores its words only |
 | 1.24 | `+light` (light direction for the shaded path) | option table | MISSING | |
@@ -68,41 +68,41 @@ summary at the end gives the counts after this round.
 | 2.9 | Chat recipient panel (TALK2.GUI, SENDTO) | `0x493AE0` | MISSING | network games only |
 | 2.10 | Paste into the chat line (Ctrl+V / Insert) | `0x4AB720` | MISSING | |
 | 2.11 | Pointer looks, animation, every mode | `0x48D220`, `0x43E490`, `0x4AB5D0` | PARTIAL | animation verified (frame_harness); the per-unit pointer rules `0x43E490` only partly |
-| 2.12 | Space-held game info panel (Game Time, Total Units / Max, Game Speed) sliding up from the bottom bar | `0x4689C0` | MISSING | |
-| 2.13 | Space-held (or F4) kills / losses scoreboard sliding in from the left (skirmish, network) | `0x4948E0` | MISSING | |
-| 2.14 | F1 unit info screen (UNITINFOX.GUI: picture, name, costs, build time, statistics, speed, acceleration, turn rate, description lines) | `0x4942E0`, `0x489280` | MISSING | |
+| 2.12 | Space-held game info panel (Game Time, Total Units / Max, Game Speed) sliding up from the bottom bar | `0x4689C0` | BUILT+VERIFIED | frame_harness `--hud` panels check: 11 scenes, 0 differing pixels |
+| 2.13 | Space-held (or F4) kills / losses scoreboard sliding in from the left (skirmish, network) | `0x4948E0` | BUILT+VERIFIED | same check (both game types, F4, flashes, ranks with gaps: ranks equal after drawing); the kill ranking and lead message from the battle's kill hook |
+| 2.14 | F1 unit info screen (UNITINFOX.GUI: picture, name, costs, build time, statistics, speed, acceleration, turn rate, description lines) | `0x4942E0`, `0x489280` | BUILT+VERIFIED | gui_harness `battle unitinfo:` against ta_play frames: 7 types, 0 of 61,750 pixels each |
 | 2.15 | Game menu Help / Briefing pages (mission text) | `0x4609B0` | MISSING | buttons present, pages not built (FRONTEND owns the menu; the pages show battle data) |
 | 2.16 | Game clock option | frame | BUILT-UNVERIFIED | |
 | 2.17 | Selection: click, Shift toggle, double click (same type on screen), drag box | `0x48C7F0`, `0x48C390` | BUILT-UNVERIFIED | sounds checked by sound_harness |
 | 2.18 | Pick test (model base rectangle, smallest rank) | `0x48CD80`, `0x48C6A0` | BUILT-UNVERIFIED | |
-| 2.19 | Group keys: select (CTRL_F rule: an armed member drops the group's CTRL_F units), Shift adds; the order mode returns to default | `0x48D9A0`, `0x495860` | PARTIAL | CTRL_F rule and the mode reset missing |
+| 2.19 | Group keys: select (CTRL_F rule: an armed member drops the group's CTRL_F units), Shift adds; the order mode returns to default | `0x48D9A0`, `0x495860` | BUILT-UNVERIFIED | CTRL_F rule and the mode reset built as read |
 | 2.20 | Ctrl+digit makes a group | `0x48D920` | BUILT-UNVERIFIED | |
-| 2.21 | Digit keys and the SwitchAlt option: plain digit = build page of the focus unit, Alt+digit = group (SwitchAlt swaps) | `0x495E90`, `0x41C060` | PARTIAL | the client had the two swapped |
-| 2.22 | Ctrl+A (all selectable, mode reset), Ctrl+S, Ctrl+Z, Ctrl+letter categories | `0x48BD50`, `0x48C030`, `0x48BE00`, `0x48BF30` | PARTIAL | mode reset missing |
+| 2.21 | Digit keys and the SwitchAlt option: plain digit = build page of the focus unit, Alt+digit = group (SwitchAlt swaps) | `0x495E90`, `0x41C060` | BUILT-UNVERIFIED | fixed (was swapped); plain digits are typed characters |
+| 2.22 | Ctrl+A (all selectable, mode reset), Ctrl+S, Ctrl+Z, Ctrl+letter categories | `0x48BD50`, `0x48C030`, `0x48BE00`, `0x48BF30` | BUILT-UNVERIFIED | mode reset added |
 | 2.23 | Ctrl+C (CTRL_C category, track the last "Commander" category unit) | `0x41C310` | BUILT-UNVERIFIED | |
-| 2.24 | Ctrl+D self-destruct: cancels pending ones, else orders it | `0x495E90` case 0xAD | PARTIAL | cancel missing |
+| 2.24 | Ctrl+D self-destruct: cancels pending ones, else orders it | `0x495E90` case 0xAD | BUILT-UNVERIFIED | smoke: Ctrl+D twice takes the order back, three times gives it again |
 | 2.25 | View keys: Ctrl+F5–F8 store, F5–F8 recall (SelectSquad) | `0x41D3B0`, `0x41D3F0` | BUILT-UNVERIFIED | |
-| 2.26 | Tracking t / T, n next unit | `0x41C2E0`, `0x48C190`, `0x48D4D0` | PARTIAL | camera easing (1.20) |
-| 2.27 | F3 jump to the next noted unit of the console (marks the line) | `0x464000`, `0x463F60` | MISSING | |
-| 2.28 | F4 toggles the scoreboard (visual bit 0x80) | `0x495E90` | MISSING | |
-| 2.29 | F12 clears the console | `0x463C80` | MISSING | |
-| 2.30 | `~ ! # * damage bars toggle (saved to the settings) | `0x495E90`, `0x430F00` | PARTIAL | not saved |
-| 2.31 | + / − game speed (not in F11 debug mode, not for watchers) | `0x490DF0` | PARTIAL | watcher rule missing |
+| 2.26 | Tracking t / T, n next unit | `0x41C2E0`, `0x48C190`, `0x48D4D0` | BUILT+VERIFIED | following through the camera stage (`--camera`); 'n' eases and keeps the followed unit |
+| 2.27 | F3 jump to the next noted unit of the console (marks the line) | `0x464000`, `0x463F60` | BUILT-UNVERIFIED | built as read |
+| 2.28 | F4 toggles the scoreboard (visual bit 0x80) | `0x495E90` | BUILT+VERIFIED | part of the panels check |
+| 2.29 | F12 clears the console | `0x463C80` | BUILT-UNVERIFIED | built as read |
+| 2.30 | `~ ! # * damage bars toggle (saved to the settings) | `0x495E90`, `0x430F00` | BUILT-UNVERIFIED | saved through the front end's settings |
+| 2.31 | + / − game speed (not in F11 debug mode, not for watchers) | `0x490DF0` | BUILT-UNVERIFIED | watcher rule added |
 | 2.32 | Pause key (packet 0x19) | `0x495E90` | BUILT-UNVERIFIED | |
 | 2.33 | Esc: order mode → default, else deselect; closes the game menu | `0x495E90` | BUILT+VERIFIED | battle_menus_check |
 | 2.34 | Enter: chat line (SmallButton) | `0x495E90` | BUILT+VERIFIED | gui_harness `talk` |
 | 2.35 | Tab / F2: game menu, network tab bar | `0x495010`, `0x460CC0` | BUILT+VERIFIED | battle_menus_check |
-| 2.36 | 'h' opens SHARE.GUI (network games, not watching) | `0x4936F0` | MISSING | |
+| 2.36 | 'h' opens SHARE.GUI (network games, not watching) | `0x4936F0` | PARTIAL | the key opens the share screen hook; the screen: 2.48 |
 | 2.37 | ',' '.' step menus | `0x41BF10`, `0x41BDE0` | BUILT-UNVERIFIED | |
 | 2.38 | '\' repeats the last command (debug switch) | `0x495E90` | BUILT-UNVERIFIED | |
 | 2.39 | Shift+F1 / Shift+F2 debug unit picks (GS+0x391B3 / 0x391B9) | `0x495E90` | NOT-APPLICABLE | debug values nothing in a normal game reads |
 | 2.40 | Ctrl+F10 film (debug switch) and `+film` / `+filmspeed` | `0x495E90`, `0x496790`, `0x4CB170` | MISSING | PCX frames `FRAMnnnn.pcx` in `<dir>\MOVIEnnn` |
-| 2.41 | Ctrl+F9 screenshot: `<game dir>\screenshots\SHOTnnnn.pcx` (next number after the highest present), 8-bit RLE PCX with the display palette, in every state of the program | `0x499890`, `0x4CB170`, `0x4CAC40` | MISSING | |
+| 2.41 | Ctrl+F9 screenshot: `<game dir>\screenshots\SHOTnnnn.pcx` (next number after the highest present), 8-bit RLE PCX with the display palette, in every state of the program | `0x499890`, `0x4CB170`, `0x4CAC40` | BUILT+VERIFIED | writer: frame_harness `--pcx 30`, 30 of 30 identical; folder and numbering as read; smoke: SHOT0001/0002 |
 | 2.42 | `+makeposter` | cheat table | MISSING | |
 | 2.43 | Mouse: left/right in interface types 0 and 1, minimap orders, Shift-kept modes | `0x498F70`, `0x499100`, `0x498D00` | BUILT+VERIFIED | gui_harness pointer events, frame_harness |
 | 2.44 | Middle drag and Ctrl+right drag scroll | `0x41CC60`, `0x41CD50` | PARTIAL | pointer warp to the centre and back, remainder dropped per pass: missing |
-| 2.45 | Edge and arrow scrolling (arrows not while the chat line is open) | `0x41CE90` | PARTIAL | arrows scroll while the chat line is open in the client |
-| 2.46 | Key repeat for every held key | platform | PARTIAL | the platform layer repeats only Backspace, Delete, Left, Right |
+| 2.45 | Edge and arrow scrolling (arrows not while the chat line is open) | `0x41CE90` | BUILT-UNVERIFIED | arrows ignored under the chat line |
+| 2.46 | Key repeat for every held key | platform | BUILT-UNVERIFIED | every key repeats (menus and battles) |
 | 2.47 | Allies screen (ALLIES.GUI) | `0x4478B0` | MISSING | grayed: hook unset |
 | 2.48 | Share screen (SHARE.GUI: METAL / ENERGY sliders, PLYRLIST, SHARUNIT, MAPINFO) | `0x4936F0`, `0x4934B0` | MISSING | grayed: hook unset |
 | 2.49 | Control screen (CONTROL.GUI) | `0x4466B0` | MISSING | grayed: hook unset |
@@ -116,7 +116,7 @@ summary at the end gives the counts after this round.
 | 3.2 | World sounds (sight, mono / 3-D) | `0x47F300` | BUILT+VERIFIED | sound_harness `world` |
 | 3.3 | Unit notices (queue, priorities, texts) | `0x47F850` … | BUILT+VERIFIED | sound_harness `notices` |
 | 3.4 | Interface sounds of panels, switches, placement, selection, keys | handlers | BUILT-UNVERIFIED | read from the handlers; ta_play sound log |
-| 3.5 | Space panels' Panel / Options sounds | `0x4689C0`, `0x4948E0` | MISSING | with 2.12 / 2.13 |
+| 3.5 | Space panels' Panel / Options sounds | `0x4689C0`, `0x4948E0` | BUILT-UNVERIFIED | Panel / Options as read (headless sound log) |
 | 3.6 | Tab bar / Share / Allies sounds (BigButton, Options, Previous, Ally) | `0x494740`, `0x4934B0`, `0x453D40` | MISSING | with 2.47–2.49 |
 | 3.7 | Music in battle (moods, battle / peace judge) | `0x4CDB40`, `0x494E70` | BUILT-UNVERIFIED | |
 | 3.8 | Music console commands (CDPlay, CDStop, MusicMode), Sound3D | option table | PARTIAL | Sound3D kept; music commands not built |
