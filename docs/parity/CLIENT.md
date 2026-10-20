@@ -50,7 +50,7 @@ summary at the end gives the counts after this round.
 | 1.26 | Debug grid views (F11 debug mode, GS+0x14280 1–4), frame-rate line, profile bars | `0x418310`, `0x46B900` | NOT-APPLICABLE | debug-only (need the "+Now Film…" switch); not player features |
 | 1.27 | BPS display (`+bps`) | `0x468380` | BUILT+VERIFIED | frame_harness `--hud` bps check: 12 scenes (640 x 480, 1024 x 768), rates none / small / past 5600 / huge, 0 differing pixels; byte totals from NetBattle (messages to and from the transport) |
 | 1.28 | Paused sign, victory / defeat signs | frame | BUILT-UNVERIFIED | `hud.cpp` |
-| 1.29 | Network "waiting" sign (GS+0x38A51 bit 1 frame at (w − 16, h − 80)) | frame | MISSING | |
+| 1.29 | Network "waiting" sign (GS+0x38A51 bit 1 frame at (w − 16, h − 80)) | frame | BUILT+VERIFIED | the step budget's lag throttle (a remote player 900+ steps behind) shows the hourglass pointer's first frame; frame_harness `--hud` waiting check: 5 scenes, two sizes, 0 differing pixels |
 | 1.30 | CPU and GPU paths identical | — | BUILT+VERIFIED | `battle_view --gpu`, `--gpu-check` on every client screenshot |
 
 ## 2. Battle interface

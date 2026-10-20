@@ -291,6 +291,9 @@ public:
         budget_.game_speed = static_cast<std::uint16_t>(set);
         budget_.effective_speed = static_cast<std::uint16_t>(effective);
     }
+    // Tests: the step budget's lag throttle (a remote player 900 steps or more behind), which
+    // shows the waiting sign.
+    void set_lag_throttled(bool on) { budget_.lag_throttled = on; }
     // The pointer's animation: the look shown and its frame (tests); a new look (not the one
     // shown) starts at its first frame.
     CursorKind pointer_kind() const { return cursor_shown_; }

@@ -854,6 +854,7 @@ int main(int argc, char** argv) {
         r.w32(gs + 0x14813, file_seq("anims\\igtitles.gaf", "igvictory"));
         r.w32(gs + 0x14817, file_seq("anims\\igtitles.gaf", "igdefeat"));
         r.w32(gs + 0x1481B, file_seq("anims\\igtitles.gaf", "igpaused"));
+        r.w32(gs + 0x148CF, file_seq("anims\\cursors.gaf", "cursorhourglass"));  // (the network waiting sign)
     }
     // Effect particle lists (10 x {?, begin, end, capacity}): empty.
     const u32 fx_lists = o.alloc(10 * 16);
@@ -2412,6 +2413,33 @@ int main(int argc, char** argv) {
                 }
                 gc.options_mut().bps = false;
                 r.w32(gs + 0x391C3, 0);
+            }
+            // The waiting sign (GS+0x38A51 bit 1: a remote player far behind).
+            if (!diff) {
+                std::vector<u8> o0, o1;
+                const render::Image8 c0 = client_frame();
+                bool ok2 = original_frame(o0);
+                u16 flags = 0;
+                r.read(gs + 0x38A51, &flags, 2);
+                const u16 waiting = static_cast<u16>(flags | 2);
+                r.write(gs + 0x38A51, &waiting, 2);
+                gc.set_lag_throttled(true);
+                const render::Image8 c1 = client_frame();
+                ok2 = ok2 && original_frame(o1);
+                r.write(gs + 0x38A51, &flags, 2);
+                gc.set_lag_throttled(false);
+                if (!ok2) {
+                    std::printf("  hud: waiting sign: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 pimg(W, H, 0);
+                    long long changed = 0;
+                    const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                    std::printf("  hud: waiting sign: %lld of %lld changed pixels differ\n", pd, changed);
+                    if (pd) dump("waiting", o1, c1, pimg);
+                    st.pixels += pd;
+                    differs(pd);
+                }
             }
             // The console: random lines added by the original's routine (0x463CA0) and the
             // client's (kinds 1, 2, 4, 8, senders, characters 1..255, any length), random line

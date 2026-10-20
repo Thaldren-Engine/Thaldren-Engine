@@ -387,6 +387,12 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
     if ((b_.end_game.flags & sim::end_game_flags::kWonMovie) && c_.victory_sign) render::blit(o, o.bounds(), *c_.victory_sign, cx, cy);
     if ((b_.end_game.flags & sim::end_game_flags::kLost) && c_.defeat_sign) render::blit(o, o.bounds(), *c_.defeat_sign, cx, cy);
     draw_clock_and_units(o);
+    // The waiting sign (GS+0x38A51 bit 1, the step budget's lag throttle): the hourglass
+    // pointer's first frame at (width - 16, height - 80).
+    if (budget_.lag_throttled) {
+        const auto* busy = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Busy)];
+        if (busy && !busy->empty()) render::blit(o, o.bounds(), busy->front(), opt_.width - 16, opt_.height - 80);
+    }
     draw_chat(o);
 }
 
