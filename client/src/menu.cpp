@@ -274,9 +274,7 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         press_button_ = e.button;
         pointer_x_ = e.x;
         pointer_y_ = e.y;
-        // A text field shows the focus marking (lit glyphs) it had at the last full redraw: the
-        // marking of a focus that moved away goes with the redraw after the next press.
-        lit_field_ = focus_gadget_;
+        note_pass_focus();  // the pass's redraw comes before the pointer's events
         const int i = hit(e.x, e.y);
         if (i < 0) return;
         Widget& w = widgets_[static_cast<std::size_t>(i)];
@@ -352,6 +350,7 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
         }
         return;
     case InputEvent::Type::MouseUp: {
+        note_pass_focus();
         pointer_x_ = e.x;
         pointer_y_ = e.y;
         if (list_held_ >= 0) {
@@ -372,7 +371,6 @@ void LayoutScreen::handle(FrontEnd& fe, const InputEvent& e) {
     }
     case InputEvent::Type::KeyDown:
     case InputEvent::Type::Text:
-        lit_field_ = -2;
         for (const int code : menu_key_codes(e)) key_code(fe, code, e.shift, e.alt);
         return;
     default: return;
@@ -721,7 +719,9 @@ void LayoutScreen::key_code(FrontEnd& fe, int code, bool shift, bool alt) {
         return;
     default: break;
     }
-    // ---- the gadgets in description order; the first that takes the key is pressed
+    // ---- the gadgets in description order; the first that takes the key is pressed (after the
+    // pass's redraw and focus marking)
+    note_pass_focus();
     for (int i = 1; i < n; ++i) {
         Widget& w = widgets_[static_cast<std::size_t>(i)];
         if (!w.active) continue;
@@ -1003,13 +1003,14 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
     case WidgetKind::TextField: {
         // The original's text field (0x4A4D70): attribute 1 fills the field with interface colour
         // 0 (else the screen's picture shows); the text from (x, y + 3), the glyphs that fit w - 1;
-        // the field with the focus has its glyphs lit through light level 30 (0x4A16F0 sets its
-        // colour word); the field taking keys shows the insertion point, a line in interface colour
-        // 9 from the text's top down the font's height.
+        // the field the last focus marking marked has its glyphs lit through light level 30
+        // (0x4A16F0 sets its colour word after the pass's redraw: a field gaining or losing the
+        // focus shows it one pass later); the field taking keys (GUI +0x64) shows the insertion
+        // point, a line in interface colour 9 from the text's top down the font's height.
         if (!font) break;
         if (w.attribs & 1) fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, colour(0));
         const int index = static_cast<int>(&w - widgets_.data());
-        const bool lit = (lit_field_ == -2 ? focus_gadget_ : lit_field_) == index && mc.light.size() >= 0x2000;
+        const bool lit = field_mark_ == index && mc.light.size() >= 0x2000;
         int cx = x, left = w.w - 1;
         for (const char ch : w.text) {
             const auto c = static_cast<unsigned char>(ch);
@@ -1029,7 +1030,7 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
             if (left < 0) break;
             cx += g.width;
         }
-        if (focus_ == index) {
+        if (shows_point(index)) {
             const int at = std::clamp(w.cursor, 0, static_cast<int>(w.text.size()));
             const int px = x + font->text_width(std::string_view(w.text).substr(0, static_cast<std::size_t>(at)));
             fill_rect(out, clip, px, y + 3, px, y + 3 + font->height, colour(9));
@@ -1330,7 +1331,7 @@ void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
     if (ring_hold_ >= -1 && hold_depth_ != 0) {
         if (fe.depth() <= hold_depth_) hold_depth_ = 0;  // on top again: the ring follows the focus
     }
-    const int ring = hold_depth_ != 0 ? ring_hold_ : focus_gadget_;
+    const int ring = hold_depth_ != 0 ? ring_hold_ : pass_focus_ != -3 ? pass_focus_ : focus_gadget_;
     if (!focus_ring_ || ring < 0 || ring >= static_cast<int>(widgets_.size()) || light.size() < 0x2000) return;
     const Widget& w = widgets_[static_cast<std::size_t>(ring)];
     if (!w.active || w.kind == WidgetKind::TextField || w.kind == WidgetKind::Label || w.kind == WidgetKind::ListBox || !rings(ring)) return;
@@ -1354,6 +1355,7 @@ void LayoutScreen::draw_focus_ring(FrontEnd& fe, render::Image8& out) {
 
 void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
     if (!placed_) place(out.width, out.height);
+    if (field_mark_ == -3) field_mark_ = focus_gadget_;  // the opening's marking
     if (layout_ && (background_ || layout_->background)) {
         const render::Sprite8& bg = background_ ? *background_ : *layout_->background;
         if (background_in_box_) {
@@ -1378,6 +1380,10 @@ void LayoutScreen::draw(FrontEnd& fe, render::Image8& out) {
     }
     draw_focus_ring(fe, out);
     draw_over(fe, out);
+    // This pass's marking: what the next pass's text fields show.
+    field_mark_ = pass_focus_ != -3 ? pass_focus_ : focus_gadget_;
+    pass_focus_ = -3;
+    pass_field_ = -1;
 }
 
 }  // namespace client

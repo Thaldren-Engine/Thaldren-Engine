@@ -60,7 +60,10 @@ void sfx(FrontEnd& fe, MenuArt& art, const char* name) { fe.play_sound(art.sound
 // A screen's layout with the picture the original puts behind it: the multiplayer screens load
 // their pictures without putting the picture's palette on the display (the connection screen
 // first puts the game palette there and makes the interface colours from it), except the battle
-// room, whose picture's palette goes on the display.
+// room, whose picture's palette goes on the display. The interface colours stay the connection
+// screen's (0x444580 makes them, 0x4AC7D0, from the game palette then on the display; the room's
+// set-up 0x449BB0 does not make them again), also for the room: its chat line's insertion point
+// (colour 9) is index 9, not the nearest colour in the room's own palette.
 const client::ScreenLayout* net_layout(MenuArt& art, const char* gui, const char* picture, bool own_palette) {
     static std::map<std::string, std::unique_ptr<client::ScreenLayout>> cache;
     const std::string key = upper(gui) + "|" + (picture ? picture : "");
@@ -78,8 +81,7 @@ const client::ScreenLayout* net_layout(MenuArt& art, const char* gui, const char
         L->background = art.picture(picture, &pal);
         if (own_palette) L->palette = pal;
     }
-    const render::Palette& p = L->palette ? *L->palette : art.content().palette;
-    for (int k = 0; k < 256; ++k) L->colours[static_cast<std::size_t>(k)] = art.gui_colour(p, k);
+    for (int k = 0; k < 256; ++k) L->colours[static_cast<std::size_t>(k)] = art.gui_colour(art.content().palette, k);
     const client::ScreenLayout* out = L.get();
     cache[key] = std::move(L);
     return out;
@@ -167,6 +169,11 @@ void tile9(render::Image8& out, const render::ClipRect& clip, const std::vector<
 struct ListState {
     std::vector<std::string> items;
     int top = 0, selected = 0;
+    // As the pass's redraw drew it (held: shown so when a list was pressed after that redraw: the
+    // pressed list is drawn again, 0x4A1B40, but the lists of its association only take its pick,
+    // 0x4A3780, and show it from the next pass's redraw).
+    bool held = false, pressed = false;
+    int drawn_top = 0, drawn_selected = 0;
 };
 
 // An edit field's state (kind 3): the text, the insertion point and the limit.
@@ -252,6 +259,16 @@ protected:
             if (!focus_name_.empty()) focus_gadget_ = index_of(focus_name_);
         }
         LayoutScreen::draw(fe, out);
+        for (auto& [i, L] : lists_) L.held = L.pressed = false;
+        list_pressed_ = false;
+    }
+    bool list_pressed_ = false;  // a list was pressed this pass (after the pass's redraw)
+    void pass_redrawn() override {
+        for (auto& [i, L] : lists_) {
+            L.held = true;
+            L.drawn_top = L.top;
+            L.drawn_selected = L.selected;
+        }
     }
     // List boxes and edit fields take no focus ring (the edit field's focus is its lit text).
     bool rings(int i) const override { return !lists_.count(i) && !edits_.count(i); }
@@ -316,7 +333,7 @@ protected:
     void draw_surface(FrontEnd& fe, render::Image8& out, const Widget& w) override {
         const int i = static_cast<int>(&w - widgets_.data());
         if (auto it = lists_.find(i); it != lists_.end()) draw_list(fe, out, w, it->second);
-        else if (auto e = edits_.find(i); e != edits_.end()) draw_edit(fe, out, w, e->second, i == focus_);
+        else if (auto e = edits_.find(i); e != edits_.end()) draw_edit(fe, out, w, e->second, i == field_mark_, shows_point(i));
         else draw_other(fe, out, w);
     }
     virtual void draw_other(FrontEnd&, render::Image8&, const Widget&) {}
@@ -338,7 +355,12 @@ protected:
     // with the width limit; the picked row (unless attribs 0x100, and when the list has rows) then
     // goes through light row 30 from x + 2 to x + w, one row taller than the spacing. Rows are
     // drawn while a whole font height is left.
-    void draw_list(FrontEnd& fe, render::Image8& out, const Widget& w, const ListState& L) {
+    void draw_list(FrontEnd& fe, render::Image8& out, const Widget& w, const ListState& now) {
+        ListState L = now;
+        if (now.held && list_pressed_) {
+            L.top = now.drawn_top;
+            L.selected = now.drawn_selected;
+        }
         const client::Font* f = font();
         if (!f) return;
         const render::ClipRect clip = screen_clip(out);
@@ -361,23 +383,28 @@ protected:
             }
             line_text(out, clip, *f, t, tx, ry, width, 0, fe.menu_content().light);
             if (!(w.attribs & 0x100) && L.selected == i) shade_rect(fe, out, clip, x0, ry, x1, ry + rh, 30);
+            // A list pressed this pass is drawn again over its own box (x .. x + w - 1): the
+            // column x + w keeps the pick the pass's redraw shaded there.
+            if (now.pressed && !(w.attribs & 0x100) && now.drawn_selected != L.selected && now.drawn_top == L.top && now.drawn_selected == i)
+                shade_rect(fe, out, clip, x1, ry, x1, ry + rh, 30);
             left -= rh;
             if (left < f->height) break;
         }
     }
 
     // 0x4A4D70: attribs 1 fills the field with interface colour 0 (else the picture under it
-    // shows); the text from (x, y + 3) along the line within w - 1, through light row 30 while the
-    // field has the focus; the insertion point a line in interface colour 9 from y + 3 down one font
-    // height, at the width of the text before it.
-    void draw_edit(FrontEnd& fe, render::Image8& out, const Widget& w, const EditState& e, bool focused) {
+    // shows); the text from (x, y + 3) along the line within w - 1, through light row 30 when the
+    // last focus marking marked the field (lit: one pass behind the focus, see field_mark_); the
+    // field taking the keys (focused) shows the insertion point, a line in interface colour 9 from
+    // y + 3 down one font height, at the width of the text before it.
+    void draw_edit(FrontEnd& fe, render::Image8& out, const Widget& w, const EditState& e, bool lit, bool focused) {
         const client::Font* f = font();
         const render::ClipRect clip = screen_clip(out);
         const int x = ox_ + w.x, y = oy_ + w.y;
         if (w.attribs & 1) client::fill_rect(out, clip, x, y, x + w.w - 1, y + w.h - 1, colour(0));
         else if (boxed_) tile9(out, clip, art_.sequence("anims\\commongui.GAF", "Listbox"), x - 3, y - 3, w.w + 6, w.h + 6);
         if (!f) return;
-        line_text(out, clip, *f, e.text, x, y + 3, w.w - 1, focused ? 30 : 0, fe.menu_content().light);
+        line_text(out, clip, *f, e.text, x, y + 3, w.w - 1, lit ? 30 : 0, fe.menu_content().light);
         if (focused) {
             const int cx = x + f->text_width(e.text.substr(0, static_cast<std::size_t>(std::clamp(e.point, 0, static_cast<int>(e.text.size())))));
             client::fill_rect(out, clip, cx, y + 3, cx, y + 3 + f->height, colour(9));
@@ -387,12 +414,16 @@ protected:
     void handle(FrontEnd& fe, const InputEvent& e) override {
         using T = InputEvent::Type;
         if (e.type == T::MouseDown) {
+            note_pass_focus();  // the pass's redraw comes before the pointer's events
             for (auto& [i, L] : lists_) {
                 const Widget& w = widgets_[static_cast<std::size_t>(i)];
                 if (!w.active || e.x < ox_ + w.x || e.y < oy_ + w.y || e.x >= ox_ + w.x + w.w || e.y >= oy_ + w.y + w.h) continue;
-                // A pressed list holds the focus; no field takes the keys.
+                // A pressed list holds the focus; no field takes the keys; the list is drawn
+                // again (0x4A1B40), the others of its association at the next pass.
                 focus_gadget_ = i;
                 focus_ = -1;
+                L.held = false;
+                L.pressed = list_pressed_ = true;
                 const int rh = font() ? font()->height + 1 : 12;
                 const int row = (e.y - (oy_ + w.y) - 2) / rh + L.top;
                 if (row >= 0 && row < static_cast<int>(L.items.size())) {

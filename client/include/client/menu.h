@@ -265,7 +265,29 @@ protected:
     const std::array<std::uint8_t, 256>* colours_ = nullptr;
     int focus_ = -1;               // index of the text field taking keys (-1: none)
     bool key_press_ = false;            // the press being handled came from a key
-    int lit_field_ = -2;                // the gadget whose focus marking is shown (-2: the focus's)
+    // The focus marking (0x4A16F0) runs at the end of each pass's full redraw (0x4A81E0, which
+    // the marking asks for again: one every pass while the ring is shown), after the special keys
+    // (Tab, arrows, Enter, Escape, Space: 0x4A9B90) and before the pointer and the other keys
+    // (quick keys, typing) reach the gadgets. pass_focus_: the focus as that redraw saw it (-3:
+    // not taken this frame, the focus as it is); pass_field_: the field taking the keys then (its
+    // insertion point, drawn by that redraw, stays on the screen's surface until the next pass
+    // even when a press later in the pass gives the keys to another field or to none; -1: none);
+    // field_mark_: the gadget the last marking marked (text fields are drawn lit through its
+    // colour word, set by the previous pass's marking; -3: none yet, the first drawing takes the
+    // opening's).
+    int pass_focus_ = -3;
+    int pass_field_ = -1;
+    int field_mark_ = -3;
+    void note_pass_focus() {
+        if (pass_focus_ != -3) return;
+        pass_focus_ = focus_gadget_;
+        pass_field_ = focus_;
+        pass_redrawn();
+    }
+    // The pass's redraw, for what else a screen keeps as that redraw drew it.
+    virtual void pass_redrawn() {}
+    // A text field shows its insertion point: it takes the keys, or took them at the pass's redraw.
+    bool shows_point(int i) const { return i >= 0 && (i == focus_ || i == pass_field_); }
     // The focus ring held where it was while a screen opened by a press covers this one (until
     // the stack is back to hold_depth_; 0: not held). A press handler that redraws this screen
     // before covering it sets ring_follow_.
