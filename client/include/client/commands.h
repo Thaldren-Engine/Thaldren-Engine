@@ -39,8 +39,7 @@ int command_build(sim::Battle& b, int player, std::uint16_t type, const WorldPos
 // Whether a structure of `type` fits with its footprint's first cell at (cell_x, cell_z).
 bool structure_fits(sim::Battle& b, std::uint16_t type, int cell_x, int cell_z);
 
-// One simulation step in the original's stage order. Adapter for the game-flow agent's
-// Battle::step; stages not built yet are skipped.
+// One simulation step in the original's stage order (Battle::step).
 void step_battle(sim::Battle& b);
 // After a frame's steps (even none): the per-frame work (lingering sight expiry).
 void end_frame(sim::Battle& b);

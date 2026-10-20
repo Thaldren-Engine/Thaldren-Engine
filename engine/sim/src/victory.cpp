@@ -82,7 +82,7 @@ void Battle::victory_turn(int slot) {
             }
         }
         if (settings.provider == 2 || settings.provider == 3) return me.alive_count == 0;
-        return false;  // campaign conditions are not built
+        return false;  // (campaigns are judged by their goals below)
     };
     auto won = [&]() -> bool { return victory_met(); };
     if (settings.provider == 1) {

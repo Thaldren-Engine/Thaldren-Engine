@@ -6,7 +6,7 @@
 //  - skirmish and network games: defeated when the local player has no live units; else it
 //    has won when every other player that is not its ally has none (skirmish) or every
 //    remaining player is a mutual "allied victory" ally (network);
-//  - campaigns: the mission's conditions (not built; see RE_MEMORY).
+//  - campaigns: the mission's win and loss goals (sim/mission_goals.h; RE_MEMORY "Campaign").
 // A decision starts the end countdown (5 more turns, 150 steps); while it runs no player's
 // economy is settled. When it runs out: a win or loss ends the game (end-game flags), the
 // deathmatch mode puts a new commander on the map instead, and a network game may turn the

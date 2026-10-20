@@ -2,9 +2,9 @@
 // A battle: all simulation state of one game and the per-step routines wired
 // together in the original's order (see docs/RE_MEMORY.md, "Battle step").
 //
-// The systems built so far call each other directly here; everything else —
-// systems not built yet (mission behaviours, transport, line of sight, AI),
-// presentation, network and user interface — goes to one BattleOutside interface.
+// The simulation's systems call each other directly here; what a battle needs from
+// outside it (terrain buckets, sight hooks, the AI's hooks, presentation, network and
+// user interface) goes to one BattleOutside interface.
 
 #include <array>
 #include <cstdint>
@@ -157,7 +157,8 @@ public:
     virtual void join_group(Unit& unit, std::int32_t group) = 0;
     virtual void stamp_line_of_sight(Unit& unit) = 0;
     virtual void victory_unit_created(Unit& unit) = 0;
-    // Not built yet: mission behaviours, attack retargeting, transport.
+    // A mission kind no behaviour handles (sim/missions.h passes it on; the original's 68 kinds
+    // are all built there), transport attachment and the rest of a unit's presentation.
     virtual std::int32_t run_mission(Unit& unit, MissionOrder& order, std::uint32_t& event) = 0;
     virtual void attach_unit(Unit& unit, std::int32_t passenger, std::int32_t piece, std::int32_t mode) = 0;
     virtual void drop_unit(Unit& unit, std::int32_t passenger) = 0;
