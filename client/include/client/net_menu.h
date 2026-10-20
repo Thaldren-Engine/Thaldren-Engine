@@ -95,6 +95,7 @@ public:
     void send_chat(const std::string& text) override;
     void surrender() override;
     bool network() const override { return true; }
+    bool end_exchange_done(std::uint32_t now_ms) override;
     std::vector<PlayerStats> stats() override { return inner_->stats(); }
     bool end_table(EndTable& t) override { return inner_->end_table(t); }
     std::string battle_name() const override { return inner_->battle_name(); }
@@ -111,6 +112,8 @@ public:
 private:
     std::array<std::string, 10> names_{};
     int local_ = 0;
+    bool exchanged_ = false, exchange_started_ = false;
+    std::uint32_t exchange_ms_ = 0;
     std::unique_ptr<net::Transport> transport_;
     std::shared_ptr<net::NetSession> session_;
     std::unique_ptr<net::NetBattle> net_;

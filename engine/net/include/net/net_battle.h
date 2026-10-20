@@ -98,6 +98,12 @@ public:
         bool valid = false;
     };
     const ViewState& view_state(int slot) const { return view_[static_cast<std::size_t>(slot)]; }
+    // The end of a network game (0x4572A0, each frame once the game ends, before the statistics
+    // screen): every local player asks each remote player for its final totals (0x28 with the
+    // ask byte) until each remote human acknowledged ours (0x29), told us it had our
+    // acknowledgement, and sent its own; remote computer players until theirs arrived. True when
+    // nothing was asked any more (the statistics may show).
+    bool end_exchange();
 
     const NetCounters& counters() const { return counters_; }
     const FrameReceiver& receiver() const { return receiver_; }
@@ -209,6 +215,11 @@ private:
     std::array<std::uint32_t, 11> last_heard_{};
     std::array<std::array<std::uint8_t, 11>, 11> allied_by_{};
     std::array<ViewState, 11> view_{};
+    // Per local record, per sender slot (+0x11E acknowledged ours, +0x134 had our acknowledgement,
+    // +0x129 its final totals arrived).
+    std::array<std::array<std::uint8_t, 10>, 10> stats_acked_{}, stats_told_{}, stats_got_{};
+    void send_view_state(int player, int to, bool ask);  // 0x4573D0 (to: -1 every remote human)
+    bool remote_human(int slot) const;
     std::array<std::uint8_t, 11> leaving_{};
     std::array<RoomPlayer, 10> room_{};
     bool have_room_ = false, watch_sent_ = false, per_group_ = false, timeout_disabled_ = false;

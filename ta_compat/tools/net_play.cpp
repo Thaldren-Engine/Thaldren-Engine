@@ -5,6 +5,13 @@
 //       Two or more machines in one process over the loopback transport, each with one
 //       human player giving scripted random orders. Every 30 steps (and at the end) each
 //       machine's own units are compared with their copies on the other machines.
+//   net_play <game_dir> features [steps] [seed] [map] [every]
+//       Two machines on the loopback; armed units of each shoot at the features near the
+//       other's commander (trees, rocks, metal, wrecks) and at each other, commanders reclaim.
+//       Every `every` steps (and at the end) the machines' feature maps are compared (cell,
+//       type, damage, burning). NET_PLAY_FEATURE_DUMP=<prefix> writes each machine's map to
+//       <prefix><slot>.txt at every comparison. Fails when the final maps differ (the host's
+//       own damage counters aside: only the host keeps them).
 //   net_play <game_dir> host <port> <machines> [steps] [seed] [map]
 //   net_play <game_dir> join <address> <port> <machines> <slot> [steps] [seed] [map]
 //       The same over TCP between processes (the host is slot 0). Steps run at 30 per second.
@@ -28,6 +35,8 @@
 #include "sim/commands.h"
 #include "ta/battle_loader.h"
 #include "ta/net_setup.h"
+
+#include "feature_maps.h"
 
 namespace {
 
@@ -53,6 +62,7 @@ std::unique_ptr<ta::LoadedBattle> load(ta::Vfs& vfs, const std::string& map, int
         sp.net_id = 0x100 + p;
         sp.start_position = p;
         sp.colour = static_cast<std::uint8_t>(p);
+        sp.host = p == 0;
         sp.name = std::string("Player ") + std::to_string(p + 1);
     }
     req.start.provider = 3;
@@ -197,7 +207,13 @@ void report(const char* what, std::uint32_t tick, const Comparison& c) {
                 c.copies ? c.sum_err / static_cast<double>(c.copies) : 0.0, c.max_err);
 }
 
-int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const std::string& map) {
+using feature_maps::FeatureCell;
+using feature_maps::FeatureDiff;
+using feature_maps::feature_map;
+using feature_maps::compare_features;
+using feature_maps::dump_features;
+
+int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const std::string& map, int feature_every = 0) {
     net::LoopbackHub hub;
     std::vector<std::unique_ptr<net::NetSession>> sessions;
     std::vector<std::unique_ptr<net::BattleRoom>> rooms;
@@ -312,8 +328,72 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
     for (auto& m : ms) all.push_back(m.get());
     Comparison total;
     int failures = 0;
+    // The features scenario: each machine's feature map from the start, its host flag, a dump file.
+    const bool features = feature_every > 0;
+    std::vector<std::vector<FeatureCell>> feature_start;
+    std::vector<bool> is_host;
+    std::vector<std::FILE*> dumps;
+    std::size_t feature_compares = 0, feature_compares_equal = 0;
+    if (features) {
+        for (Machine* m : all) {
+            feature_start.push_back(feature_map(*m->lb->battle));
+            is_host.push_back(m->lb->battle->victory.sides[static_cast<std::size_t>(m->slot)].host);
+            const char* prefix = std::getenv("NET_PLAY_FEATURE_DUMP");
+            dumps.push_back(prefix ? std::fopen((std::string(prefix) + std::to_string(m->slot) + ".txt").c_str(), "w") : nullptr);
+            std::printf("machine %d: %s\n", m->slot, is_host.back() ? "host" : "not the host");
+        }
+        if (feature_start.size() > 1 && !(feature_start[0] == feature_start[1])) std::printf("feature maps differ at the start\n");
+        if (std::getenv("NET_PLAY_VERBOSE")) {
+            std::printf("fire-starting weapons:");
+            for (const ta::WeaponDefRecord& w : all[0]->lb->weapon_defs.slots)
+                if (w.loaded && w.fire_starter) std::printf(" %s(%u)", w.name.c_str(), w.fire_starter);
+            std::printf("\n");
+            // Types that reproduce draw the battle generator of each machine (they would diverge).
+            const sim::Battle& b0 = *all[0]->lb->battle;
+            std::printf("reproducing feature types:");
+            for (std::size_t k = 0; k < b0.features.size(); ++k)
+                if (b0.features[k].reproduce)
+                    std::printf(" %s(%u%%, area %u)",
+                                all[0]->lb->feature_defs.records().size() > k ? all[0]->lb->feature_defs.records()[k].name.c_str() : "?",
+                                b0.features[k].reproduce, b0.features[k].reproduce_area);
+            std::printf("\n");
+        }
+    }
+    auto feature_check = [&](const char* what) {
+        std::vector<std::vector<FeatureCell>> now;
+        for (std::size_t k = 0; k < all.size(); ++k) {
+            now.push_back(feature_map(*all[k]->lb->battle));
+            dump_features(dumps[k], all[k]->lb->battle->game_tick(), now.back(), feature_start[k], all[k]->lb->battle->map.width);
+        }
+        const FeatureDiff d = compare_features(now, is_host, all[0]->lb->battle->map.width);
+        std::size_t changed = 0, burning = 0;
+        for (std::size_t i = 0; i < now[0].size(); ++i) {
+            changed += !(now[0][i].type == feature_start[0][i].type);
+            burning += now[0][i].state == 'B';
+        }
+        ++feature_compares;
+        feature_compares_equal += d.cells == d.damage_host_only;
+        std::printf("%s step %u features: %zu cells changed since the start, %zu burning (machine 0); differing cells %zu (type %zu, burning/dying %zu, "
+                    "damage %zu); host-only damage counters %zu\n",
+                    what, all[0]->lb->battle->game_tick(), changed, burning, d.cells - d.damage_host_only, d.type, d.state, d.damage,
+                    d.damage_host_only);
+        for (const std::string& s : d.first) std::printf("    %s\n", s.c_str());
+        return d;
+    };
     for (int step = 0; step < steps; ++step) {
         if (udp_env) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (features && step == 30)
+            // Each machine places armed units near the next player's commander, among the
+            // features there (a skirmish line through the trees).
+            for (Machine* m : all) {
+                sim::Battle& b = *m->lb->battle;
+                const int foe = (m->slot + 1) % machines;
+                const sim::Unit& target = b.units[static_cast<std::size_t>(b.players[static_cast<std::size_t>(foe)].first_unit)];
+                feature_maps::place_feature_shooters(b, m->slot, target.pos, [&](const char* n) { return m->lb->type_index(n); });
+            }
+        if (features && step > 30 && step < steps - steps / 3)
+            for (Machine* m : all) feature_maps::feature_orders(*m->lb->battle, m->slot, m->rng, step);
+        if (features && (step + 1) % feature_every == 0) feature_check("compare");
         if (std::getenv("NET_PLAY_DUEL") && step == 30)
             // A skirmish line: each machine places a few of its own armed units near the first
             // unit of the next player (announced to the others by packet 9 as any new unit).
@@ -362,6 +442,35 @@ int run_loop(ta::Vfs& vfs, int machines, int steps, std::uint32_t seed, const st
             m->net->set_clock(++m->clock);
             m->net->flush_now();
         }
+    // The end of the game's statistics exchange (0x4572A0, 0x28 with the ask byte / 0x29) on
+    // every machine at once, a pass per 250 ms: it must settle.
+    {
+        int passes = 0;
+        bool all_done = false;
+        while (!all_done && passes < 40) {
+            ++passes;
+            all_done = true;
+            for (Machine* m : all) {
+                m->clock += 8;
+                m->net->set_clock(m->clock);
+                m->net->poll();
+                all_done = m->net->end_exchange() && all_done;
+            }
+        }
+        // A last pass: the final acknowledgements were sent in the pass before.
+        for (Machine* m : all) m->net->poll();
+        std::printf("end of game exchange: %s after %d passes\n", all_done ? "done" : "NOT done", passes);
+        if (!all_done) ++failures;
+    }
+    if (features) {
+        for (int k = 0; k < 10; ++k)
+            for (Machine* m : all) m->net->poll();
+        const FeatureDiff d = feature_check("final");
+        std::printf("features: %zu of %zu comparisons identical (host-only damage counters aside)\n", feature_compares_equal, feature_compares);
+        for (std::FILE* f : dumps)
+            if (f) std::fclose(f);
+        if (d.cells != d.damage_host_only) ++failures;
+    }
     if (udp_env) {
         for (int k = 0; k < 50; ++k) {
             for (auto& t : udp) t->pump();
@@ -459,6 +568,7 @@ int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr,
                      "usage: net_play <game_dir> loop [machines] [steps] [seed] [map]\n"
+                     "       net_play <game_dir> features [steps] [seed] [map] [every]\n"
                      "       net_play <game_dir> host <port> <machines> [steps] [seed] [map]\n"
                      "       net_play <game_dir> join <address> <port> <machines> <slot> [steps] [seed] [map]\n");
         return 2;
@@ -472,6 +582,13 @@ int main(int argc, char** argv) {
         const int steps = argc > 4 ? std::atoi(argv[4]) : 300;
         const std::uint32_t seed = argc > 5 ? static_cast<std::uint32_t>(std::strtoul(argv[5], nullptr, 0)) : 1u;
         return run_loop(vfs, machines, steps, seed, argc > 6 ? argv[6] : "Moon Quartet");
+    }
+    if (mode == "features") {
+        const int steps = argc > 3 ? std::atoi(argv[3]) : 1500;
+        const std::uint32_t seed = argc > 4 ? static_cast<std::uint32_t>(std::strtoul(argv[4], nullptr, 0)) : 1u;
+        const int every = argc > 6 ? std::max(1, std::atoi(argv[6])) : 60;
+        const char* n = std::getenv("NET_PLAY_MACHINES");  // more machines (each asks the host alone)
+        return run_loop(vfs, n ? std::clamp(std::atoi(n), 2, 10) : 2, steps, seed, argc > 5 ? argv[5] : "Coast To Coast", every);
     }
     if (mode == "host" && argc > 4) {
         const int steps = argc > 5 ? std::atoi(argv[5]) : 600;

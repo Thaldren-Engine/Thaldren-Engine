@@ -49,6 +49,7 @@ struct ConsoleState {
     std::int32_t film_speed = 0;
     std::string film_dir;
     std::vector<std::string> not_built;   // commands that ran but have no effect here yet
+    std::string reload_yard;              // "+reload": the FBI loader's YardMap stack buffer (an input)
 };
 
 class ConsoleCommands {

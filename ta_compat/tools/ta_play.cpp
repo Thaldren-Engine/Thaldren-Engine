@@ -560,6 +560,12 @@ int main(int argc, char** argv) {
             if (b.players[p].active)
                 std::printf("player %zu: energy %.1f metal %.1f\n", p, static_cast<double>(b.players[p].energy_stored),
                             static_cast<double>(b.players[p].metal_stored));
+        {
+            std::size_t feature_cells = 0;
+            for (const sim::MapCell& c : b.map.cells) feature_cells += c.feature < 0xFFFB;
+            std::printf("features: %zu cells, route search divisor %d base %d, goals active %d\n", feature_cells,
+                        b.route_search.budget_divisor, b.route_search.base_budget, b.mission_goals.active ? 1 : 0);
+        }
         if (!commands->state().not_built.empty()) {
             std::printf("commands without an effect here:");
             for (const std::string& n : commands->state().not_built) std::printf(" %s", n.c_str());

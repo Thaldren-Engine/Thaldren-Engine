@@ -228,9 +228,22 @@ void NetBattle::on_activate_flags_changed(sim::Unit& u, std::uint8_t gained, std
 
 void NetBattle::feature_packet(const std::uint8_t* packet, bool to_host) {
     inner_.feature_packet(packet, to_host);
-    // Feature changes go out from the first human player's net id (to the host or to everybody;
-    // with the star transport both reach every machine).
-    broadcast(first_local_net_id(), packet, 6);
+    // Feature changes go out from the first playing player's net id. A machine that is not the
+    // host asks the host alone (0x4244B0 -> 0x451BC0 to the net id of 0x450030: the first record
+    // with the host flag, -1 when that record has no controller); every other change goes to
+    // everybody. (Sent to everybody, a request reached the other non-host machines too, and
+    // each of them asked the host again: damage counted once more per extra machine.)
+    if (!to_host) {
+        broadcast(first_local_net_id(), packet, 6);
+        return;
+    }
+    if (!battle_) return;
+    for (int s = 0; s < 10; ++s) {
+        if (!battle_->victory.sides[static_cast<std::size_t>(s)].host) continue;
+        const sim::PlayerSlot& h = battle_->players[static_cast<std::size_t>(s)];
+        if (h.controller != 0) send_to(first_local_net_id(), h.net_id, packet, 6);
+        return;
+    }
 }
 
 void NetBattle::resources_shared(int kind, int from, int to, float amount) {
@@ -261,10 +274,23 @@ void NetBattle::player_sensor_turn(int player) {
     // players (0x4573D0).
     if (!battle_ || battle_->settings.provider != 3) return;
     if ((++view_turns_ & 3) != 0) return;
-    if (!plays(player) || leaving_[static_cast<std::size_t>(player)]) return;
+    send_view_state(player, -1, false);
+}
+
+bool NetBattle::remote_human(int s) const {
+    // A remote record whose side record says human (+0x94 = 1).
+    const sim::PlayerSlot& o = battle_->players[static_cast<std::size_t>(s)];
+    if (!o.active || o.controller != 3) return false;
+    return have_room_ ? room_[static_cast<std::size_t>(s)].kind == 1 : battle_->victory.sides[static_cast<std::size_t>(s)].human;
+}
+
+void NetBattle::send_view_state(int player, int to, bool ask) {
+    // 0x4573D0(record, addressee or none, ask): a playing, present record's totals (its record's
+    // kill and loss words, storage and stored resources, and the six income/use figures).
+    if (!battle_ || !plays(player) || leaving_[static_cast<std::size_t>(player)]) return;
     const sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(player)];
     const sim::PlayerEconomy& e = battle_->player_economy[static_cast<std::size_t>(player)];
-    u8 pk[58] = {packet::kViewState, 0};
+    u8 pk[58] = {packet::kViewState, static_cast<u8>(ask ? 1 : 0)};
     put32(pk + 2, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.units_killed)));
     put32(pk + 6, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.units_lost)));
     put32(pk + 10, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.commanders_killed)));
@@ -273,10 +299,33 @@ void NetBattle::player_sensor_turn(int player) {
     putf(pk + 22, e.energy_storage);
     putf(pk + 26, p.metal_stored);
     putf(pk + 30, p.energy_stored);
-    for (int s = 0; s < 10; ++s) {
-        const sim::PlayerSlot& o = battle_->players[static_cast<std::size_t>(s)];
-        if (o.active && o.controller == 3 && !leaving_[static_cast<std::size_t>(s)]) send_to(p.net_id, o.net_id, pk, 58);
+    if (to >= 0) {
+        if (!leaving_[static_cast<std::size_t>(to)]) send_to(p.net_id, battle_->players[static_cast<std::size_t>(to)].net_id, pk, 58);
+        return;
     }
+    // To every remote human player that is present (0x451BC0 to each).
+    for (int s = 0; s < 10; ++s)
+        if (remote_human(s) && !leaving_[static_cast<std::size_t>(s)]) send_to(p.net_id, battle_->players[static_cast<std::size_t>(s)].net_id, pk, 58);
+}
+
+bool NetBattle::end_exchange() {
+    // 0x4572A0.
+    if (!battle_) return true;
+    bool done = true;
+    for (int l = 0; l < 10; ++l) {
+        if (!plays(l) || leaving_[static_cast<std::size_t>(l)]) continue;
+        for (int r = 0; r < 10; ++r) {
+            const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(r)];
+            if (!q.active || q.controller != 3) continue;
+            const std::size_t L = static_cast<std::size_t>(l), R = static_cast<std::size_t>(r);
+            const bool want = remote_human(r) ? (!stats_acked_[L][R] || !stats_told_[L][R] || !stats_got_[L][R]) : !stats_got_[L][R];
+            if (!want) continue;
+            send_view_state(l, r, true);
+            done = false;
+        }
+    }
+    flush_now();
+    return done;
 }
 
 void NetBattle::network_flush() { sender_.flush(clock_, false, send_fn()); }
@@ -502,19 +551,47 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
         break;
     }
     case packet::kViewState: {
-        ViewState& vs = view_[static_cast<std::size_t>(from)];
-        vs.kills = static_cast<std::int16_t>(get16(p + 2));
-        vs.losses = static_cast<std::int16_t>(get16(p + 6));
-        vs.commanders_killed = static_cast<std::int16_t>(get16(p + 10));
-        vs.commanders_lost = static_cast<std::int16_t>(get16(p + 14));
-        vs.metal_storage = getf(p + 18);
-        vs.energy_storage = getf(p + 22);
-        vs.metal = getf(p + 26);
-        vs.energy = getf(p + 30);
-        for (int k = 0; k < 6; ++k) vs.values[k] = getf(p + 34 + 4 * k);
-        vs.valid = true;
+        // 0x457540: the totals are kept unless a local player already has this sender's final
+        // ones (+0x129); an ask (byte 1) is answered by each local player with 0x29 {1, whether
+        // the sender acknowledged ours} and, while this machine has not won, its own final
+        // totals until the sender acknowledged them.
+        bool frozen = false;
+        for (int l = 0; l < 10; ++l)
+            if (plays(l) && stats_got_[static_cast<std::size_t>(l)][static_cast<std::size_t>(from)]) frozen = true;
+        if (!frozen) {
+            ViewState& vs = view_[static_cast<std::size_t>(from)];
+            vs.kills = static_cast<std::int16_t>(get16(p + 2));
+            vs.losses = static_cast<std::int16_t>(get16(p + 6));
+            vs.commanders_killed = static_cast<std::int16_t>(get16(p + 10));
+            vs.commanders_lost = static_cast<std::int16_t>(get16(p + 14));
+            vs.metal_storage = getf(p + 18);
+            vs.energy_storage = getf(p + 22);
+            vs.metal = getf(p + 26);
+            vs.energy = getf(p + 30);
+            for (int k = 0; k < 6; ++k) vs.values[k] = getf(p + 34 + 4 * k);
+            vs.valid = true;
+        }
+        if (p[1] != 0) {
+            const bool won = b.victory_met();
+            for (int l = 0; l < 10; ++l) {
+                if (!plays(l) || leaving_[static_cast<std::size_t>(l)]) continue;
+                const std::size_t L = static_cast<std::size_t>(l), F = static_cast<std::size_t>(from);
+                stats_got_[L][F] = 1;
+                u8 ack[3] = {packet::kViewAck, 1, static_cast<u8>(stats_acked_[L][F] ? 1 : 0)};
+                send_to(b.players[L].net_id, b.players[F].net_id, ack, 3);
+                if (!won && !stats_acked_[L][F]) send_view_state(l, from, true);
+            }
+        }
         break;
     }
+    case packet::kViewAck:
+        // 0x29: the addressee's record notes that the sender has its final totals (+0x11E) and,
+        // with byte 2, that the sender had its acknowledgement (+0x134).
+        if (p[1] != 0) {
+            stats_acked_[static_cast<std::size_t>(to)][static_cast<std::size_t>(from)] = 1;
+            if (p[2] != 0) stats_told_[static_cast<std::size_t>(to)][static_cast<std::size_t>(from)] = 1;
+        }
+        break;
     case packet::kUnitStates:
         last_state_tick_[static_cast<std::size_t>(from)] = b.apply_unit_state_packet(from, p, need);
         break;

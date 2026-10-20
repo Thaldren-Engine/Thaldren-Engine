@@ -194,6 +194,7 @@ void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
         }
     }
     if (u.carrier || !ui.model) return;  // carried units are drawn with their carrier
+    if (s.drawn_units) s.drawn_units->push_back(&u);
     const Camera& c = s.camera;
     const ClipRect clip = c.view_clip();
     const LookUnit lu = look_unit(s, ui);
@@ -776,6 +777,7 @@ DrawList build_draw_list(const BattleScene& s) {
             if (p.render_type < 0) draw_projectile(s, p, out);
             else if (!draw_projectile_typed(s, p, out, rand_state)) break;
         }
+        if (s.crt_rand_after) *s.crt_rand_after = rand_state;
     }
     // World effects (the original's 0x420B00): debris pieces, then every effect's glow, then
     // every effect's shard and art; effects whose point is outside the view are skipped.

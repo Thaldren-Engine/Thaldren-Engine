@@ -172,6 +172,15 @@ private:
     };
     std::deque<Pending> pending_;
     std::deque<net::Message> inbox_;
+    // Reliable packets being put together (by message id): the message, the next piece expected,
+    // the piece count, delivered.
+    struct Reassembly {
+        Bytes message;
+        std::uint32_t next = 0, count = 0;
+        bool delivered = false;
+    };
+    std::map<std::array<std::uint8_t, 16>, Reassembly> reassembly_;
+    void packet2(const Inbound& in);
     std::deque<SessionEvent> events_;
     Counters counters_;
 };

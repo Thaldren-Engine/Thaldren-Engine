@@ -6,13 +6,19 @@
 #include <algorithm>
 
 #include "client/game_client.h"
+#include "sim/ai.h"
 #include "sim/battle.h"
 #include "sim/combat.h"
+#include "sim/commands.h"
 #include "sim/construction.h"
 #include "sim/economy.h"
+#include "sim/features.h"
+#include "sim/unit_create.h"
 #include "sim/victory.h"
 #include "sim/x87.h"
 #include "ta/ai_profile.h"
+#include "ta/battle_loader.h"
+#include "ta/battle_types.h"
 #include "ta/client_world.h"
 #include "ta/crt_strtod.h"
 
@@ -90,6 +96,70 @@ struct ConsoleCommands::Impl {
         hooks.create = [&](std::uint16_t t, const std::array<std::int32_t, 3>& p) { bt.create_unit(player, t, p[0], p[1], p[2], true, 1, 0); };
         const int matched = sim::console::place_unit_row(pos, row_end, static_cast<int>(defs.units.size()), hooks);
         if (matched == 0) include_file(pattern, words);
+    }
+
+    // The pointer's cell (GS+0x2C8E / 0x2C90: the map point's x and z >> 20 as 16-bit values)
+    // as a cell index, -1 off the map (the map point is clamped to the map, so not in practice).
+    std::int32_t pointer_cell() {
+        const sim::MapGrid& m = b().map;
+        const auto x = static_cast<std::int16_t>(static_cast<std::uint16_t>(static_cast<std::uint32_t>(cursor[0]) >> 20));
+        const auto z = static_cast<std::int16_t>(static_cast<std::uint16_t>(static_cast<std::uint32_t>(cursor[2]) >> 20));
+        if (x < 0 || z < 0 || x >= m.width || z >= m.height) return -1;
+        return static_cast<std::int32_t>(z) * m.width + x;
+    }
+    // The feature under a cell (0x421E60, GS+0x2CBC for the pointer's cell): a part gives its
+    // anchor's feature, the other special values 0xFFFF.
+    std::uint16_t feature_under(std::int32_t cell) {
+        const sim::MapGrid& m = b().map;
+        const sim::MapCell& c = m.cells[static_cast<std::size_t>(cell)];
+        if (c.feature <= 0xFFFA) return c.feature;
+        if (c.feature != 0xFFFE) return 0xFFFF;
+        const std::int32_t anchor = cell - ((c.feature_aux & 0xFF) * m.width + (c.feature_aux >> 8));
+        if (anchor < 0 || static_cast<std::size_t>(anchor) >= m.cells.size()) return 0xFFFF;  // the original reads outside the grid
+        return m.cells[static_cast<std::size_t>(anchor)].feature;
+    }
+    // A mission kind by name (MissionOrder_FindByName: lower bound over the sorted lookup
+    // names, case-insensitive; 0 when it is not there).
+    static std::uint8_t mission_by_name(const std::string& name) {
+        static const std::vector<std::string> names = UnitDefContext::default_mission_names();
+        std::size_t lo = 0, hi = names.size();
+        while (lo < hi) {
+            const std::size_t mid = lo + (hi - lo) / 2;
+            if (sim::console::c_stricmp(names[mid], name) < 0) lo = mid + 1;
+            else hi = mid;
+        }
+        return lo != names.size() && sim::console::c_stricmp(names[lo], name) == 0 ? static_cast<std::uint8_t>(lo) : 0;
+    }
+
+    // "+reload <unit>" (0x417490): every unit of the type is killed through the kill packet
+    // (0x486E80, kind 8: every table entry of that type), then its FBI and script are read
+    // again (0x42D1F0) when the type can be made.
+    void reload_type(const std::string& name) {
+        LoadedBattle& lb = w.loaded();
+        sim::Battle& bt = b();
+        const std::uint16_t t = lb.type_index(name);
+        if (t == 0 || t >= bt.types.size()) return;
+        for (std::size_t i = 1; i < bt.units.size(); ++i)
+            if (bt.ticks[i].type_index == t) sim::kill_unit(bt.combat(), bt.units[i], 8, st.kill_word);
+        if (!(bt.types[t].create.type_flags & sim::create_flags::kLoadable)) return;
+        std::string error;
+        if (!reload_unit_properties(w.vfs_, lb.unit_context, lb.unit_defs, t, lb.feature_defs, st.reload_yard, error)) {
+            bt.feature_world().state.fault = error;
+            return;
+        }
+        const UnitDefRecord& d = lb.unit_defs.units[t];
+        auto assets = std::make_unique<UnitTypeAssets>();
+        if (!load_unit_assets(w.vfs_, d, *assets, error)) return;
+        const std::uint32_t loadable = bt.types[t].create.type_flags & sim::create_flags::kLoadable;  // not an FBI key
+        to_battle_unit_type(d, *assets, lb.weapons, bt.types[t]);
+        to_ai_type(d, lb.weapons, bt.types[t].ai);
+        bt.types[t].create.type_flags = (bt.types[t].create.type_flags & ~sim::create_flags::kLoadable) | loadable;
+        // Category objects are shared by pointer in the original: every type's masks see the change.
+        for (std::size_t k = 1; k < bt.types.size() && k < lb.unit_defs.units.size(); ++k)
+            if (lb.type_assets[k] || k == t) to_targeting_type(lb.unit_defs.units[k], lb.unit_defs.categories, lb.weapons, bt.types[k].targeting);
+        if (lb.type_assets[t]) lb.retired_assets.push_back(std::move(lb.type_assets[t]));
+        lb.type_assets[t] = std::move(assets);
+        bt.unit_types_changed();
     }
 
     void include_file(const std::string& name, const Words& parent) {
@@ -295,10 +365,13 @@ void ConsoleCommands::Impl::build() {
             // Every unit with a type is killed (kind 8) through the kill routine.
             for (std::size_t i = 1; i < bt.units.size(); ++i)
                 if (bt.ticks[i].type_index != 0) sim::kill_unit(bt.combat(), bt.units[i], 8, st.kill_word);
-            return;
+        } else {
+            const std::uint32_t slot = static_cast<std::uint32_t>(a.number(1, 0));
+            if (slot < bt.players.size()) bt.kill_team(static_cast<int>(slot), st.kill_word);
         }
-        const std::uint32_t slot = static_cast<std::uint32_t>(a.number(1, 0));
-        if (slot < bt.players.size()) bt.kill_team(static_cast<int>(slot), st.kill_word);
+        // Both forms then switch the map's goals off (0x4904B0 on GS+0x391ED): a mission
+        // never ends by them afterwards.
+        bt.mission_goals.active = false;
     });
     auto end_game = [this](bool win) {
         // The local player's side picks the team killed: a win kills team (side != 1), a loss
@@ -323,9 +396,36 @@ void ConsoleCommands::Impl::build() {
         if (a.count() > 1 && a.number(1, 0) > 0) st.film_speed = a.number(1, 0);
     });
     add("Assert", [](const Words&) {});
-    add("Assign", [this](const Words&) { not_built("Assign"); });
-    add("BurnAll", [this](const Words&) { not_built("BurnAll"); });
-    add("BurnOne", [this](const Words&) { not_built("BurnOne"); });
+    add("Assign", [this](const Words& a) {
+        // "+assign <mission> <a> <b>" (0x416310): the mission kind by name to the selected units
+        // through the interface's order routine (0x48CF30) with no intent and no position; the
+        // parameters are atol of words 1 and 2 (word 1 is the mission's name, so normally 0).
+        // The unit under the pointer is the target when the kind's flags take one. The pointer
+        // record's queued bit (Shift) is clear while the chat line has the keyboard.
+        const std::uint8_t kind = mission_by_name(a.text(1));
+        if (kind == 0) return;
+        sim::Battle& bt = b();
+        const std::uint16_t h = c.hover_unit();
+        sim::Unit* hover = h != 0 && h < bt.units.size() ? &bt.units[h] : nullptr;
+        sim::command::issue_to_selected(bt, local(), 0, kind, false, hover, nullptr, a.number(1, 0), a.number(2, 0));
+    });
+    add("BurnAll", [this](const Words&) {
+        // 0x416390 -> 0x424840: every cell holding a feature (or a feature part) loses it, the
+        // indestructible ones too (Feature_RemoveFromCell with force).
+        sim::Battle& bt = b();
+        sim::FeatureWorld& fw = bt.feature_world();
+        const std::size_t n = static_cast<std::size_t>(bt.map.width) * static_cast<std::size_t>(bt.map.height);
+        for (std::size_t i = 0; i < n && i < bt.map.cells.size(); ++i) {
+            const std::uint16_t f = bt.map.cells[i].feature;
+            if (f < 0xFFFB || f == 0xFFFE) sim::remove_feature(fw, static_cast<std::int32_t>(i), true);
+        }
+    });
+    add("BurnOne", [this](const Words&) {
+        // 0x4163A0: the feature under the pointer, if any, is removed (with force).
+        const std::int32_t cell = pointer_cell();
+        if (cell < 0) return;
+        if (feature_under(cell) < 0xFFFB) sim::remove_feature(b().feature_world(), cell, true);
+    });
     add("DebugBreak", [](const Words&) {});  // needs a debug build's second switch
     add("DPrint", [](const Words&) {});
     add("Edge", [this](const Words&) { not_built("Edge"); });
@@ -339,11 +439,37 @@ void ConsoleCommands::Impl::build() {
     });
     add("PrintWeights", [](const Words&) {});  // writes a file
     add("Profile", [this](const Words&) { st.profile = !st.profile; });
-    add("Reload", [this](const Words&) { not_built("Reload"); });
-    add("ReloadAIProfiles", [this](const Words&) { not_built("ReloadAIProfiles"); });
+    add("Reload", [this](const Words& a) {
+        if (a.count() > 1) reload_type(a.text(1));
+    });
+    add("ReloadAIProfiles", [this](const Words&) {
+        // 0x4174D0 -> 0x40A100: every active computer player's table (by slot) back to the
+        // profile defaults (Ai_ResetProfile 0x409470), then the battle's profile load again
+        // (0x4648E0: the map's profile or ai\default.txt, then the units' own lines).
+        sim::Battle& bt = b();
+        sim::Ai& ai = bt.ai();
+        for (int s = 0; s < 10 && static_cast<std::size_t>(s) < bt.players.size(); ++s) {
+            const sim::PlayerSlot& p = bt.players[static_cast<std::size_t>(s)];
+            if (!p.active || p.controller != 2) continue;
+            if (!bt.ai_state.tables[static_cast<std::size_t>(s)].exists) {
+                if (ai.fault.empty()) ai.fault = "computer player without a unit table (profile reset)";
+                continue;
+            }
+            sim::ai_reset_profile(ai, s);
+        }
+        LoadedBattle& lb = w.loaded();
+        AiProfileReport report;
+        load_ai_profile(w.vfs_, ai_profile_path(lb.ota, lb.schema < 0 ? 0 : lb.schema), lb.unit_defs, ai, report);
+    });
     add("Save", [this](const Words&) { not_built("Save"); });
     add("SeaLevel", [this](const Words& a) { b().settings.sea_level = static_cast<std::uint8_t>(a.number(1, 0)); });
-    add("Search", [this](const Words&) { not_built("Search"); });
+    add("Search", [this](const Words& a) {
+        // 0x416780: the route search's work divisor (+0x48) = word 1 when nonzero; with
+        // exactly three words its base estimate scale (+0x54) = ftol(atof(word 2)).
+        sim::RouteSearch& rs = b().route_search;
+        if (a.number(1, 0) != 0) rs.budget_divisor = a.number(1, 0);
+        if (a.count() == 3) rs.base_budget = sim::x87::ftol32(crt_atof(a.text(2)));
+    });
     add("SelBoxes", [this](const Words&) { c.options_mut().selection_boxes = !c.options().selection_boxes; });
     add("Senderror", [this](const Words& a) {
         if (a.count() != 2) return;
@@ -351,7 +477,15 @@ void ConsoleCommands::Impl::build() {
         st.senderror = v < 0 || v > 100 ? 0 : v;
     });
     add("TreeDeath", [this](const Words&) { b().settings.damage_options ^= 8; });
-    add("Feature", [this](const Words&) { not_built("Feature"); });
+    add("Feature", [this](const Words& a) {
+        // 0x4163D0: the first feature type of this battle's table named word 1 (stricmp,
+        // 0x422DD0) is placed at the pointer's cell, owner nibble 10.
+        const int type = w.loaded().feature_defs.find(a.text(1));
+        if (type < 0 || type >= 0xFFFF) return;
+        const std::int32_t cell = pointer_cell();
+        if (cell < 0) return;
+        sim::place_feature(b().feature_world(), cell, static_cast<std::uint16_t>(type), nullptr, nullptr, 10);
+    });
     add("ZBuffer", [](const Words&) {});
     // The computer player's profile commands (bits 8: only text run with every bit allowed).
     auto profile = [this](const Words& a) {

@@ -164,6 +164,7 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
             if (req.start.players[static_cast<std::size_t>(s)].kind != sim::PlayerKind::Empty) players = s + 1;
         schema = select_schema(*header, players);
     }
+    lb->schema = schema;
     if (ota_root && schema >= 0 && !req.saved_game) lb->feature_defs.load_schema_features(*ota_root, "Schema " + std::to_string(schema));
     load_unit_context(vfs, lb->unit_context);
     if (!vfs.game_dir().empty()) {
