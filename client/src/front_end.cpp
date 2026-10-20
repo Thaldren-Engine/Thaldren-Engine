@@ -267,6 +267,16 @@ public:
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
             session_->frame(now);
+            // A silent remote player: the time-out dialog (it closes itself when nobody is).
+            if (session_->timed_out_player() >= 0 && s_.hooks.timeout_dialog) {
+                bool open = false;
+                for (const auto& sc : stack_) open = open || (sc && sc.get() == timeout_screen_);
+                if (!open)
+                    if (auto d = s_.hooks.timeout_dialog(*this, *session_)) {
+                        timeout_screen_ = d.get();
+                        push(std::move(d));
+                    }
+            }
             sim::Battle& b = session_->battle();
             if (s_.music) {
                 const int me = b.settings.local_player;
@@ -512,6 +522,7 @@ private:
 
     FrontEndSetup& s_;
     bool shot_pending_ = false;
+    const Screen* timeout_screen_ = nullptr;  // the time-out dialog while it is open
     render::DrawList last_shown_;
     const render::Palette* last_palette_ = nullptr;
     Settings settings_;

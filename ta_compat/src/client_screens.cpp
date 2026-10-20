@@ -1835,6 +1835,78 @@ private:
     const std::vector<render::Sprite8>* logos_ = nullptr;
 };
 
+// The time-out dialog of network games (TIMEOUT.GUI, 0x453A50, flags 0x800): opened while a
+// remote player has been silent past the time-out (0x453C20), closed ("Previous") when nobody is.
+// NAME the player's name; OUTPUT the console's last lines (as many as its rows), oldest first;
+// TALK a chat line (Enter sends it as an own chat line and empties it); TIMETEXT "will be rejected
+// in %d seconds" (time-out + 120 less the seconds since the player was last heard), and at 0 or
+// below the player is sent away (status 6 "lost"); REJECT sends it away at once (0x4538F0).
+class TimeoutDialog : public LayoutScreen {
+public:
+    TimeoutDialog(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("TIMEOUT")), art_(art), s_(s) {
+        slot_ = s.timed_out_player();
+        if (Widget* w = widget("NAME")) w->text = s.player_name(slot_);
+        s.client().dim_panel(true);
+        update();
+    }
+    ~TimeoutDialog() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        LayoutScreen::frame(fe, now_ms);
+        if (s_.timed_out_player() != slot_) {
+            sfx(fe, art_, "Previous");
+            fe.pop();
+            return;
+        }
+        update();
+        if (s_.timeout_seconds_left(slot_) <= 0) {
+            s_.reject_player(slot_, 6);
+            sfx(fe, art_, "Previous");
+            fe.pop();
+        }
+    }
+
+protected:
+    void update() {
+        if (Widget* t = widget("TIMETEXT")) {
+            char b[64];
+            std::snprintf(b, sizeof b, "will be rejected in %d seconds", s_.timeout_seconds_left(slot_));
+            t->text = b;
+        }
+        if (Widget* out = widget("OUTPUT")) {
+            // (0x453640: from the newest line back as many lines as the list has rows less one)
+            const client::GameClient::ConsoleRing& ring = s_.client().console();
+            const int rows = std::max(1, out->h / std::max(1, (out->row_h > 0 ? out->row_h : 16)));
+            int first = ring.next;
+            for (int k = 1; k < rows - 1 && first != ring.oldest; ++k)
+                if (--first < 0) first = 29;
+            std::vector<std::string> lines;
+            for (int i = first; i != ring.next; i = i == 29 ? 0 : i + 1)
+                lines.push_back(std::string(ring.lines[static_cast<std::size_t>(i)].text.data()));
+            out->items = lines;
+        }
+    }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_text(FrontEnd&, Widget& w) override {
+        if (!is(w, "TALK") || w.text.empty()) return;
+        s_.send_chat(w.text);
+        w.text.clear();
+        w.cursor = 0;
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "REJECT")) s_.reject_player(slot_, 6);
+        (void)fe;
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    int slot_ = -1;
+};
+
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
@@ -2232,6 +2304,10 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.hooks.allies_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         if (!s.network() || !art.layout("ALLIES")) return nullptr;
         return std::make_unique<AlliesScreen>(art, s);
+    };
+    setup.hooks.timeout_dialog = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        if (!s.network() || !art.layout("TIMEOUT") || s.timed_out_player() < 0) return nullptr;
+        return std::make_unique<TimeoutDialog>(art, s);
     };
     setup.hooks.unit_info = [&art](FrontEnd&, client::BattleSession& s, std::uint16_t type) -> std::unique_ptr<client::Screen> {
         if (!art.layout("UNITINFOX")) return nullptr;

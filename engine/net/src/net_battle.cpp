@@ -363,6 +363,18 @@ void NetBattle::send_speed(int speed) {
     broadcast(first_local_net_id(), pk, 3);
 }
 
+void NetBattle::reject(int slot, std::uint8_t reason) {
+    if (!battle_ || slot < 0 || slot > 9) return;
+    const sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(slot)];
+    if (!p.active || p.controller != 3 || leaving_[static_cast<std::size_t>(slot)]) return;
+    u8 pk[6] = {packet::kStatus};
+    put32(pk + 1, static_cast<std::uint32_t>(p.net_id));
+    pk[5] = reason;
+    broadcast(first_local_net_id(), pk, 6);
+    leaving_[static_cast<std::size_t>(slot)] = reason;
+    if (on_player_left) on_player_left(slot, reason);
+}
+
 void NetBattle::send_alliance(int from, int to, bool allied) {
     if (!battle_) return;
     // 0x452960 for a local player: its own alliance byte, and the other's answer byte when the

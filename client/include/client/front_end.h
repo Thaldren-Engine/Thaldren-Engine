@@ -188,6 +188,12 @@ public:
     virtual bool computer(int /*slot*/) const { return false; }
     // The local player's acceptance of an allied victory (side record flags bit 1).
     virtual void set_allied_victory(int slot, bool on);
+    // Network games' time-out (0x453C20): the remote player nobody has heard from for the time-out
+    // (-1: none), the seconds left before it is sent away (0x453640: time-out + 120 less the seconds
+    // since it was last heard) and sending it away (status 6 "lost").
+    virtual int timed_out_player() const { return -1; }
+    virtual int timeout_seconds_left(int /*slot*/) const { return 0; }
+    virtual void reject_player(int /*slot*/, int /*reason*/) {}
     // Set by the front end: the session reports combat involving the local player here (+1 a
     // hit, +5 a kill it scores; the music's battle/peace switch).
     std::function<void(int)> combat_activity;
@@ -249,6 +255,9 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> control_menu;
     // F1 in a battle: the unit information screen for a unit type (0x4942E0).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session, std::uint16_t type)> unit_info;
+    // A network battle's time-out dialog (TIMEOUT.GUI, 0x453A50): opened while a remote player is
+    // silent past the time-out; it closes itself when nobody is.
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> timeout_dialog;
 };
 
 // ---------------------------------------------------------------- front end

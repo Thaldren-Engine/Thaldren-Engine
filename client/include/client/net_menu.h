@@ -108,6 +108,12 @@ public:
     void send_explored_map(int from, int to) override { net_->explored_map_shared(from, to); }
     std::string player_name(int slot) const override { return slot >= 0 && slot < 10 ? names_[static_cast<std::size_t>(slot)] : std::string(); }
     int ally_team(int slot) const override { return slot >= 0 && slot < 10 ? net_->room()[static_cast<std::size_t>(slot)].ally_team : 5; }
+    int timed_out_player() const override { return timed_out_; }
+    int timeout_seconds_left(int slot) const override {
+        const std::uint32_t since = net_->clock() - net_->last_heard(slot);
+        return static_cast<int>(net_->timeout_seconds()) - static_cast<int>(since / 30) + 120;
+    }
+    void reject_player(int slot, int reason) override { net_->reject(slot, static_cast<std::uint8_t>(reason)); }
     bool computer(int slot) const override { return slot >= 0 && slot < 10 && net_->room()[static_cast<std::size_t>(slot)].kind == 2; }
     // The players' names (the session's) and this machine's player: chat lines carry the
     // sender's name, lines to one player that player's name.
@@ -119,6 +125,7 @@ public:
 private:
     std::array<std::string, 10> names_{};
     int local_ = 0;
+    int timed_out_ = -1;  // (net::NetBattle::on_timeout)
     bool exchanged_ = false, exchange_started_ = false;
     std::uint32_t exchange_ms_ = 0;
     std::unique_ptr<net::Transport> transport_;
