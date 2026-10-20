@@ -141,9 +141,19 @@ summary at the end gives the counts after this round.
 
 (Filled in as items are built; each entry names its evidence.)
 
+*2026-10-20, open-items pass:*
+- Shards (1.13): drawn as the original's `0x46BAE0` from the shard object of `0x420620` / `0x421700` (was a model sprite with reversed angles); the copied animation cursor stays at its frame; debris and shard team textures by the player's colour (were by player index). frame_harness `--shards N` (new): 46 scenes identical.
+- frame_harness: fog grid cell count set (the original's view went black after a few fog-on scenes); render type 2 shots left out (the lens frame needs the battle-start routine); `--camera` shakes. Shots of every other render type (1.11, 1.12), features (1.10), screen shake (1.21) now compared: identical.
+- render_harness run: 699 unit-draw scenarios identical (1.4, 1.6-1.9).
+- Victory / defeat signs not drawn for a watching local player (1.28, `0x468CF0`).
+- Stale notes corrected: 1.12 (lightning rand), 4.9 (+noshake), the summary below.
+
 ## 6. Summary
 
-Counts after this round (2026-10-20, the + commands added): 99 items (2.50 added) — BUILT+VERIFIED 36, BUILT-UNVERIFIED 52,
-PARTIAL 6, MISSING 1, NOT-APPLICABLE 4 (start: 26 / 17 / 18 / 33 / 4 of 98). Left open: the chat recipient panel TALK2.GUI (2.9),
-the campaign's in-battle briefing page (2.15), air shadows, depth-plane water clipping, hidden
-features, plasma sizes (1.6, 1.7, 1.10, 1.11).
+Counts after the open-items pass (*2026-10-20*): 99 items — BUILT+VERIFIED 46, BUILT-UNVERIFIED 49, PARTIAL 0 (1.11 keeps one
+PARTIAL part: render type 2, the lens), MISSING 0, NOT-APPLICABLE 4 (earlier this round: 36 / 52 / 6 / 1 / 4; start: 26 / 17 /
+18 / 33 / 4 of 98). The previous summary's open list was stale: TALK2.GUI (2.9) and the briefing page (2.15) are built (not
+pixel-compared), air shadows, depth-plane clipping and hidden features are built and now compared (1.6, 1.7, 1.10), and the
+"plasma sizes" item was a misreading (1.11). Left open: the lens shot (1.11, MINDGUN only; its transparent index is heap
+garbage); the BUILT-UNVERIFIED interface keys, panels and sounds (2.9-2.50, 3.4-3.8, 4.x), which have no harness against the
+original yet; the music mode change's cross-fade (3.8).
