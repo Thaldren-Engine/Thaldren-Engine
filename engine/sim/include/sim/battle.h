@@ -321,6 +321,9 @@ public:
     AiState ai_state;
     Ai& ai();
     void collect_ai_metal_sites();
+    // A unit type's data changed during the battle (the debug command Reload): the computer
+    // player's copy of the types is taken again at its next use.
+    void unit_types_changed() { ai_types_.clear(); }
     // The players' stage (stage 6 of a step): for every playing player its weapon-target pass,
     // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
     void players_stage();
@@ -411,6 +414,12 @@ public:
     // frame loop calls end_frame().
     void step();
     void end_frame();
+    // Drawing's effect on the simulation: the original draws a unit through 0x45AC20, which
+    // first brings the unit's pose (base angles more than 7 apart, then the transforms when
+    // dirty) and the pose of each unit on board that is not hidden up to date. Debris and
+    // shards later start from those transforms. An input: the units the frame drew, by id
+    // (the client hands over what its renderer drew; tools without drawing never call it).
+    void units_drawn(const std::vector<std::uint16_t>& ids);
     // Stage 8's meteors (sim/sky.h): a scheduled shower, a meteor shot when one drops.
     void step_meteor_shower();
     // Victory (sim/victory.h, engine/sim/src/victory.cpp): the local player's checks in its turn

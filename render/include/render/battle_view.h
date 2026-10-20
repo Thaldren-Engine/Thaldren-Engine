@@ -177,6 +177,10 @@ struct BattleScene {
     // The C runtime random state when the frame is drawn: lightning shots draw from a copy of
     // it (the original's draw calls rand(); the renderer never advances the simulation's).
     std::uint32_t crt_rand_state = 0;
+    // Optional: receives that copy's state after the frame's lightning (the original's
+    // drawing advances the simulation's C runtime random sequence by those draws; the owner
+    // hands the state to the battle).
+    std::uint32_t* crt_rand_after = nullptr;
     std::uint8_t clear_index = 0;
     // Optional: drawn poses kept between frames by the scene's owner (the same frames, less
     // work for units whose pose did not change).
@@ -184,6 +188,11 @@ struct BattleScene {
     // Optional, with pose_cache: each unit's plain sprite (the cached pieces) kept while its
     // drawn pose and every other input of the sprite stay the same.
     struct UnitSpriteCache* sprite_cache = nullptr;
+    // Optional: receives every unit drawn through the model path, feature stand-ins included
+    // (the original's 0x45AC20, which brings the unit's and its visible cargo's poses up to
+    // date in the simulation's own state; the owner hands the battle's own units among them
+    // to sim::Battle::units_drawn).
+    std::vector<const sim::Unit*>* drawn_units = nullptr;
 };
 
 struct UnitSpriteCache {

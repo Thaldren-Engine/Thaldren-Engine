@@ -652,6 +652,19 @@ void Battle::end_frame() {
     expire_lingering_sight();
 }
 
+void Battle::units_drawn(const std::vector<std::uint16_t>& ids) {
+    // 0x45AC20 before it draws: nothing for a carried unit; else the unit's pose, then every
+    // unit in its cargo list without the hidden flag (0x20000).
+    for (const std::uint16_t id : ids) {
+        if (id == 0 || id >= units.size()) continue;
+        Unit& u = units[id];
+        if (u.carrier) continue;
+        u.pose.sync(u.pitch, u.heading, u.bank);
+        for (Unit* c = u.cargo_head; c; c = c->cargo_next)
+            if (!(c->flags & 0x20000u)) c->pose.sync(c->pitch, c->heading, c->bank);
+    }
+}
+
 void Battle::emit_sfx(Unit& u, std::int32_t piece, std::int32_t type) {
     // A unit script's effect (0x480EB0): only for units the viewed player sees. The pose is
     // brought up to date; the effect starts at the piece's first point and points at its
