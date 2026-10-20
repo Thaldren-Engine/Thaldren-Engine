@@ -18,6 +18,14 @@ std::unique_ptr<TdfSection> parse_file(Vfs& vfs, const std::string& path) {
     return tdf_parse(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size())).root;
 }
 
+// A localized key (Tdf_GetStringLocalized 0x4C58A0): "<language><key>" (the translation
+// table's language) when present, else "<key>", else the default.
+std::string get_localized(const TdfSection& s, const std::string& lang, const std::string& key, std::size_t buf, const char* def) {
+    bool found = false;
+    std::string v = s.get_string(lang + key, buf, def, &found);
+    return found ? v : s.get_string(key, buf, def);
+}
+
 std::string strip_ext(const std::string& s) {
     const std::size_t dot = s.find_last_of('.');
     const std::size_t slash = s.find_last_of("\\/");
@@ -57,7 +65,7 @@ bool load_campaign(Vfs& vfs, const std::string& name, Campaign& out, std::string
         if (!m) break;
         CampaignMission cm;
         cm.file = m->get_string("missionfile", 0x100, "");
-        cm.name = m->get_string("missionname", 0x100, "");
+        cm.name = get_localized(*m, vfs.language, "missionname", 0x100, "");  // (0x435864 / 0x435F48)
         out.missions.push_back(cm);
     }
     return true;
@@ -81,9 +89,10 @@ bool load_mission(Vfs& vfs, const std::string& file, int difficulty, MissionInfo
     out.map = strip_ext(file);
     out.max_units = gh->get_int("maxunits", 200);
     out.name = gh->get_string("missionname", 0x100, "");
-    out.brief = gh->get_string("brief", 0x100, "");
-    out.narration = gh->get_string("narration", 0x100, "");
-    out.hint = gh->get_string("missionhint", 0x100, "");
+    // (The briefing's files by the language's keys first, 0x4361F5 / 0x436297 / 0x4362CD.)
+    out.brief = get_localized(*gh, vfs.language, "brief", 0x100, "");
+    out.narration = get_localized(*gh, vfs.language, "narration", 0x100, "");
+    out.hint = get_localized(*gh, vfs.language, "missionhint", 0x100, "");
     out.glamour = gh->get_string("glamour", 0x100, "");
     out.glamour_sound = gh->get_string("glamoursound", 0x100, "");
     out.use_only = gh->get_string("UseOnlyUnits", 0x100, "");
@@ -101,7 +110,8 @@ bool load_mission(Vfs& vfs, const std::string& file, int difficulty, MissionInfo
     out.time_mul = static_cast<float>(gh->get_float("timemul", 0.0));
     if (!out.brief.empty()) {
         std::vector<std::uint8_t> t;
-        if (vfs.read("camps\\briefs\\" + strip_ext(out.brief) + ".txt", t)) out.brief_text.assign(t.begin(), t.end());
+        // camps\briefs-<language>\<brief>.TXT when it opens, else camps\briefs\ (0x435430).
+        if (vfs.read(vfs.virtual_path("camps\\briefs", out.brief, "TXT"), t)) out.brief_text.assign(t.begin(), t.end());
     }
     read_mission_goals(*gh, st, out.goals);
     // The schema for the difficulty (0x436860).
@@ -197,8 +207,8 @@ BattleRequest make_mission_request(Vfs& vfs, const MissionInfo& mission, const M
     s.players[1].colour = 1;
     // The names (0x496DB0 -> 0x464290): the computer's side index is the other one of the
     // campaign side's (0x477360 / 0x477AB0 / the load 0x492360 set them 0 and 1).
-    s.players[0].name = start_player_name(false, 0);
-    s.players[1].name = start_player_name(true, stricmp_c(rq.campaign_side, "ARM") == 0 ? 1 : 0);
+    s.players[0].name = start_player_name(false, 0, false);
+    s.players[1].name = start_player_name(true, stricmp_c(rq.campaign_side, "ARM") == 0 ? 1 : 0, false);
     s.unit_limit = static_cast<std::uint16_t>(mission.max_units);
     s.fog_of_war = mission.line_of_sight != 0;
     s.explore = mission.mapping != 0;
@@ -217,9 +227,10 @@ BattleRequest make_mission_request(Vfs& vfs, const MissionInfo& mission, const M
     // The mission's unit list (camps\useonly), read now.
     std::vector<std::string> use_only;
     if (!mission.use_only.empty())
-        if (const std::unique_ptr<TdfSection> list = parse_file(vfs, "camps\\useonly\\" + strip_ext(mission.use_only) + ".tdf"))
+        if (const std::unique_ptr<TdfSection> list = parse_file(vfs, vfs.virtual_path("camps\\useonly", mission.use_only, "TDF")))
             for (const auto& sec : list->children()) use_only.push_back(sec->name());
-    const bool limit_types = !mission.use_only.empty() && (!use_only.empty() || vfs.size_or_zero("camps\\useonly\\" + strip_ext(mission.use_only) + ".tdf"));
+    // (camps\useonly-<language>\ first, 0x435430 kind 6)
+    const bool limit_types = !mission.use_only.empty() && (!use_only.empty() || vfs.size_or_zero(vfs.virtual_path("camps\\useonly", mission.use_only, "TDF")));
     req.prepare_start = [mission, use_only, limit_types](LoadedBattle& lb, sim::BattleStart& start) {
         start.mission.units = mission.units;
         for (sim::MissionUnit& u : start.mission.units) u.type = lb.type_index(u.unit_name);

@@ -196,8 +196,22 @@ void test_translations() {
     ta::load_translations(tdf, "french");
     CHECK(ta::translate("KILLS") == "VICTIMES");
     CHECK(ta::translate("Kills") == "Kills");
+    // Lowered names (0x434BF0): the lowered name's translation, else the name as given.
+    ta::load_translations(
+        "[canal crossing]\n{\nGerman = Kanal\xFC" "berquerung;\n}\n[b]\n{\nGerman = Same;\n}\n[a]\n{\nGerman = SAME;\n}\n"
+        "[zz]\n{\nGerman = zZ;\n}\n",
+        "german");
+    CHECK(ta::lower_ascii("Canal CROSSING \xDC") == "canal crossing \xDC");
+    CHECK(ta::translate_lowered("Canal Crossing") == "Kanal\xFC" "berquerung");
+    CHECK(ta::translate_lowered("Lava Run") == "Lava Run");
+    CHECK(ta::translate_lowered("ZZ") == "ZZ");  // the translation equals the lowered name in any case
+    // The reverse lookup (0x4C5840): any case, the first base text in byte order.
+    CHECK(ta::untranslate("KANAL\xFC" "BERQUERUNG") == "canal crossing");
+    CHECK(ta::untranslate("same") == "a");
+    CHECK(ta::untranslate("Lava Run").empty());
     ta::load_translations(tdf, "english");  // no english fields: every text as it is
     CHECK(ta::translate("KILLS") == "KILLS");
+    CHECK(ta::untranslate("KILLS").empty());
 }
 
 } // namespace

@@ -32,6 +32,7 @@ std::string ta::progress_from_thumbs(const std::string& thumbs) {
 #include "ta/client_world.h"
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
+#include "ta/translate.h"
 
 namespace ta {
 
@@ -145,7 +146,16 @@ public:
     void surrender() override { inner_->surrender(); }
     std::vector<client::PlayerStats> stats() override { return inner_->stats(); }
     bool end_table(client::EndTable& t) override { return inner_->end_table(t); }
-    std::string battle_name() const override { return inner_->battle_name(); }
+    std::string battle_name() const override {
+        // The map info's name (+0xA14) of a mission: the campaign's [MISSIONn] missionname, the
+        // language's key first (0x435DA0 provider 1, 0x435F48).
+        Campaign c;
+        std::string err;
+        if (progress_ && load_campaign(art_.vfs(), progress_->campaign, c, err) && progress_->mission >= 0 &&
+            progress_->mission < static_cast<int>(c.missions.size()))
+            return c.missions[static_cast<std::size_t>(progress_->mission)].name;
+        return info_.name;
+    }
     int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
     // The exit menu's Restart (0x460340): the same mission again at the dialog's difficulty
@@ -374,10 +384,11 @@ public:
             if (const client::Widget* s = widget("SOLARSYSTEM")) {
                 client::fill_rect(out, all, s->x, s->y, s->x + s->w - 1, s->y + s->h - 1, colours_table_[0]);
                 if (side_font_) {
-                    char buf[64];
-                    std::snprintf(buf, sizeof buf, "%s : %d", "Wind Speed", wind_);
+                    // (The words go through the translation, 0x47888A / 0x47890A.)
+                    char buf[256];
+                    std::snprintf(buf, sizeof buf, "%s : %d", translate("Wind Speed").c_str(), wind_);
                     client::draw_text(out, all, *side_font_, buf, s->x + 80, s->y + 20, kSideColour[side_][0], -1, s->w - 1 - 80);
-                    std::snprintf(buf, sizeof buf, "%s : %.1f", "Gravity", static_cast<double>(info_.gravity) * 0.008928571428571428);
+                    std::snprintf(buf, sizeof buf, "%s : %.1f", translate("Gravity").c_str(), static_cast<double>(info_.gravity) * 0.008928571428571428);
                     client::draw_text(out, all, *side_font_, buf, s->x + 80, s->y + 40, kSideColour[side_][0], -1, s->w - 1 - 80);
                 }
             }
@@ -512,7 +523,8 @@ private:
         if (info_.narration.empty()) return;
         if (narration_.pcm.empty()) {
             std::vector<std::uint8_t> wav;
-            if (!art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) || !client::decode_wav(wav, narration_)) return;
+            // (camps\briefs-<language>\ first, 0x435430 kind 3)
+            if (!art_.vfs().read(art_.vfs().virtual_path("camps\\briefs", info_.narration, "WAV"), wav) || !client::decode_wav(wav, narration_)) return;
         }
         fe.play_narration_sample(&narration_);
         const std::size_t frames = narration_.pcm.size() / static_cast<std::size_t>(std::max(1, narration_.channels));
@@ -606,7 +618,8 @@ private:
             }
         }
         const bool more = after_lines((page_ + 1) * lines) != std::string::npos;
-        more_text_ = more ? "MORE..." : page_ == 0 ? "" : "BACK TO START";
+        // (Translated, 0x47712C / 0x47710B, and again as the gadget's caption.)
+        more_text_ = more ? translate(translate("MORE...")) : page_ == 0 ? "" : translate(translate("BACK TO START"));
         lines_.clear();
         blinks_.clear();
         bool expect_open = true;
@@ -1149,7 +1162,7 @@ private:
         const client::Widget& hd = widgets_.front();
         const render::ClipRect box{ox_, oy_, ox_ + hd.w - 1, oy_ + hd.h - 1};
         if (!read_saved_game(bytes, *save, message) || (save->summary.game_type != 1 && save->summary.game_type != 2)) {
-            show_message(fe, art_, "Invalid savegame file", &box);
+            show_message(fe, art_, translate("Invalid savegame file"), &box);
             return;
         }
         fe.play_sound(art_.sound("SMLBUTTON"));
@@ -1158,7 +1171,7 @@ private:
         if (m.game_type == 1) {
             Campaign c;
             if (!load_campaign(art_.vfs(), m.campaign, c, message)) {
-                show_message(fe, art_, "Invalid savegame file", &box);
+                show_message(fe, art_, translate("Invalid savegame file"), &box);
                 return;
             }
             progress = std::make_shared<CampaignProgress>();
@@ -1170,7 +1183,7 @@ private:
             for (std::size_t k = 0; k < c.missions.size(); ++k)
                 if (stricmp_c(c.missions[k].name, m.mission) == 0) progress->mission = static_cast<int>(k);
             if (progress->mission < 0) {
-                show_message(fe, art_, "Invalid savegame file", &box);
+                show_message(fe, art_, translate("Invalid savegame file"), &box);
                 return;
             }
             if (m.between_missions) {
@@ -1303,7 +1316,8 @@ bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOu
         if (!info.glamour_sound.empty()) {
             std::vector<std::uint8_t> wav;
             auto smp = std::make_shared<client::Sample>();
-            if (art.vfs().read("camps\\briefs\\" + info.glamour_sound + ".wav", wav) && client::decode_wav(wav, *smp)) out.glamour_sound = smp;
+            // (camps\briefs-<language>\ first, 0x435430 kind 8)
+            if (art.vfs().read(art.vfs().virtual_path("camps\\briefs", info.glamour_sound, "WAV"), wav) && client::decode_wav(wav, *smp)) out.glamour_sound = smp;
         }
     }
     // "Click to continue." in the side's console font (sidedata "font").
@@ -1367,7 +1381,7 @@ void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const st
         mount_cd_archives(art.vfs(), art.game_dir());
         // No saved games: the message instead (0x4931D0).
         if (list_save_files(save_dir).empty()) {
-            show_message(fe, art, "There are no saved games to choose from");
+            show_message(fe, art, translate("There are no saved games to choose from"));
             return nullptr;
         }
         return std::make_unique<SaveGamesScreen>(art, save_dir, s, false, screen_under(fe, s));

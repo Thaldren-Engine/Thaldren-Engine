@@ -420,8 +420,9 @@ void GameClient::draw_clock_and_units(render::Image8& o) {
     const std::uint32_t hours = t / 108000u;
     const std::int32_t rest = static_cast<std::int32_t>(t - hours * 108000u);
     const std::int32_t minutes = rest / 1800, seconds = (rest - minutes * 1800) / 30;
-    char buf[64];
-    std::snprintf(buf, sizeof buf, "%s : %02d:%02d:%02d", "Game Time", static_cast<int>(hours), minutes, seconds);
+    char buf[256];
+    // (The label goes through the translation, 0x46A246.)
+    std::snprintf(buf, sizeof buf, "%s : %02d:%02d:%02d", tr("Game Time").c_str(), static_cast<int>(hours), minutes, seconds);
     draw_text(o, o.bounds(), f, buf, 130, opt_.height - 34 - f.height, c_.hud[15]);
 }
 
@@ -738,7 +739,8 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
         const Content::FeatureLook* fl = k < c_.features.size() ? &c_.features[k] : nullptr;
         const std::uint16_t fflags = fl ? fl->flags : 0;
         if (fflags & 0x400) return;
-        std::string n = fl ? fl->name : std::string();
+        // (The description goes through the translation, 0x46B869 / 0x46B887.)
+        std::string n = fl ? tr(fl->name) : std::string();
         if (!(fflags & 0x200)) {
             char m[32] = "", e[32] = "";
             if (!(ft.metal == 0.0f || ft.metal != ft.metal)) std::snprintf(m, sizeof m, " M:%d", whole(ft.metal));
@@ -751,9 +753,10 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     const sim::Unit& u = b_.units[id];
     const sim::UnitTickState& t = b_.ticks[id];
     const bool mine = t.owner == opt_.player;
-    // Units the viewed player does not see are an "Unidentified object".
+    // Units the viewed player does not see are an "Unidentified object" (translated, 0x46B710),
+    // after "S: " for a unit with flag 0x200, else "R: " ("%s%s").
     if (!mine && b_.settings.fog_of_war && !b_.unit_seen_by(opt_.player, u)) {
-        centred("Unidentified object", side_->unit_name);
+        centred(std::string((u.flags & 0x200u) ? "S: " : "R: ") + tr("Unidentified object"), side_->unit_name);
         return;
     }
     centred(t.type_index < c_.types.size() ? c_.types[t.type_index].name : std::string(), side_->unit_name);
@@ -771,14 +774,16 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
                   c_.hud[12]);
         // Kills of armed units (unit flag bit 31): "1 kill", "<n> kills", from 5 "<n> kills - Veteran".
         if (t.kill_count > 0 && (u.flags & 0x80000000u)) {
-            const std::string k = std::to_string(t.kill_count) + (t.kill_count == 1 ? " kill" : " kills") + (t.kill_count >= 5 ? " - Veteran" : "");
+            // ("%d %s" / "%d %s - %s", the words translated: 0x46B2F3, 0x46B301, 0x46B32C.)
+            const std::string k = std::to_string(t.kill_count) + " " + tr(t.kill_count == 1 ? "kill" : "kills") +
+                                  (t.kill_count >= 5 ? " - " + tr("Veteran") : std::string());
             bar_text(o, f, k, side_->damage_bar.x1, side_->damage_bar.y2 + 2 + dy, c_.hud[15]);
         }
         // The unit's status: what its head order does (the mission table's text of the kind;
         // the text of mission kind 0 without orders), centred on the status line's x1.
         if (!c_.mission_status.empty()) {
             const std::size_t kind = u.orders ? u.orders->kind : 0u;
-            centred(c_.mission_status[kind < c_.mission_status.size() ? kind : 0], side_->mission_text);
+            centred(tr(c_.mission_status[kind < c_.mission_status.size() ? kind : 0]), side_->mission_text);  // (translated, 0x46B3C0)
         }
     }
     // The second line: a stockpile weapon being built (the first secondary order with flag
@@ -801,7 +806,7 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
         if (target->type && (tt.owner == opt_.player || !hides_health(tt)))
             bar(side_->damage_bar2, target->hit_points, static_cast<int>(target->type->max_damage));
     } else if (mine) {
-        centred("Weapon", side_->unit_name2);
+        centred(tr("Weapon"), side_->unit_name2);  // (0x46B47C)
         bar(side_->damage_bar2, std::min(building, 100), 100);
     }
 }

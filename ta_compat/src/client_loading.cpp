@@ -9,6 +9,9 @@
 #include "client/canvas.h"
 #include "client/menu.h"
 #include "ta/client_menus.h"
+#include "ta/hpi.h"
+#include "ta/tdf.h"
+#include "ta/translate.h"
 
 namespace ta {
 namespace {
@@ -73,9 +76,14 @@ void draw_loading_screen(MenuArt& art, render::Image8& out, client::LoadingState
             if (f) f = std::max(0, f - 2);
     }
     // "Map: <name>" centred, one and a half console-font heights above the bottom (not for
-    // missions).
+    // missions). "%s: %s" of the translated "Map" and the map info's name (+0xA14, at most 100
+    // characters) translated; in a language other than English the name is lowered first, so an
+    // untranslated name shows in lower case (0x4986AC / 0x4986B7).
     if (st.map_line && font) {
-        const std::string t = "Map: " + st.map;
+        std::string name = map_file_name(art.vfs(), st.map).substr(0, 100);
+        const std::string& lang = Vfs::game_language();
+        if (!lang.empty() && stricmp_c(lang, "english") != 0) name = lower_ascii(name);
+        const std::string t = translate("Map") + ": " + translate(name);
         const int y = static_cast<int>(static_cast<double>(out.height) - static_cast<double>(console_font_height(art)) * 1.5);
         picture_text(out, *font, t, out.width / 2 - font->text_width(t) / 2, y, -1, 0, light);
     }
@@ -91,7 +99,7 @@ void draw_loading_screen(MenuArt& art, render::Image8& out, client::LoadingState
         if (pct == 100 && st.seen[i] != 100) st.flash[i] = 30;
         st.seen[i] = pct;
         const int y = ys[r];
-        if (font) picture_text(out, *font, labels[r], 0x5A, y, -1, st.flash[i], light);
+        if (font) picture_text(out, *font, translate(labels[r]), 0x5A, y, -1, st.flash[i], light);  // (0x4987C3 .. 0x498C11)
         client::fill_rect(out, clip, 0xCD, y, 0xCD + pct * 7 / 2, y + 20, col);
         // (The frame's offsets are cleared: its top-left corner goes at the point.)
         if (bar && !bar->empty()) render::blit(out, clip, bar->front(), 0xCD + bar->front().x_offset, y + bar->front().y_offset);
@@ -117,10 +125,12 @@ void draw_loading_screen(MenuArt& art, render::Image8& out, client::LoadingState
     }
     std::string status;
     if (st.synchronised) {
-        status = "Synchronization complete";
+        status = translate("Synchronization complete");  // (0x497D3A)
     } else {
-        char buf[128];
-        std::snprintf(buf, sizeof buf, "%s.  %i %s", "Waiting for other players", ready, ready == 1 ? "player ready" : "players ready");
+        // (Both texts translated, 0x497EE5 / 0x497EF1.)
+        char buf[512];
+        std::snprintf(buf, sizeof buf, "%s.  %i %s", translate("Waiting for other players").c_str(), ready,
+                      translate(ready == 1 ? "player ready" : "players ready").c_str());
         status = buf;
     }
     if (font) picture_text(out, *font, status, 10, 400, -1, 0, light);

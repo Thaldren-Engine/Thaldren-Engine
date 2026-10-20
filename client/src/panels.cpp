@@ -117,7 +117,8 @@ void GameClient::on_kill_counted(int a, const sim::Unit& victim) {
             rank_[static_cast<std::size_t>(a)] = best;
             if (best == 0) {
                 char line[100];
-                std::snprintf(line, sizeof line, "%s has taken the lead with %d kills", c_.player_names[static_cast<std::size_t>(a)].c_str(),
+                // (The format goes through the translation, 0x486C4B.)
+                std::snprintf(line, sizeof line, tr("%s has taken the lead with %d kills").c_str(), c_.player_names[static_cast<std::size_t>(a)].c_str(),
                               static_cast<int>(mine));
                 message(line, kGameNote);
             }
@@ -219,8 +220,9 @@ void GameClient::draw_panels(render::DrawList& list) {
             fn(bb);
         };
         both([&](render::Image8& o) {
-            draw_picture_text(o, screen, f, "Kills", x0 + 2, 0x20, tw, 0);
-            draw_picture_text(o, screen, f, "Losses", x1 - text_width("Losses") - 2, 0x20, tw, 0);
+            // (Both translated, 0x494AC5 / 0x494B10.)
+            draw_picture_text(o, screen, f, tr("Kills"), x0 + 2, 0x20, tw, 0);
+            draw_picture_text(o, screen, f, tr("Losses"), x1 - text_width(tr("Losses")) - 2, 0x20, tw, 0);
         });
         // (the headings go first: the local player's lit row may reach under them)
         list.blit(list.keep(keyed_layer(a, bb)), 0, 0, screen, false);
@@ -280,14 +282,15 @@ void GameClient::draw_panels(render::DrawList& list) {
             const std::uint32_t hours = t / 108000u;
             const std::int32_t rest = static_cast<std::int32_t>(t - hours * 108000u);
             const std::int32_t minutes = rest / 1800, seconds = (rest - minutes * 1800) / 30;
-            char time_text[64], units_text[64], speed_text[64], speed[16];
-            std::snprintf(time_text, sizeof time_text, "%s : %02d:%02d:%02d", "Game Time", static_cast<int>(hours), minutes, seconds);
+            // (The words go through the translation: 0x468B74, 0x468BD7, 0x468C1D, 0x468C57.)
+            char time_text[256], units_text[256], speed_text[256], speed[128];
+            std::snprintf(time_text, sizeof time_text, "%s : %02d:%02d:%02d", tr("Game Time").c_str(), static_cast<int>(hours), minutes, seconds);
             const sim::PlayerSlot& me = b_.players[static_cast<std::size_t>(opt_.player)];
-            std::snprintf(units_text, sizeof units_text, "%s : %d  (Max %d)", "Total Units", static_cast<int>(me.alive_count),
+            std::snprintf(units_text, sizeof units_text, "%s : %d  (Max %d)", tr("Total Units").c_str(), static_cast<int>(me.alive_count),
                           static_cast<int>(static_cast<std::uint16_t>(b_.settings.unit_limit)));
-            if (budget_.effective_speed == 10) std::snprintf(speed, sizeof speed, "%s", "Normal");
+            if (budget_.effective_speed == 10) std::snprintf(speed, sizeof speed, "%s", tr("Normal").c_str());
             else std::snprintf(speed, sizeof speed, "%+d", static_cast<int>(budget_.effective_speed) - 10);
-            std::snprintf(speed_text, sizeof speed_text, "%s %s", "Game Speed", speed);
+            std::snprintf(speed_text, sizeof speed_text, "%s %s", tr("Game Speed").c_str(), speed);
             std::string speed_line = speed_text;
             if (budget_.effective_speed != budget_.game_speed) {
                 char more[16];

@@ -495,7 +495,7 @@ bool make_saved_game_request(Vfs& vfs, const SavedGame& save, const LoadInputs& 
             sp.net_id = k + 1;
             sp.colour = static_cast<std::uint8_t>(ps->get_int("Logo", k));
             req.sides[static_cast<std::size_t>(k)] = side_name(vfs, ps->get_int("Side", 0));
-            sp.name = start_player_name(ctl != 1, ps->get_int("Side", 0));
+            sp.name = start_player_name(ctl != 1, ps->get_int("Side", 0), true);
             if (ctl == 1) s.local_player = static_cast<std::uint8_t>(k);  // the last human slot (0x47A760)
         }
     } else {

@@ -53,4 +53,29 @@ const std::string& translate(const std::string& text) {
     return it == t.entries.end() ? text : it->second;
 }
 
+std::string lower_ascii(std::string text) {
+    for (char& c : text)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
+    return text;
+}
+
+std::string translate_lowered(const std::string& name) {
+    const std::string low = lower_ascii(name);
+    const std::string& t = translate(low);
+    return stricmp_c(t, low) == 0 ? name : t;
+}
+
+std::string untranslate(const std::string& text) {
+    for (const auto& e : table().entries)
+        if (stricmp_c(e.second, text) == 0) return e.first;
+    return std::string();
+}
+
+std::string map_file_name(Vfs& vfs, const std::string& name) {
+    // (Hapi_BuildVirtualPath: maps-<language>\<name>.ota first.)
+    if (vfs.locate(vfs.virtual_path("maps", name, "ota"))) return name;
+    const std::string base = untranslate(name);
+    return base.empty() ? name : base;
+}
+
 }  // namespace ta

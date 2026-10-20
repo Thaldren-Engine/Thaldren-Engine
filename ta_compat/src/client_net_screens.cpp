@@ -466,8 +466,11 @@ protected:
 // stock panel.
 class NetMessage : public LayoutScreen {
 public:
-    NetMessage(MenuArt& art, const std::string& text, int width, bool fit, std::function<void(FrontEnd&)> done = {})
+    NetMessage(MenuArt& art, const std::string& text_in, int width, bool fit, std::function<void(FrontEnd&)> done = {})
         : LayoutScreen(art.layout("MSGBOX")), art_(art), done_(std::move(done)) {
+        // The text goes through the translation first (0x4ABDC7; a caller's width stays the one
+        // it measured).
+        const std::string text = translate(text_in);
         // Measured in the interface's caption font (the labels then draw in the small one).
         const client::Font* f = art.content().font;
         // Word wrap: at the end of a word, when the line is at least as wide as the limit, the line
@@ -557,7 +560,7 @@ void show_net_message(FrontEnd& fe, MenuArt& art, const std::string& text, int w
 }
 
 // A message left for the menu loop (0x425730 into the buffer 0x511FB8, shown by 0x426E80): a box
-// as wide as the text + 20, the text not translated. The width (0x4A5030) is the interface's
+// as wide as the text + 20 (measured untranslated; the box translates it). The width (0x4A5030) is the interface's
 // picture font's when it has one (GUI +0x14: hattfont12, set by the start-up 0x491200 and kept in
 // the menus), else the current bit font's: the sum of the font's frame widths of every byte up to
 // the end (a byte without a frame adds nothing; control characters and line breaks are counted
@@ -582,7 +585,7 @@ constexpr const char* kServiceError = "An error occurred trying to use this serv
 // the first text; the client keeps no records between sessions, so it is always the second, also
 // on the host.
 void show_add_player_failed(FrontEnd& fe, MenuArt& art) {
-    show_net_message(fe, art, "Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-join the game session.\n", 500);
+    show_net_message(fe, art, translate("Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-join the game session.\n"), 500);
 }
 
 // ------------------------------------------------------------------ shared state of the part
@@ -889,16 +892,21 @@ std::array<std::string, 11> game_columns(const GameEntry& g) {
     c[1] = std::to_string(g.options & 0xF) + "/" + std::to_string(g.max_players);
     std::string m = g.map.substr(0, 15);
     while (!m.empty() && m.back() == ' ') m.pop_back();
+    // In a language other than English the name is lowered and translated (0x44172F): an
+    // untranslated name shows in lower case (at most 127 characters).
+    const std::string& lang = Vfs::game_language();
+    if (!lang.empty() && stricmp_c(lang, "english") != 0) m = translate(lower_ascii(m)).substr(0, 0x7F);
     c[2] = m;
-    c[3] = g.major < 3 ? "VER!" : (g.options & 0x8000) ? "Lock" : (g.options & 0x10) ? "Play" : "Open";
+    // (The words go through the translation: 0x4417D3, 0x4417F2, 0x441924, 0x441964, 0x4419A3.)
+    c[3] = translate(g.major < 3 ? "VER!" : (g.options & 0x8000) ? "Lock" : (g.options & 0x10) ? "Play" : "Open");
     c[4] = std::to_string(g.memory);
     c[5] = std::to_string(g.metal * 100);
     c[6] = std::to_string(g.energy * 100);
     c[7] = std::to_string(g.ping);
     const int cm = g.options & 0x1800;
-    c[8] = cm == 0 ? "No" : cm == 0x800 ? "Yes" : "DM";
-    c[9] = (g.options & 0x100) ? "Blk" : "Gray";
-    c[10] = (g.options & 0x200) ? "No" : "Yes";
+    c[8] = translate(cm == 0 ? "No" : cm == 0x800 ? "Yes" : "DM");
+    c[9] = translate((g.options & 0x100) ? "Blk" : "Gray");
+    c[10] = translate((g.options & 0x200) ? "No" : "Yes");
     return c;
 }
 
@@ -1223,7 +1231,7 @@ void SelGame::join(FrontEnd& fe, bool watch) {
         // 0x4A7190: the name field takes the keys (the message box over it first).
         focus_gadget_ = index_of("NICKNAME");
         activate_field(focus_gadget_);
-        show_net_message(fe, art_, "You must enter your name");
+        show_net_message(fe, art_, translate("You must enter your name"));
         return;
     }
     if (const EditState* p = edit("PASSWORD")) part_->password = p->text;
@@ -1286,13 +1294,13 @@ void NewMulti::next(FrontEnd& fe) {
     const EditState* gn = edit("GAMENAME");
     if (!gn || gn->text.empty()) {
         focus_edit("GAMENAME");
-        show_net_message(fe, art_, "You must enter a game name", 320);
+        show_net_message(fe, art_, translate("You must enter a game name"), 320);
         return;
     }
     const EditState* nn = edit("NICKNAME");
     if (!nn || nn->text.empty()) {
         focus_edit("NICKNAME");
-        show_net_message(fe, art_, "You must enter your name", 320);
+        show_net_message(fe, art_, translate("You must enter your name"), 320);
         return;
     }
     part_->game_name = gn->text;
@@ -1501,7 +1509,7 @@ std::string first_network_map(MenuArt& art) {
             if (upper(c->get_string("Type", 64, "")).find("NETWORK") != std::string::npos) network = true;
         const std::string name = file.substr(0, file.size() - 4);
         if (!network || art.vfs().size_or_zero("maps\\" + name + ".tnt") == 0) continue;
-        first = name;
+        first = translate_lowered(name);  // (the list's shown name, 0x434DF9)
         break;
     }
     return first;
@@ -1675,7 +1683,8 @@ const std::vector<RestrictEntry>& restrict_entries(MenuArt& art) {
         RestrictEntry e;
         e.key = d.fbi_checksum;
         e.def_index = static_cast<std::int32_t>(k);
-        e.text = d.name + "\r" + d.side + " " + std::to_string(static_cast<int>(d.build_cost_metal)) + "M  " +
+        // (the side goes through the translation, 0x44CA9D)
+        e.text = d.name + "\r" + translate(d.side) + " " + std::to_string(static_cast<int>(d.build_cost_metal)) + "M  " +
                  std::to_string(static_cast<int>(d.build_cost_energy)) + "E";
         e.picture = "unitpics\\" + d.unit_name + ".PCX";
         e.wacky = (d.can_do_flags & (1u << 16)) != 0;
@@ -1912,7 +1921,7 @@ protected:
         const RestrictEntry& e = entries_[static_cast<std::size_t>(row)];
         const int v = knob_value(*s);
         const std::int32_t count = v < 0x65 ? v : -1;
-        if (Widget* l = widget("COUNT" + std::to_string(i))) l->text = v < 0x65 ? std::to_string(v) : std::string("No Limit");
+        if (Widget* l = widget("COUNT" + std::to_string(i))) l->text = v < 0x65 ? std::to_string(v) : translate("No Limit");  // (0x44BECA)
         counts_[static_cast<std::size_t>(row)] = count;
         if (hooks_.set_count) hooks_.set_count(e.key, count);
         const bool on = hooks_.enabled ? hooks_.enabled(e.key) : true;
@@ -2072,7 +2081,7 @@ protected:
             const bool save = is(w, "Save");
             // 0x44BC10: no list file: the dialog closed again and the message instead.
             if (!save && list_files_newest_first(list_dir_, "LST").empty()) {
-                show_message(fe, art_, "There are no saved lists to choose from");
+                show_message(fe, art_, translate("There are no saved lists to choose from"));
                 return;
             }
             fe.push(std::make_unique<RestrictListFiles>(
@@ -2190,7 +2199,7 @@ public:
         // bit off. The name is the session's player name (tests: none, as gui_harness has no
         // session).
         if (!live_ && !host_ && !st_.map.empty() && upper(st_.map) != upper(first_network_map(art_))) {
-            const std::string line = "<" + (test ? std::string() : part_->nickname) + "> does not have this map";
+            const std::string line = "<" + (test ? std::string() : part_->nickname) + "> " + translate("does not have this map");  // (0x448F6C)
             st_.chat.add(line, text_lines_);
             st_.slots[static_cast<std::size_t>(st_.local)].options &= static_cast<std::uint16_t>(~0x20u);
             join_line_ = line;
@@ -2378,7 +2387,9 @@ protected:
                 m->text = translate("NOT SELECTED");  // (set through 0x4A0BF0: translated)
                 map_red_ = true;
             } else {
-                m->text = translate(st_.map);
+                // (the map info's shown name, 0x435C20: the lowered name's translation when there
+                // is one, 0x435A20; set through 0x4A0BF0: translated again)
+                m->text = translate(translate_lowered(st_.map));
                 map_red_ = !st_.have_map && ((clock_ / 30) & 1) != 0;
             }
         }
@@ -2411,7 +2422,8 @@ protected:
             if (!p.playing() && !p.watching()) {
                 if (cd) cd->active = false;
                 if (player) {
-                    std::string t = p.controller == 4 ? "[BLOCKED]" : "UNUSED";
+                    // ("[%s]" of the translated "BLOCKED", 0x4492BD)
+                    std::string t = p.controller == 4 ? "[" + translate("BLOCKED") + "]" : "UNUSED";
                     caption_fit(*player, t.substr(0, 0x1E));
                     player->grayed = me_ready;
                 }
@@ -2517,7 +2529,7 @@ protected:
     int memory_needed() {
         if (st_.map != size_map_) {
             size_map_ = st_.map;
-            map_size_ = static_cast<std::int64_t>(art_.vfs().size_or_zero("maps\\" + st_.map + ".tnt"));
+            map_size_ = static_cast<std::int64_t>(art_.vfs().size_or_zero(art_.vfs().virtual_path("maps", map_file_name(art_.vfs(), st_.map), "tnt")));
         }
         const std::int64_t s = map_size_;
         return s < 0x3E6666 ? 16 : s < 0x600000 ? 24 : s < 0x800000 ? 32 : s < 0xA00000 ? 48 : s < 0xC00000 ? 64 : 128;
@@ -2785,7 +2797,7 @@ protected:
             MenuArt& art = art_;
             launched_ = true;
             fe.pop();
-            if (reason != 2) show_net_message(fe, art, out_text(reason), 320);
+            if (reason != 2) show_net_message(fe, art, translate(out_text(reason)), 320);  // (translated, 0x443F6D)
             return false;
         }
         if (room.started()) {
@@ -2813,7 +2825,7 @@ protected:
             if (!host_ && st_.map != shown_map_ && !st_.map.empty()) {
                 shown_map_ = st_.map;
                 if (!st_.have_map) {
-                    const std::string line = client::chat_line(part_->nickname, std::string(), "does not have this map");
+                    const std::string line = client::chat_line(part_->nickname, std::string(), translate("does not have this map"));  // (0x448F6C)
                     st_.chat.add(line, text_lines_);
                     room.say(line);
                     room.set_ready(false);
@@ -3015,7 +3027,7 @@ protected:
             }
             if (q.controller == 4) q.controller = 0;
             if (opt & 0x8000) {
-                show_net_message(fe, art_, "Can't add another player when game is closed.", 500);
+                show_net_message(fe, art_, translate("Can't add another player when game is closed."), 500);
                 return;
             }
             int computers = 0;
@@ -3101,7 +3113,7 @@ protected:
             }
             if (q.controller == 4) room.set_blocked(s, false);  // blocked -> open, then a computer
             if (opt & 0x8000) {
-                show_net_message(fe, art_, "Can't add another player when game is closed.", 500);
+                show_net_message(fe, art_, translate("Can't add another player when game is closed."), 500);
                 return;
             }
             // 0x457B90: one computer player per machine (this machine's records, controller 2).
@@ -3148,7 +3160,8 @@ protected:
                 now = false;
             }
             sfx(fe, art_, now ? "Ally" : "Multi");
-            say_line(std::string(" ") + (now ? "allied with" : "broke alliance with") + " " + st_.slots[static_cast<std::size_t>(s)].name);
+            // (" %s %s" with the words translated, 0x44725E / 0x448020)
+            say_line(std::string(" ") + translate(now ? "allied with" : "broke alliance with") + " " + st_.slots[static_cast<std::size_t>(s)].name);
             return;
         }
         if (int s = row_of(n, "TEAMICONS"); s >= 0) {
@@ -3250,14 +3263,14 @@ protected:
             cds += human && (q.cd & 4);
         }
         if (cds < 1 || (cds < 2 && humans > 3) || (cds < 3 && humans > 6)) {
-            show_net_message(fe, art_, "There are not enough game CDs present to play", 200);
+            show_net_message(fe, art_, translate("There are not enough game CDs present to play"), 200);
             return;
         }
         for (int t = 0; t < 5; ++t) {
             int n = 0;
             for (const LoungeSlot& q : st_.slots) n += q.playing() && q.team == t;
             if (n == humans + computers) {
-                show_net_message(fe, art_, "Can not start game with all players on the same team.", 200);
+                show_net_message(fe, art_, translate("Can not start game with all players on the same team."), 200);
                 return;
             }
         }

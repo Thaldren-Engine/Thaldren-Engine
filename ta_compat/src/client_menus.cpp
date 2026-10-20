@@ -26,6 +26,7 @@
 #include "ta/render_assets.h"
 #include "ta/tdf.h"
 #include "ta/tnt.h"
+#include "ta/translate.h"
 
 namespace ta {
 namespace {
@@ -569,8 +570,9 @@ const std::vector<std::string>& MenuArt::skirmish_maps() {
                 }
             }
         if (!network) continue;
+        // The name shown and kept: the lowered name's translation when there is one (0x434DF9).
         const auto dot = file.find_last_of('.');
-        maps_.push_back(dot == std::string::npos ? file : file.substr(0, dot));
+        maps_.push_back(translate_lowered(dot == std::string::npos ? file : file.substr(0, dot)));
     }
     // The list itself stays in enumeration order (0x434BF0 does not sort; only the map choice
     // screen sorts its copy), so the default map is the first one found.
@@ -827,13 +829,11 @@ void SkirmishSession::surrender() { surrendered_ = true; }
 int SkirmishSession::difficulty() const { return world_ ? world_->request().start.ai_difficulty : 1; }
 
 std::string SkirmishSession::battle_name() const {
-    // The map's [GlobalHeader] missionname (map info +0xA14).
+    // The map info's name (+0xA14; 0x435DA0 providers 2 and 3): the map's name as chosen, or
+    // the base text of a translated name whose file is not found (a campaign's session gives
+    // its mission's name).
     if (!world_) return {};
-    std::vector<std::uint8_t> ota;
-    if (!world_->vfs_.read("maps\\" + world_->request().map + ".ota", ota)) return {};
-    const TdfParseResult parsed = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
-    const TdfSection* h = parsed.root ? parsed.root->child("GlobalHeader") : nullptr;
-    return h ? h->get_string("missionname", 0x100, "") : std::string();
+    return map_file_name(world_->vfs_, world_->request().map);
 }
 
 client::BattleLauncher SkirmishSession::restart_launcher(int difficulty) {
@@ -883,7 +883,7 @@ bool SkirmishSession::end_table(client::EndTable& t) {
     float kill_mul = 0.0f, time_mul = 0.0f;
     {
         std::vector<std::uint8_t> ota;
-        if (world_->vfs_.read("maps\\" + req.map + ".ota", ota)) {
+        if (world_->vfs_.read(world_->vfs_.virtual_path("maps", map_file_name(world_->vfs_, req.map), "ota"), ota)) {
             const TdfParseResult parsed = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size()));
             if (const TdfSection* h = parsed.root ? parsed.root->child("GlobalHeader") : nullptr) {
                 kill_mul = static_cast<float>(h->get_float("killmul", 0.0));
