@@ -1707,6 +1707,134 @@ private:
     std::vector<int> slots_;
 };
 
+// The allies screen of network games (ALLIES.GUI, 0x4478B0 from the tab bar; flags 0x800). The
+// ALLYx / TEAMICONSx gadgets become ALLY0.. / TEAMICONS0.. in order. Per player row k (0x447380:
+// in use, not watching, controller 1-3, record index not 10, live units or never any, a logo):
+// PLAYERk its name, LOGOk its colour logo (32xlogos stretched over the box, texels 1 .. size - 1),
+// TEAMICONSk its ally team's symbol (10 none, 2t + 1 a team of one, 2t a team of several; grayed
+// in a battle), ALLYk for another machine's human while the local player plays: its stage = (the
+// other's answer << 1) | the local alliance byte (0x446FB0). An ALLY press ("Options") toggles the
+// local alliance (packet 0x23, 0x452960) and says "<local name> allied with <name>" / "broke
+// alliance with" as an own chat line. VICTORY (allied victory) shows the side record's bit and is
+// grayed in a team of two or more or for a watcher; OK ("Options") takes it and announces a change.
+class AlliesScreen : public LayoutScreen {
+public:
+    AlliesScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("ALLIES")), art_(art), s_(s) {
+        int ally = 0, team = 0;
+        for (Widget& w : widgets_) {
+            if (is(w, "ALLYx")) w.name = "ALLY" + std::to_string(ally++);
+            else if (is(w, "TEAMICONSx")) w.name = "TEAMICONS" + std::to_string(team++);
+        }
+        logos_ = s.content().team_logos;
+        refresh();
+        const sim::Battle& b = s.battle();
+        const int local = b.settings.local_player;
+        if (Widget* v = widget("VICTORY")) {
+            v->stage = b.victory.sides[static_cast<std::size_t>(local)].allied_victory ? 1 : 0;
+            const int t = s.ally_team(local);
+            int in_team = 0;
+            if (t != 5)
+                for (int k = 0; k < 10; ++k)
+                    if (s.ally_team(k) == t && plays(k)) ++in_team;
+            v->grayed = in_team >= 2 || b.settings.player_sight[static_cast<std::size_t>(local)].watching;
+        }
+        s.client().dim_panel(true);
+    }
+    ~AlliesScreen() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+
+protected:
+    bool plays(int k) const {
+        const sim::Battle& b = s_.battle();
+        const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+        return p.active && p.controller >= 1 && p.controller <= 3 && p.state != 10 && (p.alive_count != 0 || p.units_created == 0);
+    }
+    void refresh() {
+        const sim::Battle& b = s_.battle();
+        const int local = b.settings.local_player;
+        for (int k = 0; k < 10; ++k) {
+            const std::string n = std::to_string(k);
+            Widget* player = widget("PLAYER" + n);
+            Widget* logo = widget("LOGO" + n);
+            Widget* ally = widget("ALLY" + n);
+            Widget* team = widget("TEAMICONS" + n);
+            for (Widget* w : {player, logo, ally, team})
+                if (w) w->active = false;
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            if (!plays(k) || b.settings.player_sight[static_cast<std::size_t>(k)].watching) continue;
+            if (player) {
+                player->active = true;
+                player->text = s_.player_name(k);
+            }
+            if (logo) {
+                logo->active = true;
+                logo->stage = s_.content().player_colour[static_cast<std::size_t>(k)];
+            }
+            if (ally && p.controller == 3 && plays(local) && !s_.computer(k)) {
+                ally->active = true;
+                const std::uint8_t mine = b.alliances[static_cast<std::size_t>(local)][p.state] ? 1 : 0;
+                ally->stage = (s_.allied_by(local, k) ? 2 : 0) | mine;
+            }
+            if (team) {
+                team->active = true;
+                team->grayed = true;  // (a battle: the teams are fixed)
+                const int t = s_.ally_team(k);
+                int members = 0;
+                if (t != 5)
+                    for (int q = 0; q < 10; ++q)
+                        if (s_.ally_team(q) == t && plays(q)) ++members;
+                team->stage = t == 5 || members == 0 ? 10 : members == 1 ? 2 * t + 1 : 2 * t;
+            }
+        }
+    }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!logos_ || w.stage < 0 || w.stage >= static_cast<int>(logos_->size()) || w.name.rfind("LOGO", 0) != 0) return;
+        const render::Sprite8& s = (*logos_)[static_cast<std::size_t>(w.stage)];
+        const Widget& h = widgets_.front();
+        const int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+        const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+        const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+        render::RasterTarget t;
+        t.pixels = out.pixels.data();
+        t.pitch = out.width;
+        t.clip = {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+        render::textured_quad_uv(t, v, uv, s);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        sim::Battle& b = s_.battle();
+        const int local = b.settings.local_player;
+        if (w.name.rfind("ALLY", 0) == 0 && w.name.size() == 5) {
+            const int k = w.name[4] - '0';
+            if (k < 0 || k > 9 || !plays(k)) return;
+            sfx(fe, art_, "Options");
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            const bool now = !b.alliances[static_cast<std::size_t>(local)][p.state];
+            s_.set_alliance(local, k, now);
+            s_.send_chat(std::string(now ? "allied with" : "broke alliance with") + " " + s_.player_name(k));
+            refresh();
+            return;
+        }
+        if (is(w, "VICTORY")) {
+            sfx(fe, art_, "Options");
+            return;
+        }
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            if (const Widget* v = widget("VICTORY")) s_.set_allied_victory(local, v->stage != 0);
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+};
+
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
@@ -1722,8 +1850,13 @@ public:
         // Tab opening (and closing) the bar sounds "SmallButton".
         if (!opened_) sfx(fe, art_, "SmallButton");
         opened_ = true;
-        if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu;
-        if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu;
+        // (0x495010: Allies and Share in a network game for a player not watching; Control also
+        // needs the host's rights, not built)
+        client::BattleSession* bs = fe.session();
+        const bool can = bs && bs->network() &&
+                         !bs->battle().settings.player_sight[static_cast<std::size_t>(bs->battle().settings.local_player)].watching;
+        if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu || !can;
+        if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu || !can;
         if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu;
     }
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
@@ -2095,6 +2228,10 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
         auto sc = std::make_unique<ShareScreen>(art, s);
         if (sc->empty()) return nullptr;
         return sc;
+    };
+    setup.hooks.allies_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        if (!s.network() || !art.layout("ALLIES")) return nullptr;
+        return std::make_unique<AlliesScreen>(art, s);
     };
     setup.hooks.unit_info = [&art](FrontEnd&, client::BattleSession& s, std::uint16_t type) -> std::unique_ptr<client::Screen> {
         if (!art.layout("UNITINFOX")) return nullptr;

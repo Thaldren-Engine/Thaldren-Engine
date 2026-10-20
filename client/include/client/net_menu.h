@@ -107,6 +107,8 @@ public:
     std::uint8_t allied_by(int local, int other) const override { return net_->allied_by(local, other); }
     void send_explored_map(int from, int to) override { net_->explored_map_shared(from, to); }
     std::string player_name(int slot) const override { return slot >= 0 && slot < 10 ? names_[static_cast<std::size_t>(slot)] : std::string(); }
+    int ally_team(int slot) const override { return slot >= 0 && slot < 10 ? net_->room()[static_cast<std::size_t>(slot)].ally_team : 5; }
+    bool computer(int slot) const override { return slot >= 0 && slot < 10 && net_->room()[static_cast<std::size_t>(slot)].kind == 2; }
     // The players' names (the session's) and this machine's player: chat lines carry the
     // sender's name, lines to one player that player's name.
     void set_names(const std::array<std::string, 10>& names, int local) {

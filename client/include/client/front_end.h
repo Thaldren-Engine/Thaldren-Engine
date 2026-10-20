@@ -182,6 +182,12 @@ public:
     virtual std::uint8_t allied_by(int /*local*/, int /*other*/) const { return 0; }
     virtual void send_explored_map(int /*from*/, int /*to*/) {}
     virtual std::string player_name(int /*slot*/) const { return {}; }
+    // A player's ally team from the battle room (0..4, 5 none) and whether it is a computer player
+    // (its side record's kind 2).
+    virtual int ally_team(int /*slot*/) const { return 5; }
+    virtual bool computer(int /*slot*/) const { return false; }
+    // The local player's acceptance of an allied victory (side record flags bit 1).
+    virtual void set_allied_victory(int slot, bool on);
     // Set by the front end: the session reports combat involving the local player here (+1 a
     // hit, +5 a kill it scores; the music's battle/peace switch).
     std::function<void(int)> combat_activity;

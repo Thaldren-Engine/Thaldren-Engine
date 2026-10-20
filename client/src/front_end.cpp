@@ -959,4 +959,8 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
 #endif
 }
 
+void BattleSession::set_allied_victory(int slot, bool on) {
+    if (slot >= 0 && slot < 10) battle().victory.sides[static_cast<std::size_t>(slot)].allied_victory = on;
+}
+
 }  // namespace client
