@@ -103,8 +103,9 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
                 e.type = InputEvent::Type::MouseUp;
                 out.push_back({frame, e});
             }
-        } else if (ev == "key" || ev == "keyup") {
-            e.type = ev == "key" ? InputEvent::Type::KeyDown : InputEvent::Type::KeyUp;
+        } else if (ev == "key" || ev == "keyup" || ev == "hold") {
+            // (hold: the key goes down and stays down until a keyup)
+            e.type = ev == "keyup" ? InputEvent::Type::KeyUp : InputEvent::Type::KeyDown;
             e.key = key_by_name(w[2]);
             out.push_back({frame, e});
             if (ev == "key" && e.key < 0x100) {  // characters are typed: down and up

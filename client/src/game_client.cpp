@@ -300,6 +300,7 @@ int GameClient::frame(std::uint32_t now_ms) {
     if (mode_kept_ && !shift_ && !keys_down_[keys::kShift]) end_order_mode();
     advance_pointer(dt);
     notices_frame();
+    panels_frame(now_ms);
     if (panel_dirty_) refresh_panel();
     ++frame_counter_;
     return steps;

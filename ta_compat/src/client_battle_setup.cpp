@@ -33,6 +33,9 @@ struct ClientWorld::Outside : sim::QuietBattleOutside {
     void forget_speech(sim::Unit& u) override {
         if (w->client_) w->client_->forget_speech(u);
     }
+    void kill_counted(std::uint8_t slot, sim::Unit& v) override {
+        if (w->client_) w->client_->on_kill_counted(slot, v);
+    }
     void under_attack_notice(sim::Unit& u) override {
         if (w->client_) w->client_->on_under_attack(u);
     }

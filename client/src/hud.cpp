@@ -210,6 +210,20 @@ render::DrawList GameClient::draw() {
     }
     render::DrawList list = render::build_draw_list(scene);
     const render::ClipRect screen{0, 0, w - 1, h - 1};
+    // The view's marks (the drag box, the placement outline), then the Space-held panels over
+    // the view (the frame draws them after the fog and the marks, before the console).
+    {
+        render::Image8 marks(w, h, overlay_key_);
+        draw_unit_marks(marks);
+        render::Sprite8 sp;
+        sp.width = w;
+        sp.height = h;
+        sp.key = overlay_key_;
+        sp.has_key = true;
+        sp.pixels = std::move(marks.pixels);
+        list.blit(list.keep(std::move(sp)), 0, 0, screen, false);
+    }
+    draw_panels(list);
 
     // Interface art: the side panel, the top and bottom bars (repeated across wider screens).
     if (side_) {
@@ -322,7 +336,7 @@ void GameClient::add_selection_outlines(render::BattleScene& scene) const {
 }
 
 void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
-    draw_unit_marks(o);
+    // (the view's marks: their own layer, before the Space-held panels)
     draw_console(o);
     draw_top_bar(o);
     draw_bottom_bar(o);

@@ -288,6 +288,17 @@ bool ClientWorld::build_content(std::string& error) {
     const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
     c.picture_font = caption_font;
     c.console_font = font("COMIX");
+    // The interface's second picture font (hattfont11: the Space-held game information panel).
+    fonts_.push_back(picture_font(gaf("anims\\hattfont11.GAF")));
+    c.small_picture_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
+    // The game information panel's art: commongui's LIGHTBAR, its second frame with the
+    // offsets cleared (0x4679A0 at the battle's loading).
+    if (const auto* q = sequence(common, "LIGHTBAR"); q && q->size() > 1) {
+        render::Sprite8 s = (*q)[1];
+        s.x_offset = s.y_offset = 0;
+        sprites_.push_back(std::move(s));
+        c.info_panel = &sprites_.back();
+    }
     // Buttons from a GUI file's gadgets: the gadget's name is the art's sequence name.
     auto unit_index = [&](const std::string& name) -> std::uint16_t {
         for (std::size_t k = 1; k < defs_.units.size(); ++k)
@@ -501,6 +512,15 @@ bool ClientWorld::build_content(std::string& error) {
         c.nuke_dots = sequence("anims\\FX.GAF", "nuclogo");
         c.team_logos = sequence("textures\\logos.GAF", "32xlogos");
         for (std::size_t p = 0; p < c.player_colour.size(); ++p) c.player_colour[p] = request_.start.players[p].colour;
+        // Names: the battle's own, else as the player records are set up (0x464290): "Player"
+        // for a player at this machine, the side's name ("Arm" for side 0, else "Core") for a
+        // computer player.
+        for (std::size_t p = 0; p < c.player_names.size(); ++p) {
+            const sim::StartPlayer& sp = request_.start.players[p];
+            std::string n = sp.name;
+            if (n.empty()) n = sp.kind == sim::PlayerKind::Computer ? (upper(request_.sides[p]) == "ARM" ? "Arm" : "Core") : "Player";
+            c.player_names[p] = n;
+        }
         if (const auto* q = sequence("anims\\FX.GAF", "radlogohigh")) c.radar_dot_hover = &q->front();
         if (const auto* q = sequence("anims\\IGTITLES.GAF", "igpaused")) c.paused_sign = &q->front();
     }
@@ -634,6 +654,8 @@ bool ClientWorld::build_content(std::string& error) {
         u.message = ui("MessageArrived");
         u.small_button = ui("SMALLBUTTON");
         u.victory = ui("Victory Condition");
+        u.panel = ui("Panel");
+        u.options = ui("Options");
         sample_index_["TREEBURN"] = ui("TREEBURN");
         // The notices' sing switch: two sound files played instead of the notices' own.
         u.honk = sample("honk");

@@ -88,7 +88,7 @@ inline bool is_screenshot_key(const InputEvent& e) { return e.type == InputEvent
 
 // Parses a script file: one event per line, "<frame> <event> <args...>" with events
 // move X Y | down X Y BUTTON | up X Y BUTTON | click X Y BUTTON (down and up) |
-// key K | keyup K | type TEXT (the rest of the line typed key by key) |
+// key K | hold K (down until a keyup) | keyup K | type TEXT (the rest of the line typed key by key) |
 // wmove X Y W H [SCALE] (the system pointer at window pixel X, Y of a W x H window, possibly
 // outside it: pointer_motion) | leave (the system pointer left the window) |
 // shift/ctrl/alt modifiers as a trailing "+shift" etc.

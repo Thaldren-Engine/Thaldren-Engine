@@ -573,6 +573,7 @@ int main(int argc, char** argv) {
     std::printf("map %s, %d players, %dx%d, seed %u\n", setup.map.c_str(), opt.players, opt.width, opt.height, opt.seed);
 
     // ---- Original ----
+    u32 info_panel_art = 0;  // (--hud: the game information panel's art in the original)
     Original o;
     o.keep_bottom_bar = opt.hud;
     o.keep_console = opt.hud;
@@ -1039,7 +1040,45 @@ int main(int argc, char** argv) {
                     r.write(fr + 6, &yo, 2);
                 }
                 r.w32(gs + 0x519 + 0x14, handle);
+                r.w32(gs + 0x519 + 0x08, handle);  // (font 0: the one put back after a font change)
                 r.w32(0x0051FBA4, gs + 0x519);  // the GUI system the text routines ask for their font
+            }
+            // Font 1 (hattfont11, GUI+0xC) the same way: the game information panel's text.
+            std::vector<u8> pf11;
+            if (vfs.read("anims\\hattfont11.GAF", pf11) && pf11.size() > 16) {
+                const u32 seq = o.gaf("anims\\hattfont11.GAF", pf11) + Original::gaf_entry(pf11, 0);
+                const u32 handle = o.alloc(0x20);
+                r.w32(handle + 0xC, seq);
+                std::uint16_t frames = 0;
+                r.read(seq, &frames, 2);
+                std::int16_t ih = 0;
+                if (frames > 0x49) r.read(r.r32(seq + 0x28 + 8 * 0x49) + 2, &ih, 2);
+                for (u32 k = 0; k < frames; ++k) {
+                    const u32 fr = r.r32(seq + 0x28 + 8 * k);
+                    if (!fr) continue;
+                    std::int16_t yo = 0;
+                    r.read(fr + 6, &yo, 2);
+                    yo = static_cast<std::int16_t>(yo - ih);
+                    r.write(fr + 6, &yo, 2);
+                }
+                r.w32(gs + 0x519 + 0x0C, handle);
+            }
+            // The game information panel's art (0x4679A0): commongui's LIGHTBAR, frame 1, its
+            // offsets cleared.
+            std::vector<u8> cg;
+            if (vfs.read("anims\\commongui.GAF", cg)) {
+                ta::GafDirectory dir;
+                ta::gaf_read_directory(cg, dir);
+                const int i = ta::gaf_find_sequence(dir, "LIGHTBAR");
+                if (i >= 0) {
+                    const u32 seq = o.gaf("anims\\commongui.GAF", cg) + Original::gaf_entry(cg, i);
+                    const u32 fr = r.r32(seq + 0x28 + 8);
+                    const std::int16_t z = 0;
+                    r.write(fr + 4, &z, 2);
+                    r.write(fr + 6, &z, 2);
+                    r.w32(gs + 0x37E94, fr);
+                    info_panel_art = fr;
+                }
             }
             if (vfs.read("fonts\\COMIX.FNT", fnt)) {
                 const u32 at = o.alloc(static_cast<u32>(fnt.size()) + 16);
@@ -2109,6 +2148,157 @@ int main(int argc, char** argv) {
                 for (const auto& [i, f] : kept_flags) {
                     b.units[i].flags = f;
                     r.w32(units_at + static_cast<u32>(i) * kUnitSize + 0x110, f);
+                }
+            }
+            // The Space-held panels (0x4689C0, 0x4948E0): random slides, flashes, ranks (with gaps),
+            // kills and losses, unit counts, speeds, commander modes, watchers and players out, in a
+            // skirmish or network game; the pixels the panels change in either frame compared, and
+            // the ranks after the drawing (it closes rank gaps).
+            if (!diff) {
+                const u32 schema = r.r32(gs + gSchema);
+                const int type = rnd(2, 3);
+                const sim::BattleSettings saved_settings = b.settings;
+                const std::vector<sim::PlayerSlot> saved_players = b.players;
+                std::vector<u8> o0, o1;
+                // Closed (both sides) first.
+                const client::GameClient::PanelsState closed{};
+                gc.set_panels_state(closed);
+                const render::Image8 c0 = client_frame();
+                r.w32(0x0051F2D8, 0);  // (the kills panel's slide)
+                r.w32(gs + 0x37F06, r.r32(gs + 0x37F06) & ~0x80u);
+                bool ok2 = original_frame(o0);
+                // Then the random state.
+                b.settings.provider = type;
+                r.w32(schema, static_cast<u32>(type));
+                b.settings.game_mode = rnd(0, 2);
+                r.w32(gs + 0x37EF6, static_cast<u32>(b.settings.game_mode));
+                b.settings.player_count = static_cast<std::uint16_t>(rnd(1, 10));
+                const u16 pc = b.settings.player_count;
+                r.write(gs + 0x2A3C, &pc, 2);
+                b.settings.unit_limit = rnd(20, 500);
+                const u16 ul = static_cast<u16>(b.settings.unit_limit);
+                r.write(gs + 0x37EE6, &ul, 2);
+                const int set_speed = rnd(1, 20), eff_speed = rnd(0, 1) ? set_speed : rnd(1, 20);
+                gc.set_speeds(set_speed, eff_speed);
+                const u16 s16 = static_cast<u16>(set_speed), e16 = static_cast<u16>(eff_speed);
+                r.write(gs + 0x38A4B, &s16, 2);
+                r.write(gs + 0x38A4D, &e16, 2);
+                client::GameClient::PanelsState ps;
+                ps.info_slide = rnd(0, 3) ? -rnd(1, 31) : 0;
+                const bool f4 = rnd(0, 1) != 0;
+                const int v = rnd(0, 4) == 0 ? 0x7D : rnd(1, 0x7D);
+                // (the original's panel moves before it draws: kept out with F4 it stays at 125
+                // once there; else it goes back by a quarter, at least 1)
+                int v_after = v;
+                if (f4) v_after = v < 0x7D ? std::min(0x7D, v + std::max(1, (0x7D - v) / 4)) : 0x7D;
+                else v_after = v - std::max(1, v / 4) < 1 ? 0 : v - std::max(1, v / 4);
+                ps.score_slide = v_after;
+                std::vector<int> order = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+                std::shuffle(order.begin(), order.end(), g);
+                for (int k = 0; k < 10; ++k) {
+                    ps.kill_flash[static_cast<std::size_t>(k)] = static_cast<u8>(rnd(0, 2) ? 0 : 2 * rnd(0, 15));
+                    ps.loss_flash[static_cast<std::size_t>(k)] = static_cast<u8>(rnd(0, 2) ? 0 : 2 * rnd(0, 15));
+                    ps.rank[static_cast<std::size_t>(k)] = static_cast<u8>(rnd(0, 4) ? order[static_cast<std::size_t>(k)] : rnd(0, 12));
+                }
+                gc.set_panels_state(ps);
+                r.w32(gs + 0x37E90, static_cast<u32>(ps.info_slide));
+                r.w32(0x0051E544, 0x7FFFFFFFu);  // (no move of the information panel: its 15 ms not passed)
+                r.w32(0x0051F2F4, 0x7FFFFFFFu);  // (no fading of the flashes)
+                r.w32(0x0051F2D8, static_cast<u32>(v));
+                r.write(0x0051F2C8, ps.kill_flash.data(), 10);
+                r.write(0x0051E810, ps.loss_flash.data(), 10);
+                r.w32(gs + 0x37F06, (r.r32(gs + 0x37F06) & ~0x80u) | (f4 ? 0x80u : 0u));
+                const u8 up = 0;
+                r.write(o.key_state + 0x20, &up, 1);
+                static const char* const kNames[] = {"Player", "Arm", "Core", "Bob", "a very long name for the panel", "X", "Abcdefghijklmn", "", "IJ", "Zz"};
+                for (int k = 0; k < 10; ++k) {
+                    sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+                    const bool used = k == 0 || rnd(0, 3) != 0;
+                    p.active = used;
+                    p.controller = static_cast<std::uint8_t>(used ? (k == 0 ? 1 : rnd(0, 4) == 0 ? rnd(0, 4) : rnd(1, 3)) : 0);
+                    p.state = static_cast<std::uint8_t>(rnd(0, 9) ? k : 10);
+                    p.alive_count = static_cast<std::uint16_t>(rnd(0, 3) ? rnd(1, 400) : 0);
+                    p.units_created = static_cast<std::uint32_t>(rnd(0, 3) ? rnd(1, 900) : 0);
+                    p.units_killed = static_cast<std::uint16_t>(rnd(0, 3) ? rnd(0, 300) : rnd(0, 65535));
+                    p.units_lost = static_cast<std::uint16_t>(rnd(0, 3) ? rnd(0, 300) : rnd(0, 65535));
+                    p.commanders_killed = static_cast<std::uint16_t>(rnd(0, 3));
+                    p.commanders_lost = static_cast<std::uint16_t>(rnd(0, 3));
+                    b.settings.player_sight[static_cast<std::size_t>(k)].watching = k != 0 && rnd(0, 7) == 0;
+                    const_cast<std::string&>(world.content().player_names[static_cast<std::size_t>(k)]) = kNames[k];
+                    const u32 rec = gs + gPlayers + static_cast<u32>(k) * kPlayerSize;
+                    r.w32(rec + 0, used ? 1u : 0u);
+                    r.write(rec + 0x73, &p.controller, 1);
+                    r.write(rec + 0x146, &p.state, 1);
+                    r.write(rec + 0x144, &p.alive_count, 2);
+                    r.w32(rec + 0x140, p.units_created);
+                    r.write(rec + 0xFC, &p.units_killed, 2);
+                    r.write(rec + 0xFE, &p.units_lost, 2);
+                    r.write(rec + 0x104, &p.commanders_killed, 2);
+                    r.write(rec + 0x106, &p.commanders_lost, 2);
+                    r.write(rec + 0x148, &ps.rank[static_cast<std::size_t>(k)], 1);
+                    char nm[30] = {};
+                    std::snprintf(nm, sizeof nm, "%s", kNames[k]);
+                    r.write(rec + 0x2B, nm, sizeof nm);
+                    u16 opt_word = 0;
+                    r.read(infos + static_cast<u32>(k) * 0x100 + 0x9B, &opt_word, 2);
+                    opt_word = static_cast<u16>((opt_word & ~0x40) | (b.settings.player_sight[static_cast<std::size_t>(k)].watching ? 0x40 : 0));
+                    r.write(infos + static_cast<u32>(k) * 0x100 + 0x9B, &opt_word, 2);
+                }
+                const render::Image8 c1 = client_frame();
+                // (as original_frame, but the panels' state kept)
+                r.w32(gs + 0x141F3, static_cast<u32>(b.projectiles.count));
+                r.w32(o.rand_state, b.crt_rand.state());
+                r.write(o.frame, bg.data(), bg.size());
+                write_top();
+                {
+                    const u16 hv = gc.hover_unit();
+                    r.write(gs + 0x2CBA, &hv, 2);
+                }
+                r.write(gs + 0x37E60, std::vector<u8>(0x3C, 0xFF).data(), 0x3C);
+                // (that copy's range holds the information panel's slide and art too)
+                r.w32(gs + 0x37E90, static_cast<u32>(ps.info_slide));
+                r.w32(gs + 0x37E94, info_panel_art);
+                ok2 = ok2 && o.call(kVisibleList, 0, {}) && o.call(kDrawFrame, 0, {1, 0});
+                if (ok2) {
+                    o1.resize(static_cast<std::size_t>(W * H));
+                    r.read(o.frame, o1.data(), o1.size());
+                }
+                if (!ok2) {
+                    std::printf("  hud: panels: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 pimg(W, H, 0);
+                    long long changed = 0;
+                    const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                    int rank_diff = 0;
+                    const auto after = gc.panels_state();
+                    for (int k = 0; k < 10; ++k) {
+                        u8 rk = 0;
+                        r.read(gs + gPlayers + static_cast<u32>(k) * kPlayerSize + 0x148, &rk, 1);
+                        rank_diff += rk != after.rank[static_cast<std::size_t>(k)];
+                    }
+                    std::printf("  hud: panels (game type %d, information %d, kills %d->%d%s, %d players, mode %d, speed %d/%d): %lld of %lld changed pixels differ, %d ranks differ\n",
+                                type, ps.info_slide, v, v_after, f4 ? " F4" : "", pc, b.settings.game_mode, set_speed, eff_speed, pd, changed, rank_diff);
+                    if (pd || rank_diff) dump("panels", o1, c1, pimg);
+                    if (changed && std::getenv("FH_SHOTS")) dump("panelsok", o1, c1, pimg);
+                    st.pixels += pd + rank_diff;
+                    differs(pd + rank_diff);
+                }
+                // Back to the battle's own state.
+                b.settings = saved_settings;
+                b.players = saved_players;
+                r.w32(schema, 0);
+                r.w32(gs + 0x37E90, 0);
+                r.w32(0x0051F2D8, 0);
+                r.w32(gs + 0x37F06, r.r32(gs + 0x37F06) & ~0x80u);
+                gc.set_panels_state(closed);
+                gc.set_speeds(10, 10);
+                for (int k = 0; k < 10; ++k) {
+                    const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+                    const u32 rec = gs + gPlayers + static_cast<u32>(k) * kPlayerSize;
+                    const u8 idx = static_cast<u8>(k);
+                    r.write(rec + 0x146, &idx, 1);
+                    r.w32(rec + 0, p.active ? 1u : 0u);
                 }
             }
             // The console: random lines added by the original's routine (0x463CA0) and the

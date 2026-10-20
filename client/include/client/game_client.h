@@ -145,6 +145,10 @@ public:
     // goal met).
     void interface_sound(int sample) { play_ui(sample); }
     void on_speech(sim::Unit& unit, std::uint32_t id);
+    // A kill or loss the battle counted (attacker's player slot, the victim): the kills ranking
+    // and its lead message, the kills and losses panel's flashes (the original's kill handler,
+    // 0x4866D0's end, and 0x4948B0).
+    void on_kill_counted(int attacker_slot, const sim::Unit& victim);
     void on_under_attack(sim::Unit& unit);
     void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
     // A console line (0x463CA0): kind 2 the game's own notes, 1 unit notices (param: the unit),
@@ -233,6 +237,25 @@ public:
         bar_timer_ = s.timer;
         bar_timer_set_ = s.timer_set;
         bar_copy_valid_ = false;  // (the next frame redraws the bar)
+    }
+    // The Space-held panels' state (tests: put into both the client and the original): the
+    // game information panel's slide (0 .. -31), the kills and losses panel's (0 .. 125), its
+    // numbers' flashes and the players' kills ranks; and the set and effective game speeds.
+    struct PanelsState {
+        int info_slide = 0, score_slide = 0;
+        std::array<std::uint8_t, 10> kill_flash{}, loss_flash{}, rank{};
+    };
+    PanelsState panels_state() const { return {info_slide_, score_slide_, kill_flash_, loss_flash_, rank_}; }
+    void set_panels_state(const PanelsState& s) {
+        info_slide_ = s.info_slide;
+        score_slide_ = s.score_slide;
+        kill_flash_ = s.kill_flash;
+        loss_flash_ = s.loss_flash;
+        rank_ = s.rank;
+    }
+    void set_speeds(int set, int effective) {
+        budget_.game_speed = static_cast<std::uint16_t>(set);
+        budget_.effective_speed = static_cast<std::uint16_t>(effective);
     }
     // The pointer's animation: the look shown and its frame (tests); a new look (not the one
     // shown) starts at its first frame.
@@ -401,6 +424,25 @@ private:
     void camera_step();
     // F3 (0x464000): the next console line naming a live unit that F3 has not visited yet.
     bool jump_to_noted_unit();
+    // The Space-held panels (0x4689C0 the game information panel rising from the bottom bar,
+    // 0x4948E0 the kills and losses panel coming in from the right; F4 keeps the second out):
+    // their slides, the flashes of the second panel's numbers and the players' ranks in it.
+    int info_slide_ = 0;                    // 0 (in) .. -31 (out)
+    std::uint32_t info_next_ms_ = 0;        // it moves once 15 ms of wall clock have passed
+    int score_slide_ = 0;                   // 0 (in) .. 125 (out)
+    std::uint32_t score_next_tick_ = 0;     // the flashes fade every second tick of 1/30 s
+    std::array<std::uint8_t, 10> kill_flash_{}, loss_flash_{};
+    std::array<std::uint8_t, 10> rank_{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};  // the records' kills ranks
+    bool panel_player(int k) const;          // a player the kills and losses panel lists
+    void panels_frame(std::uint32_t now_ms);
+    void draw_panels(render::DrawList& list);
+    // The shade and light tables as mixing tables (made once; the draw list keeps them by address).
+    render::BlendTable shade8_, light31_, light20_;
+    // 0x4A50E0 with a picture font: characters from 0x20 that have a glyph, each drawn at its
+    // offsets with its own colours (light row 0) or through the light table's row; a width limit
+    // (-1: none) stops before a glyph wider than what is left. Returns the x after the text.
+    int draw_picture_text(render::Image8& o, const render::ClipRect& clip, const Font& f, const std::string& s, int x, int y,
+                          int width, int light_row) const;
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;
     std::string chat_text_;

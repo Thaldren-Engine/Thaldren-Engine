@@ -165,6 +165,7 @@ struct InterfaceSounds {
     int small_button = -1;           // the chat line key
     int honk = -1, sing = -1;        // the notices' sing switch
     int victory = -1;                // a mission goal met
+    int panel = -1, options = -1;    // the Space-held panels sliding out (Panel) and coming to rest (Options)
 };
 
 // Display data of a unit type (index = battle type index).
@@ -285,6 +286,13 @@ struct Content {
     const Font* picture_font = nullptr;
     std::vector<std::uint8_t> shade_levels;  // the shade table (32 levels x 256; a layout dimmed under a dialog)
     std::vector<std::uint8_t> light_levels;  // the light table (32 levels x 256; the focused text field's text)
+    // The Space-held game information panel's art (the interface's light bar, its second frame,
+    // offsets cleared) and its text font (the interface's second picture font).
+    const render::Sprite8* info_panel = nullptr;
+    const Font* small_picture_font = nullptr;
+    // The players' names as the battle's records hold them (the kills and losses panel, the
+    // lead messages).
+    std::array<std::string, 10> player_names;
     // Builds the battle view of the viewing player (projection, culling and draw order are
     // the renderer's; which units, features and shots are seen is the content's).
     std::function<void(render::BattleScene& scene, int view_player, std::uint32_t frame_counter)> fill_scene;
