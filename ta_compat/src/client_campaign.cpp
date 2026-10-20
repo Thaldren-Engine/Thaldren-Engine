@@ -512,7 +512,8 @@ private:
         if (info_.narration.empty()) return;
         if (narration_.pcm.empty()) {
             std::vector<std::uint8_t> wav;
-            if (!art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) || !client::decode_wav(wav, narration_)) return;
+            // (camps\briefs-<language>\ first, 0x435430 kind 3)
+            if (!art_.vfs().read(art_.vfs().virtual_path("camps\\briefs", info_.narration, "WAV"), wav) || !client::decode_wav(wav, narration_)) return;
         }
         fe.play_narration_sample(&narration_);
         const std::size_t frames = narration_.pcm.size() / static_cast<std::size_t>(std::max(1, narration_.channels));
@@ -1303,7 +1304,8 @@ bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOu
         if (!info.glamour_sound.empty()) {
             std::vector<std::uint8_t> wav;
             auto smp = std::make_shared<client::Sample>();
-            if (art.vfs().read("camps\\briefs\\" + info.glamour_sound + ".wav", wav) && client::decode_wav(wav, *smp)) out.glamour_sound = smp;
+            // (camps\briefs-<language>\ first, 0x435430 kind 8)
+            if (art.vfs().read(art.vfs().virtual_path("camps\\briefs", info.glamour_sound, "WAV"), wav) && client::decode_wav(wav, *smp)) out.glamour_sound = smp;
         }
     }
     // "Click to continue." in the side's console font (sidedata "font").

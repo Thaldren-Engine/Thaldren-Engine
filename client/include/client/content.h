@@ -49,6 +49,11 @@ struct Button {
                           // unknown unit on a build page)
 };
 
+// The program's text translation (a game's language table; none set: texts as given). The
+// texts the original's code passes through its translation are shown through tr().
+std::function<std::string(const std::string&)>& text_translation();
+std::string tr(const std::string& text);
+
 // Frame of a button's look: a staged button shows its stage (the last frame while
 // held down); a plain one frame 0, 1 while held, min(2, last) when disabled.
 int button_frame(const Button& b, bool held, bool disabled, int stage);

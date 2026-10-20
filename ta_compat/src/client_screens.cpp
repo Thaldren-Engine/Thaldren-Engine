@@ -508,8 +508,10 @@ void draw_surface_picture(render::Image8& out, const render::ClipRect& box, cons
 }
 
 // What the map choice shows of a map (the map info the original loads for a skirmish or network
-// game, 0x435DA0 provider 2/3, from maps\<name>.ota [GlobalHeader]): the description (at most 127
-// characters, "No description available" when the key is missing), memory and numplayers.
+// game, 0x435DA0 provider 2/3, from maps\<name>.ota [GlobalHeader], the name a translated one's
+// base text when no such file opens): the description (at most 127 characters, "No description
+// available" when the key is missing; its lowered text's translation when there is one, 0x4364B5),
+// memory and numplayers.
 struct MapSummary {
     bool loaded = false;
     std::string description, memory, players;
@@ -517,11 +519,11 @@ struct MapSummary {
 MapSummary map_summary(MenuArt& art, const std::string& map) {
     MapSummary m;
     std::vector<std::uint8_t> f;
-    if (!art.vfs().read("maps\\" + map + ".ota", f)) return m;
+    if (!art.vfs().read(art.vfs().virtual_path("maps", map_file_name(art.vfs(), map), "ota"), f)) return m;
     m.loaded = true;
     if (auto root = tdf_parse(std::string_view(reinterpret_cast<const char*>(f.data()), f.size())).root)
         if (const TdfSection* gh = root->child("GlobalHeader")) {
-            m.description = gh->get_string("missiondescription", 0x80, "No description available");
+            m.description = translate_lowered(gh->get_string("missiondescription", 0x80, "No description available"));
             m.memory = gh->get_string("memory", 0x80, "");
             m.players = gh->get_string("numplayers", 0x80, "");
         }
@@ -569,9 +571,10 @@ protected:
         const std::string map = list.items[static_cast<std::size_t>(list.selected)];
         const MapSummary m = map_summary(art_, map);
         if (!m.loaded) return;
-        if (Widget* s = widget("SIZE")) s->text = m.memory + "  Players: " + m.players;
-        if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(map, pic->w, pic->h);
-        if (Widget* d = widget("DESCRIPTION")) d->text = m.description;
+        // ("%s  %s: %s" with "Players" translated, 0x444A85, set as a caption: translated again)
+        if (Widget* s = widget("SIZE")) s->text = translate(m.memory + "  " + translate("Players") + ": " + m.players);
+        if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(map_file_name(art_.vfs(), map), pic->w, pic->h);
+        if (Widget* d = widget("DESCRIPTION")) d->text = translate(m.description);  // (set as a caption)
     }
     void on_list_select(FrontEnd&, Widget& w) override { show(w); }
     void choose(FrontEnd& fe, Widget& list) {
@@ -630,12 +633,15 @@ public:
 protected:
     void show() {
         shown_ = host_map_ ? host_map_() : std::string();
-        if (Widget* n = widget("MAPNAME")) n->text = shown_;
+        // (the map info's shown name, 0x435A20: a translated lowered name or the name as given;
+        // set as a caption)
+        if (Widget* n = widget("MAPNAME")) n->text = translate(translate_lowered(shown_));
         const MapSummary m = map_summary(art_, shown_);
         if (!m.loaded) return;
-        if (Widget* s = widget("SIZE")) s->text = m.memory + "  Players: " + m.players;
-        if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(shown_, pic->w, pic->h);
-        if (Widget* d = widget("DESCRIPTION")) d->text = m.description;
+        // ("%s  %s: %s" with "Players" translated, 0x444A85, set as a caption: translated again)
+        if (Widget* s = widget("SIZE")) s->text = translate(m.memory + "  " + translate("Players") + ": " + m.players);
+        if (Widget* pic = widget("MAPPIC")) pic->picture = art_.map_preview(map_file_name(art_.vfs(), shown_), pic->w, pic->h);
+        if (Widget* d = widget("DESCRIPTION")) d->text = translate(m.description);  // (set as a caption)
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         if (is(w, "OK")) {
@@ -688,7 +694,7 @@ public:
         build_rows();
     }
     void enter(FrontEnd& fe) override {
-        if (Widget* m = widget("MapName")) m->text = map_;
+        if (Widget* m = widget("MapName")) m->text = translate(translate_lowered(map_));  // (the map info's shown name, 0x435A20, as a caption)
         (void)fe;
     }
 
@@ -731,7 +737,9 @@ protected:
         map_ = s.get_text("SkirmishMap", "");
         const auto& maps = art_.skirmish_maps();
         bool found = false;
-        for (const auto& m : maps) found = found || upper(m) == upper(map_);
+        // (The list holds the shown names; a saved name may be a file name or a translated one.)
+        const std::string file = upper(map_file_name(art_.vfs(), map_));
+        for (const auto& m : maps) found = found || upper(m) == upper(map_) || upper(map_file_name(art_.vfs(), m)) == file;
         if (!found) map_ = art_.first_skirmish_map();
     }
     void save(client::Settings& s) {
@@ -781,7 +789,7 @@ protected:
                 wd.frames = frames;
                 wd.attribs = name == "Metal" || name == "Energy" ? 2 | 0x10000 : 2;
                 wd.text.clear();
-                help_[wd.name] = help;
+                help_[wd.name] = translate(help);  // (translated, 0x479EBB / 0x479FA8 / 0x47A067)
                 widgets_.push_back(wd);
             };
             add(WidgetKind::Button, "Player", 45, 112, name_art, "");
@@ -800,7 +808,8 @@ protected:
             const std::string n = std::to_string(i);
             const bool on = r.kind != 0;
             if (Widget* w = widget("Player" + n)) {
-                set_caption(*w, r.kind == 1 ? "Player" : r.kind == 2 ? "Computer" : "Open");
+                // (Translated, 0x479873 .. 0x4798D0 / 0x47A1E4 / 0x47A20D, and again as the caption.)
+                set_caption(*w, translate(r.kind == 1 ? "Player" : r.kind == 2 ? "Computer" : "Open"));
                 w->active = true;
             }
             if (Widget* w = widget("Side" + n)) {
@@ -831,7 +840,7 @@ protected:
         auto stage = [&](const char* name, int s, const char* help) {
             if (Widget* w = widget(name)) {
                 w->stage = s;
-                help_[upper(name)] = help;
+                help_[upper(name)] = translate(help);  // (translated, 0x47A50D .. 0x47A691, 0x47B88B)
             }
         };
         stage("StartLocation", fixed_ ? 0 : 1,
@@ -843,7 +852,7 @@ protected:
               !los_ ? "All mapped terrain is visible." : los_type_ == 1 ? "Terrain elevations affect a unit's view."
                                                                        : "Terrain elevations do not affect a unit's view.");
         stage("Difficulty", difficulty_, "");
-        if (Widget* m = widget("MapName")) m->text = map_;
+        if (Widget* m = widget("MapName")) m->text = translate(translate_lowered(map_));  // (the map info's shown name, 0x435A20, as a caption)
     }
 
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
@@ -1482,7 +1491,7 @@ public:
         if (Widget* w = widget("RESTART")) {
             const bool offered = s && !s->network();
             w->active = offered;
-            if (offered) set_caption(*w, "Restart");
+            if (offered) set_caption(*w, translate("Restart"));  // (translated, 0x46092E, and again by the caption)
         }
     }
     bool see_through() const override { return true; }
@@ -1571,8 +1580,9 @@ private:
                 key = line.substr(0, bar);
                 rest = bar == std::string::npos ? std::string() : line.substr(bar + 1);
             }
-            add_run_time_label(widgets_, key, 0x28, y, 0x4E, 1);
-            add_run_time_label(widgets_, rest, 0x7D, y, 300, 1);
+            // (Both parts go through the translation, 0x45FA04 / 0x45FA50.)
+            add_run_time_label(widgets_, translate(key), 0x28, y, 0x4E, 1);
+            add_run_time_label(widgets_, translate(rest), 0x7D, y, 300, 1);
             y += 0x12;
         }
     }
@@ -1609,9 +1619,11 @@ public:
         const std::uint16_t host = s.host_options();
         static const char* const kMode[] = {"Game Continues", "Game Ends", "Deathmatch"};
         static const char* const kLevel[] = {"Easy", "Medium", "Hard"};
-        auto row = [&](const char* name, const std::string& value, int y) {
-            add_run_time_label(widgets_, name, 0x12, y, 0x6E, 1);
-            add_run_time_label(widgets_, value, 0x8C, y, 0x78, 1);
+        auto row = [&](const char* name, const std::string& value, int y, bool number = false) {
+            // (Every name and value goes through the translation, the map name too: 0x45F2E9 ..
+            // 0x45F6AB.)
+            add_run_time_label(widgets_, translate(name), 0x12, y, 0x6E, 1);
+            add_run_time_label(widgets_, number ? value : translate(value), 0x8C, y, 0x78, 1);  // (numbers as they are)
         };
         const int mode = b.settings.game_mode;
         row("Commander Death:", mode >= 0 && mode < 3 ? kMode[mode] : "", 0x5A);
@@ -1629,9 +1641,9 @@ public:
             row("Difficulty:", d >= 0 && d < 3 ? kLevel[d] : "", 0xA2);
         }
         row("Map:", s.battle_name(), y);  // (the map info's name, +0xA14)
-        row("Starting Metal:", std::to_string(c.game_info.start_metal), y + 0x12);
-        row("Starting Energy:", std::to_string(c.game_info.start_energy), y + 0x24);
-        row("Max Units:", std::to_string(static_cast<unsigned>(b.settings.unit_limit)), y + 0x36);
+        row("Starting Metal:", std::to_string(c.game_info.start_metal), y + 0x12, true);
+        row("Starting Energy:", std::to_string(c.game_info.start_energy), y + 0x24, true);
+        row("Max Units:", std::to_string(static_cast<unsigned>(b.settings.unit_limit)), y + 0x36, true);
     }
     bool see_through() const override { return true; }
     const render::Palette* palette() const override { return nullptr; }
@@ -1671,7 +1683,7 @@ public:
         if (Widget* w = widget("SAVEGAME")) w->grayed = net || !fe.hooks().save_game_menu;
         if (Widget* w = widget("LOADGAME")) w->grayed = net || !fe.hooks().load_game_menu;
         // (a new caption takes a new quick key: its first letter no other button uses, the "t")
-        if (Widget* w = widget("MISSION")) set_caption(*w, "Settings");
+        if (Widget* w = widget("MISSION")) set_caption(*w, translate("Settings"));  // (translated, 0x460D92, and again by the caption)
         if (!opened_) {
             opened_ = true;
             // Opening it pauses the battle outside network games and holds the music.
@@ -1816,28 +1828,30 @@ public:
             w.active = false;  // (drawn by draw_over: its glyphs through light level 15)
             widgets_.push_back(w);
         };
-        label("Cost", 0x82, 0x20);
-        label("Energy", 0x8C, 0x2F);
-        label("Metal", 0x8C, 0x3E);
-        label("Build Time", 0x8C, 0x4D);
-        label("Statistics", 0x82, 0x5C);
-        label("Max Velocity", 0x8C, 0x6B);
-        label("Acceleration", 0x8C, 0x7A);
-        label("Turn Rate", 0x8C, 0x89);
+        // (The headings go through the translation, 0x49445F .. 0x494651; so do the units and
+        // "N/A" of the values, 0x48938F .. 0x4894CC.)
+        label(translate("Cost"), 0x82, 0x20);
+        label(translate("Energy"), 0x8C, 0x2F);
+        label(translate("Metal"), 0x8C, 0x3E);
+        label(translate("Build Time"), 0x8C, 0x4D);
+        label(translate("Statistics"), 0x82, 0x5C);
+        label(translate("Max Velocity"), 0x8C, 0x6B);
+        label(translate("Acceleration"), 0x8C, 0x7A);
+        label(translate("Turn Rate"), 0x8C, 0x89);
         auto ftol = [](double v) { return static_cast<int>(sim::x87::ftol32(v)); };
         std::vector<std::string> values = {"\n", std::to_string(ftol(t.cost_energy)), std::to_string(ftol(t.cost_metal)), std::to_string(t.build_time), "\n"};
         if (!t.mobile) {
-            values.insert(values.end(), {"N/A", "N/A", "N/A"});
+            values.insert(values.end(), {translate("N/A"), translate("N/A"), translate("N/A")});
         } else {
             char b[64];
             // (x87: 30 x (speed x 2^-16 as a float) x 0.4, printed from the double)
             const float v = static_cast<float>(static_cast<double>(t.max_velocity) * (1.0 / 65536.0));
-            std::snprintf(b, sizeof b, "%.1f %s ", static_cast<double>(30.0 * static_cast<double>(v) * 0.4), "m/s");
+            std::snprintf(b, sizeof b, "%.1f %s ", static_cast<double>(30.0 * static_cast<double>(v) * 0.4), translate("m/s").c_str());
             values.push_back(b);
             const float a = static_cast<float>(static_cast<double>(t.acceleration) * (1.0 / 65536.0));
-            std::snprintf(b, sizeof b, "%.2f %s", static_cast<double>(30.0 * static_cast<double>(a) * 0.4), "m/s/s");
+            std::snprintf(b, sizeof b, "%.2f %s", static_cast<double>(30.0 * static_cast<double>(a) * 0.4), translate("m/s/s").c_str());
             values.push_back(b);
-            std::snprintf(b, sizeof b, "%.0f %s", static_cast<double>(30.0 * t.turn_rate * 0.0054931640625), "deg/s");
+            std::snprintf(b, sizeof b, "%.0f %s", static_cast<double>(30.0 * t.turn_rate * 0.0054931640625), translate("deg/s").c_str());
             values.push_back(b);
         }
         int y = 0x20;
@@ -2593,7 +2607,7 @@ public:
             render::blit(out, out.bounds(), *camp_.glamour, camp_.glamour->x_offset, camp_.glamour->y_offset);
             if (glam_text_ && camp_.click_font) {
                 const client::Font& f = *camp_.click_font;
-                const std::string t = "Click to continue.";
+                const std::string t = translate("Click to continue.");  // (0x41FF1A)
                 const int x = (out.width - f.text_width(t)) >> 1, y = out.height - 20;
                 for (const auto& d : {std::array<int, 2>{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) client::draw_text(out, out.bounds(), f, t, x + d[0], y + d[1], hud_[0]);
                 client::draw_text(out, out.bounds(), f, t, x, y, hud_[15]);

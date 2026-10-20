@@ -198,8 +198,10 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     // name, kind 4, from the packet's sender: 0x453D40 case 0x1A); a player sent away (0x453010)
     // shows nothing.
     net_->on_disconnected = [this](int slot, int from) {
-        inner_->client().message("Player " + names_[static_cast<std::size_t>(slot)] + " has disconnected", GameClient::kChat,
-                                 static_cast<std::uint8_t>(from));
+        // (The format goes through the translation, 0x454FD6.)
+        char line[256];
+        std::snprintf(line, sizeof line, tr("Player %s has disconnected").c_str(), names_[static_cast<std::size_t>(slot)].c_str());
+        inner_->client().message(line, GameClient::kChat, static_cast<std::uint8_t>(from));
     };
 }
 

@@ -1212,9 +1212,10 @@ void GameClient::set_game_speed(int speed) {
     budget_.game_speed = budget_.effective_speed = static_cast<std::uint16_t>(speed);
     if (!changed) return;
     const int d = speed - 10;
-    char line[64];
-    if (d == 0) std::snprintf(line, sizeof line, "%s", "Game Speed Normal");
-    else std::snprintf(line, sizeof line, "%s  %c%d\n", "Game Speed", d > 0 ? '+' : ' ', d);
+    // (Both texts translated, 0x490E2D / 0x490E6D.)
+    char line[256];
+    if (d == 0) std::snprintf(line, sizeof line, "%s", tr("Game Speed Normal").c_str());
+    else std::snprintf(line, sizeof line, "%s  %c%d\n", tr("Game Speed").c_str(), d > 0 ? '+' : ' ', d);
     message(line);
 }
 

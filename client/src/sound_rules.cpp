@@ -3,6 +3,7 @@
 
 #include "client/sound_rules.h"
 
+#include "client/content.h"
 #include "client/sound_mixer.h"
 
 namespace client {
@@ -70,7 +71,7 @@ void NoticeQueue::queue(Host& h, const Levels& l, std::uint16_t unit, std::uint3
     e.tick = tick;
     e.unit = unit;
     e.priority = kNotices[id].priority;
-    if (kNotices[id].text) e.text = kNotices[id].text;
+    if (kNotices[id].text) e.text = tr(kNotices[id].text);  // (translated when queued: 0x47F7C5 / 0x47F89E)
     // Before the first entry of lower priority.
     std::size_t at = 0;
     while (at < entries_.size() && entries_[at].priority >= e.priority) ++at;

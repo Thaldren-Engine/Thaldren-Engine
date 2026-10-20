@@ -9,6 +9,7 @@
 #include "ta/sight_tables.h"
 #include "ta/tdf.h"
 #include "ta/tnt.h"
+#include "ta/translate.h"
 #include "sim/x87.h"
 
 namespace ta {
@@ -130,11 +131,14 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     }
     if (added) vfs.refresh_shadows();
     auto lb = std::make_unique<LoadedBattle>();
-    if (!vfs.read("maps\\" + req.map + ".tnt", lb->tnt)) {
+    // The map info's name (0x435DA0: a translated map name's base text when no file has the name)
+    // and its files by the localized path builder (maps-<language>\ first, 0x435430 kind 1).
+    const std::string map = map_file_name(vfs, req.map);
+    if (!vfs.read(vfs.virtual_path("maps", map, "tnt"), lb->tnt)) {
         error = "map not found: " + req.map;
         return nullptr;
     }
-    vfs.read("maps\\" + req.map + ".ota", lb->ota);
+    vfs.read(vfs.virtual_path("maps", map, "ota"), lb->ota);
     TntInfo info;
     if (!tnt_load_heights(lb->tnt, lb->heights, &info)) {
         error = "bad map file";

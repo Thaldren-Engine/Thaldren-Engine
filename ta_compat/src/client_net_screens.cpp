@@ -858,16 +858,21 @@ std::array<std::string, 11> game_columns(const GameEntry& g) {
     c[1] = std::to_string(g.options & 0xF) + "/" + std::to_string(g.max_players);
     std::string m = g.map.substr(0, 15);
     while (!m.empty() && m.back() == ' ') m.pop_back();
+    // In a language other than English the name is lowered and translated (0x44172F): an
+    // untranslated name shows in lower case (at most 127 characters).
+    const std::string& lang = Vfs::game_language();
+    if (!lang.empty() && stricmp_c(lang, "english") != 0) m = translate(lower_ascii(m)).substr(0, 0x7F);
     c[2] = m;
-    c[3] = g.major < 3 ? "VER!" : (g.options & 0x8000) ? "Lock" : (g.options & 0x10) ? "Play" : "Open";
+    // (The words go through the translation: 0x4417D3, 0x4417F2, 0x441924, 0x441964, 0x4419A3.)
+    c[3] = translate(g.major < 3 ? "VER!" : (g.options & 0x8000) ? "Lock" : (g.options & 0x10) ? "Play" : "Open");
     c[4] = std::to_string(g.memory);
     c[5] = std::to_string(g.metal * 100);
     c[6] = std::to_string(g.energy * 100);
     c[7] = std::to_string(g.ping);
     const int cm = g.options & 0x1800;
-    c[8] = cm == 0 ? "No" : cm == 0x800 ? "Yes" : "DM";
-    c[9] = (g.options & 0x100) ? "Blk" : "Gray";
-    c[10] = (g.options & 0x200) ? "No" : "Yes";
+    c[8] = translate(cm == 0 ? "No" : cm == 0x800 ? "Yes" : "DM");
+    c[9] = translate((g.options & 0x100) ? "Blk" : "Gray");
+    c[10] = translate((g.options & 0x200) ? "No" : "Yes");
     return c;
 }
 
@@ -1470,7 +1475,7 @@ std::string first_network_map(MenuArt& art) {
             if (upper(c->get_string("Type", 64, "")).find("NETWORK") != std::string::npos) network = true;
         const std::string name = file.substr(0, file.size() - 4);
         if (!network || art.vfs().size_or_zero("maps\\" + name + ".tnt") == 0) continue;
-        first = name;
+        first = translate_lowered(name);  // (the list's shown name, 0x434DF9)
         break;
     }
     return first;
@@ -2347,7 +2352,9 @@ protected:
                 m->text = translate("NOT SELECTED");  // (set through 0x4A0BF0: translated)
                 map_red_ = true;
             } else {
-                m->text = translate(st_.map);
+                // (the map info's shown name, 0x435C20: the lowered name's translation when there
+                // is one, 0x435A20; set through 0x4A0BF0: translated again)
+                m->text = translate(translate_lowered(st_.map));
                 map_red_ = !st_.have_map && ((clock_ / 30) & 1) != 0;
             }
         }
@@ -2486,7 +2493,7 @@ protected:
     int memory_needed() {
         if (st_.map != size_map_) {
             size_map_ = st_.map;
-            map_size_ = static_cast<std::int64_t>(art_.vfs().size_or_zero("maps\\" + st_.map + ".tnt"));
+            map_size_ = static_cast<std::int64_t>(art_.vfs().size_or_zero(art_.vfs().virtual_path("maps", map_file_name(art_.vfs(), st_.map), "tnt")));
         }
         const std::int64_t s = map_size_;
         return s < 0x3E6666 ? 16 : s < 0x600000 ? 24 : s < 0x800000 ? 32 : s < 0xA00000 ? 48 : s < 0xC00000 ? 64 : 128;
