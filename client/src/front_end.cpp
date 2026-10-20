@@ -328,10 +328,9 @@ public:
                 end_battle(o);
             }
         }
-        for (auto& sc : stack_)
-            if (sc) {
-                if (&sc == &stack_.back()) sc->frame(*this, now);
-            }
+        // The top screen's pass (a screen it pushes or uncovers has its first pass next time; the
+        // stack may change during the call).
+        if (!stack_.empty() && stack_.back()) stack_.back()->frame(*this, now);
         if (s_.music) s_.music->update(ticks, audio_);
     }
 
