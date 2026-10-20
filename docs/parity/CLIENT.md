@@ -44,10 +44,10 @@ summary at the end gives the counts after this round.
 | 1.20 | Camera follow (tracking eases half the distance a step, 320 at most; F3 / `n` / view jumps through the eased target) | `0x41CA10`, `0x41C7C0`, `0x41C8E0` | BUILT+VERIFIED | frame_harness `--camera`: 600 random states, two maps and screen sizes, identical (2026-10-20) |
 | 1.21 | Screen shake | `0x41C6F0` (in the camera stage) | BUILT-UNVERIFIED | the simulation's offsets (flow_harness) added in the camera stage's order (eased, shaken, clamped) |
 | 1.22 | Gamma (option slider, `+gamma`) | display palette | BUILT-UNVERIFIED | display palette x factor (min 255, truncated) at presentation only (frames, screenshots, films keep the palette); factor 0.5 + n/24 from the setting at battle load and after the options screens, n x 0.1 from +gamma; as read in 0x4BA200 / 0x45BCC0 / 0x417290, not compared (the original's output goes to DirectDraw) |
-| 1.23 | `+contour` lines | `0x418310` → `0x4181D0` / `0x417F60` | MISSING | the command stores its words only |
-| 1.24 | `+light` (light direction for the shaded path) | option table | MISSING | |
-| 1.25 | ShowRanges (`+showranges`, GS+0x391BF) | read by the drawing | MISSING | switch kept, nothing drawn |
-| 1.26 | Debug grid views (F11 debug mode, GS+0x14280 1–4), frame-rate line, profile bars | `0x418310`, `0x46B900` | NOT-APPLICABLE | debug-only (need the "+Now Film…" switch); not player features |
+| 1.23 | `+contour` lines | `0x418310` → `0x4181D0` / `0x417F60` | BUILT-UNVERIFIED | as read (RE_MEMORY "Console commands, the rest"); smoke: ta_play headless, +contour 1024 on Anteer Strait: lines on the hills, none on flat ground |
+| 1.24 | `+light` (light direction for the shaded path) | `0x4166C0` → `0x4597F0`, read by `0x459C70` | BUILT-UNVERIFIED | the lit path's vector (render::LookTables::light, default -0.8, 1, 0.25), n x 0.01 each; the look cache is made again |
+| 1.25 | ShowRanges (`+showranges`, GS+0x391BF) | `0x4390A0`, `0x439740`, rings `0x438EA0` | BUILT-UNVERIFIED | the queued-order view's labelled rings (every range of the type, weapon ranges, and at attack targets area of effect / coverage / attack length); smoke screenshot with Shift held |
+| 1.26 | Debug grid views (F11 debug mode, GS+0x14280 1–4), frame-rate line | `0x418310` | NOT-APPLICABLE | debug-only (need the "+Now Film…" switch); not player features. The `+profile` bars (`0x46B900`) are built (BUILT-UNVERIFIED, RE_MEMORY "Console commands, the rest") |
 | 1.27 | BPS display (`+bps`) | `0x468380` | BUILT+VERIFIED | frame_harness `--hud` bps check: 12 scenes (640 x 480, 1024 x 768), rates none / small / past 5600 / huge, 0 differing pixels; byte totals from NetBattle (messages to and from the transport) |
 | 1.28 | Paused sign, victory / defeat signs | frame | BUILT-UNVERIFIED | `hud.cpp` |
 | 1.29 | Network "waiting" sign (GS+0x38A51 bit 1 frame at (w − 16, h − 80)) | frame | BUILT+VERIFIED | the step budget's lag throttle (a remote player 900+ steps behind) shows the hourglass pointer's first frame; frame_harness `--hud` waiting check: 5 scenes, two sizes, 0 differing pixels |
@@ -98,7 +98,7 @@ summary at the end gives the counts after this round.
 | 2.39 | Shift+F1 / Shift+F2 debug unit picks (GS+0x391B3 / 0x391B9) | `0x495E90` | NOT-APPLICABLE | debug values nothing in a normal game reads |
 | 2.40 | Ctrl+F10 film (debug switch) and `+film` / `+filmspeed` | `0x495E90`, `0x496790`, `0x4CB170` | BUILT-UNVERIFIED | as read (start / stop, MOVIEnnn numbering, first frame without the console, a frame each 30 / speed ticks, the budget clock restarted); settings saved; smoke: ta_play headless, +filmspeed 15, 60 ticks filmed: 32 frames (FRAM0001..0032); pictures by the verified PCX writer |
 | 2.41 | Ctrl+F9 screenshot: `<game dir>\screenshots\SHOTnnnn.pcx` (next number after the highest present), 8-bit RLE PCX with the display palette, in every state of the program | `0x499890`, `0x4CB170`, `0x4CAC40` | BUILT+VERIFIED | writer: frame_harness `--pcx 30`, 30 of 30 identical; folder and numbering as read; smoke: SHOT0001/0002 |
-| 2.42 | `+makeposter` | cheat table | MISSING | |
+| 2.42 | `+makeposter` | `0x417600` → `0x495A30` | BUILT-UNVERIFIED | size / corner rules as read; tiles of a whole battle frame each (sight and mapping off, sight rebuilt clearing before and after); smoke: BIGSHOT0001.pcx 800 x 600; the tile loop's exact steps not compared |
 | 2.43 | Mouse: left/right in interface types 0 and 1, minimap orders, Shift-kept modes | `0x498F70`, `0x499100`, `0x498D00` | BUILT+VERIFIED | gui_harness pointer events, frame_harness |
 | 2.44 | Middle drag and Ctrl+right drag scroll | `0x41CC60`, `0x41CD50` | BUILT-UNVERIFIED | re-read: only Ctrl+right over the view in interface type 0 drags (the client's middle-button drag removed: the original has none); pointer hidden, put in the screen's centre, a pass's travel / 4 cells then back to the centre (rest dropped), ends when the right button is up with the pointer back where it was; smoke: ta_play headless, the view moved 7 / 5 then 2 / 2 cells as computed, pointer restored |
 | 2.45 | Edge and arrow scrolling (arrows not while the chat line is open) | `0x41CE90` | BUILT-UNVERIFIED | arrows ignored under the chat line |
@@ -126,16 +126,16 @@ summary at the end gives the counts after this round.
 
 | # | Command | Status | Note |
 |---|---------|--------|------|
-| 4.1 | +contour | MISSING | see 1.23 |
+| 4.1 | +contour | BUILT-UNVERIFIED | see 1.23 |
 | 4.2 | +gamma | BUILT-UNVERIFIED | see 1.22 |
-| 4.3 | +light | MISSING | see 1.24 |
-| 4.4 | +makeposter | MISSING | see 2.42 |
+| 4.3 | +light | BUILT-UNVERIFIED | see 1.24 |
+| 4.4 | +makeposter | BUILT-UNVERIFIED | see 2.42 |
 | 4.5 | +film / +filmspeed | BUILT-UNVERIFIED | see 2.40 (+film sets the image output folder, +filmspeed the rate, both saved) |
 | 4.6 | +cdplay / +cdstop / +musicmode | BUILT-UNVERIFIED | see 3.8 |
-| 4.7 | +showranges | MISSING | see 1.25 |
+| 4.7 | +showranges | BUILT-UNVERIFIED | see 1.25 |
 | 4.8 | +bps | BUILT+VERIFIED | see 1.27 (the command sets the client option) |
 | 4.9 | +screenchat, +clock, +noshake, +dither, +shading, +antialias, +shadow, +tshadow, +fshadow | BUILT-UNVERIFIED | switches the client reads (noshake waits for 1.21) |
-| 4.10 | Settings the original saves after a command (DitheredFog, Shading, …) | PARTIAL | not written to the settings file |
+| 4.10 | Settings the original saves after a command (DitheredFog, Shading, …) | BUILT-UNVERIFIED | the commands that call `0x430F00` (scrollspeed, iface, sound3d, shading, antialias, shadow, dither, switchalt toggle, screenchat, gamma, clock, los, mapping, film, filmspeed) write the battle's settings by their registry names |
 
 ## 5. Work done this round
 
@@ -143,9 +143,7 @@ summary at the end gives the counts after this round.
 
 ## 6. Summary
 
-Counts after this round (2026-10-20): 99 items (2.50 added) — BUILT+VERIFIED 36, BUILT-UNVERIFIED 43,
-PARTIAL 7, MISSING 9, NOT-APPLICABLE 4 (start: 26 / 17 / 18 / 33 / 4 of 98). Left open: +contour, +light,
-ShowRanges, +makeposter (1.23-1.25, 2.42, 4.1, 4.3, 4.4, 4.7), the chat recipient panel TALK2.GUI (2.9),
+Counts after this round (2026-10-20, the + commands added): 99 items (2.50 added) — BUILT+VERIFIED 36, BUILT-UNVERIFIED 52,
+PARTIAL 6, MISSING 1, NOT-APPLICABLE 4 (start: 26 / 17 / 18 / 33 / 4 of 98). Left open: the chat recipient panel TALK2.GUI (2.9),
 the campaign's in-battle briefing page (2.15), air shadows, depth-plane water clipping, hidden
-features, plasma sizes (1.6, 1.7, 1.10, 1.11) and settings saved
-after some commands (4.10).
+features, plasma sizes (1.6, 1.7, 1.10, 1.11).

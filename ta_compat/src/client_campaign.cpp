@@ -1355,6 +1355,25 @@ void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const st
         }
         return std::make_unique<SaveGamesScreen>(art, save_dir, s, false, screen_under(fe, s));
     };
+    hooks.save_game_command = [save_dir](client::BattleSession& s, const std::string& name) {
+        // 0x417430: savegame\<name>.sav (the folder made first) with 0x4326B0's summary
+        // description "Generic Game Description" and the game id 666 in place of the time.
+        SkirmishSession* sk = dynamic_cast<SkirmishSession*>(&s);
+        CampaignProgress* progress = nullptr;
+        if (auto* ms = dynamic_cast<MissionSession*>(&s)) {
+            sk = &ms->inner();
+            progress = &ms->progress();
+        }
+        if (!sk) return;
+        SaveContext c = battle_save_context(*sk, progress, "Generic Game Description");
+        c.game_id = 0x29A;
+        std::vector<std::uint8_t> bytes;
+        write_save_file(sk->world().loaded(), c, bytes);
+        std::error_code ec;
+        std::filesystem::create_directories(save_dir, ec);
+        std::ofstream o(std::filesystem::path(save_dir) / (name + ".sav"), std::ios::binary);
+        o.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    };
     hooks.save_game_menu = [&art, save_dir](client::FrontEnd& fe, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         return std::make_unique<SaveGamesScreen>(art, save_dir, &s, true, screen_under(fe, &s));
     };

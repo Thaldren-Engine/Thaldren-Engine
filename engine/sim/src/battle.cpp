@@ -139,8 +139,8 @@ void Battle::sync_settings() {
         unit_mission_types_[k] = types[k].unit_missions;
         tick_types_[k] = types[k].tick;
     }
-    unit_mission_env_.map_width = map.width * 16 - 32;
-    unit_mission_env_.map_height = map.height * 16 - 128;
+    unit_mission_env_.map_width = scroll_width();
+    unit_mission_env_.map_height = scroll_height();
     unit_mission_env_.sea_level = s.sea_level;
     unit_mission_env_.gravity = s.map_gravity;  // the bomb run reads the map info's raw value
     unit_mission_env_.air_repair_patrol_site_address = s.air_repair_patrol_site_address;
@@ -282,6 +282,8 @@ void Battle::sync_ai() {
     ai_env_.difficulty = settings.ai_difficulty;
     ai_env_.map_width = map.width;
     ai_env_.map_height = map.height;
+    ai_env_.scroll_width = scroll_width();
+    ai_env_.scroll_height = scroll_height();
     ai_env_.surface_metal = settings.surface_metal;
     ai_env_.provider = settings.provider;
     ai_env_.units_per_player = settings.units_per_player;
@@ -606,17 +608,26 @@ void Battle::free_order(MissionOrder* order) {
 }
 
 void Battle::step() {
-    // Game_RunSimulationStep 0x495490, one pending step (docs/RE_MEMORY.md "Battle step").
+    // Game_RunSimulationStep 0x495490, one pending step (docs/RE_MEMORY.md "Battle step"). The
+    // profile marks follow the original's timing categories (presentation only).
+    auto mark = [this](int category) {
+        if (profile_mark) profile_mark(category);
+    };
     advance_tick();                  // 1
     if (settings.net_game) outside_.network_input();  // 2
+    mark(0);
     step_units_and_projectiles();    // 3, 4
+    mark(1);
     step_effects();                  // 5
+    mark(8);
     players_stage();                 // 6
+    mark(2);
     step_features();                 // 7
     // 8: texture animation cursors (presentation), wind, meteors, camera (its shake decay).
     step_wind();
     step_meteor_shower();
     step_camera_shake(shake, crt_rand);
+    mark(8);
     {                                // 9: the effect sweep, lists 0-9 in order (6: nano streams)
         FxContext c = fx_context();
         step_effect_lists(c, 0, 6);
@@ -624,11 +635,22 @@ void Battle::step() {
         c.nano_streams = static_cast<std::int32_t>(nano.streams.size());
         step_effect_lists(c, 7, EffectLists::kLists);
     }
+    mark(6);
     // The minimap blink counter (presentation) runs here.
     if (settings.net_game && settings.net_frame_timing) {  // 10
         auto_share_resources();
         outside_.network_flush();
     }
+    mark(0);
+}
+
+void Battle::set_scroll_edges(std::int32_t x, std::int32_t z) {
+    scroll_edge_x_ = x;
+    scroll_edge_z_ = z;
+    unit_mission_env_.map_width = scroll_width();
+    unit_mission_env_.map_height = scroll_height();
+    ai_env_.scroll_width = scroll_width();
+    ai_env_.scroll_height = scroll_height();
 }
 
 void Battle::step_meteor_shower() {

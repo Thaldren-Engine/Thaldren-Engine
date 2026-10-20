@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -328,6 +329,15 @@ public:
     // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
     void players_stage();
     Targeting& targeting() { return targeting_; }
+    // The view's scroll extent (GS+0x1422B / +0x1422F): the map's size in world units less the
+    // edge margins, 32 across and 128 down ("+edge x z" sets them, 0x416730). Besides the view,
+    // the aircraft missions and the computer player's constructors read it as the map's size.
+    void set_scroll_edges(std::int32_t x, std::int32_t z);
+    std::int32_t scroll_width() const { return static_cast<std::int32_t>(static_cast<std::uint32_t>(map.width) * 16u - static_cast<std::uint32_t>(scroll_edge_x_)); }
+    std::int32_t scroll_height() const { return static_cast<std::int32_t>(static_cast<std::uint32_t>(map.height) * 16u - static_cast<std::uint32_t>(scroll_edge_z_)); }
+    // Presentation only (the "+profile" panel): called after the step's stages with the original's
+    // timing category (0 network, 1 units, 2 logic, 6 effects, 7 weapons, 8 misc).
+    std::function<void(int category)> profile_mark;
     // Economy setup for a player at battle start (after its slot's state is set): everything
     // zero, its first 30-step turn at the current step (0x464700's economy part).
     void init_player_economy(int player);
@@ -880,6 +890,7 @@ private:
     std::vector<UnitMissionTypeInfo> unit_mission_types_;  // by type index
     std::vector<UnitTickTypeInfo> tick_types_;             // by type index (copies, for lookups by index)
     UnitMissionEnvironment unit_mission_env_;
+    std::int32_t scroll_edge_x_ = 32, scroll_edge_z_ = 128;
     UnitMissions unit_missions_;
 };
 

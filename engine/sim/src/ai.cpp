@@ -246,7 +246,7 @@ void run_constructors(Ai& ai, AiController& c, AiBehaviour& b) {
         bool ok = ai_find_site(ai, c.side, near, type, site);
         if (!ai.fault.empty()) return;
         if (capture) {
-            const i32 reach = wshl(((world_width(ai) - 0x20) + (world_height(ai) - 0x80)) / 3, 16);
+            const i32 reach = wshl((ai.env.scroll_width + ai.env.scroll_height) / 3, 16);
             const i32 d = length3(wsub(site[0], anchor[0]), 0, wsub(site[2], anchor[2]));
             anchor[1] = site[1];
             if (d > reach) ok = false;

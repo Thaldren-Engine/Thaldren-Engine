@@ -163,7 +163,7 @@ const LookFrame& cached_unit_sprite(const BattleScene& s, const LookUnit& lu, st
                       e.build_left_bits == build_bits && e.options.shadows == o.shadows && e.options.unit_shadows == o.unit_shadows &&
                       e.options.feature_shadows == o.feature_shadows && e.options.antialias == o.antialias &&
                       e.options.shading == o.shading && e.tables.mix == s.tables.mix && e.tables.shade == s.tables.shade &&
-                      e.tables.water == s.tables.water;
+                      e.tables.water == s.tables.water && e.tables.light == s.tables.light;
     if (same) return e.sprite;
     e.sprite = build_unit_sprite(lu, false, 1, s.options, s.tables);
     e.valid = true;

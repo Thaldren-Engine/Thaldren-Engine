@@ -104,6 +104,64 @@ void GameClient::toggle_film() {
     film_next_tick_ = b_.game_tick();
 }
 
+std::string GameClient::make_poster(int width, int height, bool all) {
+    // 0x417600: the size (default 3200 x 2400; "all": the scroll extent) is at least the view's
+    // size in whole cells and at most the scroll extent; its corner = the view's centre less half
+    // the size, at least 0 and at most the extent less the size. 0x495A30 then draws it in square
+    // tiles of the view's height in cells x 16 - 1 pixels, each a whole battle frame (the frame's
+    // side effects with it) at that scroll, the paused sign, the clock and the console off,
+    // copies the view's part into the picture and writes it to <image folder>\screenshots as
+    // BIGSHOTnnnn.pcx; then the view goes back and the step clock restarts.
+    const int sw = scroll_width(), sh = scroll_height();
+    const int vwc = (opt_.width - 128) / 16, vhc = (opt_.height - 64) / 16;
+    int w = all ? sw : width, h = all ? sh : height;
+    if (w <= vwc * 16) w = vwc * 16;
+    if (sw <= w) w = sw;
+    if (h <= vhc * 16) h = vhc * 16;
+    if (sh <= h) h = sh;
+    int x = scroll_x_ - w / 2 + vwc * 8;
+    int y = scroll_y_ - h / 2 + vhc * 8;
+    if (x < 1) x = 0;
+    if (sw - w <= x) x = sw - w;
+    if (y < 1) y = 0;
+    if (sh - h <= y) y = sh - h;
+    if (w <= 0 || h <= 0) return std::string();
+    const int tile = vhc * 16 - 1;
+    if (tile <= 0) return std::string();
+
+    const int keep_x = scroll_x_, keep_y = scroll_y_;
+    const bool keep_paused = budget_.paused, keep_clock = opt_.clock, keep_hidden = pointer_hidden_;
+    budget_.paused = false;
+    opt_.clock = false;
+    no_console_ = true;
+    pointer_hidden_ = true;
+    render::Image8 poster(w, h, 0);
+    const render::ClipRect view = view_rect();
+    for (int ty = 0; ty < h; ty += tile)
+        for (int tx = 0; tx < w; tx += tile) {
+            set_scroll(x + tx, y + ty);
+            const render::Image8 frame = render::execute(draw(), c_.blend);
+            const int ex = std::min(tx + tile, w), ey = std::min(ty + tile, h);
+            for (int py = ty; py < ey; ++py) {
+                const int fy = y + py - scroll_y_ + view.y0;
+                if (fy < view.y0 || fy > view.y1 || fy >= frame.height) continue;
+                for (int px = tx; px < ex; ++px) {
+                    const int fx = x + px - scroll_x_ + view.x0;
+                    if (fx < view.x0 || fx > view.x1 || fx >= frame.width) continue;
+                    poster.row(py)[px] = frame.pixels[static_cast<std::size_t>(fy) * static_cast<std::size_t>(frame.width) + static_cast<std::size_t>(fx)];
+                }
+            }
+        }
+    budget_.paused = keep_paused;
+    opt_.clock = keep_clock;
+    no_console_ = false;
+    pointer_hidden_ = keep_hidden;
+    set_scroll(keep_x, keep_y);
+    budget_restart_ = true;
+    const std::string dir = (opt_.image_dir.empty() ? std::string(".") : opt_.image_dir) + "\\screenshots";
+    return save_numbered_picture(dir, "BIGSHOT", poster, c_.palette);
+}
+
 void GameClient::film_written(std::uint32_t now_ms) {
     // (the battle loop then restarts the step budget's clock: the writing's time is not caught up)
     film_due_ = false;

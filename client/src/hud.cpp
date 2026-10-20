@@ -82,6 +82,7 @@ std::string fmti(const char* f, long long v) {
 // The bars' text routine: a line is drawn only when its whole box (x .. x + width, y .. y +
 // the font's height) lies inside the frame; otherwise nothing of it.
 void bar_text(render::Image8& o, const Font& f, const std::string& s, int x, int y, int colour) {
+    set_last_text_colour(static_cast<std::uint8_t>(colour));
     const int w = f.text_width(s);
     if (x < 0 || y < 0 || x + w > o.width - 1 || y + f.height > o.height - 1) return;
     draw_text(o, o.bounds(), f, s, x, y, colour);
@@ -168,6 +169,7 @@ render::DrawList GameClient::draw() {
     if (c_.fill_scene) c_.fill_scene(scene, viewed_player(), frame_counter_);
     if (!opt_.fog) scene.fog = nullptr;
     scene.dithered_fog = opt_.dithered_fog;
+    scene.tables.light = opt_.light;
     scene.options.shading = opt_.shading;
     scene.options.antialias = opt_.antialias;
     scene.options.shadows = opt_.shadows;
@@ -177,7 +179,8 @@ render::DrawList GameClient::draw() {
     // The top bar's art is drawn right after the terrain (its pieces may reach into the view's
     // first rows; units, shots and effects draw over them there): its own piece at x 129, then
     // (wider screens) the bottom bar's piece repeated.
-    scene.after_terrain = [this, w, h](render::DrawList& out) {
+    scene.after_terrain = [this, w, h, &scene](render::DrawList& out) {
+        draw_contours(out, scene.camera);  // (0x418310, right after the terrain)
         if (!side_) return;
         const render::ClipRect all{0, 0, w - 1, bar_redrawn_ ? h - 1 : 31};
         for (int x = 129; side_->panel_top && x < w;) {
@@ -307,6 +310,12 @@ render::DrawList GameClient::draw() {
         layer.pixels = std::move(o.pixels);
     }
     list.blit(list.keep(std::move(layer)), 0, 0, screen, false);
+
+    // +profile: the timing panel (after the interface, Render_DrawBattleFrame's end).
+    if (opt_.profile) {
+        draw_profile(list);
+        profile_mark(4);
+    }
 
     // The pointer: the look set by the last pass at the frame its animation reached (frame
     // times from the art, counted down by the wall clock; see advance_pointer).

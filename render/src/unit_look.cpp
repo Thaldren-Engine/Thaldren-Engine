@@ -73,7 +73,7 @@ V3 normalize(const V3& v) {
 
 // Light level of each vertex of a piece: the mean of the unit normals of the faces using it,
 // dotted with the light direction, times 5, truncated, low 5 bits; unshaded pieces get 15.
-std::vector<int> vertex_lights(const ModelPiece& piece, const sim::PosePiece& pc) {
+std::vector<int> vertex_lights(const ModelPiece& piece, const sim::PosePiece& pc, const std::array<float, 3>& lv) {
     const std::size_t nv = pc.points.size() / 3;
     std::vector<int> light(nv, 15);
     if (!(pc.flags & sim::pose_flags::kShaded)) return light;
@@ -97,16 +97,13 @@ std::vector<int> vertex_lights(const ModelPiece& piece, const sim::PosePiece& pc
             ++count[i];
         }
     }
-    float c0;
-    const std::uint32_t c0_bits = 0xBF4CCCCDu;  // -0.8f
-    std::memcpy(&c0, &c0_bits, 4);
     for (std::size_t i = 0; i < nv; ++i) {
         V3 n = sum[i];
         if (count[i]) {
             const double d = count[i];
             n = {static_cast<float>(n.x / d), static_cast<float>(n.y / d), static_cast<float>(n.z / d)};
         }
-        const double dot = (static_cast<double>(n.x) * c0 + static_cast<double>(n.y) * 1.0) + static_cast<double>(n.z) * 0.25;
+        const double dot = (static_cast<double>(n.x) * lv[0] + static_cast<double>(n.y) * lv[1]) + static_cast<double>(n.z) * lv[2];
         light[i] = sim::x87::ftol32(dot * 5.0) & 0x1F;
     }
     return light;
@@ -148,7 +145,7 @@ void rasterize_unit_pieces(LookFrame& f, const LookUnit& u, int which, bool lit,
         if (pc.node < 0 || static_cast<std::size_t>(pc.node) >= u.model->pieces.size()) continue;
         const ModelPiece& piece = u.model->pieces[static_cast<std::size_t>(pc.node)];
         std::vector<int> lights;
-        if (lit) lights = vertex_lights(piece, pc);
+        if (lit) lights = vertex_lights(piece, pc, tables.light);
         pts.clear();
         for (std::size_t v = 0; v + 2 < pc.points.size(); v += 3) {
             const int x = hi16(pc.points[v]) * k;

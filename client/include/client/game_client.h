@@ -71,12 +71,18 @@ struct ClientOptions {
     int view = -1;                   // the viewed player (-1: the human player)
     bool dithered_fog = false;       // fog drawn as a checkerboard instead of greyed (setting DitheredFog)
     bool radar_everything = false;   // the minimap shows every unit (cheat)
-    bool show_ranges = false;        // weapon range circles (not drawn yet)
+    bool show_ranges = false;        // +showranges (GS+0x391BF): the queued-order view's labelled range rings
     bool scoreboard = false;         // F4: the kills and losses panel stays out (visual option bit 0x80)
     bool bps = false;                // +bps: the network send / receive rates over the view (GS+0x391C3)
     std::string image_dir;           // the image output folder (GS+0x38A53: films; screenshots under it)
     int film_speed = 10;             // film frames a second of game time ("Movie Output Rate", GS+0x38C57)
     bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
+    // "+light x y z" (0x4166C0 -> 0x4597F0): the lit path's light direction, each n x 0.01.
+    std::array<float, 3> light{-0.8f, 1.0f, 0.25f};
+    // "+contour n m" (0x416DB0, 0x511DD0 / 0x511DD4): contour lines over the terrain every n
+    // height units (x 256), offset by m; 0: none.
+    std::int32_t contour_interval = 0, contour_offset = 0;
+    bool profile = false;            // "+profile" (GS+0x38DD5): the timing panel
 };
 
 // The minimap's place in its 126 x 126 square for a map whose scroll extent is sw x sh
@@ -112,6 +118,13 @@ public:
         std::function<std::int32_t()> remote_lag;
         std::function<void(bool)> send_pause;
         std::function<void(int)> send_speed;
+        // "+compression" (GS+0x4ED: nonzero = outgoing compression off) and "+drop n" (GS+0x37F2F
+        // bit 0: no time-out drops).
+        std::function<void(bool off)> set_compression_off;
+        std::function<void(bool off)> set_timeout_off;
+        // The share commands: the local player's side record flag word (+0x97) toggled by `bit`
+        // and the side record announced (0x450F90).
+        std::function<void(std::uint8_t bit)> toggle_share_flag;
     };
     NetworkHooks network;
     // The chat line (Enter): a typed line goes here when Enter is pressed again.
@@ -125,6 +138,11 @@ public:
     std::function<void(const char* name, int value)> save_setting;
     std::function<void(const char* name, const std::string& value)> save_text_setting;
     std::function<void(int n)> on_gamma_command;  // "+gamma n" (the display's gamma, 0x417290)
+    // The settings writer (0x430F00) after a command that saves: every setting the battle holds.
+    std::function<void()> save_settings;
+    // "+save <name>" (0x417430): the battle saved as savegame\<name>.sav (0x4326B0 with the
+    // description "Generic Game Description" and the game id 666).
+    std::function<void(const std::string& name)> save_game_command;
     // The music commands (0x4167F0 "+cdplay n", 0x416810 "+cdstop", 0x4175E0 "+musicmode n"):
     // what = "play", "stop" or "mode".
     std::function<void(const char* what, int n)> music_command;
@@ -139,6 +157,17 @@ public:
     int film_number() const { return film_number_; }
     void film_written(std::uint32_t now_ms);
     void toggle_film();
+    // "+makeposter [w h | all]" (0x417600 -> 0x495A30): the map around the view's centre drawn
+    // whole at w x h (default 3200 x 2400; "all": the scroll extent; at least the view, at most
+    // the extent) with line of sight and mapping off, written to <image folder>\screenshots as
+    // BIGSHOTnnnn.pcx. Returns the file written ("" when none).
+    std::string make_poster(int width, int height, bool all);
+    // "+netstats" (0x417570): the sent / received totals start again from 0 (the rates' last
+    // totals are kept, so the next rate update wraps once, as in the original).
+    void reset_net_stats();
+    // "+bigbrother" (0x4174E0): on, every 90 steps without Shift held the viewed player's next
+    // selectable unit is selected (0x48D790) and followed (0x41C2E0); off, the following ends.
+    void toggle_big_brother();
     // The 'h' key in a network game: the share screen (0x4936F0).
     std::function<void()> on_share_key;
     // F1 (0x4942E0): the unit information screen for a unit type (the build button under the
@@ -287,8 +316,10 @@ public:
     BpsState bps_state() const { return bps_; }
     void set_bps_state(const BpsState& s) { bps_ = s; }
     void set_net_totals(std::uint32_t sent, std::uint32_t received) {
-        bps_.sent = sent;
-        bps_.received = received;
+        net_raw_sent_ = sent;
+        net_raw_received_ = received;
+        bps_.sent = sent - net_base_sent_;
+        bps_.received = received - net_base_received_;
     }
     // Tests: one camera stage (0x41CA10) from the given view, target and followed unit (0: none),
     // with the battle's shake offsets as they are; returns the state after it.
@@ -491,12 +522,26 @@ private:
     void panels_frame(std::uint32_t now_ms);
     void draw_panels(render::DrawList& list);
     BpsState bps_;
+    std::uint32_t net_base_sent_ = 0, net_base_received_ = 0, net_raw_sent_ = 0, net_raw_received_ = 0;
     void draw_bps(render::DrawList& list);
+    // BigBrother (GS+0x14373 bit 1, countdown GS+0x14371).
+    bool big_brother_ = false;
+    std::int16_t big_brother_countdown_ = 0;
+    void big_brother_step();
+    void select_next_viewed_unit();  // 0x48D790
+    // +profile: the nine categories' wall-clock milliseconds of the last pass and the running ones.
+    std::array<std::uint32_t, 9> profile_acc_{}, profile_shown_{};
+    std::uint32_t profile_total_ = 1, profile_last_ = 0;
+    void profile_mark(int category);
+    void draw_profile(render::DrawList& list);
+    // +contour: the lines over the terrain (0x418310 -> 0x4181D0 / 0x417F60).
+    void draw_contours(render::DrawList& out, const render::Camera& camera) const;
     int film_number_ = 0;              // GS+0x38C53: the film's MOVIEnnn number, 0 while not filming
     std::string film_folder_;
     std::uint32_t film_next_tick_ = 0;  // GS+0x38C5B
     bool film_due_ = false;
     bool no_console_ = false;           // the frame drawn without the console (the film's first frame)
+    bool budget_restart_ = false;       // the step budget's clock restarts at the next pass (a poster's time is not caught up)
     // The shade and light tables as mixing tables (made once; the draw list keeps them by address).
     render::BlendTable shade8_, light31_, light20_;
     // 0x4A50E0 with a picture font: characters from 0x20 that have a glyph, each drawn at its

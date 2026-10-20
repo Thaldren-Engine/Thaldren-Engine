@@ -349,4 +349,33 @@ void GameClient::draw_bps(render::DrawList& list) {
     list.blit(list.keep(keyed_layer(a, bb)), 0, 0, view, false);
 }
 
+void GameClient::draw_profile(render::DrawList& list) {
+    // Render_DrawBattleFrame's end with GS+0x38DD5 set: per category n (0x46B900; Network, Units,
+    // Logic, Render Static, Render Stuff, Render Fog, SFX, Weapon, Misc) a line in colour 255 from
+    // (width - 290, 38) to (639, 9 x the font's height + 41) (meant as a box; the same line nine
+    // times), the name at (width - 85, n x height + 40) in the text colour set last, and a bar
+    // from width - 90 - 2 x (its share of the last pass's milliseconds, in percent) to width - 90,
+    // one font height tall, in colour n + 1.
+    if (!side_ || !side_->font) return;
+    static const char* const kNames[9] = {"Network", "Units", "Logic", "Render Static", "Render Stuff", "Render Fog", "SFX", "Weapon", "Misc"};
+    const Font& f = *side_->font;
+    const int w = opt_.width, h = opt_.height;
+    const render::ClipRect screen{0, 0, w - 1, h - 1};
+    const std::uint8_t text = last_text_colour();
+    render::Image8 a(w, h, 0), bb(w, h, 255);
+    const int fh = f.height;
+    for (int n = 0; n < 9; ++n) {
+        const int y = fh * n + 0x28;
+        const std::int32_t pct = static_cast<std::int32_t>(profile_shown_[static_cast<std::size_t>(n)] * 100u) /
+                                 static_cast<std::int32_t>(profile_total_);
+        for (render::Image8* o : {&a, &bb}) {
+            render::draw_line(*o, screen, w - 0x122, 0x26, 0x27F, fh * 9 + 0x29, 0xFF);
+            const int tw = f.text_width(kNames[n]);
+            if (!(w - 0x55 < 0 || y < 0 || w - 0x55 + tw > w - 1 || y + fh > h - 1)) draw_text(*o, o->bounds(), f, kNames[n], w - 0x55, y, text);
+            fill_rect(*o, screen, w - 0x5A + pct * -2, y, w - 0x5A, y + fh, static_cast<std::uint8_t>(n + 1));
+        }
+    }
+    list.blit(list.keep(keyed_layer(a, bb)), 0, 0, screen, false);
+}
+
 }  // namespace client

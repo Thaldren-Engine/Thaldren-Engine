@@ -40,7 +40,8 @@ struct ConsoleState {
     bool screen_chat = true;              // chat shown on the screen (setting screenchat)
     bool sing = false;                    // units' notices replaced by the two "sing" sounds
     bool big_brother = false;             // the view follows the tracked unit
-    bool bps = false, compression = true; // network statistics / outgoing compression
+    bool bps = false;                     // network statistics
+    bool compression_off = false;         // GS+0x4ED: outgoing packet compression switched off
     bool profile = false;                 // the debug profiler display
     std::int32_t contour[2] = {0, 0};     // contour line display (interval, shade)
     std::int32_t gamma = 12;

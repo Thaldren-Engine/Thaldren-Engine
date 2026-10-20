@@ -5,6 +5,12 @@
 
 namespace client {
 
+namespace {
+std::uint8_t g_last_text_colour = 0;
+}
+std::uint8_t last_text_colour() { return g_last_text_colour; }
+void set_last_text_colour(std::uint8_t colour) { g_last_text_colour = colour; }
+
 void fill_rect(render::Image8& dst, const render::ClipRect& clip, int x0, int y0, int x1, int y1, std::uint8_t colour) {
     if (x0 > x1) std::swap(x0, x1);
     if (y0 > y1) std::swap(y0, y1);

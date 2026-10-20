@@ -20,6 +20,8 @@ struct LookTables {
     const BlendTable* mix = nullptr;                   // colour mixing (anti-aliasing average, shadows)
     const std::vector<std::uint8_t>* shade = nullptr;  // 32 levels x 256 colours (lit path)
     const std::vector<std::uint8_t>* water = nullptr;  // 256: the colour a pixel takes under water
+    // The light direction of the lit path (0x5065F8; "+light x y z" sets each to n x 0.01).
+    std::array<float, 3> light{-0.8f, 1.0f, 0.25f};
 };
 
 // The player's visual options.

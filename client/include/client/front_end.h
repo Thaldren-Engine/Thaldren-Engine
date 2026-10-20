@@ -261,6 +261,9 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession* session)> load_game_menu;
     // In-game menu > save game.
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> save_game_menu;
+    // "+save <name>" (0x417430): the battle written as savegame\<name>.sav in the game folder
+    // (description "Generic Game Description", game id 666).
+    std::function<void(BattleSession& session, const std::string& name)> save_game_command;
     // Network games: Tab opens the tab bar (options, allies, share, control); its buttons
     // other than the options use these.
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> allies_menu;

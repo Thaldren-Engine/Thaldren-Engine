@@ -83,6 +83,9 @@ public:
     std::function<void(std::int32_t)> on_activity;  // combat activity (music battle/peace switching)
 
     sim::Battle& battle() { return *lb_->battle; }
+    // The game folder the battle was loaded from (the original's working folder: files the
+    // commands write go there).
+    const std::string& game_dir() const { return game_dir_; }
     client::Content& content() { return content_; }
     const SkirmishSetup& setup() const { return setup_; }
     const BattleRequest& request() const { return request_; }
@@ -100,6 +103,7 @@ public:
     struct Outside;
 
     // Game data.
+    std::string game_dir_;
     Vfs vfs_;
     SkirmishSetup setup_;
     BattleRequest request_;

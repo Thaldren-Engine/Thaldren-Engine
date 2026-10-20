@@ -389,6 +389,20 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     c.network.remote_lag = [n] { return n->remote_lag(); };
     c.network.send_pause = [n](bool p) { n->send_pause(p); };
     c.network.send_speed = [n](int s) { n->send_speed(s); };
+    // "+compression" (GS+0x4ED) switches the frames' compression; "+drop" the time-out check.
+    c.network.set_compression_off = [n](bool off) {
+        net::NetTiming t = n->sender().timing();
+        t.compression = !off;
+        n->set_timing(t);
+    };
+    c.network.set_timeout_off = [n](bool off) { n->set_timeout(n->timeout_seconds(), off); };
+    // The share commands: the local side record's flag word toggled and announced (0x450F90).
+    c.network.toggle_share_flag = [this](std::uint8_t bit) {
+        if (local_ < 0 || local_ > 9) return;
+        net::RoomPlayer r = net_->room()[static_cast<std::size_t>(local_)];
+        r.flags = static_cast<std::uint8_t>(r.flags ^ bit);
+        net_->set_local_record(local_, r);
+    };
     net_->on_pause = [this](bool p) { inner_->client().set_paused(p); };
     net_->on_speed = [this](int s) { inner_->client().set_game_speed(s); };
     // A received line is shown as it came (its sender put its name in front), in colour 8 with

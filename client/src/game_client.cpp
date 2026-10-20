@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -288,17 +289,38 @@ int GameClient::frame(std::uint32_t now_ms) {
     }
     const std::uint32_t dt = scaled - last_scaled_;
     last_scaled_ = scaled;
+    if (budget_restart_) {
+        budget_.last_scaled_tick = scaled;
+        budget_restart_ = false;
+    }
     // The interface type is the original's one global (GS+0x37EFA): both the default command's
     // resolution and the pointer read it.
     b_.targeting().env.command_mode = opt_.right_click_orders ? 1 : 0;
+    // +profile (0x496790): the last pass's categories are shown and counted anew.
+    if (opt_.profile) {
+        if (!b_.profile_mark) b_.profile_mark = [this](int category) { profile_mark(category); };
+        profile_total_ = 0;
+        for (std::size_t k = 0; k < profile_acc_.size(); ++k) {
+            profile_total_ += profile_acc_[k];
+            profile_shown_[k] = profile_acc_[k];
+            profile_acc_[k] = 0;
+        }
+        if (static_cast<std::int32_t>(profile_total_) < 1) profile_total_ = 1;
+        profile_last_ = static_cast<std::uint32_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    } else if (b_.profile_mark) {
+        b_.profile_mark = nullptr;
+    }
     if (mdrag_) view_drag_step();  // (the input pass, before the steps)
     int steps = budget_.update(now_ms, network.remote_lag ? network.remote_lag() : 0);
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
     for (int k = 0; k < steps; ++k) {
         step_battle(b_);
+        big_brother_step();  // (the end of the step's unit stage)
         if (c_.after_step) c_.after_step();
         camera_step();  // the step's camera stage: following, easing, shake
     }
+    if (opt_.profile) profile_mark(8);
     end_frame(b_);  // once per frame, after the frame's steps (even none)
     // Console lines expire one per pass that ran steps (0x463EF0 at the end of the step routine):
     // the oldest goes when it came more than (text_seconds + 1) seconds of game steps ago.
@@ -1212,8 +1234,8 @@ sim::Vec3i GameClient::cursor_world() const {
     // range (map size less 32 and 128 units); elsewhere it is clamped to the battle view.
     int px, py;
     if (prepared_ && mouse_x_ >= mm_x_ && mouse_x_ < mm_x_ + mm_w_ && mouse_y_ >= mm_y_ && mouse_y_ < mm_y_ + mm_h_) {
-        px = (mouse_x_ - mm_x_) * (map_width_px() - 32) / std::max(1, mm_w_);
-        py = (mouse_y_ - mm_y_) * (map_height_px() - 128) / std::max(1, mm_h_);
+        px = (mouse_x_ - mm_x_) * scroll_width() / std::max(1, mm_w_);
+        py = (mouse_y_ - mm_y_) * scroll_height() / std::max(1, mm_h_);
     } else {
         const render::ClipRect r = view_rect();
         px = scroll_x_ + std::clamp(mouse_x_, r.x0, r.x1) - r.x0;
@@ -1690,6 +1712,79 @@ void GameClient::advance_pointer(std::uint32_t dt) {
     // Wall-clock ticks (1/30 s) since the last pass step the look's frames by their own times
     // (see FrameClock; a look that does not loop ends: no pointer shown).
     cursor_clock_.step(c_.cursors.by_number_timing[static_cast<std::size_t>(cursor_shown_)], dt);
+}
+
+// ---- console command effects ---------------------------------------------------------------
+
+void GameClient::reset_net_stats() {
+    // 0x417570: the totals of bytes sent and received start again (the network session's own
+    // counters go on: the client counts from their present values).
+    net_base_sent_ = net_raw_sent_;
+    net_base_received_ = net_raw_received_;
+    bps_.sent = 0;
+    bps_.received = 0;
+}
+
+void GameClient::toggle_big_brother() {
+    // 0x4174E0: on, the countdown starts at 1 (the next step picks); off, following ends (0x41C390).
+    big_brother_ = !big_brother_;
+    if (big_brother_) big_brother_countdown_ = 1;
+    else tracked_ = 0;
+}
+
+void GameClient::big_brother_step() {
+    // The end of the step's unit stage (0x48B02E): with the switch on and Shift not held, the
+    // countdown loses one; below 1 it starts again at 90, the next unit is selected and followed.
+    if (!big_brother_) return;
+    if (shift_ || keys_down_[keys::kShift]) return;
+    big_brother_countdown_ = static_cast<std::int16_t>(big_brother_countdown_ - 1);
+    if (big_brother_countdown_ >= 1) return;
+    big_brother_countdown_ = 90;
+    select_next_viewed_unit();
+    track_next(false);  // 0x41C2E0(0): the next selected own unit after the followed one
+}
+
+void GameClient::select_next_viewed_unit() {
+    // 0x48D790 over the viewed player's units: a selectable unit is finished (build fraction left
+    // 0.0), has the selectable flag (0x20), no hand-over pending and no carrier (or one with flag
+    // 0x40000000). At the first selected one, every unit of the table loses flags 0x10, 0x40 and
+    // 0x80 and the next selectable unit after it (else the first) becomes selected; with none
+    // selected the first selectable one does.
+    const int v = viewed_player();
+    if (v < 0 || static_cast<std::size_t>(v) >= b_.players.size()) return;
+    const sim::PlayerSlot& p = b_.players[static_cast<std::size_t>(v)];
+    const int first = std::max(1, p.first_unit), last = p.last_unit;
+    auto ok = [&](int i) {
+        const sim::Unit& u = b_.units[static_cast<std::size_t>(i)];
+        return (u.flags & kSelectable) && u.build_fraction_left == 0.0f && b_.ticks[static_cast<std::size_t>(i)].transfer_holdoff == 0 &&
+               (!u.carrier || (u.carrier->flags & 0x40000000u));
+    };
+    int first_ok = 0;
+    for (int i = first; i <= last && static_cast<std::size_t>(i) < b_.units.size(); ++i) {
+        if (!ok(i)) continue;
+        if (!first_ok) first_ok = i;
+        if (!(b_.units[static_cast<std::size_t>(i)].flags & kSelected)) continue;
+        for (sim::Unit& u : b_.units) u.flags &= ~0xD0u;
+        focus_ = 0;
+        for (int j = i + 1; j <= last && static_cast<std::size_t>(j) < b_.units.size(); ++j)
+            if (ok(j)) {
+                b_.units[static_cast<std::size_t>(j)].flags |= kSelected;
+                panel_dirty_ = true;
+                return;
+            }
+        break;
+    }
+    if (first_ok) b_.units[static_cast<std::size_t>(first_ok)].flags |= kSelected;
+    panel_dirty_ = true;
+}
+
+void GameClient::profile_mark(int category) {
+    // 0x46A400: the wall-clock milliseconds since the last mark go to the category.
+    const std::uint32_t now = static_cast<std::uint32_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    if (category >= 0 && static_cast<std::size_t>(category) < profile_acc_.size())
+        profile_acc_[static_cast<std::size_t>(category)] += now - profile_last_;
+    profile_last_ = now;
 }
 
 } // namespace client

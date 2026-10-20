@@ -218,6 +218,7 @@ bool ClientWorld::load(const std::string& game_dir, const BattleRequest& request
                        const std::function<void(float, const std::string&)>& progress) {
     request_ = request;
     human_ = human;
+    game_dir_ = game_dir;
     setup_.map = request.map;
     setup_.human = human;
     // The start-up scan, then the rescan the original runs on every path into a battle

@@ -518,6 +518,34 @@ private:
         // The battle's load applies the Gamma setting (0x491200); "+gamma n" shows n x 0.1 and
         // keeps n as the setting (saved at once).
         gamma_from_settings();
+        // The settings writer (0x430F00) after a command that saves: the battle's settings by
+        // their registry names (the rest of the settings file stays as it is).
+        session_->client().save_settings = [this, sess]() {
+            const ClientOptions& o = sess->client().options();
+            settings_.set_int("Interface Type", o.right_click_orders ? 1 : 0);
+            settings_.set_int("scrollspeed", o.scroll_speed);
+            settings_.set_int("screenchat", o.screen_chat ? 1 : 0);
+            settings_.set_int("damagebars", o.damage_bars ? 1 : 0);
+            settings_.set_int("Sound Mode", o.sound_mode);
+            settings_.set_int("Anti-Alias", o.antialias ? 1 : 0);
+            settings_.set_int("Shadows", o.shadows ? 1 : 0);
+            settings_.set_int("FeatureShadows", o.feature_shadows ? 1 : 0);
+            settings_.set_int("VehicleShadows", o.unit_shadows ? 1 : 0);
+            settings_.set_int("Shading", o.shading ? 1 : 0);
+            settings_.set_int("DitheredFog", o.dithered_fog ? 1 : 0);
+            settings_.set_int("SwitchAlt", o.alt_groups ? 1 : 0);
+            settings_.set_int("textlines", o.text_lines);
+            settings_.set_int("textscroll", o.text_seconds);
+            settings_.set_int("unitchat", o.unit_chat);
+            settings_.set_int("unitchattext", o.unit_chat_text);
+            settings_.set_int("clock", o.clock ? 1 : 0);
+            if (!o.image_dir.empty()) settings_.set_text("Image Output Directory", o.image_dir);
+            settings_.set_int("Movie Output Rate", o.film_speed);
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+        };
+        session_->client().save_game_command = [this, sess](const std::string& name) {
+            if (s_.hooks.save_game_command) s_.hooks.save_game_command(*sess, name);
+        };
         session_->client().music_command = [this](const char* what, int n) {
             MusicPlayer* m = s_.music;
             if (!m) return;

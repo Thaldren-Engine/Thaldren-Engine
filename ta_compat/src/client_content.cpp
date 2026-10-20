@@ -719,6 +719,13 @@ bool ClientWorld::build_content(std::string& error) {
         look.min_cloak_distance = d.min_cloak_distance;
         look.sight_distance = d.sight_distance;
         look.kamikaze_distance = static_cast<std::uint16_t>(d.kamikaze_distance);
+        look.radar_distance = d.radar_distance;
+        look.sonar_distance = d.sonar_distance;
+        look.radar_jam = d.radar_distance_jam;
+        look.sonar_jam = d.sonar_distance_jam;
+        look.build_distance = static_cast<std::uint16_t>(d.build_distance);
+        look.maneuver_leash = static_cast<std::uint16_t>(d.maneuver_leash_length);
+        look.attack_run_length = static_cast<std::uint16_t>(d.attack_run_length);
         if (d.explode_as >= 0 && d.explode_as < 256) look.explosion_area = static_cast<std::uint16_t>(weapons_.slots[static_cast<std::size_t>(d.explode_as)].area_of_effect);
         for (const std::string& cm : commanders)
             if (stricmp_c(cm, d.unit_name) == 0) look.commander = true;

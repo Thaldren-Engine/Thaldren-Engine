@@ -207,6 +207,9 @@ struct UnitTypeLook {
     bool kamikaze = false;
     std::int16_t min_cloak_distance = 0, sight_distance = 0;
     std::uint16_t kamikaze_distance = 0, explosion_area = 0;
+    // The other ranges "+showranges" labels (definition +0x204 .. +0x216).
+    std::int16_t radar_distance = 0, sonar_distance = 0, radar_jam = 0, sonar_jam = 0;
+    std::uint16_t build_distance = 0, maneuver_leash = 0, attack_run_length = 0;
 };
 
 // A decoded sound: signed 16-bit samples.

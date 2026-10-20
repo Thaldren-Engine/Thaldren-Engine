@@ -95,6 +95,9 @@ struct AiEnvironment {
     std::uint32_t game_tick = 0;
     std::int32_t difficulty = 0;               // 0 easy, 1 medium, 2 hard (profile "plan" lines)
     std::int32_t map_width = 0, map_height = 0;  // cells
+    // The view's scroll extent in world units (GS+0x1422B / +0x1422F: cells x 16 less 32 and 128
+    // unless "+edge" changed the margins); constructors that capture limit their sites by it.
+    std::int32_t scroll_width = 0, scroll_height = 0;
     std::int32_t surface_metal = 0;            // the map's surface metal value
     std::int32_t provider = 0;                 // the map info's kind of game (1: downloadable units are never built)
     std::uint16_t units_per_player = 0;

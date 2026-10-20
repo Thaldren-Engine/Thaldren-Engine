@@ -55,8 +55,8 @@ MinimapBox minimap_box(int sw, int sh) {
     return b;
 }
 
-int GameClient::scroll_width() const { return b_.map.width * 16 - 32; }
-int GameClient::scroll_height() const { return b_.map.height * 16 - 128; }
+int GameClient::scroll_width() const { return b_.scroll_width(); }
+int GameClient::scroll_height() const { return b_.scroll_height(); }
 
 void GameClient::minimap_build_picture() {
     // Each minimap pixel mixes a 2 x 2 block of the source picture's top-left part: the two

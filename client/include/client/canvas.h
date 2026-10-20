@@ -13,6 +13,11 @@
 namespace client {
 
 void fill_rect(render::Image8& dst, const render::ClipRect& clip, int x0, int y0, int x1, int y1, std::uint8_t colour);
+// The text colour the bars' text routine used last: the original's text routine (0x4C14F0) draws
+// in the colour last set, so text drawn without setting one (range labels, the profile panel)
+// takes it.
+std::uint8_t last_text_colour();
+void set_last_text_colour(std::uint8_t colour);
 void outline_rect(render::Image8& dst, const render::ClipRect& clip, int x0, int y0, int x1, int y1, std::uint8_t colour);
 void put_pixel(render::Image8& dst, const render::ClipRect& clip, int x, int y, std::uint8_t colour);
 // A circle outline of radius r around (cx, cy) (midpoint algorithm).

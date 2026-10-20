@@ -4,6 +4,8 @@
 #include "ta/console_commands.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <filesystem>
 
 #include "client/game_client.h"
 #include "sim/ai.h"
@@ -58,9 +60,15 @@ struct ConsoleCommands::Impl {
         c.minimap_sight_rebuilt();
     }
 
+    // 0x430F00 after the commands that save: every setting the battle holds is written.
+    void save() {
+        if (c.save_settings) c.save_settings();
+    }
+
     // The share switches of the local player's side record (network games): flip, announce.
     void toggle_share(std::uint8_t bit, const char* what) {
         if (!b().settings.net_game) return;
+        if (c.network.toggle_share_flag) c.network.toggle_share_flag(bit);
         sim::Battle& bt = b();
         const int p = local();
         bool on = false;
@@ -84,7 +92,7 @@ struct ConsoleCommands::Impl {
         std::array<std::int32_t, 3> pos = cursor;
         const UnitDefTable& defs = w.defs();
         sim::Battle& bt = b();
-        const std::int32_t row_end = (bt.map.width * 16 - 32) * 0x10000;
+        const std::int32_t row_end = static_cast<std::int32_t>(static_cast<std::uint32_t>(bt.scroll_width()) * 0x10000u);
         const std::int32_t player = words.number(1, 0);
         sim::console::UnitRowHooks hooks;
         hooks.matches = [&](std::uint16_t t) { return t < defs.units.size() && sim::console::wildcard_match(defs.units[t].unit_name, pattern); };
@@ -170,6 +178,52 @@ struct ConsoleCommands::Impl {
         cursor = saved;
     }
 
+    // "+printweights <player> <file>" (0x418BB0, exactly three words): for a player in the
+    // game, <file> opened "w+b" gets the computer player's table (0x40C250).
+    void print_weights(const Words& a) {
+        if (a.count() != 3) return;
+        const std::uint32_t p = static_cast<std::uint32_t>(a.number(1, 0));
+        if (!playing(p)) return;
+        const std::size_t slot = p & 0xFF;
+        // (a name without a folder lands in the working folder: the game folder)
+        std::string file = a.text(2);
+        if (std::filesystem::path(file).is_relative()) file = w.game_dir() + "\\" + file;
+        std::FILE* f = std::fopen(file.c_str(), "w+b");
+        if (!f) return;
+        sim::Battle& bt = b();
+        const std::uint32_t tick = bt.game_tick();
+        const std::uint32_t hours = tick / 108000u;
+        const std::int32_t rest = static_cast<std::int32_t>(tick - hours * 108000u);
+        const std::int32_t minutes = rest / 1800, seconds = (rest - minutes * 1800) / 30;
+        char t[64];
+        std::snprintf(t, sizeof t, "%02d:%02d:%02d", static_cast<int>(hours), minutes, seconds);
+        std::fprintf(f, "gametime: '%s'\r\n", t);
+        const std::string& name = slot < w.content().player_names.size() ? w.content().player_names[slot] : std::string();
+        std::fprintf(f, "player:   '%s' num: %d\r\n", name.c_str(), static_cast<int>(p));
+        const std::uint8_t ctl = bt.players[slot].controller;
+        std::fprintf(f, "controller: %s\r\n", ctl == 1 ? "HUMAN" : ctl == 2 ? "AI" : "INVALID");
+        std::fprintf(f, "terrain:    '%s'\r\n", ("Maps\\" + w.request().map + ".TNT").c_str());
+        LoadedBattle& lb = w.loaded();
+        std::fprintf(f, "profile:    '%s'\r\n", ai_profile_path(lb.ota, lb.schema < 0 ? 0 : lb.schema).c_str());
+        static const char* const kDifficulty[3] = {"EASY", "MEDIUM", "HARD"};
+        const std::int32_t d = bt.settings.ai_difficulty;
+        std::fprintf(f, "difficulty: '%s'\r\n", d >= 0 && d < 3 ? kDifficulty[d] : "");
+        std::fprintf(f, "================================================\r\n");
+        std::fprintf(f, "<limit> - <base:baseML:baseEL> : <end result - before economy-based tweaks> - <unit name>\r\n");
+        const UnitDefTable& defs = w.defs();
+        const sim::AiTable& tb = bt.ai_state.tables[slot % bt.ai_state.tables.size()];
+        for (std::size_t k = 1; k < defs.units.size(); ++k) {
+            const std::int32_t limit = k < tb.limit.size() ? tb.limit[k] : -1;
+            if (limit < 0) std::fprintf(f, "n/a ");
+            else std::fprintf(f, "%4d", limit);
+            const std::array<std::int8_t, 3> sc = k < tb.build_scores.size() ? tb.build_scores[k] : std::array<std::int8_t, 3>{};
+            const int weight = k < tb.weight.size() ? tb.weight[k] : 0;
+            std::fprintf(f, " - %3d : %3d : %3d = %3d - '%s\t\t:%s'\r\n", sc[0], sc[1], sc[2], weight, defs.units[k].unit_name.c_str(),
+                         defs.units[k].name.c_str());
+        }
+        std::fclose(f);
+    }
+
     void build();
 };
 
@@ -179,12 +233,21 @@ void ConsoleCommands::Impl::build() {
     // ---- options (bit 1): always allowed ----
     add("NoShake", [this](const Words&) { b().settings.shake_disabled = !b().settings.shake_disabled; });
     add("Contour", [this](const Words& a) {
+        // (0x416DB0: ftol of atof of words 1 and 2, defaults 0 and 0.75: the interval and offset of
+        // the contour lines over the terrain, 0x418310)
         st.contour[0] = sim::x87::ftol32(a.count() > 1 ? crt_atof(a.text(1)) : 0.0);
         st.contour[1] = sim::x87::ftol32(a.count() > 2 ? crt_atof(a.text(2)) : static_cast<double>(0.75f));
-        not_built("Contour");
+        c.options_mut().contour_interval = st.contour[0];
+        c.options_mut().contour_offset = st.contour[1];
     });
-    add("ScrollSpeed", [this](const Words& a) { c.options_mut().scroll_speed = static_cast<std::uint8_t>(a.number(1, 0)); });
-    add("IFace", [this](const Words& a) { c.options_mut().right_click_orders = a.number(1, 0) == 1; });
+    add("ScrollSpeed", [this](const Words& a) {
+        c.options_mut().scroll_speed = static_cast<std::uint8_t>(a.number(1, 0));
+        save();
+    });
+    add("IFace", [this](const Words& a) {
+        c.options_mut().right_click_orders = a.number(1, 0) == 1;
+        save();
+    });
     add("Give", [this](const Words& a) {
         // Give <player> <amount> metal|energy: a transfer from the local player.
         if (!playing(static_cast<std::uint32_t>(a.number(1, 0)))) return;
@@ -206,14 +269,32 @@ void ConsoleCommands::Impl::build() {
     add("Sound3D", [this](const Words&) {
         auto& o = c.options_mut();
         o.sound_mode = o.sound_mode == 2 ? 1 : 2;
+        save();
     });
-    add("Shading", [this](const Words&) { c.options_mut().shading = !c.options().shading; });
-    add("AntiAlias", [this](const Words&) { c.options_mut().antialias = !c.options().antialias; });
-    add("Shadow", [this](const Words&) { c.options_mut().shadows = !c.options().shadows; });
-    add("Dither", [this](const Words&) { c.options_mut().dithered_fog = !c.options().dithered_fog; });
+    add("Shading", [this](const Words&) {
+        c.options_mut().shading = !c.options().shading;
+        save();
+    });
+    add("AntiAlias", [this](const Words&) {
+        c.options_mut().antialias = !c.options().antialias;
+        save();
+    });
+    add("Shadow", [this](const Words&) {
+        c.options_mut().shadows = !c.options().shadows;
+        save();
+    });
+    add("Dither", [this](const Words&) {
+        c.options_mut().dithered_fog = !c.options().dithered_fog;
+        save();
+    });
     add("SwitchAlt", [this](const Words& a) {
         auto& o = c.options_mut();
-        o.alt_groups = a.count() < 2 ? !o.alt_groups : (a.number(1, 0) & 1) != 0;
+        if (a.count() < 2) {
+            o.alt_groups = !o.alt_groups;
+            save();
+        } else {
+            o.alt_groups = (a.number(1, 0) & 1) != 0;
+        }
     });
     add("TShadow", [this](const Words&) { c.options_mut().unit_shadows = !c.options().unit_shadows; });
     add("FShadow", [this](const Words&) { c.options_mut().feature_shadows = !c.options().feature_shadows; });
@@ -222,10 +303,14 @@ void ConsoleCommands::Impl::build() {
         rebuild_sight(false);
     });
     add("Light", [this](const Words& a) {
+        // (0x4166C0 -> 0x4597F0: each word n becomes float(n) x 0.01 of the lit path's light
+        // direction; then the drawing caches are made again)
         st.light[0] = a.number(1, 0);
         st.light[1] = a.number(2, 0);
         st.light[2] = a.number(3, 0);
-        not_built("Light");
+        auto& o = c.options_mut();
+        for (int k = 0; k < 3; ++k)
+            o.light[static_cast<std::size_t>(k)] = static_cast<float>(static_cast<double>(static_cast<float>(st.light[k])) * 0.01);
     });
     add("RCache", [](const Words&) {});  // the original rebuilds its drawing caches
     add("Selectable", [this](const Words&) {
@@ -251,14 +336,18 @@ void ConsoleCommands::Impl::build() {
     add("ScreenChat", [this](const Words&) {
         st.screen_chat = !st.screen_chat;
         c.options_mut().screen_chat = st.screen_chat;
+        save();
     });
     add("Gamma", [this](const Words& a) {
         // (0x417290: the display gamma n x 0.1, n kept as the Gamma setting and saved)
         st.gamma = a.number(1, 0);
         if (c.on_gamma_command) c.on_gamma_command(st.gamma);
     });
-    add("Clock", [this](const Words&) { c.options_mut().clock = !c.options().clock; });
-    add("NetStats", [](const Words&) {});  // resets the network statistics display
+    add("Clock", [this](const Words&) {
+        c.options_mut().clock = !c.options().clock;
+        save();
+    });
+    add("NetStats", [this](const Words&) { c.reset_net_stats(); });
     add("Sing", [this](const Words&) {
         st.sing = !st.sing;
         c.options_mut().sing = st.sing;
@@ -271,14 +360,20 @@ void ConsoleCommands::Impl::build() {
         const std::uint32_t p = a.count() == 1 ? static_cast<std::uint32_t>(local()) : static_cast<std::uint8_t>(a.number(1, 0));
         if (playing(p)) b().players[p & 0xFF].energy_stored = static_cast<float>(a.number(2, 0));
     });
-    add("BigBrother", [this](const Words&) { st.big_brother = !st.big_brother; });
+    add("BigBrother", [this](const Words&) {
+        st.big_brother = !st.big_brother;
+        c.toggle_big_brother();
+    });
     add("Now", [this](const Words& a) {
         // Unlocks the debug commands with exactly these five words (compared case-sensitively);
         // any other "Now" line locks them again.
         c.options_mut().debug_commands = a.count() == 6 && a.text(1) == "Film" && a.text(2) == "Chris" && a.text(3) == "Include" &&
                                         a.text(4) == "Reload" && a.text(5) == "Assert";
     });
-    add("Drop", [this](const Words& a) { st.net_drop_off = a.number(1, 0) == 0; });
+    add("Drop", [this](const Words& a) {
+        st.net_drop_off = a.number(1, 0) == 0;
+        if (c.network.set_timeout_off) c.network.set_timeout_off(st.net_drop_off);
+    });
     add("ShootAll", [this](const Words&) { b().settings.target_everything = !b().settings.target_everything; });
     add("ShareMetal", [this](const Words&) { toggle_share(2, "ShareMetal"); });
     add("ShareEnergy", [this](const Words&) { toggle_share(4, "ShareEnergy"); });
@@ -305,9 +400,11 @@ void ConsoleCommands::Impl::build() {
     add("SetShareMetal", [set_share](const Words& a) { set_share(a, true); });
     add("SetShareEnergy", [set_share](const Words& a) { set_share(a, false); });
     add("Compression", [this](const Words&) {
+        // (0x4194D0: GS+0x4ED = (it was 0); the line names the new state, "OFF" while it is set)
         if (!b().settings.net_game) return;
-        st.compression = !st.compression;
-        say(std::string("Ok.  Outgoing packet compression turned ") + (st.compression ? "ON" : "OFF"));
+        st.compression_off = !st.compression_off;
+        if (c.network.set_compression_off) c.network.set_compression_off(st.compression_off);
+        say(std::string("Ok.  Outgoing packet compression turned ") + (st.compression_off ? "OFF" : "ON"));
     });
     add("BPS", [this](const Words&) {
         st.bps = !st.bps;
@@ -331,11 +428,13 @@ void ConsoleCommands::Impl::build() {
     });
     add("LOS", [this](const Words&) {
         b().settings.fog_of_war = !b().settings.fog_of_war;
+        save();
         sight_view_changed();
         rebuild_sight(false);
     });
     add("Mapping", [this](const Words&) {
         b().settings.explore = !b().settings.explore;
+        save();
         sight_view_changed();
         rebuild_sight(true);
     });
@@ -354,7 +453,26 @@ void ConsoleCommands::Impl::build() {
         }
         b().meteors.enabled = a.number(1, 0) != 0;
     });
-    add("MakePoster", [this](const Words&) { not_built("MakePoster"); });
+    add("MakePoster", [this](const Words& a) {
+        // 0x417600: "<w> <h>" (defaults 3200 x 2400) or "all" (the scroll extent); 0x495A30 draws
+        // it with line of sight and mapping off (the sight rebuilt clearing the explored map before
+        // and after: the explored map is lost), then both switches as they were.
+        const int pw = a.count() > 1 ? a.number(1, 0) : 0xC80;
+        const int ph = a.count() > 2 ? a.number(2, 0) : 0x960;
+        const bool all = sim::console::c_stricmp(a.text(1), "all") == 0;
+        sim::Battle& bt = b();
+        const bool explore = bt.settings.explore, fog = bt.settings.fog_of_war;
+        bt.settings.explore = false;
+        bt.settings.fog_of_war = false;
+        sight_view_changed();
+        rebuild_sight(true);
+        const std::string path = c.make_poster(pw, ph, all);
+        bt.settings.explore = explore;
+        bt.settings.fog_of_war = fog;
+        sight_view_changed();
+        rebuild_sight(true);
+        std::printf("poster %s\n", path.empty() ? "(not written)" : path.c_str());
+    });
 
     // ---- debug commands (bit 4): after "Now" unlocks them ----
     add("AI", [this](const Words& a) {
@@ -450,17 +568,27 @@ void ConsoleCommands::Impl::build() {
     });
     add("DebugBreak", [](const Words&) {});  // needs a debug build's second switch
     add("DPrint", [](const Words&) {});
-    add("Edge", [this](const Words&) { not_built("Edge"); });
+    add("Edge", [this](const Words& a) {
+        // (0x416730: the scroll extent = the map's size less word 1 (default 32) across and word 2
+        // (default 128) down)
+        b().set_scroll_edges(a.number(1, 0x20), a.number(2, 0x80));
+    });
     add("Include", [this](const Words& a) { include_file(a.text(0), a); });
     add("Mem", [](const Words&) {});
-    add("MemDump", [](const Words&) {});
+    add("MemDump", [this](const Words&) {
+        // (0x416240: memdump.txt made empty in the working folder; nothing is written into it)
+        if (std::FILE* f = std::fopen((w.game_dir() + "\\memdump.txt").c_str(), "wb")) std::fclose(f);
+    });
     add("Move", [this](const Words& a) {
         if (sim::console::c_stricmp(a.text(0), "move") != 0) return;
         cursor[0] = static_cast<std::int32_t>(static_cast<std::uint32_t>(cursor[0]) + static_cast<std::uint32_t>(a.number(1, 0)) * 0x100000u);
         cursor[2] = static_cast<std::int32_t>(static_cast<std::uint32_t>(cursor[2]) + static_cast<std::uint32_t>(a.number(2, 0)) * 0x100000u);
     });
-    add("PrintWeights", [](const Words&) {});  // writes a file
-    add("Profile", [this](const Words&) { st.profile = !st.profile; });
+    add("PrintWeights", [this](const Words& a) { print_weights(a); });
+    add("Profile", [this](const Words&) {
+        st.profile = !st.profile;
+        c.options_mut().profile = st.profile;
+    });
     add("Reload", [this](const Words& a) {
         if (a.count() > 1) reload_type(a.text(1));
     });
@@ -483,7 +611,10 @@ void ConsoleCommands::Impl::build() {
         AiProfileReport report;
         load_ai_profile(w.vfs_, ai_profile_path(lb.ota, lb.schema < 0 ? 0 : lb.schema), lb.unit_defs, ai, report);
     });
-    add("Save", [this](const Words&) { not_built("Save"); });
+    add("Save", [this](const Words& a) {
+        // (0x417430: with a name, savegame\<name>.sav, the folder made first)
+        if (a.count() > 1 && c.save_game_command) c.save_game_command(a.text(1));
+    });
     add("SeaLevel", [this](const Words& a) { b().settings.sea_level = static_cast<std::uint8_t>(a.number(1, 0)); });
     add("Search", [this](const Words& a) {
         // 0x416780: the route search's work divisor (+0x48) = word 1 when nonzero; with
