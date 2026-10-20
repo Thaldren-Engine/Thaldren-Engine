@@ -835,6 +835,7 @@ int main(int argc, char** argv) {
         r.w32(grid, cellsb);
         r.w32(grid + 4, gw);
         r.w32(grid + 8, gh);
+        r.w32(grid + 12, gw * gh);  // cells cleared by the grid build 0x4843C0 (it only ORs bits in)
         r.w32(gs + gFogGrid, grid);
     }
     // The effect art the loader (0x429870) finds by name in anims\fx.gaf and the in-game titles.
