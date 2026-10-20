@@ -92,7 +92,7 @@ summary at the end gives the counts after this round.
 | 2.33 | Esc: order mode → default, else deselect; closes the game menu | `0x495E90` | BUILT+VERIFIED | battle_menus_check |
 | 2.34 | Enter: chat line (SmallButton) | `0x495E90` | BUILT+VERIFIED | gui_harness `talk` |
 | 2.35 | Tab / F2: game menu, network tab bar | `0x495010`, `0x460CC0` | BUILT+VERIFIED | battle_menus_check |
-| 2.36 | 'h' opens SHARE.GUI (network games, not watching) | `0x4936F0` | PARTIAL | the key opens the share screen hook; the screen: 2.48 |
+| 2.36 | 'h' opens SHARE.GUI (network games, not watching) | `0x4936F0` | BUILT-UNVERIFIED | the key opens the share screen (2.48) |
 | 2.37 | ',' '.' step menus | `0x41BF10`, `0x41BDE0` | BUILT-UNVERIFIED | |
 | 2.38 | '\' repeats the last command (debug switch) | `0x495E90` | BUILT-UNVERIFIED | |
 | 2.39 | Shift+F1 / Shift+F2 debug unit picks (GS+0x391B3 / 0x391B9) | `0x495E90` | NOT-APPLICABLE | debug values nothing in a normal game reads |
@@ -103,9 +103,10 @@ summary at the end gives the counts after this round.
 | 2.44 | Middle drag and Ctrl+right drag scroll | `0x41CC60`, `0x41CD50` | PARTIAL | pointer warp to the centre and back, remainder dropped per pass: missing |
 | 2.45 | Edge and arrow scrolling (arrows not while the chat line is open) | `0x41CE90` | BUILT-UNVERIFIED | arrows ignored under the chat line |
 | 2.46 | Key repeat for every held key | platform | BUILT-UNVERIFIED | every key repeats (menus and battles) |
-| 2.47 | Allies screen (ALLIES.GUI) | `0x4478B0` | MISSING | grayed: hook unset |
-| 2.48 | Share screen (SHARE.GUI: METAL / ENERGY sliders, PLYRLIST, SHARUNIT, MAPINFO) | `0x4936F0`, `0x4934B0` | MISSING | grayed: hook unset |
-| 2.49 | Control screen (CONTROL.GUI) | `0x4466B0` | MISSING | grayed: hook unset |
+| 2.47 | Allies screen (ALLIES.GUI) | `0x4478B0` | BUILT-UNVERIFIED | ta_compat `AlliesScreen` (rows, logos, team icons, alliance switches with the answer stage, allied victory); smoke: two headless loopback clients, alliance announced on both; not pixel-compared |
+| 2.48 | Share screen (SHARE.GUI: METAL / ENERGY sliders, PLYRLIST, SHARUNIT, MAPINFO) | `0x4936F0`, `0x4934B0` | BUILT-UNVERIFIED | ta_compat `ShareScreen` (sliders, player list, units, explored map); smoke: two loopback clients, metal and energy arrive; not pixel-compared |
+| 2.49 | Control screen (CONTROL.GUI) | `0x4466B0` | BUILT-UNVERIFIED | ta_compat `ControlScreen` + `RejectQuestion` (YESORNO); smoke: the host rejects the joiner, both consoles report it; not pixel-compared |
+| 2.50 | Time-out dialog of network games (TIMEOUT.GUI: name, console lines, chat, seconds left, Reject Now) | `0x453A50`, `0x453C20`, `0x4538F0` | BUILT-UNVERIFIED | added this round (was not listed); smoke: the joiner gone silent, the dialog after 30 s, the countdown, rejected at 0 |
 | 2.50 | One-frame present lag | `0x426E80` / `0x496BB0` | NOT-APPLICABLE | the client presents the frame it drew; the lag of the original's DirectDraw flip is a timing artefact, not a picture difference |
 
 ## 3. Sound in battle
@@ -117,7 +118,7 @@ summary at the end gives the counts after this round.
 | 3.3 | Unit notices (queue, priorities, texts) | `0x47F850` … | BUILT+VERIFIED | sound_harness `notices` |
 | 3.4 | Interface sounds of panels, switches, placement, selection, keys | handlers | BUILT-UNVERIFIED | read from the handlers; ta_play sound log |
 | 3.5 | Space panels' Panel / Options sounds | `0x4689C0`, `0x4948E0` | BUILT-UNVERIFIED | Panel / Options as read (headless sound log) |
-| 3.6 | Tab bar / Share / Allies sounds (BigButton, Options, Previous, Ally) | `0x494740`, `0x4934B0`, `0x453D40` | MISSING | with 2.47–2.49 |
+| 3.6 | Tab bar / Share / Allies sounds (BigButton, Options, Previous, Ally) | `0x494740`, `0x4934B0`, `0x453D40` | BUILT-UNVERIFIED | BigButton / Options / Previous / Ally / SmallButton as read in the handlers (headless sound log) |
 | 3.7 | Music in battle (moods, battle / peace judge) | `0x4CDB40`, `0x494E70` | BUILT-UNVERIFIED | |
 | 3.8 | Music console commands (CDPlay, CDStop, MusicMode), Sound3D | option table | PARTIAL | Sound3D kept; music commands not built |
 
