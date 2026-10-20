@@ -665,6 +665,20 @@ static void test_battle_leave_paths() {
         CHECK(r.na.probe_answered(2) && !r.nb.probe_answered(0));
     }
     {
+        // A known sender that is not a present remote player (0x453D40's sender check): one
+        // out of the game (state 10) is sent away with 6 (status to everybody, nothing answered);
+        // an inactive record only gets the leaving byte.
+        LeaveRig r;
+        r.a.players[3].state = 10;
+        r.tb.send(202, 0, {0x06});
+        r.na.poll();
+        CHECK(r.na.leaving(3) == 6 && r.na.counters().packets_sent == 1 && r.na.counters().by_type[0x1B] == 1);
+        r.a.players[2].active = false;
+        r.tb.send(201, 0, {0x06});
+        r.na.poll();
+        CHECK(r.na.leaving(2) == 6 && r.na.counters().packets_sent == 1);
+    }
+    {
         // B's time-out Reject sends A's human away (0x453010, remote human): A's whole machine
         // group freed on B, the host flag passed to the highest human id (B's 201).
         LeaveRig r;

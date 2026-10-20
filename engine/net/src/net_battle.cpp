@@ -539,13 +539,23 @@ void NetBattle::network_input() {
             ++counters_.refused;
             continue;
         }
-        if (from == 10 || to == 10) {
-            ++counters_.refused;  // the original answers "unknown player" (status 6)
+        if (from == 10) {
+            // (The original reads a "record 10" past the table here, GS+0x2851; 0x453010 on the
+            // unknown id returns before sending anything.)
+            ++counters_.refused;
             continue;
         }
         const sim::PlayerSlot& fp = battle_->players[static_cast<std::size_t>(from)];
         if (!(fp.active && fp.controller == 3 && fp.state != 10)) {
+            // A known sender that is not a present remote player goes to 0x453010(sender, 6)
+            // (a local one is only ignored): an inactive record just gets the leaving byte; one
+            // out of the game (state 10) is sent away (status 6 to everybody, its group if human).
+            if (fp.controller != 1 && fp.controller != 2) send_away(from, 6);
             ++counters_.refused;
+            continue;
+        }
+        if (to == 10 || !battle_->players[static_cast<std::size_t>(to)].active || battle_->players[static_cast<std::size_t>(to)].state == 10) {
+            ++counters_.refused;  // the addressee is no record in the game: dropped, nothing said
             continue;
         }
         last_heard_[static_cast<std::size_t>(from)] = clock_;
