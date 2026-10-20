@@ -9,6 +9,7 @@
 // client::LayoutScreen, and start battles with SkirmishSession-like sessions.
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -147,6 +148,29 @@ void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, c
 // far is at least `width` wide, the last space or hyphen before becomes a line break).
 std::string wrap_for_width(const client::Font& font, const std::string& text, int width);
 
+// The campaign's part of the end of a battle (the end state machine 0x41F7F0, states 5-7, for a
+// mission; docs/RE_MEMORY.md "Campaign"): the glamour picture faded in after a won mission, the
+// ending movies after the last one, the statistics screen's campaign buttons and mission list.
+struct CampaignEnd {
+    bool buttons = false;    // Start, Load / Save Game, the mission list, Difficulty (not after the last mission won)
+    bool final_win = false;  // the last mission won: the ending movies instead of the statistics
+    std::vector<std::string> final_movies;
+    std::vector<std::string> missions;  // the campaign's missions' names
+    std::string results;                // 'U' / 'W' / 'L' per mission
+    int mission = 0;                    // the mission just played
+    bool won = false;
+    int difficulty = 1;
+    const render::Sprite8* glamour = nullptr;  // a won mission's picture (null: none)
+    const render::Palette* glamour_palette = nullptr;
+    std::shared_ptr<client::Sample> glamour_sound;
+    const client::Font* click_font = nullptr;  // "Click to continue."
+    std::function<void(client::FrontEnd&, int mission)> start;  // Start / a mission picked: its briefing
+    std::function<void(client::FrontEnd&)> load, save;          // the load / save menus
+    std::function<void(int difficulty)> set_difficulty;
+};
+// Fills `out` when the battle is a campaign mission (and records the mission's result).
+bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOutcome outcome, CampaignEnd& out);
+
 // The C runtime's rand() of the program's main thread as the menus draw from it (the main
 // menu's sparks, the briefing's wind); what is left of it seeds a battle's rand().
 sim::Lcg15& menus_rand();
@@ -156,6 +180,6 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
 
 // The statistics screen on its own for a given table (tests: ta_play --end-screen), with the
 // battle's interface colours made from the game palette.
-std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table);
+std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table, const CampaignEnd* campaign = nullptr);
 
 }  // namespace ta

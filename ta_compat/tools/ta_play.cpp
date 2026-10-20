@@ -71,6 +71,7 @@
 #include "client/game_client.h"
 #include "client/music.h"
 #include "render/presenter.h"
+#include "ta/campaign.h"
 #include "ta/client_campaign.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
@@ -427,6 +428,10 @@ int main(int argc, char** argv) {
             std::uint32_t tick = 0;
             float km = 0.0f, tm = 0.0f;
             int won = 0, local = 0;
+            // (campaign tests: "campaign NAME" — the rest of the line —, "mission N", "results
+            // STRING" (25 characters, '.' for a zero byte), "difficulty N": the campaign's buttons)
+            std::string camp_name, camp_results;
+            int camp_mission = 0, camp_difficulty = 1;
             for (std::string line; std::getline(in, line);) {
                 if (const auto c = line.find('#'); c != std::string::npos) line.resize(c);
                 std::istringstream ls(line);
@@ -437,6 +442,10 @@ int main(int argc, char** argv) {
                 else if (key == "timemul") ls >> tm;
                 else if (key == "won") ls >> won;
                 else if (key == "local") ls >> local;
+                else if (key == "campaign") std::getline(ls >> std::ws, camp_name);
+                else if (key == "mission") ls >> camp_mission;
+                else if (key == "results") ls >> camp_results;
+                else if (key == "difficulty") ls >> camp_difficulty;
                 else if (key == "player") {
                     int slot = 0, colour = 0, controller = 0, state = 0, present = 1, watch = 0, kills = 0, losses = 0;
                     std::uint32_t created = 0;
@@ -471,7 +480,25 @@ int main(int argc, char** argv) {
                             r.values[4], r.values[5], r.values[6]);
             std::printf("end maxima: %d %d %d %d %d %d %d\n", table.maxima[0], table.maxima[1], table.maxima[2], table.maxima[3], table.maxima[4],
                         table.maxima[5], table.maxima[6]);
-            fes.main_menu = [&art, table](client::FrontEnd&) { return ta::make_end_screen(art, table); };
+            if (!camp_name.empty()) {
+                while (!camp_name.empty() && (camp_name.back() == '\r' || camp_name.back() == ' ')) camp_name.pop_back();
+                ta::mount_cd_archives(art.vfs(), art.game_dir());
+                ta::Campaign c;
+                std::string e;
+                auto ce = std::make_shared<ta::CampaignEnd>();
+                if (ta::load_campaign(art.vfs(), camp_name, c, e))
+                    for (const ta::CampaignMission& m : c.missions) ce->missions.push_back(m.name);
+                for (char& ch : camp_results)
+                    if (ch == '.') ch = '\0';
+                ce->results = camp_results;
+                ce->mission = camp_mission;
+                ce->won = won != 0;
+                ce->difficulty = camp_difficulty;
+                ce->buttons = true;
+                fes.main_menu = [&art, table, ce](client::FrontEnd&) { return ta::make_end_screen(art, table, ce.get()); };
+            } else {
+                fes.main_menu = [&art, table](client::FrontEnd&) { return ta::make_end_screen(art, table); };
+            }
             fes.width = opt.width;  // (--res: the screen size the battle had)
             fes.height = opt.height;
         }

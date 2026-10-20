@@ -22,6 +22,8 @@ std::string ta::progress_from_thumbs(const std::string& thumbs) {
 
 #include "client/audio.h"
 #include "client/canvas.h"
+#include "sim/battle.h"
+#include "sim/victory.h"
 #include "client/front_end.h"
 #include "client/game_client.h"
 #include "client/menu.h"
@@ -119,17 +121,31 @@ bool write_file(const std::string& dir, const std::string& name, const std::vect
 }
 
 class BriefingScreen;
-class EndMissionScreen;
 
 // A mission battle: the front end's battle session with the campaign's progression.
 class MissionSession : public client::BattleSession {
 public:
-    MissionSession(std::unique_ptr<SkirmishSession> inner, MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : inner_(std::move(inner)), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
+    MissionSession(std::unique_ptr<SkirmishSession> inner, MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress,
+                   MissionInfo info = {})
+        : inner_(std::move(inner)), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)), info_(std::move(info)) {}
     sim::Battle& battle() override { return inner_->battle(); }
     client::Content& content() override { return inner_->content(); }
     client::GameClient& client() override { return inner_->client(); }
-    int frame(std::uint32_t now_ms) override { return inner_->frame(now_ms); }
+    int frame(std::uint32_t now_ms) override {
+        // (tests: TA_TEST_MISSION_END=win:STEP or lose:STEP ends the mission at that step as its
+        // goals would, so the end screens can be checked without playing it)
+        if (const char* t = std::getenv("TA_TEST_MISSION_END")) {
+            const std::string v = t;
+            const auto c = v.find(':');
+            sim::Battle& b = battle();
+            if (c != std::string::npos && b.game_tick() >= std::strtoul(v.c_str() + c + 1, nullptr, 10) &&
+                !(b.end_game.flags & sim::end_game_flags::kEnding)) {
+                if (v.compare(0, c, "win") == 0) b.end_game.flags |= sim::end_game_flags::kWon | sim::end_game_flags::kEnding;
+                else b.end_game.flags |= sim::end_game_flags::kLost | sim::end_game_flags::kEnding;
+            }
+        }
+        return inner_->frame(now_ms);
+    }
     client::BattleOutcome outcome() override { return inner_->outcome(); }
     void send_chat(const std::string& t) override { inner_->send_chat(t); }
     void surrender() override { inner_->surrender(); }
@@ -140,12 +156,16 @@ public:
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
     SkirmishSession& inner() { return *inner_; }
     CampaignProgress& progress() { return *progress_; }
+    std::shared_ptr<CampaignProgress> progress_ptr() { return progress_; }
+    MissionInfo& info() { return info_; }
+    const std::string& save_dir() const { return save_dir_; }
 
 private:
     std::unique_ptr<SkirmishSession> inner_;
     MenuArt& art_;
     std::string save_dir_;
     std::shared_ptr<CampaignProgress> progress_;
+    MissionInfo info_;
 };
 
 client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_dir, std::shared_ptr<CampaignProgress> progress, const MissionInfo& info,
@@ -156,12 +176,13 @@ client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_di
     rq.difficulty = progress->difficulty;
     rq.battle_rng_seed = clock_value();
     rq.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
-    rq.crt_rand_state = clock_value() * 2654435761u;
+    // (the program's one C runtime rand() goes on into the battle, as for a skirmish)
+    rq.crt_rand_state = menus_rand().state();
     return [&art, save_dir, progress, info, rq, options](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
         const BattleRequest req = make_mission_request(art.vfs(), info, rq);
         std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, 0, options, lp, error);
         if (!s) return nullptr;
-        return std::make_unique<MissionSession>(std::move(s), art, save_dir, progress);
+        return std::make_unique<MissionSession>(std::move(s), art, save_dir, progress, info);
     };
 }
 
@@ -206,7 +227,8 @@ public:
         ok_ = load_campaign(art_.vfs(), progress_->campaign, c, error) && index >= 0 && index < static_cast<int>(c.missions.size()) &&
               load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(index)].file, progress_->difficulty, info_, error);
         side_ = side_index(art_.vfs(), progress_->side) == 1 ? 1 : 0;
-        background_ = art_.picture("mbrief" + side_prefix());
+        // (0x4288D0 with its third argument set: the picture's palette goes on the display)
+        background_ = art_.picture("mbrief" + side_prefix(), &palette_);
         for (int k = 0; k < 256; ++k) colours_table_[static_cast<std::size_t>(k)] = art_.gui_colour(art_.content().palette, k);
         colours_ = &colours_table_;
         for (const char* n : {"MOREBAR", "TextRegion"})
@@ -556,6 +578,12 @@ private:
     std::string save_dir_;
     std::shared_ptr<CampaignProgress> progress_;
     MissionInfo info_;
+    const render::Palette* palette_ = nullptr;
+
+public:
+    const render::Palette* palette() const override { return palette_ ? palette_ : client::LayoutScreen::palette(); }
+
+private:
     bool set_up_ = false, ok_ = false, text_down_ = false;
     int side_ = 0;
     std::array<std::uint8_t, 256> colours_table_{};
@@ -591,97 +619,8 @@ struct NameLine {
     }
 };
 
-// --- Between missions (ENDMSN, 0x41F0A0 / 0x41EC50): the missions with their results.
-class EndMissionScreen : public client::Screen {
-public:
-    EndMissionScreen(MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {
-        std::string err;
-        load_campaign(art_.vfs(), progress_->campaign, campaign_, err);
-        // The mission after a won one is selected, else the same one.
-        sel_ = std::min(progress_->mission + (progress_->won ? 1 : 0), std::max(0, static_cast<int>(campaign_.missions.size()) - 1));
-    }
-    void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type != client::InputEvent::Type::KeyDown) return;
-        if (saving_) {
-            if (e.key == client::keys::kEscape) saving_ = false;
-            else if (e.key == client::keys::kEnter && !name_.name.empty()) save_between_missions();
-            else name_.key(e.key);
-            return;
-        }
-        switch (e.key) {
-        case client::keys::kEscape: fe.play_sound(art_.sound("BigButton")); fe.pop(); return;  // (main menu)
-        case client::keys::kUp: sel_ = std::max(0, sel_ - 1); return;
-        case client::keys::kDown: sel_ = std::min(static_cast<int>(campaign_.missions.size()) - 1, sel_ + 1); return;
-        case 'd':  // Easy -> Medium -> Hard -> Easy
-            fe.play_sound(art_.sound("Skirmish"));
-            progress_->difficulty = (progress_->difficulty + 1) % 3;
-            return;
-        case 's': fe.play_sound(art_.sound("BigButton")); saving_ = true; message_.clear(); return;
-        case client::keys::kEnter:
-            fe.play_sound(art_.sound("BigButton"));
-            if (sel_ >= 0 && sel_ < static_cast<int>(campaign_.missions.size())) {
-                progress_->mission = sel_;
-                fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress_));
-            }
-            return;
-        default: return;
-        }
-    }
-    void draw(client::FrontEnd& fe, render::Image8& out) override {
-        static const char* const kDifficulty[3] = {"Easy", "Medium", "Hard"};
-        Pen p(fe, out);
-        p.clear();
-        const client::MenuContent& m = fe.menu_content();
-        p.text(progress_->campaign + (progress_->won ? ": mission won" : ": mission lost"), 40, 20, m.text_highlight);
-        p.text(std::string("Difficulty: ") + kDifficulty[progress_->difficulty % 3] + "   (D)", fe.width() / 2, 20, m.text_colour);
-        for (std::size_t k = 0; k < campaign_.missions.size(); ++k) {
-            const char r = k < progress_->results.size() ? progress_->results[k] : 'U';
-            const std::string mark = r == 'W' ? "[won]  " : r == 'L' ? "[lost] " : "       ";
-            p.row(mark + campaign_.missions[k].name, 40, 50 + static_cast<int>(k) * p.line(), fe.width() - 80, static_cast<int>(k) == sel_);
-        }
-        if (saving_) p.text("Save as: " + name_.name + "_", 40, fe.height() - 50, m.text_colour);
-        else if (!message_.empty()) p.text(message_, 40, fe.height() - 50, m.text_colour);
-        p.text("Arrows: mission   Enter: start   S: save   D: difficulty   Esc: main menu", 40, fe.height() - 30, m.text_dim);
-    }
-
-private:
-    void save_between_missions() {
-        // GameSave_SaveAll outside a battle: the summary with the next mission's name (the map
-        // info moves on when there is a next mission, whatever the outcome) and BetweenMissions.
-        SaveContext c;
-        c.description = name_.name;
-        c.game_id = static_cast<std::int32_t>(std::time(nullptr));
-        c.game_type = 1;
-        c.campaign = progress_->campaign;
-        const int next = progress_->mission + 1 < static_cast<int>(campaign_.missions.size()) ? progress_->mission + 1 : progress_->mission;
-        c.mission = next < static_cast<int>(campaign_.missions.size()) ? campaign_.missions[static_cast<std::size_t>(next)].name : std::string();
-        c.thumbs = progress_->results;
-        c.difficulty = progress_->difficulty;
-        c.side = side_index(art_.vfs(), progress_->side);
-        c.between_missions = true;
-        std::vector<std::uint8_t> bytes;
-        write_bank(make_between_missions_bank(c), bytes, nullptr, c.bank);
-        message_ = write_file(save_dir_, name_.name, bytes) ? "Saved." : "Could not write the file.";
-        saving_ = false;
-    }
-    MenuArt& art_;
-    std::string save_dir_, message_;
-    std::shared_ptr<CampaignProgress> progress_;
-    Campaign campaign_;
-    int sel_ = 0;
-    bool saving_ = false;
-    NameLine name_;
-};
-
-bool MissionSession::after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) {
-    if (outcome != client::BattleOutcome::Victory && outcome != client::BattleOutcome::Defeat) return false;
-    // 0x41DC20: the mission's result goes into the results string at its index.
-    progress_->won = outcome == client::BattleOutcome::Victory;
-    if (progress_->mission >= 0 && progress_->mission < 25) progress_->results[static_cast<std::size_t>(progress_->mission)] = progress_->won ? 'W' : 'L';
-    fe.push(std::make_unique<EndMissionScreen>(art_, save_dir_, progress_));
-    return true;
-}
+// The campaign's end of a mission goes through the statistics screen (ta::campaign_end).
+bool MissionSession::after_battle(client::FrontEnd&, client::BattleOutcome) { return false; }
 
 // --- A new campaign (NEWGAME.GUI: set-up 0x478240, handler 0x477AB0). `any` (the AnyMsn button,
 // 0x478240(1)): the Missions list too, to start at any mission.
@@ -705,7 +644,14 @@ public:
     NewCampaignScreen(MenuArt& art, std::string save_dir, bool any) : client::LayoutScreen(art.layout("NEWGAME")), art_(art), save_dir_(std::move(save_dir)), any_(any) {}
 
     void enter(client::FrontEnd& fe) override {
-        if (set_up_) return;
+        if (set_up_ && !again_) return;
+        if (again_) {
+            // Back from the briefing: the screen is set up anew (state 0xB/0xC sub-state 3 calls
+            // 0x478240 again).
+            again_ = false;
+            widgets_ = layout()->widgets;
+            placed_ = false;
+        }
         set_up_ = true;
         auto count = static_cast<int>(list_campaigns(art_.vfs()).size());
         no_list_ = !any_ && count <= 2;
@@ -864,12 +810,13 @@ protected:
         if (const client::Widget* d = widget("Difficulty")) progress->difficulty = d->stage;
         fe.settings().set_int("Difficulty", progress->difficulty);
         fe.apply_settings();  // (the settings saved, 0x430F00)
+        again_ = true;
         fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress));
     }
 
     MenuArt& art_;
     std::string save_dir_;
-    bool any_ = false, no_list_ = false, set_up_ = false;
+    bool any_ = false, no_list_ = false, set_up_ = false, again_ = false;
     int side_ = 0;
     const char* first_focus_ = "Campaign";
     std::vector<std::string> campaigns_, missions_;
@@ -1114,6 +1061,14 @@ private:
         fe.play_sound(art_.sound("smlbutton"));
         const client::Widget* g = widget("GAMENAME");
         const std::string name = g ? g->text : std::string();
+        if (!name.empty() && !session_ && between_) {
+            // Between missions (the campaign's statistics screen): only the summary (0x4326B0).
+            SaveContext c = between_();
+            c.description = name;
+            std::vector<std::uint8_t> bytes;
+            write_bank(make_between_missions_bank(c), bytes, nullptr, c.bank);
+            write_file(dir_, name, bytes);
+        }
         if (!name.empty() && session_) {
             SkirmishSession* sk = dynamic_cast<SkirmishSession*>(session_);
             CampaignProgress* progress = nullptr;
@@ -1191,6 +1146,10 @@ private:
             return s;
         });
     }
+public:
+    std::function<SaveContext()> between_;  // a save outside a battle: its summary
+
+private:
     MenuArt& art_;
     std::string dir_;
     client::BattleSession* session_ = nullptr;
@@ -1251,6 +1210,86 @@ SaveContext battle_save_context(SkirmishSession& s, const CampaignProgress* camp
         c.line_of_sight_type = req.start.true_sight ? 1 : 0;
     }
     return c;
+}
+
+
+bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOutcome outcome, CampaignEnd& out) {
+    auto* ms = dynamic_cast<MissionSession*>(&session);
+    if (!ms) return false;
+    std::shared_ptr<CampaignProgress> progress = ms->progress_ptr();
+    const std::string save_dir = ms->save_dir();
+    // 0x41DC20: the mission's result into the results string at its index.
+    progress->won = outcome == client::BattleOutcome::Victory;
+    if (outcome == client::BattleOutcome::Victory || outcome == client::BattleOutcome::Defeat)
+        if (progress->mission >= 0 && progress->mission < 25) progress->results[static_cast<std::size_t>(progress->mission)] = progress->won ? 'W' : 'L';
+    Campaign c;
+    std::string err;
+    load_campaign(art.vfs(), progress->campaign, c, err);
+    MissionInfo& info = ms->info();
+    if (info.file.empty() && progress->mission >= 0 && progress->mission < static_cast<int>(c.missions.size()))
+        load_mission(art.vfs(), c.missions[static_cast<std::size_t>(progress->mission)].file, progress->difficulty, info, err);
+    for (const CampaignMission& m : c.missions) out.missions.push_back(m.name);
+    out.results = progress->results;
+    out.mission = progress->mission;
+    out.won = progress->won;
+    out.difficulty = progress->difficulty;
+    const bool has_next = progress->mission + 1 < static_cast<int>(c.missions.size());
+    // (0x41F400 / 0x41F7F0 state 5: the buttons unless the last mission was won; then the movies)
+    out.buttons = !(out.won && !has_next);
+    out.final_win = out.won && !has_next;
+    out.final_movies = {side_index(art.vfs(), progress->side) == 1 ? "4.zrb" : "3.zrb", "5.zrb"};
+    if (out.won && !info.glamour.empty()) {
+        // 0x41DA60: bitmaps\glamour\<glamour>.pcx with its palette; its sound camps\briefs\<..>.wav.
+        out.glamour = art.picture("glamour\\" + info.glamour, &out.glamour_palette);
+        if (!info.glamour_sound.empty()) {
+            std::vector<std::uint8_t> wav;
+            auto smp = std::make_shared<client::Sample>();
+            if (art.vfs().read("camps\\briefs\\" + info.glamour_sound + ".wav", wav) && client::decode_wav(wav, *smp)) out.glamour_sound = smp;
+        }
+    }
+    // "Click to continue." in the side's console font (sidedata "font").
+    {
+        std::vector<std::uint8_t> sd;
+        if (art.vfs().read("gamedata\\sidedata.tdf", sd)) {
+            const TdfParseResult r = tdf_parse(std::string_view(reinterpret_cast<const char*>(sd.data()), sd.size()));
+            if (r.root)
+                if (const TdfSection* sec = r.root->child("SIDE" + std::to_string(side_index(art.vfs(), progress->side))))
+                    out.click_font = art.fnt_font(sec->get_string("font", 32, ""));
+        }
+    }
+    out.start = [&art, progress, save_dir](client::FrontEnd& fe, int mission) {
+        mount_cd_archives(art.vfs(), art.game_dir());
+        progress->mission = mission;
+        progress->won = false;
+        fe.push(std::make_unique<BriefingScreen>(art, save_dir, progress));
+    };
+    out.load = [&art, save_dir](client::FrontEnd& fe) {
+        if (fe.hooks().load_game_menu)
+            if (auto s = fe.hooks().load_game_menu(fe, nullptr)) fe.push(std::move(s));
+    };
+    out.save = [&art, progress, save_dir](client::FrontEnd& fe) {
+        auto s = std::make_unique<SaveGamesScreen>(art, save_dir, nullptr, true, screen_under(fe, nullptr));
+        s->between_ = [&art, progress]() {
+            SaveContext c;
+            c.game_id = static_cast<std::int32_t>(std::time(nullptr));
+            c.game_type = 1;
+            c.campaign = progress->campaign;
+            Campaign camp;
+            std::string e;
+            load_campaign(art.vfs(), progress->campaign, camp, e);
+            const int n = static_cast<int>(camp.missions.size());
+            const int next = progress->mission + 1 < n ? progress->mission + 1 : progress->mission;
+            c.mission = next >= 0 && next < n ? camp.missions[static_cast<std::size_t>(next)].name : std::string();
+            c.thumbs = progress->results;
+            c.difficulty = progress->difficulty;
+            c.side = side_index(art.vfs(), progress->side);
+            c.between_missions = true;
+            return c;
+        };
+        fe.push(std::move(s));
+    };
+    out.set_difficulty = [progress](int d) { progress->difficulty = d; };
+    return true;
 }
 
 void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const std::string& save_dir) {

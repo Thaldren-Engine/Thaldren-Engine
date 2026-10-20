@@ -406,6 +406,15 @@ private:
         play_pending_sounds();
         BattleLauncher l = std::move(pending_);
         pending_ = nullptr;
+        // A battle that ended and is still kept (the campaign's statistics screen, which stays
+        // under the next mission's briefing) is left now, before the next one loads.
+        if (session_ && ended_) {
+            std::unique_ptr<BattleSession> old = std::move(session_);
+            ended_ = false;
+            battle_base_ = 0;
+            desk_.forget(old->content().samples);
+            retired_ = std::move(old);
+        }
         // The loading screen starts with every row at 0 and its highlights off; it is drawn at
         // the first report (the launcher names the map first) and then at most every 200 ms
         // (the original's loading routine draws a frame, then sleeps 200 ms).
