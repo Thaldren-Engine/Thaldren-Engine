@@ -143,4 +143,9 @@ summary at the end gives the counts after this round.
 
 ## 6. Summary
 
-(Counts after this round: at the end of the round.)
+Counts after this round (2026-10-20): 99 items (2.50 added) — BUILT+VERIFIED 36, BUILT-UNVERIFIED 43,
+PARTIAL 7, MISSING 9, NOT-APPLICABLE 4 (start: 26 / 17 / 18 / 33 / 4 of 98). Left open: +contour, +light,
+ShowRanges, +makeposter (1.23-1.25, 2.42, 4.1, 4.3, 4.4, 4.7), the chat recipient panel TALK2.GUI (2.9),
+the campaign's in-battle briefing page (2.15), air shadows, depth-plane water clipping, hidden
+features, plasma sizes (1.6, 1.7, 1.10, 1.11), the per-unit pointer rules (2.11) and settings saved
+after some commands (4.10).
