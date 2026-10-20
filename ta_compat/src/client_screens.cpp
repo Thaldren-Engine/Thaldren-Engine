@@ -722,11 +722,16 @@ protected:
         los_type_ = s.get_int("SkirmishLOSType", 1);
         difficulty_ = s.get_int("SkirmishDifficulty", 1) & 0xFFFF;
         fixed_ = s.get_int("SkirmishLocation", 1);
+        // The original (0x47BBB0): the saved map is looked up (0x435A20 -> 0x435DA0: Maps\<name>.ota
+        // loads with a [GlobalHeader] and a network schema; the name kept as saved, any case);
+        // when that fails — no setting, or a map that is gone — the map list's first name is taken
+        // (0x435D30 with 0: the unsorted list, maps in enumeration order; "" when there are no
+        // maps). The registry read at start-up (0x42F9A0) does the same for a missing key.
         map_ = s.get_text("SkirmishMap", "");
         const auto& maps = art_.skirmish_maps();
         bool found = false;
         for (const auto& m : maps) found = found || upper(m) == upper(map_);
-        if (!found) map_ = maps.empty() ? std::string("Moon Quartet") : maps.front();
+        if (!found) map_ = art_.first_skirmish_map();
     }
     void save(client::Settings& s) {
         s.set_int("NumSkirmishPlayers", static_cast<int>(rows_.size()));
@@ -1047,7 +1052,7 @@ protected:
             p.ally_group = r.ally == 5 ? 0xFF : static_cast<std::uint8_t>(r.ally);
             p.energy = r.energy;
             p.metal = r.metal;
-            p.name = r.kind == 1 ? "Player" : "Computer";
+            p.name = start_player_name(r.kind != 1, r.side);  // 0x47A760 -> 0x464290
             req.sides[i] = static_cast<std::size_t>(r.side) < art_.sides().size() ? art_.sides()[static_cast<std::size_t>(r.side)] : "ARM";
         }
         req.start.provider = 2;
