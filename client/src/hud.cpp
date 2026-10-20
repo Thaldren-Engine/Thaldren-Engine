@@ -210,7 +210,13 @@ render::DrawList GameClient::draw() {
     }
     std::vector<const sim::Unit*> drawn;
     scene.drawn_units = &drawn;
+    std::uint32_t rand_after = scene.crt_rand_state;
+    scene.crt_rand_after = &rand_after;
     render::DrawList list = render::build_draw_list(scene);
+    // Lightning shots on screen draw the C runtime's rand() while the original draws them
+    // (Gfx_DrawProjectiles 0x49BE60, three draws a segment): the simulation's sequence moves on
+    // by those draws, as the original's does.
+    if (c_.fill_scene && rand_after != scene.crt_rand_state) b_.crt_rand.set_state(rand_after);
     {
         // The original's unit drawing (0x45AC20) brings the drawn units' poses up to date in
         // the simulation's state (debris and shards start from them): the battle's own units

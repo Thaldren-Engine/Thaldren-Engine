@@ -177,6 +177,10 @@ struct BattleScene {
     // The C runtime random state when the frame is drawn: lightning shots draw from a copy of
     // it (the original's draw calls rand(); the renderer never advances the simulation's).
     std::uint32_t crt_rand_state = 0;
+    // Optional: receives that copy's state after the frame's lightning (the original's
+    // drawing advances the simulation's C runtime random sequence by those draws; the owner
+    // hands the state to the battle).
+    std::uint32_t* crt_rand_after = nullptr;
     std::uint8_t clear_index = 0;
     // Optional: drawn poses kept between frames by the scene's owner (the same frames, less
     // work for units whose pose did not change).

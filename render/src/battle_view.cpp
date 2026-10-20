@@ -777,6 +777,7 @@ DrawList build_draw_list(const BattleScene& s) {
             if (p.render_type < 0) draw_projectile(s, p, out);
             else if (!draw_projectile_typed(s, p, out, rand_state)) break;
         }
+        if (s.crt_rand_after) *s.crt_rand_after = rand_state;
     }
     // World effects (the original's 0x420B00): debris pieces, then every effect's glow, then
     // every effect's shard and art; effects whose point is outside the view are skipped.
