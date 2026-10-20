@@ -107,6 +107,13 @@ public:
         start_battle(std::move(launcher));
     }
     void quit() override { quit_ = true; }
+    void exit_to_windows() override {
+        if (session_ && !ended_) {
+            if (s_.music) s_.music->set_mood(MusicMood::Silent);  // (0x4CE690(4))
+            session_->leave_game();
+        }
+        exiting_ = true;
+    }
     Settings& settings() override { return settings_; }
     FrontEndHooks& hooks() override { return s_.hooks; }
     const MenuContent& menu_content() const override { return *s_.content; }
@@ -328,6 +335,19 @@ public:
         list.width = w;
         list.height = h;
         palette = &s_.content->palette;
+        if (exiting_) {
+            // (0x4257A0 / state 8: the back buffer filled with colour 0 and shown, no pointer;
+            // the window closes after it)
+            if (in_battle()) palette = &session_->content().palette;
+            render::Sprite8 s;
+            s.width = w;
+            s.height = h;
+            s.has_key = false;
+            s.pixels.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), 0);
+            list.blit(list.keep(std::move(s)), 0, 0, {0, 0, w - 1, h - 1}, false);
+            quit_ = true;
+            return list;
+        }
         if (in_battle() && !ended_) {
             session_->client().set_pointer_hidden(stack_.size() > battle_base_);
             list = session_->client().draw();
@@ -557,7 +577,8 @@ private:
             } else if (w == "stop") {
                 m->stop();
             } else if (w == "mode") {
-                m->set_mode(n);
+                // (0x4175E0 -> 0x4CE690: the music mood, 0 building .. 4 silent)
+                if (n >= 0 && n <= 4) m->set_mood(static_cast<MusicMood>(n));
             }
         };
         session_->client().warp_pointer = [this](int x, int y) {
@@ -643,6 +664,7 @@ private:
     LoadingState load_;
     std::chrono::steady_clock::time_point load_clock_start_{};
     bool quit_ = false;
+    bool exiting_ = false;  // exit to Windows: the next frame is the black one, then the end
     AudioOut* audio_ = nullptr;
     SoundDesk desk_;
     int fx_volume_ = 27, sound_mode_ = 1;
@@ -920,8 +942,17 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         }
         std::printf("front end (headless): %d frames, %zu interface sounds\n", f, run.sound_count_);
         // (tests: whether a battle is still running at the end, and the screens open over it)
-        if (run.session()) std::printf("battle running, %zu screens over it\n", run.screens_over_battle());
-        else std::printf("no battle running\n");
+        if (run.session()) {
+            std::printf("battle running, %zu screens over it\n", run.screens_over_battle());
+            // (tests: each player record in use, its controller and its live units)
+            const sim::Battle& b = run.session()->battle();
+            for (std::size_t k = 0; k < b.players.size() && k < 10; ++k)
+                if (b.players[k].active)
+                    std::printf("player %zu: controller %d, %d units\n", k, static_cast<int>(b.players[k].controller),
+                                static_cast<int>(b.players[k].alive_count));
+        } else {
+            std::printf("no battle running\n");
+        }
         return 0;
     }
 #ifdef CLIENT_HAVE_SDL

@@ -155,6 +155,9 @@ public:
     virtual void send_chat(const std::string& text) { client().message(text); }
     // The local player gives up (in-game menu).
     virtual void surrender() {}
+    // The program is about to end with this battle running (exit to Windows): network games
+    // take this machine's players out of the game (0x451B60).
+    virtual void leave_game() {}
     // A network game (Tab opens the tab bar instead of the game menu).
     virtual bool network() const { return false; }
     // Once the battle has ended: true when the end screens may show (network games first
@@ -301,6 +304,12 @@ public:
     virtual void restart_battle(BattleLauncher launcher) { start_battle(std::move(launcher)); }
     // Ends the program.
     virtual void quit() = 0;
+    // Exit to Windows as the original does it (the main menu's EXIT, 0x425D80 state 8; the exit
+    // menu's "Exit Game" answered Yes, 0x4605C0 -> 0x491C60): in a battle the music goes silent
+    // and the session leaves the game (network games: the local players' units die and the
+    // players leave the session, 0x451B60); then one black frame (colour 0, no pointer) is shown
+    // and the program ends.
+    virtual void exit_to_windows() { quit(); }
 
     virtual Settings& settings() = 0;
     virtual FrontEndHooks& hooks() = 0;

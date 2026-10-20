@@ -146,6 +146,8 @@ public:
     void player_sensor_turn(int player) override;
     void network_input() override;
     void network_flush() override;
+    // Everything queued goes out now (the program is about to end).
+    void flush_all();
 
     // ---- the rest goes to the client's outside.
     std::uint8_t bucket_height(const sim::Unit& u) override { return inner_.bucket_height(u); }
@@ -213,6 +215,9 @@ private:
     // Net_SendPacketToPlayer: from a playing player to a remote one.
     bool send_to(std::int32_t from, std::int32_t to, const std::uint8_t* p, std::size_t n);
     int slot_of(std::int32_t net_id) const;  // 10 when none
+    // 0x452CC0 for another machine's player that left the session: its whole team killed here
+    // (0x486F10), this machine's alliance bytes toward it cleared and its record freed.
+    void remove_remote_player(int slot);
     std::int32_t first_local_net_id() const;
     bool plays(int slot) const;
     void dispatch(int from, int to, const std::vector<std::uint8_t>& p);

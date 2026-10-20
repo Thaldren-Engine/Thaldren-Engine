@@ -333,6 +333,8 @@ bool NetBattle::end_exchange() {
 
 void NetBattle::network_flush() { sender_.flush(clock_, false, send_fn()); }
 
+void NetBattle::flush_all() { sender_.flush(clock_, true, send_fn()); }
+
 void NetBattle::send_chat(const std::string& text) { send_chat(text, 0); }
 
 void NetBattle::send_chat(const std::string& text, int recipients, const std::array<bool, 10>& chosen) {
@@ -401,10 +403,43 @@ void NetBattle::send_alliance(int from, int to, bool allied) {
 
 // ------------------------------------------------------------------ receiving
 
+void NetBattle::remove_remote_player(int slot) {
+    sim::Battle& b = *battle_;
+    if (slot < 0 || slot > 9 || static_cast<std::size_t>(slot) >= b.players.size()) return;
+    sim::PlayerSlot& p = b.players[static_cast<std::size_t>(slot)];
+    if (!p.active || p.state == 10) return;
+    const u8 state = p.state;
+    for (std::size_t k = 0; k < b.players.size() && k < 10; ++k) {
+        const sim::PlayerSlot& q = b.players[k];
+        if (q.active && (q.controller == 1 || q.controller == 2) && k < b.alliances.size() && state < 16) b.alliances[k][state] = 0;
+    }
+    b.kill_team(slot);
+    p.active = false;
+    p.net_id = -1;
+}
+
 void NetBattle::network_input() {
     // 0x453D40: every packet that is due, then the session's bookkeeping.
     if (!battle_) return;
     transport_.pump();
+    // The session's own messages first: a destroyed player of the game (system message 5,
+    // 0x4550D5) that another machine ran leaves here (0x452CC0), and every machine is told
+    // "has disconnected" (packet 0x1C) by this machine's first player.
+    SessionEvent ev;
+    while (transport_.next_event(ev)) {
+        if (ev.kind != SessionEvent::Kind::PlayerDestroyed) continue;
+        const int s = slot_of(ev.id);
+        if (s == 10) continue;
+        const sim::PlayerSlot& lp = battle_->players[static_cast<std::size_t>(s)];
+        if (lp.active && lp.controller == 3) {
+            remove_remote_player(s);
+            leaving_[static_cast<std::size_t>(s)] = 1;
+            if (on_player_left) on_player_left(s, 0x1C);
+        }
+        u8 pk[5] = {packet::kDisconnect};
+        put32(pk + 1, static_cast<std::uint32_t>(ev.id));
+        broadcast(first_local_net_id(), pk, 5);
+    }
     const FrameReceiver::ReadFn read = [this](std::int32_t& f, std::int32_t& t, std::vector<std::uint8_t>& m) {
         Message msg;
         if (!transport_.receive(msg)) return false;

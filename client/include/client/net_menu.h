@@ -94,6 +94,7 @@ public:
     BattleOutcome outcome() override { return inner_->outcome(); }
     void send_chat(const std::string& text) override;
     void surrender() override;
+    void leave_game() override;
     bool network() const override { return true; }
     bool end_exchange_done(std::uint32_t now_ms) override;
     std::vector<PlayerStats> stats() override { return inner_->stats(); }

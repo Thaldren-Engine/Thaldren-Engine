@@ -1291,7 +1291,7 @@ protected:
         } else if (is(w, "MULTI")) {
             if (fe.hooks().multiplayer_menu) fe.push(fe.hooks().multiplayer_menu(fe));
         } else if (is(w, "EXIT")) {
-            fe.quit();
+            fe.exit_to_windows();
         } else if (is(w, "INTRO") || is(w, "Credits")) {
             // (0x425D80) Only on a full screen; the CD check passes on the Steam version. INTRO
             // plays 2.zrb (again and again while Shift was held, until a key), the credits 5.zrb;
@@ -1394,7 +1394,7 @@ protected:
     void on_press(FrontEnd& fe, Widget& w) override {
         sfx(fe, art_, "Exit");
         if (is(w, "CHOICE1")) {
-            if (kind_ == 2) fe.quit();
+            if (kind_ == 2) fe.exit_to_windows();
             else fe.to_main_menu();
         } else if (is(w, "CHOICE2")) {
             fe.pop();

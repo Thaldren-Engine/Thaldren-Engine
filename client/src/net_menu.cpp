@@ -482,4 +482,21 @@ void NetBattleSession::surrender() {
     inner_->surrender();
 }
 
+void NetBattleSession::leave_game() {
+    // 0x451B60 at exit to Windows: for every player this machine runs (controller 1 or 2) its
+    // whole team is killed (0x452CC0 -> 0x486F10; the deaths go out as usual) and the player
+    // leaves the session; what was queued is sent first.
+    sim::Battle& b = inner_->battle();
+    std::vector<std::int32_t> ids;
+    for (int k = 0; k < 10 && static_cast<std::size_t>(k) < b.players.size(); ++k) {
+        const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+        if (!p.active || (p.controller != 1 && p.controller != 2)) continue;
+        b.kill_team(k);
+        const std::int32_t id = net_->room()[static_cast<std::size_t>(k)].net_id;
+        if (id) ids.push_back(id);
+    }
+    net_->flush_all();
+    for (std::int32_t id : ids) transport_->destroy_player(id);
+}
+
 }  // namespace client
