@@ -153,6 +153,12 @@ public:
     virtual BattleOutcome outcome() = 0;
     // A line typed into the in-game chat line (default: shown locally only).
     virtual void send_chat(const std::string& text) { client().message(text); }
+    // Network games' chat recipients (GS+0x2BF0: 0 everybody, 1 allies, 2 enemies, 3 the chosen
+    // players of GS+0x2BF1) and TALK2's switch (GS+0x2BEE bit 0x100: the recipient panel shown
+    // with the chat line; cleared when a line is sent).
+    int chat_mode = 0;
+    std::array<bool, 10> chat_chosen{};
+    bool chat_panel = false;
     // The local player gives up (in-game menu).
     virtual void surrender() {}
     // The program is about to end with this battle running (exit to Windows): network games
@@ -269,6 +275,9 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> save_game_menu;
     // The game menu's Mission button in a campaign: the mission's briefing pages (BRIEFING.GUI).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> mission_briefing;
+    // Network games: the chat line's screen (TALK.GUI with its SENDTO switch, or TALK2.GUI with
+    // the recipient panel), opened when the battle's chat line opens.
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> chat_panel;
     // "+save <name>" (0x417430): the battle written as savegame\<name>.sav in the game folder
     // (description "Generic Game Description", game id 666).
     std::function<void(BattleSession& session, const std::string& name)> save_game_command;

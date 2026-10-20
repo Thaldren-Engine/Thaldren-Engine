@@ -289,6 +289,16 @@ public:
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
             session_->frame(now);
+            // Network games: the chat line opens as its own screen (0x494050: TALK.GUI or TALK2.GUI).
+            if (session_->network() && session_->client().chatting() && s_.hooks.chat_panel) {
+                bool open = false;
+                for (const auto& sc : stack_) open = open || (sc && sc.get() == chat_screen_);
+                if (!open)
+                    if (auto d = s_.hooks.chat_panel(*this, *session_)) {
+                        chat_screen_ = d.get();
+                        push(std::move(d));
+                    }
+            }
             // A silent remote player: the time-out dialog (it closes itself when nobody is).
             if (session_->timed_out_player() >= 0 && s_.hooks.timeout_dialog) {
                 bool open = false;
@@ -664,7 +674,8 @@ private:
     LoadingState load_;
     std::chrono::steady_clock::time_point load_clock_start_{};
     bool quit_ = false;
-    bool exiting_ = false;  // exit to Windows: the next frame is the black one, then the end
+    bool exiting_ = false;
+    const Screen* chat_screen_ = nullptr;  // the network chat line's screen while it is open  // exit to Windows: the next frame is the black one, then the end
     AudioOut* audio_ = nullptr;
     SoundDesk desk_;
     int fx_volume_ = 27, sound_mode_ = 1;

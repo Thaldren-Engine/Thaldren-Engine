@@ -456,8 +456,10 @@ void NetBattleSession::send_chat(const std::string& line) {
     // then made "<name->to> text" (0x463E50), sent to those receivers and shown in colour 4
     // without a sender.
     std::string text = line, to;
-    int recipients = 0;
-    std::array<bool, 10> chosen{};
+    // (without a prefix: the recipients chosen on TALK2, GS+0x2BF0 / +0x2BF1)
+    int recipients = chat_mode;
+    std::array<bool, 10> chosen = chat_chosen;
+    chat_panel = false;  // (0x493BF0: GS+0x2BEE bit 0x100 cleared once a line went)
     if (text.size() >= 2 && (text[1] == ',' || text[1] == ':' || text[1] == ';')) {
         const char c = text[0];
         if (c >= '0' && c <= '9') {

@@ -424,7 +424,7 @@ void GameClient::draw_chat(render::Image8& o) {
     // go through light level 30 — the focus marking of a text field, 0x4A16F0, which sets the
     // gadget's colour word to 30 — instead of a focus ring), then the insertion point: a line in
     // interface colour 9 from the text's top down the font's height (inclusive). No blinking.
-    if (!chat_) return;
+    if (!chat_ || chat_external_) return;
     const Content::ChatLine& t = c_.chat;
     if (!t.loaded) return;
     int bx = t.x, by = t.y;

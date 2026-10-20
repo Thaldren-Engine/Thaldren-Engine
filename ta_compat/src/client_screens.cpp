@@ -2133,6 +2133,103 @@ private:
     const std::vector<render::Sprite8>* logos_ = nullptr;
 };
 
+// The chat line of network games (0x494050): TALK.GUI (flags 0x880: no stock panel) with its
+// SENDTO switch, or with that switch on TALK2.GUI (flags 0x800: the stock panel) with the
+// recipient panel: SENDTYPE (All, Allies, Enemies, Custom: GS+0x2BF0) and a row per other player
+// (0x447380(1): PLAYERn its name, LOGOn its colour logo). The handler (0x493BF0): SENDTO
+// ("SmallButton") keeps the switch and opens the line again in the other form; SENDTYPE
+// ("SmallButton") takes its stage as the recipients; the PLAYER switches only change their look
+// (the handler looks for gadgets named LIVEPLYR, which the file does not have). The console
+// picture and the text field are the battle's chat line (its keys stay the battle's).
+class ChatPanelScreen : public LayoutScreen {
+public:
+    ChatPanelScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout(s.chat_panel ? "TALK2" : "TALK")), art_(art), s_(s) {
+        panel_ = s.chat_panel;
+        focus_ring_ = false;
+        logos_ = s.content().team_logos;
+        s.client().set_chat_external(true);
+        for (const char* n : {"CONSOLE", "TALK"})
+            if (Widget* w = widget(n)) w->active = false;
+        if (Widget* w = widget("SENDTO")) {
+            w->active = true;
+            w->stage = panel_ ? 1 : 0;
+        }
+        if (Widget* w = widget("SENDTYPE")) w->stage = s.chat_mode;
+        if (panel_) rows();
+    }
+    ~ChatPanelScreen() override { s_.client().set_chat_external(false); }
+    bool see_through() const override { return true; }
+    bool battle_keys() const override { return true; }
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        LayoutScreen::frame(fe, now_ms);
+        if (!s_.client().chatting()) fe.pop();
+    }
+
+protected:
+    void rows() {
+        const sim::Battle& b = s_.battle();
+        const int local = b.settings.local_player;
+        for (int k = 0; k < 10; ++k) {
+            const std::string n = std::to_string(k);
+            Widget* player = widget("PLAYER" + n);
+            Widget* logo = widget("LOGO" + n);
+            for (Widget* w : {player, logo})
+                if (w) w->active = false;
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            const bool plays = p.active && p.controller >= 1 && p.controller <= 3 && p.state != 10 && (p.alive_count != 0 || p.units_created == 0);
+            if (k == local || !plays || b.settings.player_sight[static_cast<std::size_t>(k)].watching) continue;
+            if (player) {
+                player->active = true;
+                player->text = s_.player_name(k);
+            }
+            if (logo) {
+                logo->active = true;
+                logo->stage = s_.content().player_colour[static_cast<std::size_t>(k)];
+            }
+        }
+    }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        if (panel_) {
+            const Widget& h = widgets_.front();
+            draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+        }
+        // (CONSOLE and TALK come first in the description: the battle's chat line, under SENDTO)
+        s_.client().draw_chat_line(out);
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!logos_ || w.stage < 0 || w.stage >= static_cast<int>(logos_->size()) || w.name.rfind("LOGO", 0) != 0) return;
+        const render::Sprite8& s = (*logos_)[static_cast<std::size_t>(w.stage)];
+        const Widget& h = widgets_.front();
+        const int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+        const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+        const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+        render::RasterTarget t;
+        t.pixels = out.pixels.data();
+        t.pitch = out.width;
+        t.clip = {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+        render::textured_quad_uv(t, v, uv, s);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "SENDTO")) {
+            sfx(fe, art_, "SmallButton");
+            s_.chat_panel = w.stage != 0;
+            fe.pop();  // (opened again in the other form by the battle's next pass)
+            return;
+        }
+        if (is(w, "SENDTYPE")) {
+            sfx(fe, art_, "SmallButton");
+            s_.chat_mode = w.stage > 3 ? 0 : w.stage;
+            return;
+        }
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    bool panel_ = false;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+};
+
 // The time-out dialog of network games (TIMEOUT.GUI, 0x453A50, flags 0x800): opened while a
 // remote player has been silent past the time-out (0x453C20), closed ("Previous") when nobody is.
 // NAME the player's name; OUTPUT the console's last lines (as many as its rows), oldest first;
@@ -2892,6 +2989,10 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.hooks.allies_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         if (!s.network() || !art.layout("ALLIES")) return nullptr;
         return std::make_unique<AlliesScreen>(art, s);
+    };
+    setup.hooks.chat_panel = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        if (!art.layout(s.chat_panel ? "TALK2" : "TALK")) return nullptr;
+        return std::make_unique<ChatPanelScreen>(art, s);
     };
     setup.hooks.timeout_dialog = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         if (!s.network() || !art.layout("TIMEOUT") || s.timed_out_player() < 0) return nullptr;

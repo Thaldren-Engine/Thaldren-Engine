@@ -132,6 +132,15 @@ public:
     // The chat line (Enter): a typed line goes here when Enter is pressed again.
     std::function<void(const std::string&)> on_chat;
     bool chatting() const { return chat_; }
+    // Network games: the chat line belongs to TALK.GUI / TALK2.GUI opened over the battle (the
+    // screen draws it with draw_chat_line); the battle frame then leaves it out.
+    void set_chat_external(bool on) { chat_external_ = on; }
+    void draw_chat_line(render::Image8& o) {
+        const bool was = chat_external_;
+        chat_external_ = false;
+        draw_chat(o);
+        chat_external_ = was;
+    }
     // Typed commands: a chat line starting with '+' (after leading spaces) runs the rest as a
     // command line with the allowed permission bits (1 options, 2 cheats, 4 debug); returns the
     // bits of the command that ran (0: none). The line is then sent as chat like any other.
@@ -556,6 +565,7 @@ private:
     int panel_dimmed_ = 0;
     std::string chat_text_;
     int chat_cursor_ = 0;          // the text field's insertion point
+    bool chat_external_ = false;   // (set_chat_external)
     bool text_events_ = false;     // the platform sends typed characters (Text events)
     int chat_provisional_ = -1;    // a key's character standing in for its typed character
     std::string last_command_;  // the last command line (debug: '\' runs it again)
