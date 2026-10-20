@@ -1,0 +1,11 @@
+# The game list (SELGAME.GUI) with two games, for menu drawing comparisons (FRONTEND.md 11.2).
+# Ours:     ta_play <game> --headless --no-sound --no-pointer --frames N --shots ... [--script S]
+#             --net-screen selgame:<this file>
+# Original: gui_harness <TotalA.exe> <out> main selprov selgame:<this file> [mouse:X,Y,HELD,MSG
+#             shot:kN | press:KEY frame shot:kN ...]  (each mouse: / frame is one interface pass;
+#           kN = our frame N)
+# Lines: game NAME;MAP;MAX;PLAYERS;OPTIONS;MEMORY;CD;PING;ENERGY;METAL;UNITLIMIT;MAJOR;MINOR
+nick Tester
+password
+game Big Battle;Canal Crossing;4;2;0;64;1;120;10;10;500;3;1
+game Second;Lava Run;8;3;0;64;1;80;10;10;500;3;1

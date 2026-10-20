@@ -137,7 +137,8 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Item | Before | After / evidence |
 |---|---|---|---|
-| 11.1 | Start button glow difference in the battle room | PARTIAL (see RE_MEMORY "Battle room, live") | BUILT+VERIFIED *2026-10-20*: `ta_compat/tests/fixtures/client/room_start_glow.txt` (everybody ready, clock 1725 + 5 a frame) — gui_harness `stub:46E000:1:0 clock:T lounge:FILE` then `clock:T' frame shot:kN`, against ta_play `--net-screen lounge:FILE`: the grill's 8 opening stages and START through light rows 2, 7, 12, 17, 22, 27, 0, 5 identical (harness kN = our frame N − 1, its pass drawing before the room's state). The earlier difference came from the comparison: the dump's "focus START" (a focus ring around START; ta_play's room reader ignores focus lines), the harness's free-running clock (another light row), 0x46E000 answering 0 (SYNCHING instead of START) and `loungeframe` not redrawing the grill. Left outside this row: in that room ours draws the chat line's caret and the labels' quick-key underlines, the original neither (89 pixels; room keys / focus) |
+| 11.1 | Start button glow difference in the battle room | PARTIAL (see RE_MEMORY "Battle room, live") | BUILT+VERIFIED *2026-10-20*: `ta_compat/tests/fixtures/client/room_start_glow.txt` (everybody ready, clock 1725 + 5 a frame) — gui_harness `stub:46E000:1:0 clock:T lounge:FILE` then `clock:T' frame shot:kN`, against ta_play `--net-screen lounge:FILE`: the grill's 8 opening stages and START through light rows 2, 7, 12, 17, 22, 27, 0, 5 identical (harness kN = our frame N − 1, its pass drawing before the room's state). The earlier difference came from the comparison: the dump's "focus START" (a focus ring around START; ta_play's room reader ignores focus lines), the harness's free-running clock (another light row), 0x46E000 answering 0 (SYNCHING instead of START) and `loungeframe` not redrawing the grill. The 89 pixels left then (the chat line's insertion point and the labels' quick-key underlines, "drawn by ours only") were the harness's: run straight into `lounge:` it never loaded GUIPAL, so every interface colour was 0; with `main selprov` first (as the menus reach the room) the original draws both, and the one real difference was the insertion point's colour (the room kept its own palette's interface colours; the original keeps the connection screen's) — fixed, 0 of 307,200 pixels differ in all 9 frames *2026-10-20*, see 11.2 |
+| 11.2 | Insertion point, quick-key underlines, focus marking timing on every menu screen | — | BUILT+VERIFIED *2026-10-20* (RE_MEMORY "Insertion point, quick-key underlines and the focus marking's pass"): underlines always drawn (buttons' centred captions and labels, interface colour 2, no flag / Alt / focus condition); the insertion point whenever the field taking keys is drawn (no blinking); the layout redrawn every pass before the pointer and gadget keys, the marking after it: field lighting one pass behind, outlines at the pass's focus, a stale insertion point for the pass a press takes the keys away, a pressed list's associated lists one pass behind. gui_harness vs ta_play, differing pixels before → after: room 89 → 0 (×9 frames; typing / Tab 0), main menu 0 → 0, single player 0 → 0, options 0 → 0, skirmish quick key 3,570 → 0 (outlines one pass behind; the rest of that screen differs only by its stored settings and map list, not this row), NEWMULTI keys 68 → 0 (Tab away: the text stays lit a pass) and 68 → 0 (Left back), pointer presses on its fields 0 (15 at an intermediate step: the stale insertion point), SELGAME 0 → 0 at opening, row press 12,376 → 0 (the other columns one pass behind); fixture `ta_compat/tests/fixtures/client/selgame_two_games.txt` |
 
 ## 12. Not in this area (noted)
 
@@ -153,13 +154,14 @@ Before: BUILT+VERIFIED 3, BUILT-UNVERIFIED 17, PARTIAL 20, MISSING 22, N/A 15.
 
 Recounted row by row over the 72 numbered rows (status word of the "Before" cell, and of the
 "After" cell where set): before BUILT+VERIFIED 2, BUILT-UNVERIFIED 15, PARTIAL 19, MISSING 24,
-N/A 12; after BUILT+VERIFIED 11, BUILT-UNVERIFIED 33, PARTIAL 10, MISSING 6, N/A 12.
+N/A 12; after BUILT+VERIFIED 11, BUILT-UNVERIFIED 33, PARTIAL 10, MISSING 6, N/A 12. Row 11.2
+(added *2026-10-20*, no "Before"): BUILT+VERIFIED — 73 rows, after BUILT+VERIFIED 12.
 
 Still missing / partial, and why: 1.6 single-instance semaphore and 9.3 / 9.5 (-d display flag,
 bare-word language): program-level switches with no front-end screen, not built. 4.4 / 8.1 the
 `side` setting and 8.2 Single* / Multi* options: the values feed the battle room and the
 battle's options (NETWORK / CLIENT areas), not read yet. 8.5 / 8.6 Password, Game Name, image
 output, mousespeed, ackfx, buildfx: no screen of this area uses them. 7.2 the SELVMODE dialog.
-10.5 the original's error texts. 11.1 the battle room's START glow (rule confirmed, the light
-row difference not resolved). 1.1 the state machine is a screen stack by design. 5.12 the
+10.5 the original's error texts. (11.1 the battle room's START glow and 11.2 the menus'
+insertion point / underlines / focus marking: resolved *2026-10-20*.) 1.1 the state machine is a screen stack by design. 5.12 the
 mission keys' effects belong to SIM.

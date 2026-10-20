@@ -108,6 +108,7 @@ summary at the end gives the counts after this round.
 | 2.49 | Control screen (CONTROL.GUI) | `0x4466B0` | BUILT-UNVERIFIED | ta_compat `ControlScreen` + `RejectQuestion` (YESORNO); smoke: the host rejects the joiner, both consoles report it; not pixel-compared |
 | 2.50 | Time-out dialog of network games (TIMEOUT.GUI: name, console lines, chat, seconds left, Reject Now) | `0x453A50`, `0x453C20`, `0x4538F0` | BUILT-UNVERIFIED | added this round (was not listed); smoke: the joiner gone silent, the dialog after 30 s, the countdown, rejected at 0 |
 | 2.50 | One-frame present lag | `0x426E80` / `0x496BB0` | NOT-APPLICABLE | the client presents the frame it drew; the lag of the original's DirectDraw flip is a timing artefact, not a picture difference |
+| 2.51 | Menu gadgets in and out of battles (the shared layout screen): quick-key underlines, text fields' insertion point, focus marking one pass behind | `0x4A9FD0`, `0x4A81E0`, `0x4A16F0`, `0x4A4D70`, `0x4A56B0`, `0x4A5F40` | BUILT+VERIFIED (menus) | *2026-10-20*: underlines always drawn (colour 2), the insertion point whenever the field taking keys is drawn (no blinking); the redraw every pass comes before the pointer and gadget keys and the marking after it — field lighting the previous pass's marking, outlines at the pass's focus, a press keeps the old field's point for the pass (RE_MEMORY "Insertion point, quick-key underlines and the focus marking's pass"). Verified on the front-end and multiplayer screens with gui_harness (FRONTEND 11.2, all 0 pixels); the in-battle menus share `LayoutScreen` but were not re-compared (see 6) |
 
 ## 3. Sound in battle
 
@@ -157,3 +158,7 @@ pixel-compared), air shadows, depth-plane clipping and hidden features are built
 "plasma sizes" item was a misreading (1.11). Left open: the lens shot (1.11, MINDGUN only; its transparent index is heap
 garbage); the BUILT-UNVERIFIED interface keys, panels and sounds (2.9-2.50, 3.4-3.8, 4.x), which have no harness against the
 original yet; the music mode change's cross-fade (3.8).
+*2026-10-20*: 2.51 added (menu focus marking / insertion point / underlines, BUILT+VERIFIED on the
+front-end screens). Open there: in a battle the original shows no focus outlines (GUI +0xA2 clear,
+`0x49FA70`), so `0x4A16F0` never runs from the redraw and no text field is lit by it — a text field
+in an in-battle menu (the save game name) is still drawn lit by the client; not compared.

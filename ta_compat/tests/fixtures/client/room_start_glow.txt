@@ -3,10 +3,12 @@
 # frame, START is drawn through light row clock & 31 (29, 2, 7, 12, 17, 22, 27, 0, 5, ...).
 # Ours:     ta_play <game> --headless --no-sound --no-pointer --frames 10 --shots 0,...,9
 #             --net-screen lounge:<this file>
-# Original: gui_harness <TotalA.exe> <out> stub:46E000:1:0 clock:1725 lounge:<this file>
+# Original: gui_harness <TotalA.exe> <out> stub:46E000:1:0 clock:1725 main selprov lounge:<this file>
 #             clock:1730 frame shot:k1 clock:1735 frame shot:k2 ... clock:1770 frame shot:k9
 #           ("frame" runs the interface pass before the room's state, so its kN is our frame N-1;
-#           0x46E000 answering 1: every machine's unit definitions compared, START shown.)
+#           0x46E000 answering 1: every machine's unit definitions compared, START shown;
+#           "main selprov" first, as the menus reach the room: they load GUIPAL and make the
+#           interface colours the room keeps; without them every interface colour is 0.)
 local 0
 clock 1725
 clockstep 5
