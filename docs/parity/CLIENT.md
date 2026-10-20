@@ -42,7 +42,7 @@ summary at the end gives the counts after this round.
 | 1.18 | Drag box, placement outline | frame, `0x4197D0` | BUILT+VERIFIED | frame_harness `--hud` |
 | 1.19 | Shift-held queued orders view | `0x48CC30` | BUILT+VERIFIED | frame_harness `--hud` |
 | 1.20 | Camera follow (tracking eases half the distance a step, 320 at most; F3 / `n` / view jumps through the eased target) | `0x41CA10`, `0x41C7C0`, `0x41C8E0` | BUILT+VERIFIED | frame_harness `--camera`: 600 random states, two maps and screen sizes, identical (2026-10-20) |
-| 1.21 | Screen shake | `0x41C6F0` (in the camera stage) | BUILT-UNVERIFIED | the simulation's offsets (flow_harness) added in the camera stage's order (eased, shaken, clamped) |
+| 1.21 | Screen shake | `0x41C6F0` (in the camera stage) | BUILT+VERIFIED | the simulation's offsets (flow_harness) added in the camera stage's order (eased, shaken, clamped). *2026-10-20*: frame_harness `--camera` now shakes in half the stages (random shake state and rand() state written into the original; the engine runs the simulation's decay, then the client's camera stage): 4,000 stages (Great Divide 640 x 480, Moon Quartet 1024 x 768) identical, view, target, following, rand() state and shake state |
 | 1.22 | Gamma (option slider, `+gamma`) | display palette | BUILT-UNVERIFIED | display palette x factor (min 255, truncated) at presentation only (frames, screenshots, films keep the palette); factor 0.5 + n/24 from the setting at battle load and after the options screens, n x 0.1 from +gamma; as read in 0x4BA200 / 0x45BCC0 / 0x417290, not compared (the original's output goes to DirectDraw) |
 | 1.23 | `+contour` lines | `0x418310` → `0x4181D0` / `0x417F60` | BUILT-UNVERIFIED | as read (RE_MEMORY "Console commands, the rest"); smoke: ta_play headless, +contour 1024 on Anteer Strait: lines on the hills, none on flat ground |
 | 1.24 | `+light` (light direction for the shaded path) | `0x4166C0` → `0x4597F0`, read by `0x459C70` | BUILT-UNVERIFIED | the lit path's vector (render::LookTables::light, default -0.8, 1, 0.25), n x 0.01 each; the look cache is made again |
@@ -134,7 +134,7 @@ summary at the end gives the counts after this round.
 | 4.6 | +cdplay / +cdstop / +musicmode | BUILT-UNVERIFIED | see 3.8 |
 | 4.7 | +showranges | BUILT-UNVERIFIED | see 1.25 |
 | 4.8 | +bps | BUILT+VERIFIED | see 1.27 (the command sets the client option) |
-| 4.9 | +screenchat, +clock, +noshake, +dither, +shading, +antialias, +shadow, +tshadow, +fshadow | BUILT-UNVERIFIED | switches the client reads (noshake waits for 1.21) |
+| 4.9 | +screenchat, +clock, +noshake, +dither, +shading, +antialias, +shadow, +tshadow, +fshadow | BUILT-UNVERIFIED | switches the client reads (*2026-10-20*: the "noshake waits for 1.21" note was stale: +noshake toggles the battle's shake switch, which the shake add reads as flow_harness checks; 1.21 is built and compared) |
 | 4.10 | Settings the original saves after a command (DitheredFog, Shading, …) | BUILT-UNVERIFIED | the commands that call `0x430F00` (scrollspeed, iface, sound3d, shading, antialias, shadow, dither, switchalt toggle, screenchat, gamma, clock, los, mapping, film, filmspeed) write the battle's settings by their registry names |
 
 ## 5. Work done this round

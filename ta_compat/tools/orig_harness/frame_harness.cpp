@@ -1289,8 +1289,10 @@ int main(int argc, char** argv) {
         // --camera N: the camera stage of a step (0x41CA10: a followed unit's position as the
         // target, each axis eased half way to the target, at most 320, then the clamp) against
         // the client's (GameClient::camera_test), N random states: views and targets in and out
-        // of the scroll range, followed units alive or not at random points, none. (Shaking is
-        // the simulation's, checked by flow_harness; it is off here.)
+        // of the scroll range, followed units alive or not at random points, none. Half the
+        // stages shake: a random shake state and C runtime rand() state on both sides; the engine
+        // runs the simulation's decay (sim::step_camera_shake, its own stage, flow_harness) and
+        // then the client's camera stage, which adds the offsets between easing and clamping.
         r.w32(gs + 0x1422B, static_cast<u32>(mw * 16 - 32));
         r.w32(gs + 0x1422F, static_cast<u32>(mh * 16 - 128));
         r.w32(gs + 0x1423B, static_cast<u32>((W - 128) / 16));
@@ -1327,16 +1329,36 @@ int main(int argc, char** argv) {
             r.w32(gs + 0x142F7, 0);
             const u16 zero16 = 0;
             r.write(gs + 0x1434B, &zero16, 2);
+            sim::CameraShake sh{};
+            if (rnd(0, 1)) {
+                sh.shaking = rnd(0, 5) != 0;
+                sh.magnitude = rnd(1, 60);
+                sh.ticks_left = rnd(0, sh.magnitude);
+                sh.accum_x = rnd(-300, 300);
+                sh.accum_y = rnd(-300, 300);
+            }
+            const u32 rand_in = static_cast<u32>(rnd(0, 0x7FFFFFFF));
             u8 shake = 0;
             r.read(gs + 0x1434E, &shake, 1);
-            shake = static_cast<u8>(shake & ~1);
+            shake = static_cast<u8>((shake & ~1) | (sh.shaking ? 1 : 0));
             r.write(gs + 0x1434E, &shake, 1);
+            r.w32(gs + 0x1432F, static_cast<u32>(sh.magnitude));
+            r.w32(gs + 0x14333, static_cast<u32>(sh.ticks_left));
+            r.w32(gs + 0x14337, static_cast<u32>(sh.accum_x));
+            r.w32(gs + 0x1433B, static_cast<u32>(sh.accum_y));
+            r.w32(o.rand_state, rand_in);
             if (!o.call(0x0041CA10, 0, {})) return 1;
+            b.shake = sh;
+            b.crt_rand.set_state(rand_in);
+            sim::step_camera_shake(b.shake, b.crt_rand);
             const client::GameClient::CameraState out = gc.camera_test(in);
+            const bool rand_same = r.r32(o.rand_state) == b.crt_rand.state() && static_cast<i32>(r.r32(gs + 0x14333)) == b.shake.ticks_left &&
+                                   ((r.rd<u8>(gs + 0x1434E) & 1) != 0) == b.shake.shaking;
+            b.shake = sim::CameraShake{};
             const int ox = static_cast<int>(r.r32(gs + 0x1431F)), oy = static_cast<int>(r.r32(gs + 0x14323));
             const int otx = static_cast<int>(r.r32(gs + 0x14327)), oty = static_cast<int>(r.r32(gs + 0x1432B));
             const bool ofollow = r.r32(gs + 0x142F3) != 0;
-            if (ox == out.scroll_x && oy == out.scroll_y && otx == out.target_x && oty == out.target_y && ofollow == (out.tracked != 0)) ++same;
+            if (rand_same && ox == out.scroll_x && oy == out.scroll_y && otx == out.target_x && oty == out.target_y && ofollow == (out.tracked != 0)) ++same;
             else if (k - same < 6)
                 std::printf("camera %d: from %d,%d target %d,%d unit %u: original %d,%d target %d,%d%s, client %d,%d target %d,%d%s\n", k,
                             in.scroll_x, in.scroll_y, in.target_x, in.target_y, id, ox, oy, otx, oty, ofollow ? " following" : "", out.scroll_x,
