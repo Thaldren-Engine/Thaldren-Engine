@@ -20,6 +20,7 @@
 #include "ta/battle_types.h"
 #include "ta/featuredefs.h"
 #include "ta/hpi.h"
+#include "ta/translate.h"
 #include "ta/unitdefs.h"
 #include "ta/weapondefs.h"
 
@@ -33,11 +34,13 @@ constexpr std::uint32_t kExplosionTableDraws = 391606;
 
 // A player's name as the original's single-player starts set it (0x464290, from the skirmish
 // start 0x47A760 and the mission start 0x496DB0; record +0x2B and the short name +0x49): a
-// human "Player"; a computer by its side record's index (+0x95): 0 "Arm", any other "Core"
-// (translated; English keeps them). Network games take the session's names instead.
-inline std::string start_player_name(bool computer, int side_index) {
-    if (!computer) return "Player";
-    return side_index == 0 ? "Arm" : "Core";
+// human "Player"; a computer by its side record's index (+0x95): 0 "Arm", any other "Core".
+// Translated (0x4643E2 .. 0x464485): "Player" always, "Arm" / "Core" in skirmishes only (a
+// mission's computer keeps the English word). Network games take the session's names instead.
+inline std::string start_player_name(bool computer, int side_index, bool skirmish) {
+    if (!computer) return translate("Player");
+    const char* n = side_index == 0 ? "Arm" : "Core";
+    return skirmish ? translate(n) : std::string(n);
 }
 
 struct BattleRequest {

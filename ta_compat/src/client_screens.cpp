@@ -868,7 +868,8 @@ protected:
                         if (it2 != help_.end()) h = it2->second;
                     }
                 }
-            if (Widget* t = widget("HELPTEXT")) t->text = h;
+            // (The interface pass translates the help it shows, 0x4AA606.)
+            if (Widget* t = widget("HELPTEXT")) t->text = translate(h);
         }
         if (typed_.take(e)) player_count_cheat(fe);
         LayoutScreen::handle(fe, e);
@@ -1026,7 +1027,7 @@ protected:
             computers += r.kind == 2;
         }
         if (humans == 0 || computers == 0) {
-            show_message(fe, art_, "There must be at least one player and one computer opponent");
+            show_message(fe, art_, translate("There must be at least one player and one computer opponent"));  // (0x47B0CB)
             return;
         }
         // Everyone in one alliance (other than "none") is refused.
@@ -1042,7 +1043,7 @@ protected:
                 else if (group != r.ally) one_group = false;
             }
         if (one_group && group >= 0) {
-            show_message(fe, art_, "All players may not be in the same allied group.");
+            show_message(fe, art_, translate("All players may not be in the same allied group."));  // (0x47B0CB)
             return;
         }
         save(fe.settings());
@@ -1062,7 +1063,7 @@ protected:
             p.ally_group = r.ally == 5 ? 0xFF : static_cast<std::uint8_t>(r.ally);
             p.energy = r.energy;
             p.metal = r.metal;
-            p.name = start_player_name(r.kind != 1, r.side);  // 0x47A760 -> 0x464290
+            p.name = start_player_name(r.kind != 1, r.side, true);  // 0x47A760 -> 0x464290
             req.sides[i] = static_cast<std::size_t>(r.side) < art_.sides().size() ? art_.sides()[static_cast<std::size_t>(r.side)] : "ARM";
         }
         req.start.provider = 2;
@@ -1099,7 +1100,11 @@ private:
 // ------------------------------------------------------------------ single player (SINGLE.GUI)
 class SinglePlayer : public LayoutScreen {
 public:
-    explicit SinglePlayer(MenuArt& art) : LayoutScreen(art.layout("SINGLE")), art_(art) {}
+    explicit SinglePlayer(MenuArt& art) : LayoutScreen(art.layout("SINGLE")), art_(art) {
+        // In Spanish the Skirmish button's quick key becomes 's' (0x4777A0 -> 0x4A1530).
+        if (stricmp_c(Vfs::game_language(), "spanish") == 0)
+            if (Widget* w = widget("Skirmish")) w->quickkey = w->quickkey_char = 's';
+    }
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("NewCamp")) w->grayed = !fe.hooks().campaign_menu;
         if (Widget* w = widget("LoadGame")) w->grayed = !fe.hooks().load_game_menu;
@@ -2284,9 +2289,10 @@ public:
 protected:
     void update() {
         if (Widget* t = widget("TIMETEXT")) {
-            char b[64];
-            std::snprintf(b, sizeof b, "will be rejected in %d seconds", s_.timeout_seconds_left(slot_));
-            t->text = b;
+            // (The format goes through the translation, 0x45386A; the caption again.)
+            char b[256];
+            std::snprintf(b, sizeof b, translate("will be rejected in %d seconds").c_str(), s_.timeout_seconds_left(slot_));
+            t->text = translate(b);
         }
         if (Widget* out = widget("OUTPUT")) {
             // (0x453640: from the newest line back as many lines as the list has rows less one)
@@ -2330,7 +2336,8 @@ public:
         open_centred_ = -1;
         if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
         if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
-        if (Widget* w = widget("TITLE")) w->text = "Reject " + s.player_name(slot) + "?";
+        // ("%s %s?" with "Reject" translated, 0x446150; the caption again)
+        if (Widget* w = widget("TITLE")) w->text = translate(translate("Reject") + " " + s.player_name(slot) + "?");
     }
     bool see_through() const override { return true; }
 

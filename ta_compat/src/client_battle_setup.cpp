@@ -97,7 +97,7 @@ BattleRequest to_battle_request(Vfs& vfs, const SkirmishSetup& setup) {
         req.sides[p] = s ? s->get_string("name", 32, "") : std::string(sp.side ? "CORE" : "ARM");
         sim::StartPlayer& st = req.start.players[p];
         st.kind = sp.ai ? sim::PlayerKind::Computer : sim::PlayerKind::Local;
-        st.name = start_player_name(sp.ai, sp.side);
+        st.name = start_player_name(sp.ai, sp.side, true);
         st.net_id = static_cast<std::int32_t>(p) + 1;
         st.colour = static_cast<std::uint8_t>(p);
         st.start_position = sp.start_pos;
