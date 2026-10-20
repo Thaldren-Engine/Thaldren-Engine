@@ -17,8 +17,8 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 |---|---|---|---|
 | 1.1 | State machine `0x426E80`: GS+0x2BBE top state, +0x2BBF/+0x2BC0 sub-state; a sub-state change runs `0x4256D0` first | PARTIAL (screens are a stack; transitions per screen) | |
 | 1.2 | State 0 start: when the display is full screen, `PlayMovie` (registry, default 1) set → `1.zrb`, then state 1 (`2.zrb`), `PlayMovie` = 0 saved; else (no lobby switch `-c`/`-n`) `1.zrb` only; then the main menu | MISSING (no movies) | BUILT-UNVERIFIED (main menu's first entry; headless ta_play --movies: 1.zrb, a key, 2.zrb, Enter, main menu; PlayMovie written 0) |
-| 1.3 | State 1 (`2.zrb`), state 3 (`5.zrb`, credits), state 4 (`3.zrb` + `5.zrb`, Arm campaign won), state 5 (`4.zrb` + `5.zrb`, Core campaign won) → main menu | MISSING | |
-| 1.4 | Main menu sub-states: 1 run, 5 → single player, 6 → multiplayer, 7 → state 0 (intro again), 8 quit, 9 → credits | PARTIAL (no movie states) | |
+| 1.3 | State 1 (`2.zrb`), state 3 (`5.zrb`, credits), state 4 (`3.zrb` + `5.zrb`, Arm campaign won), state 5 (`4.zrb` + `5.zrb`, Core campaign won) → main menu | MISSING | BUILT-UNVERIFIED (first start 1.zrb + 2.zrb, INTRO 2.zrb, credits 5.zrb, campaign ends 3.zrb / 4.zrb + 5.zrb through client::MovieScreen; headless runs checked the order, skipping and the return to the main menu) |
+| 1.4 | Main menu sub-states: 1 run, 5 → single player, 6 → multiplayer, 7 → state 0 (intro again), 8 quit, 9 → credits | PARTIAL (no movie states) | BUILT-UNVERIFIED (the movie sub-states added: Intro, Credits, the first-start movies) |
 | 1.5 | "Code segment checksum error found when switching FE states" message (`0x4256D0`, `0x428BC0`) | N/A — the check of the original's own code bytes; nothing to check in the engine | |
 | 1.6 | Program run once: semaphore "Total Annihilation" — a second start exits at once | MISSING | |
 | 1.7 | `srand(time)` at start (the menus' rand() state) | BUILT-UNVERIFIED (the client seeds its menu rand from the clock — an input) | |
@@ -108,7 +108,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | 8.5 | Password, Nickname, Game Name, Image Output Directory (`<user>_images`-like default), Movie Output Rate 10 | PARTIAL (Nickname only) | |
 | 8.6 | textlines 10, textscroll 10, mousespeed 10, gamespeed 10, unitchat 10, unitchattext 5, musicmode 1, cdmode 4, ackfx 1, buildfx 1, speechfx 1, fxvol 27, musicvol 32, clock 0 | PARTIAL (mousespeed, ackfx, buildfx missing) | |
 | 8.7 | NumSkirmishPlayers 4, Skirmish… values, SkirmishMap (first map), `Total Annihilation\Skirmish` Player%d… | BUILT-UNVERIFIED | |
-| 8.8 | PlayMovie 1, DisplaymodeDepth / Games (option bit 2), AllMissions 0 | PARTIAL (AllMissions only) | |
+| 8.8 | PlayMovie 1, DisplaymodeDepth / Games (option bit 2), AllMissions 0 | PARTIAL (AllMissions only) | PARTIAL (PlayMovie 1 read and cleared after the first start's movies; AllMissions; DisplaymodeDepth / Games not used: one colour depth, no DirectPlay option) |
 | 8.9 | CDLISTS track types | BUILT-UNVERIFIED | |
 
 ## 9. Command line (`0x49EE30`)
@@ -136,7 +136,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Item | Before | After / evidence |
 |---|---|---|---|
-| 11.1 | Start button glow difference in the battle room | PARTIAL (see RE_MEMORY "Battle room, live") | |
+| 11.1 | Start button glow difference in the battle room | PARTIAL (see RE_MEMORY "Battle room, live") | PARTIAL, rule confirmed (0x4B8310 read: START's BUTTONS0 frames are compressed and one layer, so dst = T[level*256 + src], the client's rule; uncompressed and layered frames follow other rules, now in RE_MEMORY). The remaining difference is not resolved: a re-run of gui_harness on the NETWORK agent's room dump differs elsewhere too (records / chat), so no clean comparison of the light row was possible here |
 
 ## 12. Not in this area (noted)
 
@@ -149,3 +149,16 @@ NETWORK agent.
 ## Counts
 
 Before: BUILT+VERIFIED 3, BUILT-UNVERIFIED 17, PARTIAL 20, MISSING 22, N/A 15.
+
+Recounted row by row over the 72 numbered rows (status word of the "Before" cell, and of the
+"After" cell where set): before BUILT+VERIFIED 2, BUILT-UNVERIFIED 15, PARTIAL 19, MISSING 24,
+N/A 12; after BUILT+VERIFIED 11, BUILT-UNVERIFIED 33, PARTIAL 10, MISSING 6, N/A 12.
+
+Still missing / partial, and why: 1.6 single-instance semaphore and 9.3 / 9.5 (-d display flag,
+bare-word language): program-level switches with no front-end screen, not built. 4.4 / 8.1 the
+`side` setting and 8.2 Single* / Multi* options: the values feed the battle room and the
+battle's options (NETWORK / CLIENT areas), not read yet. 8.5 / 8.6 Password, Game Name, image
+output, mousespeed, ackfx, buildfx: no screen of this area uses them. 7.2 the SELVMODE dialog.
+10.5 the original's error texts. 11.1 the battle room's START glow (rule confirmed, the light
+row difference not resolved). 1.1 the state machine is a screen stack by design. 5.12 the
+mission keys' effects belong to SIM.
