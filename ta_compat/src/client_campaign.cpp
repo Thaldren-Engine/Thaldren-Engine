@@ -13,6 +13,7 @@ std::string ta::progress_from_thumbs(const std::string& thumbs) {
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -164,88 +165,414 @@ client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_di
     };
 }
 
-// --- The briefing of one mission: text pages, narration, then the battle.
-class BriefingScreen : public client::Screen {
+// --- The mission briefing (MSNBRIEF.GUI): set-up 0x478E80, handler 0x478CB0; each pass the
+// planet (0x478B40) and the panorama (0x478790, which also draws the wind and gravity and the
+// blinking words, 0x4AFF00); the text: 0x476D80 (set-up), 0x4AC4C0 (word wrap), 0x476CD0
+// (colour spans carried over line breaks), 0x476EF0 (one page as label lines).
+//   * The picture bitmaps\mbrief<side prefix>; the interface colours from the game palette.
+//   * The planet's name (map info "Planet"; "Lunar" becomes "Lunar2" for Core) picks one of 15
+//     planets: anims\<planet>brief.GAF holds the rotating planet (<..>Rotate), the panorama strip
+//     (<..>Pan) and the frame around it (Panmask, one frame per side). Unknown names: Green.
+//   * PLANET: every 25 ms of the wall clock: the narration's end turns the narration switch off,
+//     the rotation steps by its frames' durations; the frame centred in the gadget on colour 0.
+//   * PANORAMA: the wind shown (starting at rand() % (max - min + 1) + min) moves by rand() % 5 - 2
+//     whenever its countdown (first rand() % 64, then rand() % 63 passes) runs out, kept within
+//     min..max; "Wind Speed : %d" and "Gravity : %.1f" (gravity / 112) in the side's font and
+//     colour in SOLARSYSTEM's box (filled with colour 0) at +80, +20 / +40; the blinking words;
+//     the strip of all frames (and the first again) from x - scroll, the scroll one pixel on every
+//     third tick, wrapping at the strip's width (kept from one briefing to the next); Panmask's
+//     side frame over the whole screen.
+//   * The text: camps\briefs\<brief>.txt wrapped to TextRegion's width in the side's font with
+//     CR LF breaks, "&X..&" spans (X: G, Y, R) restarted after each break inside them; a page is
+//     TextRegion.h / (font height + 2) lines from row (font height + 2) / 2, at x + 5, in the
+//     side's colour; each span also blinks over its line: its colour (G, Y, R) for a second,
+//     colour 0x5E for a quarter. MOREBAR: "MORE...", "BACK TO START" (last page of several) or
+//     nothing, in the side's second colour; a click on it or the text shows the next page ("More").
+//   * Narration (camps\briefs\<narration>.wav) starts with the screen; the switch (SHUTUP, on)
+//     stops it or starts it again ("Options", then "SmallButton").
+//   * Start: "BigButton", the narration stops, the battle. Previous: the narration stops,
+//     "Previous", the new campaign screen again.
+class BriefingScreen : public client::LayoutScreen {
 public:
     BriefingScreen(MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
+        : client::LayoutScreen(art.layout("MSNBRIEF")), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
 
     void enter(client::FrontEnd& fe) override {
-        if (loaded_) return;
-        loaded_ = true;
+        if (set_up_) return;
+        set_up_ = true;
         Campaign c;
         const int index = progress_->mission;
-        if (!load_campaign(art_.vfs(), progress_->campaign, c, error_) || index < 0 || index >= static_cast<int>(c.missions.size())) {
-            if (error_.empty()) error_ = "no such mission";
-            return;
+        std::string error;
+        ok_ = load_campaign(art_.vfs(), progress_->campaign, c, error) && index >= 0 && index < static_cast<int>(c.missions.size()) &&
+              load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(index)].file, progress_->difficulty, info_, error);
+        side_ = side_index(art_.vfs(), progress_->side) == 1 ? 1 : 0;
+        background_ = art_.picture("mbrief" + side_prefix());
+        for (int k = 0; k < 256; ++k) colours_table_[static_cast<std::size_t>(k)] = art_.gui_colour(art_.content().palette, k);
+        colours_ = &colours_table_;
+        for (const char* n : {"MOREBAR", "TextRegion"})
+            if (client::Widget* w = widget(n)) w->attribs &= ~0x10;
+        if (client::Widget* s = widget("SHUTUP")) s->stage = 1;
+        // The fonts of the screen's FONT gadgets: 0 smlfont, 1 armfont, 2 corefont.
+        std::vector<std::string> fonts;
+        if (const client::ScreenLayout* L = layout())
+            for (const client::Widget& w : L->widgets)
+                if (w.kind == client::WidgetKind::FontRef) fonts.push_back(w.text);
+        small_font_ = art_.fnt_font("smlfont");
+        side_font_ = art_.fnt_font(side_ == 0 ? "armfont" : "corefont");
+        // The wind shown and its countdown.
+        sim::Lcg15& rnd = menus_rand();
+        // (tests: TA_BRIEF_RAND=S puts rand() on state S here, as gui_harness's srand:S does)
+        if (const char* t = std::getenv("TA_BRIEF_RAND")) rnd.set_state(static_cast<std::uint32_t>(std::strtoul(t, nullptr, 0)));
+        const int span = info_.max_wind - info_.min_wind + 1;
+        const int r1 = static_cast<int>(rnd.next());
+        wind_ = span != 0 ? r1 % span + info_.min_wind : info_.min_wind;
+        countdown_ = static_cast<int>(rnd.next()) % 64;
+        load_planet();
+        now_tick_ = fe.now_ms() * 30 / 1000;
+        if (ok_ && !info_.brief_text.empty() && side_font_) {
+            const client::Widget* t = widget("TextRegion");
+            text_ = carry_spans(wrap_crlf(*side_font_, info_.brief_text, t ? t->w : 360));
+            page_ = -1;
+            paginate();
         }
-        title_ = c.missions[static_cast<std::size_t>(index)].name;
-        if (!load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(index)].file, progress_->difficulty, info_, error_)) return;
-        ok_ = true;
-        lines_ = wrap(info_.brief_text.empty() ? info_.description : info_.brief_text, fe.menu_content().font, fe.width() - 80);
-        std::vector<std::uint8_t> wav;
-        client::Sample s;
-        if (!info_.narration.empty() && art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) && client::decode_wav(wav, s)) {
-            // The narration streams on its own channel at full volume (whatever the sound
-            // settings); leaving the briefing stops it.
-            art_.content().samples.push_back(std::move(s));
-            fe.play_narration(static_cast<int>(art_.content().samples.size()) - 1);
+        start_narration(fe);
+    }
+
+    void frame(client::FrontEnd& fe, std::uint32_t now) override {
+        client::LayoutScreen::frame(fe, now);
+        const std::uint32_t tick = now * 30 / 1000;
+        now_tick_ = tick;
+        // PLANET (0x478B40): every 25 ms of the wall clock.
+        if (now >= planet_next_) {
+            planet_next_ = now + 25;
+            if (now >= narration_end_)
+                if (client::Widget* s = widget("SHUTUP"); s && s->stage != 0) s->stage = 0;
+            if (rotate_ && !rotate_times_.empty() && tick != 0) {
+                // The frame cursor (0x4B8B90): a countdown below 2 moves to the next frame.
+                if (cursor_wait_ < 2) {
+                    if (++cursor_frame_ >= static_cast<int>(rotate_times_.size())) cursor_frame_ = rotate_loop_ ? 0 : static_cast<int>(rotate_times_.size());
+                    if (cursor_frame_ < static_cast<int>(rotate_times_.size())) cursor_wait_ = rotate_times_[static_cast<std::size_t>(cursor_frame_)];
+                } else {
+                    --cursor_wait_;
+                }
+            }
+        }
+        // PANORAMA (0x478790): once per pass.
+        if (pan_) {
+            sim::Lcg15& rnd = menus_rand();
+            if (--countdown_ < 1) {
+                wind_ += static_cast<int>(rnd.next()) % 5 - 2;
+                if (wind_ < info_.min_wind) wind_ = info_.min_wind;
+                if (wind_ > info_.max_wind) wind_ = info_.max_wind;
+                countdown_ = static_cast<int>(rnd.next()) % 63;
+            }
+            int strip = 0;
+            for (const render::Sprite8& f : *pan_) strip += f.width;
+            if (static_cast<std::int32_t>(pan_next_) < static_cast<std::int32_t>(tick)) {
+                if (++pan_scroll_ >= strip) pan_scroll_ = 0;
+                pan_next_ = tick + 2;
+            }
+        }
+        // The blinking words (0x4AFF00): one second in their colour, a quarter in 0x5E.
+        for (Blink& b : blinks_)
+            if (b.next < static_cast<float>(tick)) {
+                b.next = static_cast<float>(tick) + 30.0f * (b.off ? 1.0f : 0.25f);
+                b.off = !b.off;
+            }
+    }
+
+    void draw(client::FrontEnd& fe, render::Image8& out) override {
+        client::LayoutScreen::draw(fe, out);
+        const render::ClipRect all = out.bounds();
+        // The page's lines and MOREBAR.
+        if (side_font_)
+            for (const Line& l : lines_) client::draw_text(out, all, *side_font_, l.text, l.x, l.y, kSideColour[side_][0], -1, 640 - l.x - 5);
+        if (const client::Widget* m = widget("MOREBAR"); m && small_font_ && !more_text_.empty()) {
+            // (0x4A56B0 measures a centred label's text in the interface's picture font while a
+            // picture font is set, then draws it in the label's bit font)
+            const client::Font* measure = fe.menu_content().small_font ? fe.menu_content().small_font : small_font_;
+            const int tx = m->x + m->w / 2 - measure->text_width(more_text_) / 2;
+            client::draw_text(out, all, *small_font_, more_text_, tx, m->y, kSideColour[side_][1], -1, m->w);
+        }
+        // PLANET.
+        if (const client::Widget* p = widget("PLANET")) {
+            client::fill_rect(out, all, p->x, p->y, p->x + p->w - 1, p->y + p->h - 1, colours_table_[static_cast<std::size_t>(p->bg & 0xFF)]);
+            if (rotate_ && cursor_frame_ < static_cast<int>(rotate_->size())) {
+                const render::Sprite8& f = (*rotate_)[static_cast<std::size_t>(cursor_frame_)];
+                render::blit(out, all, f, p->w / 2 - (f.width >> 1) + p->x + f.x_offset, p->h / 2 - (f.height >> 1) + p->y + f.y_offset);
+            }
+        }
+        // PANORAMA: the wind and gravity, the blinking words, the strip, the frame.
+        if (const client::Widget* g = widget("PANORAMA"); g && pan_) {
+            if (const client::Widget* s = widget("SOLARSYSTEM")) {
+                client::fill_rect(out, all, s->x, s->y, s->x + s->w - 1, s->y + s->h - 1, colours_table_[0]);
+                if (side_font_) {
+                    char buf[64];
+                    std::snprintf(buf, sizeof buf, "%s : %d", "Wind Speed", wind_);
+                    client::draw_text(out, all, *side_font_, buf, s->x + 80, s->y + 20, kSideColour[side_][0], -1, s->w - 1 - 80);
+                    std::snprintf(buf, sizeof buf, "%s : %.1f", "Gravity", static_cast<double>(info_.gravity) * 0.008928571428571428);
+                    client::draw_text(out, all, *side_font_, buf, s->x + 80, s->y + 40, kSideColour[side_][0], -1, s->w - 1 - 80);
+                }
+            }
+            if (side_font_)
+                for (const Blink& b : blinks_)
+                    client::draw_text(out, all, *side_font_, b.text, b.x, b.y, b.off ? 0x5E : b.colour, -1, -1);
+            client::fill_rect(out, all, g->x, g->y, g->x + g->w - 1, g->y + g->h - 1, colours_table_[static_cast<std::size_t>(g->bg & 0xFF)]);
+            int x = g->x - pan_scroll_;
+            const int n = static_cast<int>(pan_->size());
+            for (int k = 0; k <= n; ++k) {
+                const render::Sprite8& f = (*pan_)[static_cast<std::size_t>(k % n)];
+                render::blit(out, all, f, x + f.x_offset, g->y + f.y_offset);
+                x += f.width;
+            }
+            if (mask_ && side_ < static_cast<int>(mask_->size())) render::blit(out, all, (*mask_)[static_cast<std::size_t>(side_)], (*mask_)[static_cast<std::size_t>(side_)].x_offset, (*mask_)[static_cast<std::size_t>(side_)].y_offset);
         }
     }
+
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type != client::InputEvent::Type::KeyDown && e.type != client::InputEvent::Type::MouseDown) return;
-        if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kEscape) {
-            // (the previous menu: the narration stops, "Previous")
+        // A click on the text or MOREBAR (labels the pointer reaches through the interface pass).
+        if (e.type == client::InputEvent::Type::MouseDown && e.button == 1) text_down_ = over_text(e.x, e.y);
+        if (e.type == client::InputEvent::Type::MouseUp && e.button == 1 && text_down_ && over_text(e.x, e.y)) more(fe);
+        if (e.type == client::InputEvent::Type::MouseUp) text_down_ = false;
+        client::LayoutScreen::handle(fe, e);
+    }
+
+protected:
+    void draw_surface(client::FrontEnd&, render::Image8&, const client::Widget&) override {}
+    void on_press(client::FrontEnd& fe, client::Widget& w) override {
+        if (named(w, "Start")) {
+            fe.play_sound(art_.sound("BigButton"));
+            if (!ok_) return;
+            mount_cd_archives(art_.vfs(), art_.game_dir());
+            fe.stop_narration();
+            fe.start_battle(mission_launcher(art_, save_dir_, progress_, info_, fe));
+        } else if (named(w, "SHUTUP")) {
+            fe.play_sound(art_.sound("Options"));
+            if (w.stage == 0) {
+                fe.stop_narration();
+                narration_end_ = 0;
+            } else {
+                start_narration(fe);
+            }
+            fe.play_sound(art_.sound("SmallButton"));
+        } else if (named(w, "PrevMenu")) {
             fe.stop_narration();
             fe.play_sound(art_.sound("Previous"));
             fe.pop();
-            return;
-        }
-        const int per_page = std::max(1, (fe.height() - 120) / 14);
-        if (e.type == client::InputEvent::Type::KeyDown && (e.key == client::keys::kRight || e.key == client::keys::kDown)) {
-            // (the text's "more" bar while there is more: "More")
-            if ((page_ + 1) * per_page < static_cast<int>(lines_.size())) {
-                ++page_;
-                fe.play_sound(art_.sound("More"));
-            }
-            return;
-        }
-        if (e.type == client::InputEvent::Type::KeyDown && (e.key == client::keys::kLeft || e.key == client::keys::kUp)) {
-            if (page_ > 0) --page_;
-            return;
-        }
-        // (Start: "BigButton", the narration stops)
-        fe.play_sound(art_.sound("BigButton"));
-        if (!ok_) return;
-        fe.stop_narration();
-        fe.start_battle(mission_launcher(art_, save_dir_, progress_, info_, fe));
-    }
-    void draw(client::FrontEnd& fe, render::Image8& out) override {
-        Pen p(fe, out);
-        p.clear();
-        const client::MenuContent& m = fe.menu_content();
-        p.text(progress_->campaign, 40, 20, m.text_dim);
-        p.text(ok_ ? title_ : error_, 40, 36, m.text_highlight);
-        if (ok_) {
-            p.text(info_.description, 40, 54, m.text_colour, fe.width() - 80);
-            const int per_page = std::max(1, (fe.height() - 120) / 14);
-            for (int k = 0; k < per_page; ++k) {
-                const std::size_t at = static_cast<std::size_t>(page_ * per_page + k);
-                if (at >= lines_.size()) break;
-                p.text(lines_[at], 40, 80 + k * 14, m.text_colour);
-            }
-            p.text("Enter: start   Arrows: pages   Esc: back", 40, fe.height() - 30, m.text_dim);
         }
     }
 
 private:
+    struct Line {
+        std::string text;
+        int x = 0, y = 0;
+    };
+    struct Blink {
+        std::string text;
+        int x = 0, y = 0;
+        std::uint8_t colour = 0;
+        bool off = false;
+        float next = 0;
+    };
+    // Per side: the text colour, then the G, Y and R spans' colours (0x507B70).
+    static constexpr std::uint8_t kSideColour[2][4] = {{0x35, 0x33, 0x40, 0xD0}, {0x75, 0x56, 0x52, 0xD4}};
+
+    static bool named(const client::Widget& w, const char* n) { return stricmp_c(w.name, n) == 0; }
+    std::string side_prefix() {
+        std::vector<std::uint8_t> sd;
+        if (art_.vfs().read("gamedata\\sidedata.tdf", sd)) {
+            const TdfParseResult r = tdf_parse(std::string_view(reinterpret_cast<const char*>(sd.data()), sd.size()));
+            if (r.root)
+                if (const TdfSection* s = r.root->child("SIDE" + std::to_string(side_))) return s->get_string("nameprefix", 32, "");
+        }
+        return side_ == 0 ? "ARM" : "COR";
+    }
+    void load_planet() {
+        static const char* const kNames[] = {"Green planet", "Archipelago", "Wet Desert", "Desert", "Lava", "Red Planet", "Lunar", "Metal",
+                                             "Lunar2", "Ice", "Lush", "Slate", "Water World", "Acid", "Crystal"};
+        static const char* const kBrief[] = {"Greenbrief", "Archibrief", "WDesertbrief", "Desertbrief", "Lavabrief", "Marsbrief", "Lunarbrief", "Metalbrief",
+                                             "Lunar2brief", "Icebrief", "Lushbrief", "Slatebrief", "Waterbrief", "Acidbrief", "Crystalbrief"};
+        static const char* const kPan[] = {"GreenPan", "ArchiPan", "WDesPan", "DDesPan", "LavaPan", "MarsPan", "LunarPan", "MetalPan",
+                                           "Lunar2Pan", "IcePan", "LushPan", "SlatePan", "WaterPan", "AcidPan", "CrystPan"};
+        static const char* const kRotate[] = {"GreenRotate", "ArchiRotate", "WDesertRotate", "DDesRotate", "LavaRotate", "MarsRotate", "LunarRotate", "MetalRotate",
+                                              "Lunar2Rotate", "IceRotate", "LushRotate", "SlateRotate", "WaterRotate", "AcidRotate", "CrystalRotate"};
+        std::string planet = info_.planet;
+        if (planet == "Lunar" && side_ != 0) planet += "2";
+        int k = 0;
+        for (int i = 0; i < 15; ++i)
+            if (planet == kNames[i]) {
+                k = i;
+                break;
+            }
+        const std::string gaf = std::string("anims\\") + kBrief[k] + ".GAF";
+        pan_ = art_.gaf_sequence(gaf, kPan[k]);
+        rotate_ = art_.gaf_sequence(gaf, kRotate[k]);
+        rotate_times_ = art_.sequence_times(gaf, kRotate[k], &rotate_loop_);
+        mask_ = art_.gaf_sequence(gaf, "Panmask");
+        cursor_frame_ = 0;
+        cursor_wait_ = rotate_times_.empty() ? 0 : rotate_times_[0];
+    }
+    void start_narration(client::FrontEnd& fe) {
+        if (info_.narration.empty()) return;
+        if (narration_.pcm.empty()) {
+            std::vector<std::uint8_t> wav;
+            if (!art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) || !client::decode_wav(wav, narration_)) return;
+        }
+        fe.play_narration_sample(&narration_);
+        const std::size_t frames = narration_.pcm.size() / static_cast<std::size_t>(std::max(1, narration_.channels));
+        narration_end_ = fe.now_ms() + static_cast<std::uint32_t>(frames * 1000 / static_cast<std::size_t>(std::max(1, narration_.rate)));
+    }
+    bool over_text(int x, int y) {
+        for (const char* n : {"TextRegion", "MOREBAR"})
+            if (const client::Widget* w = widget(n); w && x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h) return true;
+        return false;
+    }
+    void more(client::FrontEnd& fe) {
+        if (text_.empty()) return;
+        fe.play_sound(art_.sound("More"));
+        paginate();
+    }
+
+    // 0x4AC4C0: the text broken for `width` in `font`: when the next character is a space, a line
+    // feed or a hyphen and the line so far (its own characters) is at least `width` wide, the
+    // line goes back to its last space or hyphen, which becomes CR LF; a line feed starts a line.
+    static std::string wrap_crlf(const client::Font& font, const std::string& src, int width) {
+        std::string out;
+        std::size_t line = 0, i = 0;
+        auto at = [&](std::size_t k) -> unsigned char { return k < src.size() ? static_cast<unsigned char>(src[k]) : 0; };
+        while (at(i) != 0 && at(i) != 0xFF) {
+            out.push_back(static_cast<char>(at(i)));
+            const unsigned char next = at(i + 1);
+            std::size_t n = i + 1;
+            if (next == ' ' || next == '\n' || next == '-') {
+                if (font.text_width(std::string_view(out).substr(line)) >= width) {
+                    std::size_t j = i;
+                    while (at(j) != ' ' && at(j) != '-') {
+                        out.pop_back();
+                        if (j == 0) break;
+                        --j;
+                    }
+                    if (!out.empty()) out.back() = '\r';
+                    out.push_back('\n');
+                    line = out.size();
+                    n = j + 1;
+                }
+            }
+            if (at(n) == '\n') line = out.size() + 1;
+            i = n;
+        }
+        return out;
+    }
+    // 0x476CD0: a line feed inside a "&X..&" span ends the span before the break and opens it again
+    // after it (the character before the line feed, the CR, becomes the closing '&').
+    static std::string carry_spans(const std::string& in) {
+        std::string out;
+        bool open = false;
+        char colour = 0;
+        for (std::size_t i = 0; i < in.size() && static_cast<unsigned char>(in[i]) != 0xFF; ++i) {
+            const char c = in[i];
+            out.push_back(c);
+            if (c == '&') {
+                colour = i + 1 < in.size() ? in[i + 1] : '\0';
+                open = !open;
+            }
+            if (c == '\n' && open) {
+                if (out.size() >= 2) out[out.size() - 2] = '&';
+                out.back() = '\r';
+                out.push_back('\n');
+                out.push_back('&');
+                out.push_back(colour);
+            }
+        }
+        return out;
+    }
+    // 0x476EF0: the next page (after the last: the first) as lines and blinking words.
+    void paginate() {
+        const client::Widget* t = widget("TextRegion");
+        if (!t || !side_font_ || text_.empty()) return;
+        const int row = side_font_->height + 2;
+        const int lines = t->h / row;
+        auto at = [&](std::size_t k) -> unsigned char { return k < text_.size() ? static_cast<unsigned char>(text_[k]) : 0; };
+        // The position after the n-th line feed (npos: the text ends first).
+        auto after_lines = [&](int n) -> std::size_t {
+            int seen = 0;
+            for (std::size_t k = 0; at(k) != 0 && at(k) != 0xFF; ++k)
+                if (at(k) == '\n' && ++seen == n) return k + 1;
+            return std::string::npos;
+        };
+        ++page_;
+        std::size_t p = 0;
+        if (page_ != 0) {
+            p = after_lines(lines * page_);
+            if (p == std::string::npos) {
+                page_ = 0;
+                p = 0;
+            }
+        }
+        const bool more = after_lines((page_ + 1) * lines) != std::string::npos;
+        more_text_ = more ? "MORE..." : page_ == 0 ? "" : "BACK TO START";
+        lines_.clear();
+        blinks_.clear();
+        bool expect_open = true;
+        int y = row / 2 + t->y;
+        const std::uint32_t tick = now_tick_;
+        for (int k = 0; k < lines; ++k, y += row) {
+            Line l;
+            l.x = t->x + 5;
+            l.y = y;
+            if (at(p) != '\n') {
+                for (;;) {
+                    unsigned char c = at(p);
+                    if (c == 0 || c == 0xFF) break;
+                    if (c == '&') {
+                        if (expect_open) {
+                            const unsigned char letter = at(p + 1);
+                            expect_open = false;
+                            const int ci = letter == 'R' ? 3 : letter == 'Y' ? 2 : letter == 'G' ? 1 : 3;
+                            p += 2;
+                            Blink b;
+                            b.x = side_font_->text_width(l.text) + t->x + 5;
+                            b.y = y;
+                            b.colour = kSideColour[side_][ci];
+                            for (std::size_t q = p; at(q) != '&' && b.text.size() < 0x7F; ++q) b.text.push_back(static_cast<char>(at(q)));
+                            b.next = static_cast<float>(tick) + 30.0f;
+                            blinks_.push_back(b);
+                        } else {
+                            ++p;
+                            expect_open = true;
+                        }
+                    }
+                    l.text.push_back(static_cast<char>(at(p)));
+                    ++p;
+                    if (at(p) == '\n') break;
+                }
+            }
+            ++p;
+            lines_.push_back(std::move(l));
+        }
+    }
+
     MenuArt& art_;
-    std::string save_dir_, title_, error_;
+    std::string save_dir_;
     std::shared_ptr<CampaignProgress> progress_;
     MissionInfo info_;
-    std::vector<std::string> lines_;
-    int page_ = 0;
-    bool loaded_ = false, ok_ = false;
+    bool set_up_ = false, ok_ = false, text_down_ = false;
+    int side_ = 0;
+    std::array<std::uint8_t, 256> colours_table_{};
+    const client::Font *small_font_ = nullptr, *side_font_ = nullptr;
+    int wind_ = 0, countdown_ = 0;
+    const std::vector<render::Sprite8>*pan_ = nullptr, *rotate_ = nullptr, *mask_ = nullptr;
+    std::vector<int> rotate_times_;
+    bool rotate_loop_ = true;
+    int cursor_frame_ = 0, cursor_wait_ = 0;
+    std::uint32_t planet_next_ = 0, narration_end_ = 0, now_tick_ = 0;
+    static inline int pan_scroll_ = 0;              // kept from one briefing to the next (0x51E674)
+    static inline std::uint32_t pan_next_ = 0;      // (0x51E678)
+    client::Sample narration_;
+    std::string text_, more_text_;
+    int page_ = -1;
+    std::vector<Line> lines_;
+    std::vector<Blink> blinks_;
 };
 
 // The save menu's file name line (SAVEGAME\<name>.SAV).

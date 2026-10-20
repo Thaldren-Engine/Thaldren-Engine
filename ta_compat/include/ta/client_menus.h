@@ -21,6 +21,7 @@
 #include "client/net_menu.h"
 #define TA_CLIENT_HAVE_NET 1
 #endif
+#include "sim/rng.h"
 #include "ta/battle_loader.h"
 #include "ta/client_world.h"
 #include "ta/hpi.h"
@@ -68,8 +69,8 @@ public:
     const client::Font* fnt_font(const std::string& name);
     // A GAF file's sequence by path and name (null when missing), its frames' offsets kept.
     const std::vector<render::Sprite8>* gaf_sequence(const std::string& gaf_path, const std::string& name) { return sequence(gaf_path, name); }
-    // GAF frame durations of a sequence (ticks; empty when missing).
-    std::vector<int> sequence_times(const std::string& gaf_path, const std::string& name);
+    // GAF frame durations of a sequence (ticks; empty when missing) and its loop byte.
+    std::vector<int> sequence_times(const std::string& gaf_path, const std::string& name, bool* loop = nullptr);
 
 private:
     const std::vector<std::uint8_t>* gaf(const std::string& path);
@@ -145,6 +146,10 @@ void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, c
 // Text broken for a width as the original's 0x4AC4C0 does (at the end of a word, when the line so
 // far is at least `width` wide, the last space or hyphen before becomes a line break).
 std::string wrap_for_width(const client::Font& font, const std::string& text, int width);
+
+// The C runtime's rand() of the program's main thread as the menus draw from it (the main
+// menu's sparks, the briefing's wind); what is left of it seeds a battle's rand().
+sim::Lcg15& menus_rand();
 
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);

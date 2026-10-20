@@ -158,6 +158,8 @@ void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const ren
     else std::printf("message: %s\n", text.c_str());
 }
 
+sim::Lcg15& menus_rand() { return menu_rand(); }
+
 namespace {
 
 // ------------------------------------------------------------------ options

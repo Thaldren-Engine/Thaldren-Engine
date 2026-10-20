@@ -263,6 +263,39 @@ int MenuArt::sound(const std::string& name) {
     return it == sound_index_.end() ? -1 : it->second;
 }
 
+const client::Font* MenuArt::fnt_font(const std::string& name) {
+    std::vector<std::uint8_t> f;
+    if (!vfs_.read("fonts\\" + name + ".FNT", f)) return nullptr;
+    fonts_.emplace_back();
+    if (!parse_fnt(f, fonts_.back())) {
+        fonts_.pop_back();
+        return nullptr;
+    }
+    return &fonts_.back();
+}
+
+std::vector<int> MenuArt::sequence_times(const std::string& gaf_path, const std::string& name, bool* loop) {
+    // Sequence entry: u16 frames, u16 (its low byte: loops), u32, name[32], then per frame
+    // {u32 offset, u32 duration in ticks}.
+    std::vector<int> times;
+    const auto* g = gaf(gaf_path);
+    if (!g) return times;
+    GafDirectory dir;
+    if (!gaf_read_directory(*g, dir)) return times;
+    const int s = gaf_find_sequence(dir, name);
+    if (s < 0) return times;
+    const std::vector<std::uint8_t>& f = *g;
+    auto u32 = [&](std::size_t at) {
+        return at + 4 <= f.size() ? static_cast<std::uint32_t>(f[at] | f[at + 1] << 8 | f[at + 2] << 16 | static_cast<std::uint32_t>(f[at + 3]) << 24) : 0u;
+    };
+    const std::size_t entry = u32(12 + static_cast<std::size_t>(s) * 4);
+    if (entry + 40 > f.size()) return times;
+    const int n = f[entry] | f[entry + 1] << 8;
+    if (loop) *loop = f[entry + 2] != 0;
+    for (int k = 0; k < n; ++k) times.push_back(static_cast<int>(u32(entry + 40 + static_cast<std::size_t>(k) * 8 + 4)));
+    return times;
+}
+
 std::vector<std::uint8_t> MenuArt::movie(const std::string& name) const {
     // The original builds "<CD>\Data\<name>.zrb" (on the Steam version the CD is the game
     // folder itself) and plays it when the file is there (0x426780, 0x41D7B0).
