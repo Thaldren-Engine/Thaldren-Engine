@@ -43,7 +43,7 @@ summary at the end gives the counts after this round.
 | 1.19 | Shift-held queued orders view | `0x48CC30` | BUILT+VERIFIED | frame_harness `--hud` |
 | 1.20 | Camera follow (tracking eases half the distance a step, 320 at most; F3 / `n` / view jumps through the eased target) | `0x41CA10`, `0x41C7C0`, `0x41C8E0` | BUILT+VERIFIED | frame_harness `--camera`: 600 random states, two maps and screen sizes, identical (2026-10-20) |
 | 1.21 | Screen shake | `0x41C6F0` (in the camera stage) | BUILT-UNVERIFIED | the simulation's offsets (flow_harness) added in the camera stage's order (eased, shaken, clamped) |
-| 1.22 | Gamma (option slider, `+gamma`) | display palette | MISSING | settings kept, palette not changed |
+| 1.22 | Gamma (option slider, `+gamma`) | display palette | BUILT-UNVERIFIED | display palette x factor (min 255, truncated) at presentation only (frames, screenshots, films keep the palette); factor 0.5 + n/24 from the setting at battle load and after the options screens, n x 0.1 from +gamma; as read in 0x4BA200 / 0x45BCC0 / 0x417290, not compared (the original's output goes to DirectDraw) |
 | 1.23 | `+contour` lines | `0x418310` → `0x4181D0` / `0x417F60` | MISSING | the command stores its words only |
 | 1.24 | `+light` (light direction for the shaded path) | option table | MISSING | |
 | 1.25 | ShowRanges (`+showranges`, GS+0x391BF) | read by the drawing | MISSING | switch kept, nothing drawn |
@@ -127,7 +127,7 @@ summary at the end gives the counts after this round.
 | # | Command | Status | Note |
 |---|---------|--------|------|
 | 4.1 | +contour | MISSING | see 1.23 |
-| 4.2 | +gamma | MISSING | see 1.22 |
+| 4.2 | +gamma | BUILT-UNVERIFIED | see 1.22 |
 | 4.3 | +light | MISSING | see 1.24 |
 | 4.4 | +makeposter | MISSING | see 2.42 |
 | 4.5 | +film / +filmspeed | BUILT-UNVERIFIED | see 2.40 (+film sets the image output folder, +filmspeed the rate, both saved) |

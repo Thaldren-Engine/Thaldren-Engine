@@ -124,6 +124,7 @@ public:
     // A setting the battle changes and the original saves at once (0x430F00), by its registry name.
     std::function<void(const char* name, int value)> save_setting;
     std::function<void(const char* name, const std::string& value)> save_text_setting;
+    std::function<void(int n)> on_gamma_command;  // "+gamma n" (the display's gamma, 0x417290)
     // The film (debug switch; Ctrl+F10, 0x495E90 case 0xD7, and the battle loop 0x496790): a
     // frame is due once the game tick reaches the next film tick; the front writes the frame it
     // draws next into the film's folder (FRAMnnnn.pcx) and calls film_written.

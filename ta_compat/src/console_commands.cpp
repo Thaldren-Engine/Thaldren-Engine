@@ -245,8 +245,9 @@ void ConsoleCommands::Impl::build() {
         c.options_mut().screen_chat = st.screen_chat;
     });
     add("Gamma", [this](const Words& a) {
+        // (0x417290: the display gamma n x 0.1, n kept as the Gamma setting and saved)
         st.gamma = a.number(1, 0);
-        not_built("Gamma");
+        if (c.on_gamma_command) c.on_gamma_command(st.gamma);
     });
     add("Clock", [this](const Words&) { c.options_mut().clock = !c.options().clock; });
     add("NetStats", [](const Words&) {});  // resets the network statistics display

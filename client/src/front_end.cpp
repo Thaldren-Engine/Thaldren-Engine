@@ -143,6 +143,7 @@ public:
             s_.music->set_enabled(settings_.get_int("musicmode", 1) != 0);
         }
         if (session_ && s_.apply_to_battle) s_.apply_to_battle(*this, *session_);
+        gamma_from_settings();  // (the options screens' handlers apply the Gamma setting)
         if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
     }
     std::uint32_t now_ms() const override { return now_; }
@@ -514,6 +515,16 @@ private:
             settings_.set_int(name, value);
             if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
         };
+        // The battle's load applies the Gamma setting (0x491200); "+gamma n" shows n x 0.1 and
+        // keeps n as the setting (saved at once).
+        gamma_from_settings();
+        session_->client().on_gamma_command = [this](int n) {
+            display_gamma_ = gamma_from_command(n);
+            gamma_setting_ = n;
+            settings_.set_int("Gamma", n);
+            gamma_seen_ = n;
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+        };
         session_->client().save_text_setting = [this](const char* name, const std::string& value) {
             settings_.set_text(name, value);
             if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
@@ -551,6 +562,24 @@ private:
     }
 
     FrontEndSetup& s_;
+    // Display gamma: the factor the screen's palette is shown with (1 until a battle loads or an
+    // options screen applies the setting), and the Gamma setting as the program holds it (read
+    // at start-up with 10 taken as 12, 0x42F9A0; a changed setting is taken as it is).
+    float display_gamma_ = 1.0f;
+    int gamma_setting_ = 12, gamma_seen_ = -1;
+    void gamma_from_settings() {
+        const int raw = settings_.get_int("Gamma", 12);
+        if (gamma_seen_ < 0) gamma_setting_ = raw == 10 ? 12 : raw;
+        else if (raw != gamma_seen_) gamma_setting_ = raw;
+        gamma_seen_ = raw;
+        display_gamma_ = gamma_from_setting(gamma_setting_);
+    }
+
+public:
+    // The palette the screen shows for a frame's palette.
+    render::Palette display_palette(const render::Palette& p) const { return display_gamma_ == 1.0f ? p : gamma_palette(p, display_gamma_); }
+
+private:
     bool shot_pending_ = false;
     const Screen* timeout_screen_ = nullptr;  // the time-out dialog while it is open
     render::DrawList last_shown_;
@@ -913,16 +942,17 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             }
         }
         if (wants_shot(frame_no)) save_shot(render::execute(list, run.blend()), *pal, o.screenshot_prefix, frame_no);
+        const render::Palette shown_palette = run.display_palette(*pal);  // (display gamma)
         if (gpu) {
             render::lines_to_sprites(list);
-            if (!gpu->present_to_window(win, list, *pal, scale)) {
+            if (!gpu->present_to_window(win, list, shown_palette, scale)) {
                 std::printf("present failed: %s\n", render::GpuRenderer::last_error().c_str());
                 return false;
             }
         } else if (tex) {
             const render::Image8 img = render::execute(list, run.blend());
             for (std::size_t i = 0; i < img.pixels.size(); ++i) {
-                const render::Rgb& c = (*pal)[img.pixels[i]];
+                const render::Rgb& c = shown_palette[img.pixels[i]];
                 rgba[i * 4] = c.r, rgba[i * 4 + 1] = c.g, rgba[i * 4 + 2] = c.b, rgba[i * 4 + 3] = 255;
             }
             SDL_UpdateTexture(tex, nullptr, rgba.data(), cur_w * 4);

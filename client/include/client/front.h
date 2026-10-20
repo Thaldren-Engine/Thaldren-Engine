@@ -83,6 +83,13 @@ inline bool key_repeats(int) { return true; }
 // Returns the path written (empty on failure).
 std::string save_numbered_picture(const std::string& dir, const std::string& prefix, const render::Image8& frame,
                                   const render::Palette& palette);
+// Display gamma (0x4BA590 / 0x4BA200): the palette the screen shows is the frame's palette with
+// every channel times the factor, at most 255, truncated (the frame, its screenshots and films
+// keep the palette as it is). The factor from the Gamma setting n (battle load, the options
+// screens): 0.5 + n / 24 as a float; from the "+gamma n" command: n x 0.1 as a float.
+render::Palette gamma_palette(const render::Palette& palette, float factor);
+float gamma_from_setting(int n);
+float gamma_from_command(int n);
 // The screenshot key (Ctrl+F9; the original checks it in every state of the program, 0x499890).
 inline bool is_screenshot_key(const InputEvent& e) { return e.type == InputEvent::Type::KeyDown && e.ctrl && e.key == keys::kF1 + 8; }
 

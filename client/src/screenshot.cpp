@@ -43,6 +43,30 @@ std::string save_numbered_picture(const std::string& dir, const std::string& pre
     return render::write_pcx(path, frame, palette) ? path : std::string();
 }
 
+// ---------------------------------------------------------------- display gamma
+render::Palette gamma_palette(const render::Palette& palette, float factor) {
+    // (each channel: FILD of the byte times the float factor, above 255 -> 255, then the
+    // truncating ftol; the product is exact in a double)
+    render::Palette out = palette;
+    auto scale = [factor](std::uint8_t c) -> std::uint8_t {
+        const double v = static_cast<double>(c) * static_cast<double>(factor);
+        return static_cast<std::uint8_t>(static_cast<long long>(v > 255.0 ? 255.0 : v));
+    };
+    for (render::Rgb& c : out) {
+        c.r = scale(c.r);
+        c.g = scale(c.g);
+        c.b = scale(c.b);
+    }
+    return out;
+}
+
+float gamma_from_setting(int n) {
+    // 0.5 - n x (float)-0.041666668 (x87 extended; exact here in a double), stored as a float.
+    return static_cast<float>(0.5 - static_cast<double>(n) * static_cast<double>(-0.041666668f));
+}
+
+float gamma_from_command(int n) { return static_cast<float>(static_cast<double>(n) * static_cast<double>(0.1f)); }
+
 // ---------------------------------------------------------------- the film
 void GameClient::toggle_film() {
     // Ctrl+F10 with the debug switch (0x495E90 case 0xD7): filming stops; else a new film starts:
