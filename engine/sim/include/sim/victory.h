@@ -31,6 +31,9 @@ struct VictorySide {
     bool wants_watch = false;    // the local player asked to keep watching (side option 0x80)
     bool human = false;          // the side record's controller is a human (watchers of AI hosts)
     std::uint8_t lobby_status = 0;
+    // Side flags bit 0: this record's machine hosts the game. Feature damage of a network
+    // game is decided on the host (the viewed player's record tells a machine whether it is).
+    bool host = false;
     std::uint16_t energy_start = 0, metal_start = 0;  // network start resources in hundreds
 };
 

@@ -175,6 +175,9 @@ if(TA_GAME_DIR)
              "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin")
     add_test(NAME features_match_game COMMAND feature_check "${TA_GAME_DIR}"
              "${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures/defs_skirmish_moonquartet.bin" "Moon Quartet")
+    # A scripted two-machine network game: trees, rocks, metal and wrecks shot at, fires,
+    # reclaims and kills; both machines' feature maps must agree at the end.
+    add_test(NAME net_features_match COMMAND net_play "${TA_GAME_DIR}" features 900 1)
 endif()
 
 # Renderer (8-bit battle view), its game-data importers and the offline viewer.

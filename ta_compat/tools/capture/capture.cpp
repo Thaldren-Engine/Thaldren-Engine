@@ -1227,6 +1227,7 @@ DWORD WINAPI menu_driver(LPVOID) {
 //   until_file <path> <ms>     wait until a file exists (to step together with another program)
 //   touch <path>               create a file (tells another program a step is done)
 //   until_battle <ms>          wait until the battle starts loading
+//   dump_features <path>       the battle's feature map (ta_compat/tools/feature_maps.h format)
 //   quit                       end the game
 // Network games (--net-trace) also log every game message the original sends.
 std::vector<std::string> g_menu_lines;
@@ -1298,6 +1299,71 @@ BOOL CALLBACK find_edit(HWND w, LPARAM lp) {
         return FALSE;
     }
     return TRUE;
+}
+
+// The battle's feature map as the network comparison writes it (ta_compat/tools/feature_maps.h):
+// "step <tick>", then "x z type damage state" for every cell holding anything. Map cells
+// (13 bytes) at GS+0x14287, width +0x14233, height +0x14237: feature +8, aux +0xA, flags +0xC;
+// animation slots (0x30 bytes) at GS+0x1420B: damage +0x26, flags +0x2F (bit 0 burning);
+// feature definitions (0x100 bytes) at GS+0x1426F, count +0x14253, flags +0xFE (bit 0: 2D).
+// The game's threads are held while it is read.
+std::string dump_feature_map(const std::string& path) {
+    const std::map<DWORD, HANDLE> threads = g_threads;
+    for (const auto& [tid, h] : threads) SuspendThread(h);
+    DWORD gs = 0, cells = 0, slots = 0, defs = 0, tick = 0;
+    std::int32_t w = 0, hgt = 0, ndefs = 0;
+    std::string why;
+    if (!read_block(kGameStatePtr, &gs, 4) || !gs) why = "no game state";
+    else if (!read_block(gs + 0x14287, &cells, 4) || !read_block(gs + 0x14233, &w, 4) || !read_block(gs + 0x14237, &hgt, 4) ||
+             !read_block(gs + 0x1420B, &slots, 4) || !read_block(gs + 0x1426F, &defs, 4) || !read_block(gs + 0x14253, &ndefs, 4) ||
+             !read_block(gs + kOffGameTick, &tick, 4))
+        why = "game state fields not readable";
+    else if (!cells || w <= 0 || hgt <= 0 || w * hgt >= (1 << 22))
+        why = "no map (cells " + std::to_string(cells) + ", " + std::to_string(w) + " x " + std::to_string(hgt) + ")";
+    std::vector<std::uint8_t> map, slot_bytes(0x800 * 0x30, 0), def_bytes;
+    if (why.empty()) {
+        map.resize(static_cast<std::size_t>(w) * static_cast<std::size_t>(hgt) * 13);
+        def_bytes.resize(static_cast<std::size_t>(std::clamp(ndefs, 0, 4096)) * 0x100);
+        if (!read_block(cells, map.data(), map.size())) why = "map cells not readable";
+        else if (slots && !read_block(slots, slot_bytes.data(), slot_bytes.size())) why = "animation slots not readable";
+        else if (!def_bytes.empty() && !read_block(defs, def_bytes.data(), def_bytes.size())) why = "feature definitions not readable";
+    }
+    const bool ok = why.empty();
+    for (const auto& [tid, h] : threads) ResumeThread(h);
+    if (!ok) return why;
+    auto u16at = [](const std::vector<std::uint8_t>& v, std::size_t at) {
+        return static_cast<std::uint16_t>(at + 1 < v.size() ? v[at] | (v[at + 1] << 8) : 0);
+    };
+    const std::string tmp = path + ".part";
+    FILE* f = std::fopen(tmp.c_str(), "w");
+    if (!f) return "cannot write " + tmp;
+    std::fprintf(f, "# original, map %dx%d\nstep %lu\n", w, hgt, static_cast<unsigned long>(tick));
+    for (std::int32_t i = 0; i < w * hgt; ++i) {
+        const std::size_t c = static_cast<std::size_t>(i) * 13;
+        const std::uint16_t type = u16at(map, c + 8);
+        if (type == 0xFFFF) continue;
+        std::uint16_t damage = 0;
+        char state = '-';
+        if (type < 0xFFFB) {
+            const std::uint16_t aux = u16at(map, c + 0xA);
+            if (!(map[c + 0xC] & 1)) {
+                damage = aux;
+            } else {
+                const std::size_t s = static_cast<std::size_t>(aux % 0x800) * 0x30;
+                const bool flat = (u16at(def_bytes, static_cast<std::size_t>(type) * 0x100 + 0xFE) & 1) != 0;
+                if (!flat) {
+                    state = 'S';
+                    damage = u16at(slot_bytes, s + 0x26);
+                } else {
+                    state = (slot_bytes[s + 0x2F] & 1) ? 'B' : 'D';
+                }
+            }
+        }
+        std::fprintf(f, "%d %d %04x %u %c\n", i % w, i / w, type, damage, state);
+    }
+    std::fclose(f);
+    std::remove(path.c_str());
+    return std::rename(tmp.c_str(), path.c_str()) == 0 ? std::string() : "cannot rename " + tmp;
 }
 
 DWORD WINAPI menu_script_driver(LPVOID) {
@@ -1377,6 +1443,9 @@ DWORD WINAPI menu_script_driver(LPVOID) {
             std::sscanf(arg.c_str(), "%511s %d", path, &ms);
             const ULONGLONG until = GetTickCount64() + static_cast<ULONGLONG>(ms);
             while (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES && GetTickCount64() < until && g_process) Sleep(100);
+        } else if (cmd == "dump_features") {
+            const std::string why = dump_feature_map(arg);
+            menu_log(why.empty() ? "feature map written" : "feature map not written: " + why);
         } else if (cmd == "touch") {
             if (FILE* f = std::fopen(arg.c_str(), "w")) std::fclose(f);
         } else if (cmd == "until_battle") {
@@ -1567,7 +1636,23 @@ bool on_comm(CONTEXT& ctx) {
         if (!mine) DuplicateHandle(g_process, reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(a[0])), GetCurrentProcess(), &mine, 0, FALSE, DUPLICATE_SAME_ACCESS);
         DWORD avail = 0;
         if (mine) PeekNamedPipe(mine, nullptr, 0, nullptr, &avail, nullptr);
-        if (!avail) Sleep(3);
+        if (!avail) {
+            // Nothing waiting: the provider's reader thread waits in the game itself, as on a
+            // port: the call becomes Sleep(20) returning to the caller with WaitCommEvent's
+            // stack clean-up (its mask stays 0). Sleeping here, inside the debug loop, froze
+            // every thread of the game at each pass of that reader (the serial "Connecting"
+            // stall: the menus, the enumeration's wait and ESC hardly ran).
+            static const DWORD sleep_addr =
+                static_cast<DWORD>(reinterpret_cast<std::uintptr_t>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "Sleep")));
+            if (sleep_addr) {
+                write_u32(ctx.Esp + 8, ret);
+                write_u32(ctx.Esp + 12, 20);
+                ctx.Esp += 8;
+                ctx.Eip = sleep_addr;
+                return true;
+            }
+            Sleep(3);
+        }
         if (a[1]) write_u32(a[1], 1);  // EV_RXCHAR
     } else if (fn == "GetCommState") {
         if (a[1]) {

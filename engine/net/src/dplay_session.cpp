@@ -333,8 +333,52 @@ void Session::pump() {
     if (!provider_->error().empty() && error_.empty()) error_ = provider_->error();
 }
 
+void Session::packet2(const Inbound& in) {
+    // A piece of a reliable message: put in place when it is the next one expected, always
+    // acknowledged (the sender sends it again until it is); the whole message is then handled
+    // as if it had come by itself.
+    const Bytes& p = in.payload;
+    auto u32 = [&](std::size_t at) {
+        std::uint32_t v = 0;
+        std::memcpy(&v, p.data() + at, 4);
+        return v;
+    };
+    if (p.size() < 0x30) return;
+    std::array<std::uint8_t, 16> id{};
+    std::memcpy(id.data(), p.data() + 8, 16);
+    const std::uint32_t index = u32(0x18), size = u32(0x1C), offset = u32(0x20), count = u32(0x24), total = u32(0x28);
+    if (p.size() - 0x30 < size || total > 0x100000 || offset > total || total - offset < size) return;
+    Reassembly& r = reassembly_[id];
+    if (r.message.empty() && r.next == 0) {
+        r.message.assign(total, 0);
+        r.count = count;
+    }
+    if (r.message.size() != total) return;
+    if (index == r.next) {
+        std::memcpy(r.message.data() + offset, p.data() + 0x30, size);
+        ++r.next;
+    }
+    Bytes ack(p.begin(), p.begin() + 0x1C);
+    ack[4] = static_cast<std::uint8_t>(cmd::kPacket2Ack);
+    ack[5] = 0;
+    send_system(in.reply_to, ack);
+    if (r.next == r.count && !r.delivered) {
+        r.delivered = true;
+        Inbound whole = in;
+        whole.payload = r.message;
+        handle(whole);
+    }
+}
+
 void Session::handle(const Inbound& in) {
     const Bytes& p = in.payload;
+    if (is_system(p.data(), p.size()) && p.size() >= 8 && (p[4] | (p[5] << 8)) == cmd::kPacket2Data) {
+        ++counters_.system_received;
+        log_msg("<-", in.reply_to, p);
+        packet2(in);
+        return;
+    }
+    if (is_system(p.data(), p.size()) && p.size() >= 8 && (p[4] | (p[5] << 8)) == cmd::kPacket2Ack) return;
     if (is_system(p.data(), p.size())) {
         ++counters_.system_received;
         log_msg("<-", in.reply_to, p);

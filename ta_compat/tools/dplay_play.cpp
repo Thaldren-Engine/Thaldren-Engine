@@ -20,6 +20,13 @@
 //   --log <file>        every session message, sent and received
 //   --no-battle         stop when the game would load
 //   --say <text>        a chat line in the room once seated
+//   --features          battle: armed units shoot at the features near the other player's
+//                       commander (feature_maps.h) instead of random orders; in the last
+//                       --quiet-steps <n> (default 900) they go home and nobody is ordered
+//   --dump-features <f> the feature map at the end (the capture tool's dump_features format)
+//   --shooters-away <n> features: the shooters' row n world units from that commander (200)
+//   --no-unit-attacks   features: shooters only shoot at features (keeps the other commander alive)
+//   --near-own          features: the shooters stand by this player's own commander instead
 //   --stream-port <n> / --datagram-port <n>   the first ports tried (TCP/IP)
 
 #define _CRT_SECURE_NO_WARNINGS
@@ -50,6 +57,8 @@
 #include "ta/net_setup.h"
 #include "ta/unitdefs.h"
 
+#include "feature_maps.h"
+
 namespace {
 
 using Clock = std::chrono::steady_clock;
@@ -59,6 +68,12 @@ struct Options {
     bool loopback = false, no_battle = false;
     std::string name = "Engine", game = "Engine game", map = "Moon Quartet", password, log, say;
     int players = 2, computers = 0, steps = 900, room_seconds = 180;
+    bool features = false;     // the features scenario instead of random orders
+    std::string dump_features;  // the feature map at the end (feature_maps.h format)
+    int quiet_steps = 900;      // features: the last steps without orders (the shooters go home)
+    int shooters_away = 200;    // features: the shooters' row this far south of the other commander
+    bool unit_attacks = true;   // features: shooters are sometimes ordered to attack enemy units
+    bool near_own = false;      // features: the shooters stand by this player's own commander
     std::uint16_t stream_port = 2300, datagram_port = 2350;
 };
 
@@ -358,7 +373,41 @@ int run(ta::Vfs& vfs, const Options& o) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
             continue;
         }
-        give_orders(b, *lb, slot, rng);
+        if (!o.features) {
+            give_orders(b, *lb, slot, rng);
+        } else if (step == 30) {
+            // Armed units near the first other player's commander (or this player's own), among
+            // the features there.
+            for (int s = 0; s < 10; ++s)
+                if ((o.near_own ? s == slot : s != slot) && b.players[static_cast<std::size_t>(s)].active) {
+                    const sim::Unit& target = b.units[static_cast<std::size_t>(b.players[static_cast<std::size_t>(s)].first_unit)];
+                    feature_maps::place_feature_shooters(b, slot, target.pos, [&](const char* n) { return lb->type_index(n); }, o.shooters_away);
+                    say("features: shooters placed near player %d's commander at (%d, %d)", s, target.pos[0] >> 16, target.pos[2] >> 16);
+                    break;
+                }
+        } else if (step > 30 && step < o.steps - o.quiet_steps) {
+            feature_maps::feature_orders(b, slot, rng, step, o.unit_attacks);
+        } else if (step == o.steps - o.quiet_steps) {
+            // Quiet: every own unit goes back to the commander.
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(slot)];
+            sim::command::Command sel;
+            sel.kind = sim::command::Kind::Select;
+            sel.player = static_cast<std::uint8_t>(slot);
+            for (int id = p.first_unit + 1; id <= p.last_unit; ++id)
+                if (b.ticks[static_cast<std::size_t>(id)].type_index && (b.units[static_cast<std::size_t>(id)].flags & sim::unit_flags::kAlive))
+                    sel.units.push_back(static_cast<std::uint16_t>(id));
+            if (!sel.units.empty()) {
+                sim::command::apply(b, sel);
+                sim::command::Command c;
+                c.player = static_cast<std::uint8_t>(slot);
+                c.kind = sim::command::Kind::IssueIntent;
+                c.intent = sim::intent::kMove;
+                c.has_pos = true;
+                c.pos = b.units[static_cast<std::size_t>(p.first_unit)].pos;
+                sim::command::apply(b, c);
+            }
+            say("features: quiet from step %d", step);
+        }
         if (step == 60) nb.send_chat("hello from the engine");
         b.step();
         b.end_frame();
@@ -372,6 +421,20 @@ int run(ta::Vfs& vfs, const Options& o) {
         if (!session->connected()) {
             say("session lost at step %d", step);
             break;
+        }
+    }
+    if (!o.dump_features.empty()) {
+        // Write to a temporary name first: a waiting capture script sees the file only when whole.
+        const std::string tmp = o.dump_features + ".part";
+        if (FILE* f = std::fopen(tmp.c_str(), "w")) {
+            const sim::Battle& cb = b;
+            std::fprintf(f, "# engine, slot %d, %s, map %s %dx%d\n", slot, cb.victory.sides[static_cast<std::size_t>(slot)].host ? "host" : "not the host",
+                         room.map().c_str(), cb.map.width, cb.map.height);
+            feature_maps::dump_features(f, b.game_tick(), feature_maps::feature_map(b), {}, b.map.width);
+            std::fclose(f);
+            std::remove(o.dump_features.c_str());
+            std::rename(tmp.c_str(), o.dump_features.c_str());
+            say("feature map written: %s", o.dump_features.c_str());
         }
     }
     int own = 0, remote = 0;
@@ -505,6 +568,12 @@ int main(int argc, char** argv) {
         else if (a == "--log") o.log = next();
         else if (a == "--no-battle") o.no_battle = true;
         else if (a == "--say") o.say = next();
+        else if (a == "--features") o.features = true;
+        else if (a == "--dump-features") o.dump_features = next();
+        else if (a == "--quiet-steps") o.quiet_steps = std::atoi(next().c_str());
+        else if (a == "--shooters-away") o.shooters_away = std::atoi(next().c_str());
+        else if (a == "--no-unit-attacks") o.unit_attacks = false;
+        else if (a == "--near-own") o.near_own = true;
         else if (a == "--stream-port") o.stream_port = static_cast<std::uint16_t>(std::atoi(next().c_str()));
         else if (a == "--datagram-port") o.datagram_port = static_cast<std::uint16_t>(std::atoi(next().c_str()));
         else {

@@ -156,6 +156,7 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
         VictorySide& side = b.victory.sides[static_cast<std::size_t>(s)];
         side.watching = sp.watcher;
         side.allied_victory = sp.allied_victory;
+        side.host = sp.host;
         side.human = sp.kind != PlayerKind::Computer;
         side.energy_start = static_cast<std::uint16_t>(start_energy(start, s) / 100);
         side.metal_start = static_cast<std::uint16_t>(start_metal(start, s) / 100);
@@ -166,7 +167,8 @@ bool start_battle(Battle& b, const BattleStart& start, std::string& error) {
             const StartPlayer& a = start.players[static_cast<std::size_t>(s)];
             const StartPlayer& c = start.players[static_cast<std::size_t>(o)];
             b.alliances[static_cast<std::size_t>(s)][static_cast<std::size_t>(o)] =
-                s == o || (a.ally_group != 0xFF && a.ally_group == c.ally_group) ? 1 : 0;
+                start.alliances_given ? start.alliances[static_cast<std::size_t>(s)][static_cast<std::size_t>(o)]
+                : s == o || (a.ally_group != 0xFF && a.ally_group == c.ally_group) ? 1 : 0;
         }
     // Map loading (0x4917D0): passability, the wind once at step 0 (denominator 5000, next
     // change at 0), the meteor schedule, every record with a controller set up (0x464700:

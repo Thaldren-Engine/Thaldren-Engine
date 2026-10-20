@@ -88,7 +88,12 @@ void Battle::sync_settings() {
     feature_env_.gravity = s.gravity;
     feature_env_.wind = s.wind_drift;
     feature_env_.destructible = (s.damage_options & 8) != 0;
+    // 0x4244B0: in a network game the viewed player's side record says whether this machine is
+    // the host (it decides feature damage) or another machine (it asks the host). A nonzero
+    // setting overrides (tools).
     feature_env_.network_role = s.feature_network_role;
+    if (s.feature_network_role == 0 && s.provider == 3)
+        feature_env_.network_role = victory.sides[s.local_view < 10 ? s.local_view : 0].host ? 1 : 2;
     effect_art.gravity = s.gravity;
     effect_art.sea_level = s.sea_level;
     effect_art.no_sea_level_trigger = s.no_sea_level_trigger;

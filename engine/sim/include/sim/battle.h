@@ -418,6 +418,9 @@ public:
     // death destroying its player's units (0x486F10).
     void victory_turn(int slot);
     void victory_stage_end();
+    // The victory condition of skirmish and network games as it stands now (0x490230; network
+    // games 0x490080). Also asked by the end-of-game statistics exchange (0x457540).
+    bool victory_met() const;
     // `stale_word`: the kill routine's wreck word for the units that go through it (owners that
     // do not play): what the caller's stack holds there (a network player leaving, 0x452CC0:
     // an input); each such kill leaves its final wreck level in it, the detonation leaves it.

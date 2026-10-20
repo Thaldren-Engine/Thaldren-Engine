@@ -1280,6 +1280,67 @@ void test_motion() {
     CHECK_EQ(sys.forgets >= 2, true);
 }
 
+// Feature damage in a network game is the host's (0x4244B0): the viewed player's side record
+// says whether this machine hosts. Another machine asks the host and changes nothing; the host
+// applies the damage and announces the destruction to everybody.
+void test_feature_damage_network_roles() {
+    struct Outside : NullOutside {
+        std::vector<std::array<std::uint8_t, 7>> sent;  // packet bytes, then 1 = to the host
+        void feature_packet(const std::uint8_t* p, bool to_host) override {
+            std::array<std::uint8_t, 7> a{};
+            std::copy(p, p + 6, a.begin());
+            a[6] = to_host ? 1 : 0;
+            sent.push_back(a);
+        }
+    };
+    sim::HeightMap hm(8, 8);
+    Outside outside;
+    sim::BattleRng rng;
+    sim::Battle b(outside, hm, rng);
+    b.map.width = b.map.height = 8;
+    b.map.cells.resize(64);
+    b.settings.damage_options = 8;
+    b.features.resize(2);
+    b.features[0].footprint_x = b.features[0].footprint_z = 1;
+    b.features[0].flags = sim::feature_type_flags::kFlat;
+    b.features[0].damage = 100;
+    b.features[0].dead = 1;
+    b.features[1].footprint_x = b.features[1].footprint_z = 1;
+    b.features[1].flags = sim::feature_type_flags::kFlat;
+    b.reset_features_and_effects();
+    sim::place_feature(b.feature_world(), 2 * 8 + 2, 0, nullptr, nullptr, 10);
+    sim::WeaponType gun;
+    gun.default_damage = 60;
+    gun.index = 7;
+    // A network game seen from player 1, whose machine does not host: a request, no change.
+    b.settings.provider = 3;
+    b.settings.local_view = 1;
+    b.victory.sides[0].host = true;
+    sim::damage_feature(b.feature_world(), b.map.cells[2 * 8 + 2], 2, 2, gun);
+    CHECK_EQ(b.map.cells[2 * 8 + 2].feature_aux, 0);
+    CHECK_EQ(outside.sent.size(), 1u);
+    CHECK_EQ(outside.sent[0][1], 7);  // the weapon index
+    CHECK_EQ(outside.sent[0][6], 1);  // to the host
+    // The host applies requests (its own or received): 60, then 120 >= 100 destroys it and
+    // everybody hears 0xFD.
+    b.settings.local_view = 0;
+    const std::uint8_t request[6] = {0x0F, 7, 2, 0, 2, 0};
+    std::vector<const sim::WeaponType*> weapons(8, nullptr);
+    weapons[7] = &gun;
+    sim::apply_feature_packet(b.feature_world(), request, weapons);
+    CHECK_EQ(b.map.cells[2 * 8 + 2].feature_aux, 60);
+    CHECK_EQ(outside.sent.size(), 1u);
+    sim::apply_feature_packet(b.feature_world(), request, weapons);
+    CHECK_EQ(b.map.cells[2 * 8 + 2].feature, 1);
+    CHECK_EQ(outside.sent.size(), 2u);
+    CHECK_EQ(outside.sent[1][1], 0xFD);
+    CHECK_EQ(outside.sent[1][6], 0);
+    // Outside network games every machine decides for itself and sends nothing.
+    b.settings.provider = 2;
+    sim::damage_feature(b.feature_world(), b.map.cells[2 * 8 + 2], 2, 2, gun);
+    CHECK_EQ(outside.sent.size(), 2u);
+}
+
 // Map features through the battle: a tree catches fire, burns out into its burnt
 // type, a wreck lands on dry ground and another sinks; a script blows a piece off
 // (battle RNG draws, the debris cache) and shatters another into a shard.
@@ -1855,6 +1916,7 @@ int main() {
     test_motion();
     test_route_search();
     test_features_and_effects();
+    test_feature_damage_network_roles();
     test_economy();
     test_sight();
     test_ai();

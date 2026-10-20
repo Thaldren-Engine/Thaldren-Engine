@@ -49,6 +49,14 @@ constexpr std::uint16_t kAddForwardReply = 0x24;     // * the host refuses a mac
 constexpr std::uint16_t kSuperEnumPlayersReply = 0x29;  // * the host's player table for a machine that joined
 constexpr std::uint16_t kAddForward = 0x2E;          // the host announces a machine to the others
 constexpr std::uint16_t kAddForwardAck = 0x2F;
+// Reliable packets: over a provider without guaranteed delivery (serial, modem) the library
+// sends its guaranteed system messages in pieces, each acknowledged (2026-10-20, seen from the
+// original over serial: its player id request came so). Data: signature, command, version,
+// message id (16), piece index, piece size, piece offset, piece count, message size, a word
+// (0 seen), then the piece at +0x30. Acknowledgement: signature, command, version, the message
+// id and the piece index (28 bytes).
+constexpr std::uint16_t kPacket2Data = 0x30;
+constexpr std::uint16_t kPacket2Ack = 0x31;
 }  // namespace cmd
 
 // Player flags.

@@ -222,6 +222,21 @@ static void test_room() {
         b.frame(clock);
     }
     CHECK(host.players()[static_cast<std::size_t>(a.local_slot())].ally_team == 0);
+    // Alliances in the room (0x446C70 team rule, 0x452960, 0x446E90): teammates allied both
+    // ways on every machine; the host allies with A by hand (A hears it in +0x113 only); B
+    // leaves the team: both ends of A-B forget it (forced).
+    const std::size_t sla = static_cast<std::size_t>(a.local_slot()), slb = static_cast<std::size_t>(b.local_slot());
+    CHECK(a.alliance_rows()[sla][slb] == 1 && b.alliance_rows()[slb][sla] == 1 && host.alliance_rows()[sla][slb] == 1);
+    host.set_allied(static_cast<int>(sla), true);
+    b.next_ally_team();  // team 1
+    for (int k = 0; k < 4; ++k) {
+        clock += 2;
+        host.frame(clock);
+        a.frame(clock);
+        b.frame(clock);
+    }
+    CHECK(host.alliance_rows()[0][sla] == 1 && a.allied_by()[0] == 1 && a.alliance_rows()[sla][0] == 0);
+    CHECK(a.alliance_rows()[sla][slb] == 0 && b.alliance_rows()[slb][sla] == 0);
     CHECK(host.start());
     sim::Lcg15 rh, ra, rb;
     net::LoopbackHub* unused = nullptr;
@@ -255,6 +270,9 @@ static void test_room() {
     CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].start_position == a.local_slot());
     CHECK(sb.players[static_cast<std::size_t>(b.local_slot())].start_position == b.local_slot());
     CHECK(sa.players[static_cast<std::size_t>(a.local_slot())].ally_group == 0);
+    // The battle starts with the records' alliance bytes.
+    CHECK(sa.alliances_given && sh.alliances[0][sla] == 1 && sa.alliances[sla][0] == 0 && sa.alliances[sla][slb] == 0 &&
+          sa.alliances[sla][sla] == 1);
     // Logos: all different; groups: the host's machine 1 (its computer player too), the others their own.
     std::vector<int> logos;
     for (const auto& p : host.players())
@@ -428,6 +446,33 @@ static void test_dplay() {
         int got = 0;
         while (serial_unframe(stream, p)) got += p == nine ? 1 : 100;
         CHECK(got == 2 && stream.empty());
+    }
+    // A reliable packet as the original sent it over serial (its player id request in one piece):
+    // acknowledged with the message id and piece index, then handled (the host answers the id).
+    {
+        MemLink link;
+        Session host(std::make_unique<MemProvider>(link, 0));
+        HostSettings hs;
+        hs.session_name = "Serial";
+        std::string err;
+        CHECK(host.host(hs, err));
+        const char* hex = "706c617930000e00c60ea5aaf6ff00499a731eba429ada6d000000000c00000000000000010000000c00000000000000706c617905000e0009000000";
+        std::vector<std::uint8_t> pk;
+        for (const char* h = hex; h[0] && h[1]; h += 2) pk.push_back(static_cast<std::uint8_t>(std::stoi(std::string(h, 2), nullptr, 16)));
+        link.to[0].push_back(pk);
+        host.pump();
+        bool acked = false, answered = false;
+        for (const auto& m : link.to[1]) {
+            if (m.size() == 28 && m[4] == 0x31 && std::equal(m.begin() + 8, m.end(), pk.begin() + 8)) acked = true;
+            if (m.size() >= 8 && m[4] == 0x07) answered = true;
+        }
+        CHECK(acked);
+        CHECK(answered);
+        // The same piece again (its acknowledgement lost): acknowledged, not handled twice.
+        link.to[1].clear();
+        link.to[0].push_back(pk);
+        host.pump();
+        CHECK(link.to[1].size() == 1 && link.to[1][0].size() == 28);
     }
     // A session: host, a machine joins, both make players, game messages both ways, one leaves.
     {
