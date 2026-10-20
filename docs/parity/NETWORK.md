@@ -56,7 +56,7 @@ requests, no comparison tool and no regression test).
 | 0x17 / 0x18 logos | `0x4526C0` / `0x452570` / `0x4523E0` | BUILT+VERIFIED | with the original (logo 0xFF crash found) |
 | 0x19 pause / speed | case 0x17 | BUILT-UNVERIFIED | |
 | 0x1A unit definition exchange | `Sync_*` | BUILT+VERIFIED | with the original; gui_harness |
-| 0x1B status (player leaving, `0x453010`) | case 0x19 | PARTIAL | the reasons' texts/consequences per reason only partly (status 7 "You need a unit you don't have" missing) |
+| 0x1B status (player leaving, `0x453010`) | case 0x19 | BUILT-UNVERIFIED *2026-10-20* | received or sent (time-out Reject): `NetBattle::send_away` — once per player: status relayed to everybody, this machine's human takes its machine's players with it, a remote human its machine group, a computer player itself; each removed by `0x452CC0` (team killed, alliance bytes toward it cleared, record freed; this machine's session players destroyed). Open: the per-reason texts (status 7 "You need a unit you don't have") |
 | 0x1C disconnect ("Player %s has disconnected") | | BUILT-UNVERIFIED | |
 | 0x1D frame timing (`0x461620`) | phase mask 0 | NOT-APPLICABLE | never accepted by the phase table |
 | 0x1E / 0x1F start positions | cases 0x1C / 0x1D | BUILT+VERIFIED | with the original |
@@ -143,7 +143,7 @@ requests, no comparison tool and no regression test).
 | chat recipients (`0x453360`) | BUILT+VERIFIED | two-machine menus run |
 | players leaving / host leaving (no one decides features after) | BUILT-UNVERIFIED | |
 | time-outs (`0x453C20`) | BUILT-UNVERIFIED | |
-| in-battle time-out dialog (TIMEOUT.GUI) | MISSING | engine reports `on_timeout`; the dialog is the CLIENT agent's on this API |
+| in-battle time-out dialog (TIMEOUT.GUI) | BUILT-UNVERIFIED | re-checked 2026-10-20: built (hooks.timeout_dialog, client_screens.cpp); the row was stale |
 | end-of-game statistics exchange (`0x4572A0`) | BUILT-UNVERIFIED *2026-10-20* | was MISSING; net_play smoke: settles in 5 passes |
 | view states to remote humans only (`0x4573D0`) | BUILT-UNVERIFIED *2026-10-20* | went to every remote record |
 | Control screen (ownership) network side | BUILT-UNVERIFIED | |

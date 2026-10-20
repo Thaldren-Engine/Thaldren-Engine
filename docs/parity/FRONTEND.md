@@ -20,7 +20,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | 1.3 | State 1 (`2.zrb`), state 3 (`5.zrb`, credits), state 4 (`3.zrb` + `5.zrb`, Arm campaign won), state 5 (`4.zrb` + `5.zrb`, Core campaign won) → main menu | MISSING | BUILT-UNVERIFIED (first start 1.zrb + 2.zrb, INTRO 2.zrb, credits 5.zrb, campaign ends 3.zrb / 4.zrb + 5.zrb through client::MovieScreen; headless runs checked the order, skipping and the return to the main menu) |
 | 1.4 | Main menu sub-states: 1 run, 5 → single player, 6 → multiplayer, 7 → state 0 (intro again), 8 quit, 9 → credits | PARTIAL (no movie states) | BUILT-UNVERIFIED (the movie sub-states added: Intro, Credits, the first-start movies) |
 | 1.5 | "Code segment checksum error found when switching FE states" message (`0x4256D0`, `0x428BC0`) | N/A — the check of the original's own code bytes; nothing to check in the engine | |
-| 1.6 | Program run once: semaphore "Total Annihilation" — a second start exits at once | MISSING | |
+| 1.6 | Program run once: semaphore "Total Annihilation" — a second start exits at once | MISSING | BUILT-UNVERIFIED *2026-10-20* (ta_play: OpenSemaphore / CreateSemaphore "Total Annihilation", a second windowed start returns −1; headless test runs exempt so that two can run side by side) |
 | 1.7 | `srand(time)` at start (the menus' rand() state) | BUILT-UNVERIFIED (the client seeds its menu rand from the clock — an input) | |
 | 1.8 | Language: registry `language` (default "english"), `gamedata\translate.tdf` | BUILT-UNVERIFIED (English only; translate.tdf not read) | |
 | 1.9 | `SOFTWARE\Classes\AudioCD\shell` default value replaced by "cdshell" while running, restored at exit | N/A — CD audio autoplay of 1998 Windows; the engine plays `music\N.mp3` and never touches the machine's settings | |
@@ -56,7 +56,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | 4.1 | New Campaign ("BigButton" → NEWGAME), Load Game ("BigButton"), Skirmish ("skirmish"), Options ("options"), Previous Menu ("Previous") | BUILT-UNVERIFIED (New Campaign goes to the engine's own text screen) | |
 | 4.2 | AnyMsn shown only with `AllMissions`; "bigButton" → NEWGAME in any-mission mode | PARTIAL (button not hidden by the setting; goes to the text screen) | BUILT-UNVERIFIED (AnyMsn shown by AllMissions; opens the any-mission screen, verified above) |
 | 4.3 | Typing DRDEATH toggles AnyMsn and writes `AllMissions` (`0x477510`) | MISSING | BUILT-UNVERIFIED (typed-key tail of the interface pass; DRDEATH toggles AllMissions) |
-| 4.4 | Registry `side` sets the local player's side (record +0x95) | MISSING | |
+| 4.4 | Registry `side` sets the local player's side (record +0x95) | MISSING | BUILT-UNVERIFIED (re-checked 2026-10-20: the campaign screens read and write setting `side`, 0x477AB0 / 0x476EF0; the row was stale) |
 | 4.5 | Spanish: the Skirmish button's quick key becomes 's' | N/A — English data only | |
 | 4.6 | CD checks ("Please insert the Campaign CD (Disc 2) and try again", Multiplayer CD) | N/A — the Steam version's check always passes (`0x50289C` = 1) | |
 
@@ -75,7 +75,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | 5.9 | Final mission won → `3.zrb`/`4.zrb` + `5.zrb` → main menu (not windowed) | MISSING | BUILT-UNVERIFIED (movies 3/4 + 5 then the main menu; windowed: straight to the main menu) |
 | 5.10 | Campaign Restart (exit menu RESTART in a mission) | MISSING (the dialog closes) | BUILT+VERIFIED headless (ta_play: Arm mission 1, F2 > Exit > Restart > Difficulty Hard->Easy > Restart: the mission reloaded from step 0 with the Easy schema's units; the exit menu offers Restart in missions; the difficulty kept in the campaign's progress) |
 | 5.11 | Progress: the 25-character status string (GS+0x391CF) per session and in saves; registry `ArmCamp`/`CoreCamp` writers exist but are never called in 3.1 | BUILT-UNVERIFIED (string kept in the session and saves) | |
-| 5.12 | Mission keys AiIgnore, AiPriorityTarget, InitialGroup, BuildPriority, CreationCountdown, MissionCriticalUnit | PARTIAL (read by the importer, not used; simulation effect is the SIM agent's) | |
+| 5.12 | Mission keys AiIgnore, AiPriorityTarget, InitialGroup, BuildPriority, CreationCountdown, MissionCriticalUnit | PARTIAL | N/A (re-checked 2026-10-20: the original stores them in the schema record but its placement 0x488310 copies only Immunity, health and facing; nothing reads them — SIM.md agrees) |
 | 5.13 | CDCHECK.GUI at the end of a campaign battle | N/A — the Steam check passes | |
 | 5.14 | SELCAMP / SELCAMPX / NEWCAMP / SELSIDE / SIDESEL / SSIDESEL / ssidesel1 / MISSION / MISSIONX / BRIEF / BRIEFX / CREDITS / DEMOMSG GUIs | N/A — present in the data but never opened by the 3.1 program (no string or reference) | |
 
@@ -102,11 +102,11 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | # | Item | Before | After / evidence |
 |---|---|---|---|
 | 8.1 | Interface Type 0 (clamped ≤ 1), DisplaymodeWidth/Height 640/480, side 0, Difficulty 1, scrollspeed 32 | PARTIAL (side missing) | |
-| 8.2 | SingleCommanderDeath / SingleMapping / SingleLineOfSight / SingleLOSType 1; MultiCommanderDeath / MultiMapping / MultiLineOfSight / MultiLOSType 1 | MISSING | |
+| 8.2 | SingleCommanderDeath / SingleMapping / SingleLineOfSight / SingleLOSType 1; MultiCommanderDeath / MultiMapping / MultiLineOfSight / MultiLOSType 1 | MISSING | BUILT-UNVERIFIED *2026-10-20*: Multi* are the network room's defaults (0x449BB0: bit 0 of MultiMapping / MultiLineOfSight / MultiLOSType, MultiCommanderDeath & 3, fixed locations from SkirmishLocation; the room used the Skirmish* keys before) and the host's Start stores the room's switches back (0x447B10) and saves; Single* N/A — a mission's loader (0x435DA0) overwrites them before the battle start (0x497180) reads them |
 | 8.3 | screenchat 1, damagebars 0, Sound Mode 1, MixingBuffers 8, RestoreVolume / WaveOutVolume / CDAudioVolume | PARTIAL (screenchat missing; the volume restore is the 1998 mixer: N/A) | BUILT-UNVERIFIED (screenchat 1 read into the client's options; the volume restore stays N/A) |
 | 8.4 | Anti-Alias 1, Shadows 1, FeatureShadows 1, VehicleShadows 1, Shading 1, DitheredFog 0, Gamma 12 (10 reads as 12), SwitchAlt 0 | PARTIAL (Shadows, VehicleShadows, DitheredFog, the 10→12 rule missing) | BUILT-UNVERIFIED (Anti-Alias, Shadows, FeatureShadows, VehicleShadows, Shading 1 / DitheredFog 0 read into the client's options as bit 0 of each value; Gamma 10 shows as 12 on the visuals page) |
-| 8.5 | Password, Nickname, Game Name, Image Output Directory (`<user>_images`-like default), Movie Output Rate 10 | PARTIAL (Nickname only) | |
-| 8.6 | textlines 10, textscroll 10, mousespeed 10, gamespeed 10, unitchat 10, unitchattext 5, musicmode 1, cdmode 4, ackfx 1, buildfx 1, speechfx 1, fxvol 27, musicvol 32, clock 0 | PARTIAL (mousespeed, ackfx, buildfx missing) | |
+| 8.5 | Password, Nickname, Game Name, Image Output Directory (`<user>_images`-like default), Movie Output Rate 10 | PARTIAL | BUILT-UNVERIFIED *2026-10-20*: Password and Game Name read for the network screens (Game Name unless -h gave one), the new game screen refuses an empty game name / player name ("You must enter a game name" / "You must enter your name", 320 wide, 0x440D70) and keeps the three; Image Output Directory and Movie Output Rate built earlier |
+| 8.6 | textlines 10, textscroll 10, mousespeed 10, gamespeed 10, unitchat 10, unitchattext 5, musicmode 1, cdmode 4, ackfx 1, buildfx 1, speechfx 1, fxvol 27, musicvol 32, clock 0 | PARTIAL | N/A for mousespeed, ackfx, buildfx (re-checked 2026-10-20: GS+0x37F2B and bits 0x10 / 0x20 of GS+0x37F19 are read only by the settings reader / writer and the sound page's Restore; nothing in play reads them); the rest built |
 | 8.7 | NumSkirmishPlayers 4, Skirmish… values, SkirmishMap (first map), `Total Annihilation\Skirmish` Player%d… | BUILT-UNVERIFIED | |
 | 8.8 | PlayMovie 1, DisplaymodeDepth / Games (option bit 2), AllMissions 0 | PARTIAL (AllMissions only) | PARTIAL (PlayMovie 1 read and cleared after the first start's movies; AllMissions; DisplaymodeDepth / Games not used: one colour depth, no DirectPlay option) |
 | 8.9 | CDLISTS track types | BUILT-UNVERIFIED | |
@@ -115,7 +115,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Switch | Before | After / evidence |
 |---|---|---|---|
-| 9.1 | `-c <file>` lobby / connection file, `-n <1-4>[:addr]` provider, `-h <name>` host game name, `-p <n>` packet rate, `-t <30-300>` time-out, `-e <0-100>` | MISSING (network start-ups; the NETWORK agent owns their behaviour) | |
+| 9.1 | `-c <file>` lobby / connection file, `-n <1-4>[:addr]` provider, `-h <name>` host game name, `-p <n>` packet rate, `-t <30-300>` time-out, `-e <0-100>` | MISSING | BUILT-UNVERIFIED *2026-10-20*: -t (time-out, else 30), -e (the share of outgoing messages dropped: each message draws rand(), dropped when rand()·101/0x8000 ≤ the share, still counted; +senderror too), -p (packets a second; "-p-" no frame timing), -n (straight to the multiplayer screens, the provider picked: 1 TCP/IP with ":address", 3 modem, 4 serial; 2 IPX is not offered, as on a machine without IPX; the start's 1.zrb skipped), -h (hosting: the game list opens the new game screen with that name). Headless: -n 1:127.0.0.1 -h Smoke → Create New Game "Smoke" / "Alice"; -n1:127.0.0.1 → Select Game. -c N/A (a DirectPlay lobby launch) |
 | 9.2 | `-s` no sound (NoDirectSound), `-w` Windows sound | MISSING | PARTIAL: -s / /s (any case) starts without sound (ta_play: front.sound off; BUILT-UNVERIFIED, the headless log lists sounds either way); -w (Windows wave-out instead of DirectSound) N/A — the client has one audio output |
 | 9.3 | `-d` / `-df` display (debug window / flag) | MISSING | |
 | 9.4 | `-f` CD drive H: only, `-l` (no effect), `-r` DirectPlay registration and exit, `-b` (battle switches) | N/A for -f/-r/-l (CD drives, DirectPlay registry); -b to be read | |

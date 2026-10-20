@@ -375,6 +375,7 @@ void launch_network_battle(FrontEnd& fe, const NetMenuConfig& cfg, NetLaunch L) 
         if (!inner || !*net) return nullptr;
         auto s = std::make_unique<NetBattleSession>(std::move(*transport), session, std::move(*net), std::move(inner));
         s->set_names(names, local);
+        s->set_timeout_seconds(cfg.timeout_seconds);  // (-t)
         return s;
     });
 }
@@ -414,6 +415,9 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     net_->on_timeout = [this](int slot) { timed_out_ = slot; };
     // The original's time-out: 30 seconds (the command line's -t gives 30..300, 0x49EE30).
     if (net_->timeout_seconds() == 0) net_->set_timeout(30);
+    // The dropped messages draw the program's one rand(): the battle's while it runs.
+    session_->sender.set_rand([this]() { return static_cast<std::int32_t>(inner_->battle().crt_rand.next()); });
+    c.network.set_send_error = [this](int percent) { session_->sender.set_send_error(percent); };
     net_->on_player_left = [this](int slot, int) {
         inner_->client().message("Player " + std::to_string(slot + 1) + " left", GameClient::kPlayerNote, static_cast<std::uint8_t>(slot));
     };

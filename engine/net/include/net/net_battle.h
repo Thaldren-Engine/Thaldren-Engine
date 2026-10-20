@@ -218,6 +218,13 @@ private:
     // 0x452CC0 for another machine's player that left the session: its whole team killed here
     // (0x486F10), this machine's alliance bytes toward it cleared and its record freed.
     void remove_remote_player(int slot);
+    // 0x452CC0 for a player of any machine: a remote one as above; one of this machine's has
+    // its team killed and its session player destroyed.
+    void remove_player(int slot);
+    // 0x453010 (player `slot`, `reason`): the player is sent away once (a status 0x1B to
+    // everybody, then 0x452CC0): this machine's human takes every player of this machine with
+    // it; a remote human every record of its machine group; a computer player only itself.
+    void send_away(int slot, std::uint8_t reason);
     std::int32_t first_local_net_id() const;
     bool plays(int slot) const;
     void dispatch(int from, int to, const std::vector<std::uint8_t>& p);

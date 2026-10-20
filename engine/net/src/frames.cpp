@@ -62,7 +62,12 @@ void FrameSender::send_channel(Channel& c, std::uint32_t clock, bool force, cons
         std::vector<std::uint8_t> msg = wrap(frame.data(), frame.size(), timing_.compression);
         ++frames_sent_;
         bytes_sent_ += msg.size();
-        send(from, c.to, std::move(msg));
+        bool dropped = false;
+        if (send_error_ != 0 && rand_) {
+            const std::int64_t r = rand_();
+            dropped = static_cast<std::int32_t>(r * 101 / 0x8000) <= send_error_;
+        }
+        if (!dropped) send(from, c.to, std::move(msg));
         c.sequence -= 1;
         if (c.sequence > -2) c.sequence = -2;
     }

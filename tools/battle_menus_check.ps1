@@ -42,7 +42,7 @@ $p = Start-Client "skirmish" "battle_menus_skirmish.txt" 950 @() $false
 $p.WaitForExit()
 if (-not (Test-Client "skirmish")) { $ok = $false }
 
-$h = Start-Client "net_host" "battle_menus_net_host.txt" 2050 @("NetLoopback = 1", "Nickname = Alice", "TCPADDR = ") $true
+$h = Start-Client "net_host" "battle_menus_net_host.txt" 2050 @("NetLoopback = 1", "Nickname = Alice", "Game Name = Alice", "TCPADDR = ") $true
 Start-Sleep -Milliseconds 500
 $j = Start-Client "net_join" "battle_menus_net_join.txt" 2050 @("NetLoopback = 1", "Nickname = Bob", "TCPADDR = 127.0.0.1") $true
 $h.WaitForExit()

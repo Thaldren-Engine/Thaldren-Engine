@@ -31,8 +31,8 @@ summary at the end gives the counts after this round.
 | 1.7 | Depth-plane path (`zbuffer` units, under construction, 3-D features' proxy unit) | `MemCache_AllocMaskBufferDual` | PARTIAL | depth sprite built for nanoframes; water clipping by sea level and the proxy unit not built |
 | 1.8 | Shaded path (Shading option), anti-aliased structures | `0x459C70` | BUILT-UNVERIFIED | `unit_look.cpp` (lit / twice-size structures); not compared |
 | 1.9 | Nanoframes (units under construction) | shaded / depth path | BUILT-UNVERIFIED | `model.cpp apply_nanoframe`; not compared |
-| 1.10 | Features (2-D, shadows, `shadtrans`/`animtrans`, hidden `nodrawundergray`) | `0x46A610`, `0x4658E0` | PARTIAL | placement exact; the hidden-feature sight test is not modelled (all drawn) |
-| 1.11 | Projectiles: lines, sprite shells, flames, models | `0x49BE60` | PARTIAL | lines / sprites / models built; plasma sizes by damage MISSING, model shots as sprites |
+| 1.10 | Features (2-D, shadows, `shadtrans`/`animtrans`, hidden `nodrawundergray`) | `0x46A610`, `0x4658E0` | BUILT-UNVERIFIED | re-checked 2026-10-20: the hidden-feature sight test is built (client_scene.cpp, kNoDrawUnderGray against the cell's viewer bits); the row was stale |
+| 1.11 | Projectiles: lines, sprite shells, flames, models | `0x49BE60` | BUILT-UNVERIFIED | re-checked 2026-10-20: render type 4 picks its shell sequence by the weapon's colour byte (+0x10D, 0..4 → GS+0x147BB..), not by damage — as built; models are drawn as models (types 1, 3, 6). The "plasma sizes by damage" note was wrong |
 | 1.12 | Lightning shots | `0x49BE60` type 7 | BUILT-UNVERIFIED | `battle_view.cpp` (own random source; the original's draws CRT rand) |
 | 1.13 | World effects, glows through the light table, shards, debris | `0x420B00`, `0x420D20` | BUILT+VERIFIED | feature_harness / fx_harness, sample frames CPU = GPU |
 | 1.14 | LOS fog, black edges | `0x4848E0` | BUILT+VERIFIED | frame_harness |

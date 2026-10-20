@@ -50,6 +50,12 @@ public:
     void flush(std::uint32_t clock, bool force, const SendFn& send);
     std::uint64_t frames_sent() const { return frames_sent_; }
     std::uint64_t bytes_sent() const { return bytes_sent_; }
+    // GS+0x37F35 (-e, +senderror): a share of the messages (0..100 %) is not sent: with it set,
+    // every message draws the program's C runtime rand() and is dropped when rand() x 101 / 0x8000
+    // is at most the share (still counted as sent; Condenser_WrapAndSend 0x44FC10).
+    void set_send_error(int percent) { send_error_ = percent; }
+    int send_error() const { return send_error_; }
+    void set_rand(std::function<std::int32_t()> rand) { rand_ = std::move(rand); }
 
 private:
     struct Pending {
@@ -70,6 +76,8 @@ private:
     Channel everybody_{kEverybody};
     std::vector<Channel> direct_;
     std::uint64_t frames_sent_ = 0, bytes_sent_ = 0;
+    int send_error_ = 0;
+    std::function<std::int32_t()> rand_;
 };
 
 struct Delivered {

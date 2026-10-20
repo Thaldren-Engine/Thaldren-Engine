@@ -581,6 +581,24 @@ public:
             for (const Provider& p : providers()) L->items.push_back(p.name);
         fit_slider("DPLAY", "SLIDER");
     }
+    void enter(FrontEnd& fe) override {
+        NetScreen::enter(fe);
+        // -n (0x443FF0 with no pick): the provider named by the switch, if this machine has it
+        // (1 TCP/IP, 2 IPX, 3 modem, 4 serial); the switch is used up either way.
+        auto& st = part_->cfg.startup;
+        if (!st || st->provider == 0) return;
+        const int want = st->provider;
+        st->provider = 0;
+        for (std::size_t k = 0; k < providers().size(); ++k) {
+            const ProviderKind kind = providers()[k].kind;
+            if ((want == 1 && kind == ProviderKind::Tcpip) || (want == 3 && kind == ProviderKind::Modem) ||
+                (want == 4 && kind == ProviderKind::Serial)) {
+                if (ListState* L = list("DPLAY")) L->selected = static_cast<int>(k);
+                choose(fe, static_cast<int>(k));
+                return;
+            }
+        }
+    }
 
 protected:
     void on_list(FrontEnd& fe, int, int row, bool dbl) override {
@@ -605,6 +623,15 @@ public:
     void enter(FrontEnd& fe) override {
         if (!entered_) {
             entered_ = true;
+            // (0x4221F0: the -n address, else the saved one; with the switch's address the
+            // dialog goes on at once, and a joining start uses the address up)
+            auto& st = part_->cfg.startup;
+            if (st && !st->address.empty()) {
+                set_edit("ADDRESS", st->address);
+                if (!st->host) st->address.clear();
+                ok(fe);
+                return;
+            }
             set_edit("ADDRESS", fe.settings().get_text("TCPADDR", ""));
         }
     }
@@ -824,6 +851,7 @@ public:
         focus_name_ = "GAMENAME";  // 0x4A7830 on the game list
         fill();
     }
+    void enter(FrontEnd& fe) override;
 
 protected:
     void fill() {
@@ -1042,6 +1070,17 @@ void ModemAsk::on_press(FrontEnd& fe, Widget& w) {
     fe.push(make_selgame(part_, found_entries(*part_)));
 }
 
+void SelGame::enter(FrontEnd& fe) {
+    NetScreen::enter(fe);
+    // (0x443CB0 / 0x4437C0: a start-up address left by a hosting start (-h) with a player name
+    // opens the new game screen; the address is used up)
+    auto& st = part_->cfg.startup;
+    if (!st || st->address.empty() || !st->host || part_->nickname.empty()) return;
+    st->address.clear();
+    sfx(fe, art_, "BigButton");
+    fe.push(std::make_unique<NewMulti>(part_));
+}
+
 void SelGame::on_press(FrontEnd& fe, Widget& w) {
     if (is(w, "UPDATE")) {
         sfx(fe, art_, "Multi");
@@ -1127,10 +1166,27 @@ void SelGame::join(FrontEnd& fe, bool watch) {
 }
 
 void NewMulti::next(FrontEnd& fe) {
+    // 0x440D70: the password is taken, then an empty game name or player name is refused (the
+    // field gets the keys, a 320-wide message); otherwise the names are kept (the settings writer
+    // saves them) and the game is created.
     sfx(fe, art_, "BigButton");
-    if (const EditState* e = edit("GAMENAME")) part_->game_name = e->text;
-    if (const EditState* e = edit("NICKNAME")) part_->nickname = e->text;
     if (const EditState* e = edit("PASSWORD")) part_->password = e->text;
+    fe.settings().set_text("Password", part_->password);
+    const EditState* gn = edit("GAMENAME");
+    if (!gn || gn->text.empty()) {
+        focus_edit("GAMENAME");
+        show_net_message(fe, art_, "You must enter a game name", 320);
+        return;
+    }
+    const EditState* nn = edit("NICKNAME");
+    if (!nn || nn->text.empty()) {
+        focus_edit("NICKNAME");
+        show_net_message(fe, art_, "You must enter your name", 320);
+        return;
+    }
+    part_->game_name = gn->text;
+    part_->nickname = nn->text;
+    fe.settings().set_text("Game Name", part_->game_name);
     fe.settings().set_text("Nickname", part_->nickname);
     fe.pop();
     if (!part_->test) {
@@ -1249,6 +1305,10 @@ void install_net_screens(client::FrontEndHooks& hooks, MenuArt& art, const clien
         auto part = std::make_shared<NetPart>(art, config);
         part->nickname = fe.settings().get_text("Nickname", "");
         part->loopback = fe.settings().get_int("NetLoopback", 0) != 0;
+        // (0x42F9A0: Password; Game Name unless -h gave one)
+        part->password = fe.settings().get_text("Password", "").substr(0, 10);
+        part->game_name = fe.settings().get_text("Game Name", "").substr(0, 16);
+        if (config.startup && !config.startup->game_name.empty()) part->game_name = config.startup->game_name.substr(0, 16);
         return std::make_unique<SelProv>(part);
     };
 }
@@ -2920,6 +2980,14 @@ protected:
             room.set_option_word(opt);
             return;
         }
+        // (0x447B10 at the start: the host's switches become the multiplayer settings, saved)
+        client::Settings& set = fe.settings();
+        set.set_int("MultiLineOfSight", (opt >> 9) & 1);
+        set.set_int("MultiLOSType", (opt >> 10) & 1);
+        set.set_int("MultiCommanderDeath", (opt & 0x1800) >> 11);
+        set.set_int("SkirmishLocation", (opt >> 14) & 1);
+        set.set_int("MultiMapping", (opt >> 8) & 1);
+        fe.apply_settings();
         launched_ = true;
         client::launch_network_battle(fe, live_->cfg, client::NetLaunch{std::move(live_->transport), live_->session, live_->room, live_->crt_rand});
     }
@@ -3034,6 +3102,17 @@ std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<v
     live->crt_rand = std::make_shared<sim::Lcg15>();
     // This machine's C runtime rand(): the host's start position shuffle draws it (an input).
     live->crt_rand->set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    // The start-up switches: -p packets a second (0x4619E0), -e the dropped share (it draws rand()).
+    if (part->cfg.packet_rate_set) {
+        net::NetTiming t = net::NetTiming::from_rate(part->cfg.packet_rate);
+        t.compression = live->session->sender.timing().compression;
+        live->session->sender.set_timing(t);
+    }
+    live->session->sender.set_send_error(part->cfg.send_error);
+    {
+        std::shared_ptr<sim::Lcg15> r = live->crt_rand;
+        live->session->sender.set_rand([r]() { return static_cast<std::int32_t>(r->next()); });
+    }
     live->text_lines = fe.settings().get_int("textlines", 10);
     if (const char* d = std::getenv("TA_ROOM_DUMP")) live->dump = d;
     {  // the sides the side buttons step through (gamedata\sidedata.tdf)
@@ -3064,18 +3143,19 @@ std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<v
         room.set_map_ready(true);
         // The room opens on the first map of the multiplayer list (0x435D30); the host's sliders
         // at 1000 metal and energy and the settings' unit limit; its switches from the game's
-        // settings (mapping, line of sight and its type, commander, fixed locations).
+        // multiplayer settings (0x449BB0: bit 0 of MultiMapping, MultiLineOfSight, MultiLOSType,
+        // MultiCommanderDeath & 3 as the commander mode; fixed locations from SkirmishLocation).
         const std::string map = first_network_map(part->art);
         room.set_map(map, map_sync_checksum(part->art.vfs(), map));
         room.set_resources(10, 10, static_cast<std::uint16_t>(limit));
         const client::Settings& s = fe.settings();
         std::uint16_t opt = static_cast<std::uint16_t>(room.players()[0].options);
         opt = static_cast<std::uint16_t>(opt & ~0x5F00u);
-        if (s.get_int("SkirmishMapping", 1)) opt |= 0x100;
-        if (s.get_int("SkirmishLineOfSight", 1)) opt |= 0x200;
-        if (s.get_int("SkirmishLOSType", 1) == 1) opt |= 0x400;
-        opt = static_cast<std::uint16_t>(opt | ((s.get_int("SkirmishCommanderDeath", 1) ? 1u : 0u) << 11));
-        if (s.get_int("SkirmishLocation", 1)) opt |= 0x4000;
+        opt = static_cast<std::uint16_t>(opt | ((s.get_int("MultiMapping", 1) & 1) << 8));
+        opt = static_cast<std::uint16_t>(opt | ((s.get_int("MultiLineOfSight", 1) & 1) << 9));
+        opt = static_cast<std::uint16_t>(opt | ((s.get_int("MultiLOSType", 1) & 1) << 10));
+        opt = static_cast<std::uint16_t>(opt | ((s.get_int("SkirmishLocation", 1) & 1) << 14));
+        opt = static_cast<std::uint16_t>(opt | ((s.get_int("MultiCommanderDeath", 1) & 3) << 11));
         room.set_option_word(opt);
     }
     LoungeState st = LoungeState{};

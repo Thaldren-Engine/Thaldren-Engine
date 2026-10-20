@@ -628,6 +628,7 @@ void ConsoleCommands::Impl::build() {
         if (a.count() != 2) return;
         const std::int32_t v = a.number(1, 0);
         st.senderror = v < 0 || v > 100 ? 0 : v;
+        if (c.network.set_send_error) c.network.set_send_error(st.senderror);
     });
     add("TreeDeath", [this](const Words&) { b().settings.damage_options ^= 8; });
     add("Feature", [this](const Words& a) {

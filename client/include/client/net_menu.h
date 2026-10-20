@@ -58,6 +58,23 @@ struct NetMenuConfig {
     std::function<std::unique_ptr<BattleSession>(const NetGameRequest&, const LoadProgress&, std::string& error)> load_network_game;
     // The unit definition checksums of this machine (key, checksum), for the room's comparison.
     std::function<net::UnitChecks()> unit_checks;
+    // The original's start-up switches (0x49EE30): -t the time-out of silent players (30..300 s),
+    // -e the share of outgoing messages dropped (0..100 %, GS+0x37F35), -p packets a second.
+    int timeout_seconds = 30;
+    int send_error = 0;
+    bool packet_rate_set = false;
+    int packet_rate = 0;
+    // -n <provider>[:address] and -h <game name>: the program goes straight to the multiplayer
+    // screens and picks the provider (1 TCP/IP, 2 IPX, 3 modem, 4 serial; 0x443FF0) and for
+    // TCP/IP the address (0x4421F0); with -h it hosts: the game list opens the new game screen
+    // (0x4437C0) with that game name. Each part is used once.
+    struct Startup {
+        int provider = 0;
+        std::string address;
+        bool host = false;
+        std::string game_name;
+    };
+    std::shared_ptr<Startup> startup;
 };
 
 // The connection and battle room screens (the main menu's multiplayer button).
@@ -150,6 +167,7 @@ public:
     bool computer(int slot) const override { return slot >= 0 && slot < 10 && net_->room()[static_cast<std::size_t>(slot)].kind == 2; }
     // The players' names (the session's) and this machine's player: chat lines carry the
     // sender's name, lines to one player that player's name.
+    void set_timeout_seconds(int seconds) { net_->set_timeout(static_cast<std::uint32_t>(seconds)); }
     void set_names(const std::array<std::string, 10>& names, int local) {
         names_ = names;
         local_ = local;

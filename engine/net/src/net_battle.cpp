@@ -372,12 +372,69 @@ void NetBattle::reject(int slot, std::uint8_t reason) {
     if (!battle_ || slot < 0 || slot > 9) return;
     const sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(slot)];
     if (!p.active || p.controller != 3 || leaving_[static_cast<std::size_t>(slot)]) return;
-    u8 pk[6] = {packet::kStatus};
-    put32(pk + 1, static_cast<std::uint32_t>(p.net_id));
-    pk[5] = reason;
-    broadcast(first_local_net_id(), pk, 6);
-    leaving_[static_cast<std::size_t>(slot)] = reason;
-    if (on_player_left) on_player_left(slot, reason);
+    send_away(slot, reason);
+}
+
+void NetBattle::remove_player(int slot) {
+    if (!battle_ || slot < 0 || slot > 9) return;
+    sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(slot)];
+    if (!p.active) return;
+    if (p.controller == 3) {
+        remove_remote_player(slot);
+        return;
+    }
+    if (p.controller == 1 || p.controller == 2) {
+        battle_->kill_team(slot);
+        const std::int32_t id = p.net_id;
+        if (id && id != -1) transport_.destroy_player(id);
+    }
+}
+
+void NetBattle::send_away(int slot, std::uint8_t reason) {
+    if (!battle_ || slot < 0 || slot > 9) return;
+    sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(slot)];
+    const std::size_t s = static_cast<std::size_t>(slot);
+    auto status = [&](std::int32_t id) {
+        u8 pk[6] = {packet::kStatus};
+        put32(pk + 1, static_cast<std::uint32_t>(id));
+        pk[5] = reason;
+        broadcast(first_local_net_id(), pk, 6);
+    };
+    auto gone = [&](int k) {
+        leaving_[static_cast<std::size_t>(k)] = reason;
+        if (on_player_left) on_player_left(k, reason);
+    };
+    if (p.active && !leaving_[s]) {
+        if (p.controller == 1) {
+            // This machine's human: every player this machine runs leaves.
+            for (int k = 0; k < 10 && static_cast<std::size_t>(k) < battle_->players.size(); ++k) {
+                const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(k)];
+                if (!q.active || (q.controller != 1 && q.controller != 2)) continue;
+                status(q.net_id);
+                remove_player(k);
+                gone(k);
+            }
+        } else if (p.controller == 2) {
+            status(p.net_id);
+            remove_player(slot);
+            gone(slot);
+        } else if (p.controller == 3) {
+            status(p.net_id);
+            if (room_[s].kind != 1) {
+                remove_player(slot);
+                gone(slot);
+            } else {
+                // A remote human: its machine's whole group.
+                const std::int32_t group = room_[s].group;
+                for (int k = 0; k < 10 && static_cast<std::size_t>(k) < battle_->players.size(); ++k)
+                    if (room_[static_cast<std::size_t>(k)].group == group && battle_->players[static_cast<std::size_t>(k)].active) {
+                        remove_player(k);
+                        gone(k);
+                    }
+            }
+        }
+    }
+    leaving_[s] = reason;
 }
 
 void NetBattle::send_alliance(int from, int to, bool allied) {
@@ -586,11 +643,9 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
         }
         break;
     case packet::kStatus: {
+        // (0x453D40 -> 0x453010: the named player is sent away here too, the status passed on)
         const int s = slot_of(static_cast<std::int32_t>(get32(p + 1)));
-        if (s != 10) {
-            leaving_[static_cast<std::size_t>(s)] = p[5];
-            if (on_player_left) on_player_left(s, p[5]);
-        }
+        if (s != 10) send_away(s, p[5]);
         break;
     }
     case packet::kAlliance: {

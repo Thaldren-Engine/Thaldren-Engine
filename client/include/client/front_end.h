@@ -259,6 +259,9 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&)> any_mission_menu;
     // Main menu > multiplayer: the connection / lobby screens.
     std::function<std::unique_ptr<Screen>(FrontEnd&)> multiplayer_menu;
+    // A start-up switch asked for the multiplayer screens at once (-n; GS+0x39245): the main menu
+    // opens them first (and the start's 1.zrb is not shown).
+    std::function<bool()> network_start;
     // Single-player menu > load game, and the in-game menu's load button
     // (session = the running battle, or nullptr from the menus).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession* session)> load_game_menu;

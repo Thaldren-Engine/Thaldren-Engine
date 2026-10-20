@@ -1171,16 +1171,21 @@ public:
         if (!started_) {
             // The program's first state (0x426E80 state 0): on a full screen, the first start
             // (registry "PlayMovie", default 1) plays 1.zrb and 2.zrb and clears the setting;
-            // later starts play 1.zrb (unless a lobby switch started the program).
+            // later starts play 1.zrb unless a network switch started the program (GS+0x39245),
+            // which then opens the multiplayer screens (main menu sub-state 6) after the movies.
             started_ = true;
+            const bool net_start = fe.hooks().network_start && fe.hooks().network_start() && fe.hooks().multiplayer_menu;
+            if (net_start) fe.push(fe.hooks().multiplayer_menu(fe));
             if (art_.full_screen) {
                 std::vector<std::string> names = {"1.zrb"};
                 if (fe.settings().get_int("PlayMovie", 1) != 0) {
                     names.push_back("2.zrb");
                     fe.settings().set_int("PlayMovie", 0);
                     fe.apply_settings();  // (saved: 0x430F00)
+                    play_movies(fe, art_, names, false, {});
+                } else if (!net_start) {
+                    play_movies(fe, art_, names, false, {});
                 }
-                play_movies(fe, art_, names, false, {});
             }
         }
     }

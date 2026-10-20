@@ -125,6 +125,8 @@ public:
         // The share commands: the local player's side record flag word (+0x97) toggled by `bit`
         // and the side record announced (0x450F90).
         std::function<void(std::uint8_t bit)> toggle_share_flag;
+        // "+senderror n" (GS+0x37F35): the share of outgoing messages dropped.
+        std::function<void(int percent)> set_send_error;
     };
     NetworkHooks network;
     // The chat line (Enter): a typed line goes here when Enter is pressed again.

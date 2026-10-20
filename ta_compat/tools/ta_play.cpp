@@ -48,6 +48,8 @@
 //                       each viewing side) to DIR and exits (compare: gui_harness buildpages:)
 
 #include <array>
+#include <cctype>
+#include <memory>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -214,9 +216,61 @@ int main(int argc, char** argv) {
     int movies = -1;  // --movies / --no-movies (default: the window plays them, headless runs not)
     std::vector<std::string> net_screens;
     std::string key_sweep;  // --key-sweep KEYS:MODS
+    // The original's network start-up switches (0x49EE30), single dash or slash, any case; a
+    // value follows the letter or is the next word (taken whatever it is).
+    int sw_timeout = 30, sw_send_error = 0, sw_rate = 0;
+    bool sw_rate_set = false;
+    auto startup = std::make_shared<client::NetMenuConfig::Startup>();
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && a[1] != '-') {
+            const char l = static_cast<char>(std::tolower(static_cast<unsigned char>(a[1])));
+            auto value = [&]() -> std::string { return a.size() > 2 ? a.substr(2) : next(); };
+            auto number = [&](const std::string& v) { return !v.empty() && v[0] != '-' ? std::atoi(v.c_str()) : -1; };
+            if (l == 't') {
+                const std::string v = value();
+                if (!v.empty()) {
+                    const int n = number(v);
+                    sw_timeout = n < 30 || n > 300 ? 30 : n;
+                }
+                continue;
+            }
+            if (l == 'e') {
+                const std::string v = value();
+                if (!v.empty()) {
+                    const int n = number(v);
+                    sw_send_error = n < 0 || n > 100 ? 0 : n;
+                }
+                continue;
+            }
+            if (l == 'p') {
+                const std::string v = value();
+                if (!v.empty()) {
+                    sw_rate = number(v);
+                    sw_rate_set = true;
+                }
+                continue;
+            }
+            if (l == 'n') {
+                const std::string v = value();
+                if (!v.empty() && v[0] != '-') {
+                    const int p = std::atoi(v.c_str());
+                    const std::size_t colon = v.find(':');
+                    if (p == 1 && colon != std::string::npos) startup->address = v.substr(colon + 1, 63);
+                    if (p >= 1 && p <= 4) startup->provider = p;
+                }
+                continue;
+            }
+            if (l == 'h') {
+                const std::string v = a.size() > 2 ? a.substr(2) : next();
+                if (!v.empty() && v[0] != '-') {
+                    startup->host = true;
+                    startup->game_name = v.substr(0, 63);
+                }
+                continue;
+            }
+        }
         if (a == "--map" || a == "--side" || a == "--players" || a == "--no-ai" || a == "--seed" || a == "--direct") direct = true;
         if (a == "--direct") continue;
         if (a == "--settings") {
@@ -350,7 +404,17 @@ int main(int argc, char** argv) {
 #ifdef TA_CLIENT_HAVE_NET
         // Multiplayer: the original's connection, game list and battle room screens on the main
         // menu's button.
-        ta::install_net_screens(fes.hooks, art, ta::network_config(art, nullptr));
+        {
+            client::NetMenuConfig cfg = ta::network_config(art, nullptr);
+            cfg.timeout_seconds = sw_timeout;
+            cfg.send_error = sw_send_error;
+            cfg.packet_rate_set = sw_rate_set;
+            cfg.packet_rate = sw_rate;
+            cfg.startup = startup;
+            ta::install_net_screens(fes.hooks, art, cfg);
+            // -n: the multiplayer screens at once (the provider used up by its screen)
+            fes.hooks.network_start = [startup]() { return startup->provider != 0; };
+        }
         if (!net_screens.empty()) {
             const client::NetMenuConfig cfg = ta::network_config(art, nullptr);
             fes.main_menu = [&art, cfg, net_screens](client::FrontEnd&) { return ta::make_net_test_screens(art, cfg, net_screens); };
@@ -525,6 +589,17 @@ int main(int argc, char** argv) {
             }
             return client::run_key_sweep(fes, key_sweep.substr(0, c), mods, cx, cy, typed);
         }
+#ifdef _WIN32
+        // The program runs once (0x49E830): a second start finds the semaphore "Total
+        // Annihilation" and ends at once with -1. (Headless test runs may run side by side.)
+        if (!front.headless) {
+            if (HANDLE h = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "Total Annihilation")) {
+                CloseHandle(h);
+                return -1;
+            }
+            CreateSemaphoreA(nullptr, 1, 1, "Total Annihilation");
+        }
+#endif
         return client::run_front_end(fes, front);
     }
 
