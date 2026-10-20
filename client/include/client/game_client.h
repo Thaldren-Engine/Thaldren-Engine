@@ -125,6 +125,9 @@ public:
     std::function<void(const char* name, int value)> save_setting;
     std::function<void(const char* name, const std::string& value)> save_text_setting;
     std::function<void(int n)> on_gamma_command;  // "+gamma n" (the display's gamma, 0x417290)
+    // Moves the system pointer to frame pixel (x, y) (SetCursorPos; the view drag); unset: the
+    // client's own pointer position only.
+    std::function<void(int x, int y)> warp_pointer;
     // The film (debug switch; Ctrl+F10, 0x495E90 case 0xD7, and the battle loop 0x496790): a
     // frame is due once the game tick reaches the next film tick; the front writes the frame it
     // draws next into the film's folder (FRAMnnnn.pcx) and calls film_written.
@@ -507,8 +510,15 @@ private:
     bool text_events_ = false;     // the platform sends typed characters (Text events)
     int chat_provisional_ = -1;    // a key's character standing in for its typed character
     std::string last_command_;  // the last command line (debug: '\' runs it again)
-    bool mdrag_ = false;                        // dragging the view with the middle button
+    // The view drag (Ctrl+right press over the view in interface type 0, 0x41CC60 / 0x41CD50):
+    // the view's cell when the pass began, the pointer's place before the drag, the right
+    // button still held.
+    bool mdrag_ = false;
     int mdrag_x_ = 0, mdrag_y_ = 0;
+    int mdrag_saved_x_ = 0, mdrag_saved_y_ = 0;
+    bool mdrag_held_ = false;
+    void view_drag_step();
+    void move_pointer(int x, int y);
     int hover_feature_ = -1;
     bool pointer_hidden_ = false;
     bool pointer_off_ = false;  // the system pointer is outside the picture (PointerLeave)

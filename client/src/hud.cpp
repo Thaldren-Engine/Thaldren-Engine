@@ -317,7 +317,7 @@ render::DrawList GameClient::draw() {
         look = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Normal)];
         frame = 0;
     }
-    if (look && !look->empty() && !pointer_hidden_ && !pointer_off_ && !cursor_clock_.ended) {
+    if (look && !look->empty() && !pointer_hidden_ && !mdrag_ && !pointer_off_ && !cursor_clock_.ended) {
         const render::Sprite8& s = (*look)[static_cast<std::size_t>(frame) % look->size()];
         list.blit(&s, mouse_x_, mouse_y_, screen, true);
     }

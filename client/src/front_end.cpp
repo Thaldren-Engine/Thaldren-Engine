@@ -518,6 +518,9 @@ private:
         // The battle's load applies the Gamma setting (0x491200); "+gamma n" shows n x 0.1 and
         // keeps n as the setting (saved at once).
         gamma_from_settings();
+        session_->client().warp_pointer = [this](int x, int y) {
+            if (warp_) warp_(x, y);
+        };
         session_->client().on_gamma_command = [this](int n) {
             display_gamma_ = gamma_from_command(n);
             gamma_setting_ = n;
@@ -578,6 +581,7 @@ private:
 public:
     // The palette the screen shows for a frame's palette.
     render::Palette display_palette(const render::Palette& p) const { return display_gamma_ == 1.0f ? p : gamma_palette(p, display_gamma_); }
+    std::function<void(int, int)> warp_;  // the window's pointer warp (frame pixels)
 
 private:
     bool shot_pending_ = false;
@@ -893,6 +897,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
     use_system_clipboard();   // the paste keys
+    run.warp_ = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
         gpu = render::GpuRenderer::create(run.blend());

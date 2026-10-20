@@ -396,6 +396,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
     use_system_clipboard();   // the paste keys
+    client.warp_pointer = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {

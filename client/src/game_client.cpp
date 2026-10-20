@@ -118,6 +118,29 @@ void GameClient::clamp_scroll() {
     else if (scroll_y_ > ly) scroll_y_ = ly;
 }
 
+void GameClient::move_pointer(int x, int y) {
+    mouse_x_ = x;
+    mouse_y_ = y;
+    if (warp_pointer) warp_pointer(x, y);
+}
+
+void GameClient::view_drag_step() {
+    // 0x41CD50, once a pass: the view becomes (the cell kept + the pointer's distance from the
+    // screen's centre / 4, C division) x 16, clamped and made the camera's target; the cell is
+    // taken again from it and the pointer put back in the centre (what is left of the distance
+    // is dropped). With the right button up the drag ends: the pointer goes back to where it
+    // was and shows again.
+    const int cx = opt_.width / 2, cy = opt_.height / 2;
+    set_scroll((mdrag_x_ + (mouse_x_ - cx) / 4) * 16, (mdrag_y_ + (mouse_y_ - cy) / 4) * 16);
+    mdrag_x_ = scroll_x_ / 16;
+    mdrag_y_ = scroll_y_ / 16;
+    move_pointer(cx, cy);
+    if (!mdrag_held_) {
+        mdrag_ = false;
+        move_pointer(mdrag_saved_x_, mdrag_saved_y_);
+    }
+}
+
 void GameClient::set_scroll(int x, int y) {
     // A scroll that moves the view at once (keys, edges, drags, the minimap, a stored view)
     // also makes it the camera's target (GS+0x14327), so the per-step camera keeps it there.
@@ -265,6 +288,7 @@ int GameClient::frame(std::uint32_t now_ms) {
     }
     const std::uint32_t dt = scaled - last_scaled_;
     last_scaled_ = scaled;
+    if (mdrag_) view_drag_step();  // (the input pass, before the steps)
     int steps = budget_.update(now_ms, network.remote_lag ? network.remote_lag() : 0);
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
     for (int k = 0; k < steps; ++k) {
@@ -1002,15 +1026,7 @@ void GameClient::handle(const InputEvent& e) {
     case InputEvent::Type::MouseMove:
         mouse_x_ = e.x;
         mouse_y_ = e.y;
-        if (mdrag_) {
-            const int cx = (e.x - mdrag_x_) / 4, cy = (e.y - mdrag_y_) / 4;
-            if (cx || cy) {
-                set_scroll((scroll_x_ / 16 + cx) * 16, (scroll_y_ / 16 + cy) * 16);
-                mdrag_x_ += cx * 4;
-                mdrag_y_ += cy * 4;
-            }
-            break;
-        }
+        if (mdrag_) break;  // (the view drag reads the pointer once a pass)
         if (left_down_ && !dragging_ && in_view(press_x_, press_y_) && mode_ != Action::BuildUnit &&
             (std::abs(e.x - press_x_) > 3 || std::abs(e.y - press_y_) > 3))
             dragging_ = true;
@@ -1053,6 +1069,11 @@ void GameClient::handle(const InputEvent& e) {
 void GameClient::mouse_down(const InputEvent& e) {
     mouse_x_ = e.x;
     mouse_y_ = e.y;
+    // While the view is dragged the battle's pointer handling waits (0x499200).
+    if (mdrag_) {
+        if (e.button == 3) mdrag_held_ = true;
+        return;
+    }
     if (e.button == 1) {
         left_down_ = true;
         press_x_ = e.x;
@@ -1087,12 +1108,19 @@ void GameClient::mouse_down(const InputEvent& e) {
                     held_button_ = &btn;
                     held_with_ = 3;
                 }
-    } else if (e.button == 2 || (e.button == 3 && e.ctrl && !opt_.right_click_orders)) {
-        // Dragging the view: every 4 pixels of pointer travel scroll one cell (16 pixels).
+    } else if (e.button == 3 && e.ctrl && !opt_.right_click_orders && in_view(e.x, e.y)) {
+        // The view drag starts (0x499100 → 0x41CC60; interface type 0, Ctrl held, the pointer
+        // over the view; the original has no middle-button drag): following ends, the pointer
+        // is hidden, its place kept, the view's cell taken, and the pointer put in the screen's
+        // centre.
         mdrag_ = true;
-        mdrag_x_ = e.x;
-        mdrag_y_ = e.y;
+        mdrag_held_ = true;
         tracked_ = 0;
+        mdrag_saved_x_ = e.x;
+        mdrag_saved_y_ = e.y;
+        mdrag_x_ = scroll_x_ / 16;
+        mdrag_y_ = scroll_y_ / 16;
+        move_pointer(opt_.width / 2, opt_.height / 2);
     } else if (e.button == 3) {
         right_down_ = true;
     }
@@ -1101,8 +1129,8 @@ void GameClient::mouse_down(const InputEvent& e) {
 void GameClient::mouse_up(const InputEvent& e) {
     mouse_x_ = e.x;
     mouse_y_ = e.y;
-    if (mdrag_ && (e.button == 2 || e.button == 3)) {
-        mdrag_ = false;
+    if (mdrag_) {
+        if (e.button == 3) mdrag_held_ = false;  // (the drag ends at its next pass)
         return;
     }
     if (e.button == 1) {
