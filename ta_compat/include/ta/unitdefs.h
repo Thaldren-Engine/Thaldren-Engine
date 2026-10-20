@@ -136,4 +136,14 @@ class FeatureDefTable;
 // during battle loading; corpse_feature_id then holds the index.
 UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable* features = nullptr);
 
+// The debug command Reload (0x42D1F0): units\<unitname>.FBI read again over the existing
+// record of a running battle (0x42BF40 in place: keys write their fields, nothing is reset
+// first). The corpse is looked up by name in the battle's feature table; a corpse the battle
+// did not load cannot be loaded any more (the loading parsers are gone: the original shows
+// "Record %s missing from feature" and then crashes), which returns false with `error`.
+// Nothing happens (true) when the file is missing or empty. The YardMap scratch buffer is
+// the caller's (`yard_buffer`, the original's stack buffer: an input).
+bool reload_unit_properties(Vfs& vfs, const UnitDefContext& ctx, UnitDefTable& table, std::size_t index,
+                            const FeatureDefTable& features, std::string& yard_buffer, std::string& error);
+
 } // namespace ta

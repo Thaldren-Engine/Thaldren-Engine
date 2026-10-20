@@ -321,6 +321,9 @@ public:
     AiState ai_state;
     Ai& ai();
     void collect_ai_metal_sites();
+    // A unit type's data changed during the battle (the debug command Reload): the computer
+    // player's copy of the types is taken again at its next use.
+    void unit_types_changed() { ai_types_.clear(); }
     // The players' stage (stage 6 of a step): for every playing player its weapon-target pass,
     // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
     void players_stage();

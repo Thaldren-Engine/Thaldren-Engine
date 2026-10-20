@@ -67,9 +67,13 @@ struct LoadedBattle {
     FeatureDefTable feature_defs;
     std::vector<sim::WeaponType> weapons;
     std::vector<std::unique_ptr<UnitTypeAssets>> type_assets;  // by battle type index ([0] empty)
+    // Assets replaced while the battle runs (the debug command Reload); units made before
+    // keep pointing into them.
+    std::vector<std::unique_ptr<UnitTypeAssets>> retired_assets;
     std::vector<const UnitDefRecord*> type_defs;                // by battle type index ([0] null)
     std::vector<std::string> feature_models;                    // 3D feature model names
     std::vector<std::uint8_t> tnt, ota;
+    int schema = -1;  // the map info schema the battle uses (-1: none)
     std::unique_ptr<AnimImporter> anims;
     std::unique_ptr<sim::Battle> battle;
 

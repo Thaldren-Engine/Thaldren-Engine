@@ -715,4 +715,25 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
     return table;
 }
 
+bool reload_unit_properties(Vfs& vfs, const UnitDefContext& ctx, UnitDefTable& table, std::size_t index,
+                            const FeatureDefTable& features, std::string& yard_buffer, std::string& error) {
+    if (index == 0 || index >= table.units.size()) return true;
+    UnitDefRecord& u = table.units[index];
+    const std::string path = vfs.virtual_path("units", u.unit_name, "FBI");
+    if (vfs.size_or_zero(path) == 0) return true;
+    if (yard_buffer.size() < 1024) yard_buffer.resize(1024, '\0');
+    load_properties(vfs, ctx, table.categories, path, u, yard_buffer, nullptr);
+    // The corpse: -1, then the feature of that name (find or load; only finding is possible now).
+    u.corpse_feature_id = -1;
+    if (u.has_corpse) {
+        const int id = features.find(u.corpse);
+        if (id < 0) {
+            error = "Record " + u.corpse + " missing from feature (the original crashes)";
+            return false;
+        }
+        u.corpse_feature_id = static_cast<std::int16_t>(id);
+    }
+    return true;
+}
+
 } // namespace ta
