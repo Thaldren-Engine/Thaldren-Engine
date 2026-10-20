@@ -137,7 +137,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Item | Before | After / evidence |
 |---|---|---|---|
-| 11.1 | Start button glow difference in the battle room | PARTIAL (see RE_MEMORY "Battle room, live") | PARTIAL, rule confirmed (0x4B8310 read: START's BUTTONS0 frames are compressed and one layer, so dst = T[level*256 + src], the client's rule; uncompressed and layered frames follow other rules, now in RE_MEMORY). The remaining difference is not resolved: a re-run of gui_harness on the NETWORK agent's room dump differs elsewhere too (records / chat), so no clean comparison of the light row was possible here |
+| 11.1 | Start button glow difference in the battle room | PARTIAL (see RE_MEMORY "Battle room, live") | BUILT+VERIFIED *2026-10-20*: `ta_compat/tests/fixtures/client/room_start_glow.txt` (everybody ready, clock 1725 + 5 a frame) — gui_harness `stub:46E000:1:0 clock:T lounge:FILE` then `clock:T' frame shot:kN`, against ta_play `--net-screen lounge:FILE`: the grill's 8 opening stages and START through light rows 2, 7, 12, 17, 22, 27, 0, 5 identical (harness kN = our frame N − 1, its pass drawing before the room's state). The earlier difference came from the comparison: the dump's "focus START" (a focus ring around START; ta_play's room reader ignores focus lines), the harness's free-running clock (another light row), 0x46E000 answering 0 (SYNCHING instead of START) and `loungeframe` not redrawing the grill. Left outside this row: in that room ours draws the chat line's caret and the labels' quick-key underlines, the original neither (89 pixels; room keys / focus) |
 
 ## 12. Not in this area (noted)
 
