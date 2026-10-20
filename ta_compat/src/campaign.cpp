@@ -195,6 +195,10 @@ BattleRequest make_mission_request(Vfs& vfs, const MissionInfo& mission, const M
     s.players[1].kind = sim::PlayerKind::Computer;
     s.players[1].net_id = 2;
     s.players[1].colour = 1;
+    // The names (0x496DB0 -> 0x464290): the computer's side index is the other one of the
+    // campaign side's (0x477360 / 0x477AB0 / the load 0x492360 set them 0 and 1).
+    s.players[0].name = start_player_name(false, 0);
+    s.players[1].name = start_player_name(true, stricmp_c(rq.campaign_side, "ARM") == 0 ? 1 : 0);
     s.unit_limit = static_cast<std::uint16_t>(mission.max_units);
     s.fog_of_war = mission.line_of_sight != 0;
     s.explore = mission.mapping != 0;

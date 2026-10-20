@@ -572,6 +572,9 @@ const std::vector<std::string>& MenuArt::skirmish_maps() {
         const auto dot = file.find_last_of('.');
         maps_.push_back(dot == std::string::npos ? file : file.substr(0, dot));
     }
+    // The list itself stays in enumeration order (0x434BF0 does not sort; only the map choice
+    // screen sorts its copy), so the default map is the first one found.
+    if (!maps_.empty()) first_map_ = maps_.front();
     auto lower_less = [](const std::string& a, const std::string& b) {
         for (std::size_t i = 0;; ++i) {
             const int ca = i < a.size() ? std::tolower(static_cast<unsigned char>(a[i])) : 0;
@@ -582,6 +585,11 @@ const std::vector<std::string>& MenuArt::skirmish_maps() {
     };
     std::stable_sort(maps_.begin(), maps_.end(), lower_less);
     return maps_;
+}
+
+const std::string& MenuArt::first_skirmish_map() {
+    skirmish_maps();
+    return first_map_;
 }
 
 const render::Sprite8* MenuArt::map_preview(const std::string& map, int w, int h) {
@@ -868,8 +876,9 @@ bool SkirmishSession::end_table(client::EndTable& t) {
         o.metal_produced = e.metal_produced;
         o.energy_wasted = e.energy_wasted;
         o.metal_wasted = e.metal_wasted;
+        // The record's name (+0x2B) as the start set it (start_player_name; a network game's
+        // from the session).
         o.name = req.start.players[static_cast<std::size_t>(p)].name;
-        if (o.name.empty()) o.name = (req.start.players[static_cast<std::size_t>(p)].kind == sim::PlayerKind::Computer ? "Computer " : "Player ") + std::to_string(p + 1);
     }
     float kill_mul = 0.0f, time_mul = 0.0f;
     {
@@ -899,8 +908,6 @@ std::vector<client::PlayerStats> SkirmishSession::stats() {
         client::PlayerStats st;
         const auto& req = world_->request();
         st.name = req.start.players[static_cast<std::size_t>(p)].name;
-        if (st.name.empty()) st.name = (req.start.players[static_cast<std::size_t>(p)].kind == sim::PlayerKind::Computer ? "Computer " : "Player ") +
-                                       std::to_string(p + 1);
         st.colour = req.start.players[static_cast<std::size_t>(p)].colour;
         st.units_killed = s.units_killed;
         st.units_lost = s.units_lost;

@@ -526,23 +526,32 @@ void show_net_message(FrontEnd& fe, MenuArt& art, const std::string& text, int w
 }
 
 // A message left for the menu loop (0x425730 into the buffer 0x511FB8, shown by 0x426E80): a box
-// as wide as the text + 20 (0x4A5030 in the current font), the text not translated.
+// as wide as the text + 20, the text not translated. The width (0x4A5030) is the interface's
+// picture font's when it has one (GUI +0x14: hattfont12, set by the start-up 0x491200 and kept in
+// the menus), else the current bit font's: the sum of the font's frame widths of every byte up to
+// the end (a byte without a frame adds nothing; control characters and line breaks are counted
+// like the others).
 void show_loop_message(FrontEnd& fe, MenuArt& art, const char* text) {
-    const client::Font* f = art.content().font;
-    show_net_message(fe, art, text, (f ? f->text_width(text) : 0) + 20);
+    int width = 0;
+    if (const client::Font* f = art.content().font)
+        for (const char* p = text; *p; ++p) width += f->glyphs[static_cast<unsigned char>(*p)].width;
+    show_net_message(fe, art, text, width + 20);
 }
 
 // The service could not be used (0x426E80 state 0x14: 0x450D80 failed): the text for the menu
 // loop and back to the provider list (state 0x0F).
 constexpr const char* kServiceError = "An error occurred trying to use this service";
 
-// A player could not be added (0x451220): 500 wide; the host's record on this machine asks to
-// re-create the session, otherwise to re-join it.
-void show_add_player_failed(FrontEnd& fe, MenuArt& art, bool host) {
-    show_net_message(fe, art,
-                     host ? "Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-create the game session.\n"
-                          : "Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-join the game session.\n",
-                     500);
+// A player could not be added (0x451220): 500 wide. The text is picked after the failed player's
+// record has been set back to controller 0 (0x463C60): the first record 0-9 with a controller
+// and the host flag (side record +0x97 bit 0) — this machine's own no longer counts — or, with
+// none, the record after the table (index 10, cleared when the game state is made (0x41D920) and
+// never seated); when that record is in use with controller 1 or 2 the text asks to re-create the
+// session, otherwise to re-join it. Only a record left over from an earlier session could give
+// the first text; the client keeps no records between sessions, so it is always the second, also
+// on the host.
+void show_add_player_failed(FrontEnd& fe, MenuArt& art) {
+    show_net_message(fe, art, "Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-join the game session.\n", 500);
 }
 
 // ------------------------------------------------------------------ shared state of the part
@@ -951,6 +960,8 @@ private:
 // The battle room and the network side live in the second part of this file.
 namespace net_screens_detail {
 std::unique_ptr<client::Screen> make_lounge(std::shared_ptr<void> part, bool host, const std::string& room_file);
+// The room the host enters when its session or its player could not be made (enter_broken_room).
+std::unique_ptr<client::Screen> make_broken_lounge(std::shared_ptr<void> part);
 // The room of a live session (the session protocol's transport, this machine's player id).
 std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<void> part, bool host, std::unique_ptr<net::Transport> transport,
                                                  std::int32_t id);
@@ -996,6 +1007,22 @@ std::vector<std::uint8_t> session_player_data(const std::string& password) {
     return d;
 }
 
+// The host's player could not be made (0x426E80, state 0x10 sub-state 0x11): 0x451540 sets this
+// machine's host flag (side record +0x97 bit 0) and the player count to 0 and opens the session
+// without looking at the result; 0x451220 then fails to add the player, sets its record back to
+// controller 0 and opens the message box (0x4ABD90: MSGBOX pushed onto the open screens, not a
+// loop of its own); 0x450A10 (seating the player) is skipped and the state goes to 0x11 all the
+// same: the next pass opens LOUNGE2 over the message box (0x449BB0). The room is broken: no
+// record is in use (no player rows: this machine's player is missing), the host's controls are
+// this machine's (the host flag stayed), the map is the list's first, and what it sends goes to a
+// session that is not there. The message box shows again once the room is left. The client has
+// no session to send to: the room runs without one.
+void enter_broken_room(FrontEnd& fe, std::shared_ptr<NetPart> part) {
+    part->session.reset();
+    show_add_player_failed(fe, part->art);
+    fe.push(net_screens_detail::make_broken_lounge(as_void(part)));
+}
+
 // Into the battle room over the session (tests without a session: the 1:1 room from a file).
 void enter_room(FrontEnd& fe, std::shared_ptr<NetPart> part, bool host) {
     if (part->test || !part->session) {
@@ -1016,7 +1043,10 @@ void enter_room(FrontEnd& fe, std::shared_ptr<NetPart> part, bool host) {
         }
     }
     if (id == 0 || id == -1) {  // (session ids are any 32-bit value: XORed with the session key)
-        show_add_player_failed(fe, part->art, host);
+        // The host goes on into a broken room (enter_broken_room); a joining machine's press ends
+        // with the message (0x4517B0 fails: state 0x12 to sub-state 0, the game list again).
+        if (host) enter_broken_room(fe, part);
+        else show_add_player_failed(fe, part->art);
         return;
     }
     // The original's battle room (LOUNGE2) over the session.
@@ -1240,23 +1270,22 @@ void NewMulti::next(FrontEnd& fe) {
     fe.settings().set_text("Nickname", part_->nickname);
     fe.pop();
     if (!part_->test) {
-        // 0x451540: the session is opened as its host (TCP/IP: a fresh one on every address).
+        // 0x451540: the session is opened as its host (TCP/IP: a fresh one on every address). It
+        // does not look at the open's result: a failed open makes the player's creation (0x451220)
+        // fail and the room is entered broken (enter_broken_room).
         std::string err;
         if (!part_->session) {
             part_->address.clear();
             if (!open_provider(*part_, err)) {
-                show_add_player_failed(fe, art_, true);
+                enter_broken_room(fe, part_);
                 return;
             }
         }
-        // (0x451540 does not look at the open's result; the player's creation (0x451220) then
-        // fails with the host's text.)
         net::dplay::HostSettings hs;
         hs.session_name = part_->game_name;
         hs.password = part_->password;
         if (!part_->session->host(hs, err)) {
-            show_add_player_failed(fe, art_, true);
-            part_->session.reset();
+            enter_broken_room(fe, part_);
             return;
         }
     }
@@ -3327,6 +3356,18 @@ std::unique_ptr<client::Screen> make_lounge(std::shared_ptr<void> p, bool host, 
     st.slots[0].flags = host ? 1 : 0;
     st.slots[0].name = part->nickname;
     return std::make_unique<Lounge>(part, host, std::move(st), false);
+}
+
+std::unique_ptr<client::Screen> make_broken_lounge(std::shared_ptr<void> p) {
+    // (enter_broken_room) Record 0 — this machine's (GS+0x2A42) — not in use with controller 0
+    // (set back by 0x451220), the host flag kept; the session's player count 0 (0x451540).
+    auto part = std::static_pointer_cast<NetPart>(p);
+    LoungeState st;
+    st.slots[0].used = false;
+    st.slots[0].controller = 0;
+    st.slots[0].flags = 1;
+    st.session_players = 0;
+    return std::make_unique<Lounge>(part, true, std::move(st), false);
 }
 
 std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<void> p, bool host, std::unique_ptr<net::Transport> transport,

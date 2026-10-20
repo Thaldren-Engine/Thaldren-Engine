@@ -1,13 +1,14 @@
 #pragma once
-// Multiplayer for the front end (client/front_end.h): the connection screen (host or join by
-// address), the battle room (players, side, colour, ready, map, options, chat, start) and the
-// battle session of a network game (network clock and pause, in-game chat, the room's game
-// description handed to the importer's loader). See docs/RE_MEMORY.md, "Network and sync".
+// Multiplayer for the front end (client/front_end.h): the launch of a network game from a
+// battle room and the battle session of a network game (network clock and pause, in-game chat,
+// the room's game description handed to the importer's loader). The multiplayer screens
+// themselves are the importer's (FrontEndHooks::multiplayer_menu). See docs/RE_MEMORY.md,
+// "Network and sync".
 //
-// Plugging in: call install_multiplayer(hooks, config) with a NetMenuConfig whose
-// load_network_game builds the battle (the importer side: game data, map, sim::start_battle
-// with request.start) and gives the battle `request.wrap_outside(client_outside)` as its
-// outside, so the network side sees every packet the battle sends.
+// The NetMenuConfig's load_network_game builds the battle (the importer side: game data, map,
+// sim::start_battle with request.start) and gives the battle
+// `request.wrap_outside(client_outside)` as its outside, so the network side sees every packet
+// the battle sends.
 
 #include <array>
 #include <cstdint>
@@ -26,7 +27,7 @@ namespace client {
 // What the importer needs to load a network game.
 struct NetGameRequest {
     std::string map;
-    std::array<std::string, 10> sides{};  // "ARM" / "CORE" per slot
+    std::array<std::string, 10> sides{};  // the side name per slot
     sim::BattleStart start;               // provider 3; this machine's players local, the others remote
     // Returns the outside to build the battle with (the network side over the client's own),
     // and after the battle exists and is started: attach(battle).
@@ -78,15 +79,6 @@ struct NetMenuConfig {
     // The folder of the build restrictions' list files (empty: SAVEGAME in the game folder).
     std::string save_dir;
 };
-
-// The connection and battle room screens (the main menu's multiplayer button).
-std::unique_ptr<Screen> make_multiplayer_menu(FrontEnd& fe, const NetMenuConfig& config);
-// The battle room over a connected transport: `net_id` is this machine's player in it (from the
-// transport's own session for the original's session protocol; 0 picks one), `game_name` the
-// host's game name.
-std::unique_ptr<Screen> make_room_screen(const NetMenuConfig& config, std::unique_ptr<net::Transport> transport, bool host, std::int32_t net_id,
-                                         const std::string& game_name = {});
-void install_multiplayer(FrontEndHooks& hooks, const NetMenuConfig& config);
 
 // A battle room handed to the game when the start comes (the host's start, packet 0x08 on the
 // others), in the original's order: the loading screen comes at once; while the data loads every

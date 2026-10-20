@@ -58,6 +58,9 @@ public:
 
     // Skirmish maps (maps\*.ota with a network schema), sorted by name.
     const std::vector<std::string>& skirmish_maps();
+    // The first map of the unsorted list (enumeration order; "" when there is none): the
+    // original's default skirmish map (0x435D30 with 0 picks the list's first name).
+    const std::string& first_skirmish_map();
     // Side names from gamedata\sidedata.tdf (ARM, CORE, ...).
     const std::vector<std::string>& sides() const { return sides_; }
 
@@ -93,6 +96,7 @@ private:
     int music_tracks_ = 0;
     std::map<int, std::shared_ptr<const client::Sample>> music_cache_;
     std::vector<std::string> maps_;
+    std::string first_map_;
     bool maps_done_ = false;
     std::vector<std::string> sides_;
     std::map<std::string, std::unique_ptr<render::Sprite8>> previews_;

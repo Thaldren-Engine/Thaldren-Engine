@@ -31,6 +31,15 @@ struct LoadedBattle;
 // (0x420620, presentation only; fixed parameters, so a fixed count: measured on 10 captures).
 constexpr std::uint32_t kExplosionTableDraws = 391606;
 
+// A player's name as the original's single-player starts set it (0x464290, from the skirmish
+// start 0x47A760 and the mission start 0x496DB0; record +0x2B and the short name +0x49): a
+// human "Player"; a computer by its side record's index (+0x95): 0 "Arm", any other "Core"
+// (translated; English keeps them). Network games take the session's names instead.
+inline std::string start_player_name(bool computer, int side_index) {
+    if (!computer) return "Player";
+    return side_index == 0 ? "Arm" : "Core";
+}
+
 struct BattleRequest {
     std::string map = "Moon Quartet";  // maps\<map>.tnt / .ota
     int schema = -1;                   // the OTA schema (-1: chosen as the original does)
