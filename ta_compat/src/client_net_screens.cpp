@@ -612,7 +612,10 @@ struct NetPart {
     std::string port = "COM1", phone;  // serial / modem
     std::uint32_t baud = 115200;
     bool answer = false;               // modem: wait for a call instead of dialing
-    bool loopback = false;             // TCP/IP on this machine only (setting NetLoopback; tests)
+    // TCP/IP on this machine only (setting NetLoopback; tests): 0 = off, else the loopback address
+    // the sockets are bound to ("1": 127.0.0.1; a 127.x.y.z address keeps concurrent test runs
+    // apart, each with its own session port).
+    std::uint32_t loopback = 0;
     std::string address;      // the host's address (empty: this machine)
     std::string nickname;     // the player's name (the original's GS+0x2BD2)
     std::string password;     // GS+0x2BE3
@@ -742,7 +745,7 @@ bool open_provider(NetPart& part, std::string& error) {
     if (kind == ProviderKind::Tcpip) {
         net::dplay::TcpipOptions o;
         o.address = part.address;
-        if (part.loopback) o.bind_ip = net::dplay::kLoopback;
+        if (part.loopback) o.bind_ip = part.loopback;
         p = net::dplay::tcpip_provider(o, error);
     } else {
         net::dplay::SerialOptions o;
@@ -1416,7 +1419,10 @@ void install_net_screens(client::FrontEndHooks& hooks, MenuArt& art, const clien
         art.vfs().scan();  // the original rescans the archives when MULTI is pressed (0x425E0B)
         auto part = std::make_shared<NetPart>(art, config);
         part->nickname = fe.settings().get_text("Nickname", "");
-        part->loopback = fe.settings().get_int("NetLoopback", 0) != 0;
+        if (const std::string lb = fe.settings().get_text("NetLoopback", "0"); lb.find('.') != std::string::npos)
+            part->loopback = net::dplay::resolve_ip(lb);
+        else if (fe.settings().get_int("NetLoopback", 0) != 0)
+            part->loopback = net::dplay::kLoopback;
         // (0x42F9A0: Password; Game Name unless -h gave one)
         part->password = fe.settings().get_text("Password", "").substr(0, 10);
         part->game_name = fe.settings().get_text("Game Name", "").substr(0, 16);
