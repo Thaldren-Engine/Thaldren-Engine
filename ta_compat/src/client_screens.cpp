@@ -9,6 +9,7 @@
 #include <ctime>
 
 #include "client/canvas.h"
+#include "client/movie.h"
 #include "render/raster.h"
 #include "sim/battle.h"
 #include "sim/construction.h"
@@ -159,6 +160,8 @@ void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const ren
     else std::printf("message: %s\n", text.c_str());
 }
 
+sim::Lcg15& menus_rand() { return menu_rand(); }
+
 namespace {
 
 // ------------------------------------------------------------------ options
@@ -208,7 +211,7 @@ protected:
                 else if (is(w, "SCREEN")) set(w, 65, s.get_int("scrollspeed", 0x20));
                 else if (is(w, "TXTSCROL")) set(w, 20, s.get_int("textscroll", 10));
                 else if (is(w, "MAXLINES")) set(w, 30, s.get_int("textlines", 10));
-                else if (is(w, "GAMMA")) set(w, 20, s.get_int("Gamma", 12));
+                else if (is(w, "GAMMA")) set(w, 20, s.get_int("Gamma", 12) == 10 ? 12 : s.get_int("Gamma", 12));  // (0x42F9A0 reads 10 as 12)
             } else if (w.kind == WidgetKind::Button && w.stages > 0) {
                 if (is(w, "SPEECH")) w.stage = s.get_int("speechfx", 1) ? std::clamp(s.get_int("unitchat", 10) / 5, 0, 2) : 0;
                 else if (is(w, "MODE")) w.stage = std::clamp(s.get_int("Sound Mode", 1), 0, 2);
@@ -218,7 +221,7 @@ protected:
                 else if (is(w, "TRACKMODE")) w.stage = std::clamp(s.get_int("cdmode", 4) - 1, 0, 3);
                 else if (is(w, "TRACKTYPE") && m) w.stage = m->types()[static_cast<std::size_t>(std::clamp(track_, 0, m->track_count()))];
                 else if (is(w, "SHADING")) w.stage = s.get_int("Shading", 1) ? 1 : 0;
-                else if (is(w, "ANTI")) w.stage = s.get_int("Anti Alias", 1) ? 1 : 0;
+                else if (is(w, "ANTI")) w.stage = s.get_int("Anti-Alias", 1) ? 1 : 0;
                 else if (is(w, "BSHADOWS")) w.stage = s.get_int("FeatureShadows", 1) ? 1 : 0;
             }
         }
@@ -303,7 +306,7 @@ protected:
         } else if (is(w, "SHADING")) {
             s.set_int("Shading", w.stage);
         } else if (is(w, "ANTI")) {
-            s.set_int("Anti Alias", w.stage);
+            s.set_int("Anti-Alias", w.stage);
         } else if (is(w, "BSHADOWS")) {
             s.set_int("FeatureShadows", w.stage);
         } else if (is(w, "CDPLAY")) {
@@ -353,7 +356,7 @@ protected:
             if (is(w, "LEFTCLICK")) s.set_int("Interface Type", 0);
             if (is(w, "GAMMA")) s.set_int("Gamma", 12);
             if (is(w, "SHADING")) s.set_int("Shading", 1);
-            if (is(w, "ANTI")) s.set_int("Anti Alias", 1);
+            if (is(w, "ANTI")) s.set_int("Anti-Alias", 1);
             if (is(w, "BSHADOWS")) s.set_int("FeatureShadows", 1);
             if (is(w, "VIDSLDR") && !in_battle_) {
                 s.set_int("DisplaymodeWidth", 640);
@@ -649,11 +652,36 @@ private:
     std::string shown_;
 };
 
+// The last characters typed on a screen (the interface pass 0x4A9FD0 keeps the last 15 key codes
+// its special keys left over, upper-cased, in the layout and then calls the screen's typing
+// hook): the single player menu's DRDEATH and the skirmish set-up's "*III" .. "*X".
+struct TypedTail {
+    std::string last = std::string(15, '\0');
+    // Takes one event's key codes; true when any went in.
+    bool take(const client::InputEvent& e) {
+        bool any = false;
+        for (int c : client::menu_key_codes(e)) {
+            // (Tab, Enter, Escape, Space and the arrows are the interface's own keys)
+            if (c == 9 || c == 13 || c == 27 || c == 0x20 || (c >= 0xF4 && c <= 0xF7)) continue;
+            last.erase(0, 1);
+            last.push_back(static_cast<char>(c >= 'a' && c <= 'z' ? c - 0x20 : c));
+            any = true;
+        }
+        return any;
+    }
+    bool ends_with(const char* s) const {
+        const std::size_t n = std::char_traits<char>::length(s);
+        return last.compare(last.size() - n, n, s) == 0;
+    }
+    void clear() { last.assign(15, '\0'); }
+};
+
 // ------------------------------------------------------------------ skirmish (SKIRMISH.GUI)
 class Skirmish : public LayoutScreen {
 public:
     Skirmish(MenuArt& art, client::Settings& s) : LayoutScreen(art.layout("SKIRMISH")), art_(art) {
         load(s);
+        described_ = widgets_.size();
         build_rows();
     }
     void enter(FrontEnd& fe) override {
@@ -825,7 +853,34 @@ protected:
                 }
             if (Widget* t = widget("HELPTEXT")) t->text = h;
         }
+        if (typed_.take(e)) player_count_cheat(fe);
         LayoutScreen::handle(fe, e);
+    }
+
+    // 0x47B9F0: "*" and a roman numeral typed sets the number of rows (3..10): the settings
+    // saved, NumSkirmishPlayers written, the rows read again and rebuilt, "SkirmishCheat", the
+    // focus to the next gadget. (Rows 5..7's numerals begin the next ones': the typing goes on.)
+    void player_count_cheat(FrontEnd& fe) {
+        int n = 0;
+        if (typed_.ends_with("*IV")) n = 4;
+        else if (typed_.ends_with("*V")) n = 5;
+        else if (typed_.ends_with("*VI")) n = 6;
+        else if (typed_.ends_with("*VII")) n = 7;
+        else if (typed_.ends_with("*VIII")) n = 8;
+        else if (typed_.ends_with("*III")) n = 3;
+        else if (typed_.ends_with("*IX")) n = 9;
+        else if (typed_.ends_with("*X")) n = 10;
+        if (n == 0) return;
+        if (n == 3 || n == 4 || n >= 8) typed_.clear();
+        client::Settings& s = fe.settings();
+        save(s);
+        s.set_int("NumSkirmishPlayers", n);
+        fe.apply_settings();
+        load(s);
+        widgets_.resize(described_);
+        build_rows();
+        sfx(fe, art_, "SkirmishCheat");
+        move_focus(1);
     }
 
     void draw_over(FrontEnd&, render::Image8& out) override {
@@ -1020,6 +1075,8 @@ private:
     std::string map_;
     std::map<std::string, std::string> help_;
     const std::vector<render::Sprite8>* colours_ = nullptr;
+    TypedTail typed_;
+    std::size_t described_ = 0;  // the description's gadgets (the rows come after them)
 };
 
 // ------------------------------------------------------------------ single player (SINGLE.GUI)
@@ -1029,16 +1086,31 @@ public:
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("NewCamp")) w->grayed = !fe.hooks().campaign_menu;
         if (Widget* w = widget("LoadGame")) w->grayed = !fe.hooks().load_game_menu;
+        // AnyMsn is shown with the all-missions setting (0x4777A0).
+        if (Widget* w = widget("AnyMsn")) w->active = fe.settings().get_int("AllMissions", 0) & 1;
+    }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        // 0x477510: DRDEATH typed switches the all-missions setting (and AnyMsn) and writes it.
+        if (typed_.take(e) && typed_.ends_with("DRDEATH") && typed_.last.compare(8, 7, "DRDEATH") == 0) {
+            const bool on = !(fe.settings().get_int("AllMissions", 0) & 1);
+            fe.settings().set_int("AllMissions", on ? 1 : 0);
+            if (Widget* w = widget("AnyMsn")) w->active = on;
+            fe.apply_settings();
+        }
+        LayoutScreen::handle(fe, e);
     }
 
 protected:
     void on_press(FrontEnd& fe, Widget& w) override {
-        if (is(w, "NewCamp") || is(w, "LoadGame") || is(w, "AnyMsn")) sfx(fe, art_, "BigButton");
+        if (is(w, "NewCamp") || is(w, "LoadGame")) sfx(fe, art_, "BigButton");
+        else if (is(w, "AnyMsn")) sfx(fe, art_, "bigButton");
         else if (is(w, "Skirmish")) sfx(fe, art_, "Skirmish");
         else if (is(w, "Options")) sfx(fe, art_, "Options");
         else if (is(w, "PrevMenu")) sfx(fe, art_, "Previous");
         if (is(w, "NewCamp")) {
             if (fe.hooks().campaign_menu) fe.push(fe.hooks().campaign_menu(fe));
+        } else if (is(w, "AnyMsn")) {
+            if (fe.hooks().any_mission_menu) fe.push(fe.hooks().any_mission_menu(fe));
         } else if (is(w, "LoadGame")) {
             if (fe.hooks().load_game_menu) {
                 if (auto next = fe.hooks().load_game_menu(fe, nullptr)) fe.push(std::move(next));
@@ -1057,7 +1129,24 @@ protected:
 
 private:
     MenuArt& art_;
+    TypedTail typed_;
 };
+
+// ------------------------------------------------------------------ movies (0x426780)
+// Plays the movies in turn, each with a player of its own (a key ends the one playing; the next
+// starts), then runs `after`. A movie whose file is missing is passed over, as the original's
+// existence check does.
+void play_movies(FrontEnd& fe, MenuArt& art, std::vector<std::string> names, bool repeat_first, std::function<void(FrontEnd&)> after) {
+    while (!names.empty()) {
+        std::vector<std::uint8_t> bytes = art.movie(names.front());
+        names.erase(names.begin());
+        if (bytes.empty()) continue;
+        auto next = [&art, names, after](FrontEnd& f) mutable { play_movies(f, art, std::move(names), false, std::move(after)); };
+        fe.push(std::make_unique<client::MovieScreen>(std::move(bytes), repeat_first, std::move(next)));
+        return;
+    }
+    if (after) after(fe);
+}
 
 // ------------------------------------------------------------------ main menu (MAINMENU.GUI)
 class MainMenu : public LayoutScreen {
@@ -1077,6 +1166,26 @@ public:
         // The menus' ambience: "BGM" looping (it keeps playing through the menus until a battle
         // loads; a second start does nothing while it plays).
         fe.play_sound_loop(art_.sound("BGM"));
+        if (!started_) {
+            // The program's first state (0x426E80 state 0): on a full screen, the first start
+            // (registry "PlayMovie", default 1) plays 1.zrb and 2.zrb and clears the setting;
+            // later starts play 1.zrb (unless a lobby switch started the program).
+            started_ = true;
+            if (art_.full_screen) {
+                std::vector<std::string> names = {"1.zrb"};
+                if (fe.settings().get_int("PlayMovie", 1) != 0) {
+                    names.push_back("2.zrb");
+                    fe.settings().set_int("PlayMovie", 0);
+                    fe.apply_settings();  // (saved: 0x430F00)
+                }
+                play_movies(fe, art_, names, false, {});
+            }
+        }
+    }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        // (the INTRO button reads whether Shift is held when it is pressed)
+        shift_ = e.shift;
+        LayoutScreen::handle(fe, e);
     }
     void frame(FrontEnd&, std::uint32_t) override {
         // The sparks run along the circuit lines of the picture: one move per pass of the
@@ -1181,12 +1290,21 @@ protected:
             if (fe.hooks().multiplayer_menu) fe.push(fe.hooks().multiplayer_menu(fe));
         } else if (is(w, "EXIT")) {
             fe.quit();
+        } else if (is(w, "INTRO") || is(w, "Credits")) {
+            // (0x425D80) Only on a full screen; the CD check passes on the Steam version. INTRO
+            // plays 2.zrb (again and again while Shift was held, until a key), the credits 5.zrb;
+            // then the main menu again.
+            if (!art_.full_screen) {
+                show_message(fe, art_, "Debug:  You must be in full-screen mode to play a movie.");
+                return;
+            }
+            play_movies(fe, art_, {is(w, "INTRO") ? "2.zrb" : "5.zrb"}, is(w, "INTRO") && shift_, {});
         }
-        // INTRO and the credits play movies (not built).
     }
 
 private:
     MenuArt& art_;
+    bool started_ = false, shift_ = false;
     std::array<Spark, 100> sparks_{};
     int pending_ = 0;        // passes whose spark move is still to be drawn
     render::Image8 shown_;  // the screen as the last pass left it
@@ -2097,7 +2215,7 @@ struct EndBar {
 class BattleOver : public LayoutScreen {
 public:
     BattleOver(MenuArt& art, const client::EndTable& table, const std::array<std::uint8_t, 256>& hud, bool network)
-        : LayoutScreen(art.layout("ENDMSN")), art_(art), table_(table), network_(network) {
+        : LayoutScreen(art.layout("ENDMSN")), art_(art), table_(table), network_(network), hud_(hud) {
         // Only the main menu button, moved to y 416 (outside campaigns).
         for (Widget& w : widgets_) w.active = false;
         if (Widget* m = widget("MainMenu")) {
@@ -2138,14 +2256,71 @@ public:
         battle_palette_ = palette;
         phase_ = 0;
     }
+    // A campaign mission (0x41F0A0 / 0x41F400 with the campaign buttons, 0x41DA60 the glamour).
+    void set_campaign(CampaignEnd c) {
+        campaign_ = true;
+        camp_ = std::move(c);
+        if (!camp_.buttons) return;
+        // Start, Load Game, Save Game, the knob, Missions, Difficulty, its label and Main Menu at
+        // its own place; outcome1; the mission list with each mission's mark (0xFF lost, 0xFE won,
+        // 0xFD not played, then a space), the mission played selected, then the next one after a
+        // win; the Difficulty switch at the setting; Enter starts; the focus on the list.
+        for (const char* n : {"Start", "LoadGame", "SaveGame", "KNOB", "Missions", "Difficulty", "AdjustDiff", "MainMenu"})
+            if (Widget* w = widget(n)) w->active = true;
+        if (const client::ScreenLayout* L = layout())
+            for (const Widget& d : L->widgets)
+                if (is(d, "MainMenu"))
+                    if (Widget* m = widget("MainMenu")) m->y = d.y;
+        background_ = art_.picture("outcome1", &camp_palette_);
+        std::vector<std::string> items;
+        for (std::size_t k = 0; k < camp_.missions.size(); ++k) {
+            const char r = k < camp_.results.size() ? camp_.results[k] : 'U';
+            std::string item;
+            if (r == 'L') item = "\xFF ";
+            else if (r == 'W') item = "\xFE ";
+            else if (r == 'U') item = "\xFD ";
+            items.push_back(item + camp_.missions[k]);
+        }
+        if (Widget* l = widget("Missions")) {
+            set_list(*l, items);
+            if (camp_.mission < static_cast<int>(items.size())) select_list_row(*l, camp_.mission);
+            const int next = camp_.mission + (camp_.won ? 1 : 0);
+            if (next < static_cast<int>(items.size())) select_list_row(*l, next);
+        }
+        if (Widget* d = widget("Difficulty")) d->stage = std::clamp(camp_.difficulty, 0, 2);
+        enter_default_ = "Start";
+        focus_missions_ = true;
+    }
     const render::Palette* palette() const override {
         if (phase_ >= 0 && phase_ <= 5) return &battle_palette_;
+        if (glamour_ != 0) return &glam_now_;
+        // (0x41F0A0 puts outcome1 on the screen with its palette, also after the glamour)
+        if (campaign_ && camp_.buttons && camp_palette_) return camp_palette_;
         return LayoutScreen::palette();
     }
     void draw(FrontEnd& fe, render::Image8& out) override {
         if (phase_ >= 0 && phase_ <= 5) {
             if (last_.width == out.width && last_.height == out.height) out.pixels = last_.pixels;
             return;
+        }
+        if (glamour_ != 0) {
+            // The faded last frame with the glamour picture copied over it at (0, 0), all on the
+            // palette fading in; "Click to continue." (outlined, centred, 20 above the bottom).
+            if (last_.width == out.width && last_.height == out.height) out.pixels = last_.pixels;
+            render::blit(out, out.bounds(), *camp_.glamour, camp_.glamour->x_offset, camp_.glamour->y_offset);
+            if (glam_text_ && camp_.click_font) {
+                const client::Font& f = *camp_.click_font;
+                const std::string t = "Click to continue.";
+                const int x = (out.width - f.text_width(t)) >> 1, y = out.height - 20;
+                for (const auto& d : {std::array<int, 2>{-1, 0}, {1, 0}, {0, -1}, {0, 1}}) client::draw_text(out, out.bounds(), f, t, x + d[0], y + d[1], hud_[0]);
+                client::draw_text(out, out.bounds(), f, t, x, y, hud_[15]);
+            }
+            return;
+        }
+        if (focus_missions_ && !placed_) {
+            place(out.width, out.height);
+            for (std::size_t i = 0; i < widgets_.size(); ++i)
+                if (is(widgets_[i], "Missions")) focus_gadget_ = static_cast<int>(i);
         }
         if (phase_ == 6) {  // the set-up frame: the screen cleared
             std::fill(out.pixels.begin(), out.pixels.end(), std::uint8_t{0});
@@ -2178,6 +2353,32 @@ public:
                 }
                 return;
             case 5:  // the statistics screen's set-up
+                if (campaign_ && camp_.final_win) {
+                    // The campaign's last mission won: its ending movies (on a full screen), then
+                    // the main menu.
+                    phase_ = 6;
+                    done_ = true;
+                    if (art_.full_screen) play_movies(fe, art_, camp_.final_movies, false, [](FrontEnd& f) { f.to_main_menu(); });
+                    else fe.to_main_menu();
+                    return;
+                }
+                if (campaign_ && camp_.won && camp_.glamour && camp_.glamour_palette) {
+                    // The glamour picture on a black palette fading to the picture's: each step
+                    // (one a tick) moves every component by a fifth of its distance (at least 1).
+                    glamour_ = 1;
+                    glam_now_ = render::Palette{};
+                    for (int i = 0; i < 256; ++i) {
+                        const render::Rgb& d = (*camp_.glamour_palette)[static_cast<std::size_t>(i)];
+                        const int comp[3] = {d.r, d.g, d.b};
+                        for (int k = 0; k < 3; ++k) {
+                            const int diff = comp[k] / 5;
+                            glam_delta_[static_cast<std::size_t>(i * 3 + k)] = comp[k] == 0 ? 0 : std::max(diff, 1);
+                        }
+                    }
+                    glam_next_ = static_cast<std::int64_t>(t) + 1;
+                    phase_ = 10;
+                    return;
+                }
                 set_up_ = true;
                 phase_ = 6;
                 return;
@@ -2185,6 +2386,46 @@ public:
                 ++phase_;
                 return;
             }
+        }
+        if (phase_ == 10) {
+            // State 6: the fade, then the glamour sound; a second after the fade a key or a held
+            // button goes on to the statistics; five seconds more and "Click to continue." shows.
+            if (glamour_ == 1) {
+                if (static_cast<std::int64_t>(t) >= glam_next_) {
+                    bool same = true;
+                    for (int i = 0; i < 256; ++i) {
+                        render::Rgb& c = glam_now_[static_cast<std::size_t>(i)];
+                        const render::Rgb& d = (*camp_.glamour_palette)[static_cast<std::size_t>(i)];
+                        std::uint8_t* now[3] = {&c.r, &c.g, &c.b};
+                        const int want[3] = {d.r, d.g, d.b};
+                        for (int k = 0; k < 3; ++k) {
+                            const int v = std::min(*now[k] + glam_delta_[static_cast<std::size_t>(i * 3 + k)], want[k]);
+                            *now[k] = static_cast<std::uint8_t>(v);
+                            same = same && v == want[k];
+                        }
+                    }
+                    if (same) glamour_ = 2;
+                    glam_next_ = static_cast<std::int64_t>(t) + 1;
+                }
+                glam_deadline_ = static_cast<std::int64_t>(t) + 30;
+                return;
+            }
+            if (!glam_sound_) {
+                glam_sound_ = true;
+                if (camp_.glamour_sound) fe.play_narration_sample(camp_.glamour_sound.get());
+            }
+            if (static_cast<std::int64_t>(t) > glam_deadline_) {
+                if (glam_input_ || mouse_held_) {
+                    fe.stop_narration();
+                    glamour_ = 0;
+                    glam_input_ = false;
+                    set_up_ = true;
+                    phase_ = 7;
+                    return;
+                }
+                if (static_cast<std::int64_t>(t) > glam_deadline_ + 150) glam_text_ = true;
+            }
+            return;
         }
         if (phase_ == 6) phase_ = 7;
         if (!set_up_) {
@@ -2227,6 +2468,13 @@ public:
 
 protected:
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        if (phase_ == 10) {
+            // The glamour picture: a key waits in the key queue; the button counts while held.
+            if (e.type == client::InputEvent::Type::KeyDown) glam_input_ = true;
+            if (e.type == client::InputEvent::Type::MouseDown) mouse_held_ = true;
+            if (e.type == client::InputEvent::Type::MouseUp) mouse_held_ = false;
+            return;
+        }
         // A key the interface does not take shows every bar at once (while they are coming).
         if (e.type == client::InputEvent::Type::KeyDown && set_up_ && !done_) {
             const Widget* m = widget("MainMenu");
@@ -2275,7 +2523,25 @@ protected:
     void on_press(FrontEnd& fe, Widget& w) override {
         if (is(w, "MainMenu") || is(w, "LoadGame") || is(w, "SaveGame") || is(w, "Start") || is(w, "Missions")) sfx(fe, art_, "BigButton");
         else if (is(w, "Difficulty")) sfx(fe, art_, "Skirmish");
-        if (is(w, "MainMenu")) fe.to_main_menu();
+        if (is(w, "MainMenu")) {
+            fe.to_main_menu();
+        } else if (campaign_ && (is(w, "Start") || is(w, "Missions"))) {
+            // (0x41EC50: the archives rescanned, the chosen mission's briefing)
+            const Widget* l = widget("Missions");
+            const int sel = l && l->selected >= 0 ? l->selected : camp_.mission;
+            if (camp_.start) camp_.start(fe, sel);
+        } else if (campaign_ && is(w, "LoadGame")) {
+            if (camp_.load) camp_.load(fe);
+        } else if (campaign_ && is(w, "SaveGame")) {
+            if (camp_.save) camp_.save(fe);
+        } else if (campaign_ && is(w, "Difficulty")) {
+            camp_.difficulty = w.stage;
+            if (camp_.set_difficulty) camp_.set_difficulty(w.stage);
+            fe.settings().set_int("Difficulty", w.stage);
+        }
+    }
+    void on_pick(FrontEnd& fe, Widget& w, int, bool double_click) override {
+        if (campaign_ && double_click && is(w, "Missions")) on_press(fe, w);
     }
 
 private:
@@ -2354,6 +2620,17 @@ private:
     render::Palette battle_palette_{};
     int phase_ = -1, fade_left_ = 0;
     std::int64_t fade_deadline_ = 0;
+    // A campaign mission's end (set_campaign): its buttons, the glamour picture's fade.
+    std::array<std::uint8_t, 256> hud_{};
+    bool campaign_ = false;
+    CampaignEnd camp_;
+    const render::Palette* camp_palette_ = nullptr;
+    int glamour_ = 0;  // 0 none, 1 fading in, 2 shown
+    render::Palette glam_now_{};
+    std::array<int, 768> glam_delta_{};
+    std::int64_t glam_next_ = 0, glam_deadline_ = 0;
+    bool glam_sound_ = false, glam_input_ = false, glam_text_ = false, mouse_held_ = false;
+    bool focus_missions_ = false;
 };
 
 // A session's end table (from its statistics when it has no table of its own).
@@ -2382,11 +2659,13 @@ client::EndTable end_table_of(client::BattleSession& s, client::BattleOutcome o)
 
 }  // namespace
 
-std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table) {
+std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table, const CampaignEnd* campaign) {
     if (!art.layout("ENDMSN")) return nullptr;
     std::array<std::uint8_t, 256> hud{};
     for (int k = 0; k < 256; ++k) hud[static_cast<std::size_t>(k)] = art.gui_colour(art.content().palette, k);
-    return std::make_unique<BattleOver>(art, table, hud, false);
+    auto bo = std::make_unique<BattleOver>(art, table, hud, false);
+    if (campaign) bo->set_campaign(*campaign);
+    return bo;
 }
 
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup) {
@@ -2400,6 +2679,8 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.battle_over = [&art](FrontEnd&, client::BattleSession& s, client::BattleOutcome o) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ENDMSN")) return nullptr;
         auto bo = std::make_unique<BattleOver>(art, end_table_of(s, o), s.content().hud, s.network());
+        CampaignEnd ce;
+        if (campaign_end(art, s, o, ce)) bo->set_campaign(std::move(ce));
         // The battle's last frame (without the pointer) for the fade.
         client::GameClient& c = s.client();
         c.set_pointer_hidden(true);
@@ -2409,6 +2690,12 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.game_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ARMOPT")) return nullptr;
         return std::make_unique<GameMenu>(art);
+    };
+    // Closing the window in a battle (the battle state's close handler 0x4609A0): the exit
+    // question "Surrender this battle and exit to Windows?" over whatever is open.
+    setup.close_prompt = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
+        if (!art.layout("YESORNO")) return nullptr;
+        return std::make_unique<YesOrNo>(art, 2);
     };
     setup.tab_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("TABMENU")) return nullptr;

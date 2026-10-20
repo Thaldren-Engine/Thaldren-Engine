@@ -13,6 +13,7 @@ std::string ta::progress_from_thumbs(const std::string& thumbs) {
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +22,8 @@ std::string ta::progress_from_thumbs(const std::string& thumbs) {
 
 #include "client/audio.h"
 #include "client/canvas.h"
+#include "sim/battle.h"
+#include "sim/victory.h"
 #include "client/front_end.h"
 #include "client/game_client.h"
 #include "client/menu.h"
@@ -118,17 +121,31 @@ bool write_file(const std::string& dir, const std::string& name, const std::vect
 }
 
 class BriefingScreen;
-class EndMissionScreen;
 
 // A mission battle: the front end's battle session with the campaign's progression.
 class MissionSession : public client::BattleSession {
 public:
-    MissionSession(std::unique_ptr<SkirmishSession> inner, MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : inner_(std::move(inner)), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
+    MissionSession(std::unique_ptr<SkirmishSession> inner, MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress,
+                   MissionInfo info = {})
+        : inner_(std::move(inner)), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)), info_(std::move(info)) {}
     sim::Battle& battle() override { return inner_->battle(); }
     client::Content& content() override { return inner_->content(); }
     client::GameClient& client() override { return inner_->client(); }
-    int frame(std::uint32_t now_ms) override { return inner_->frame(now_ms); }
+    int frame(std::uint32_t now_ms) override {
+        // (tests: TA_TEST_MISSION_END=win:STEP or lose:STEP ends the mission at that step as its
+        // goals would, so the end screens can be checked without playing it)
+        if (const char* t = std::getenv("TA_TEST_MISSION_END")) {
+            const std::string v = t;
+            const auto c = v.find(':');
+            sim::Battle& b = battle();
+            if (c != std::string::npos && b.game_tick() >= std::strtoul(v.c_str() + c + 1, nullptr, 10) &&
+                !(b.end_game.flags & sim::end_game_flags::kEnding)) {
+                if (v.compare(0, c, "win") == 0) b.end_game.flags |= sim::end_game_flags::kWon | sim::end_game_flags::kEnding;
+                else b.end_game.flags |= sim::end_game_flags::kLost | sim::end_game_flags::kEnding;
+            }
+        }
+        return inner_->frame(now_ms);
+    }
     client::BattleOutcome outcome() override { return inner_->outcome(); }
     void send_chat(const std::string& t) override { inner_->send_chat(t); }
     void surrender() override { inner_->surrender(); }
@@ -137,14 +154,22 @@ public:
     std::string battle_name() const override { return inner_->battle_name(); }
     int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
+    // The exit menu's Restart (0x460340): the same mission again at the dialog's difficulty
+    // (its schema chosen anew), defined after mission_launcher.
+    client::BattleLauncher restart_launcher(int difficulty) override;
     SkirmishSession& inner() { return *inner_; }
     CampaignProgress& progress() { return *progress_; }
+    std::shared_ptr<CampaignProgress> progress_ptr() { return progress_; }
+    MissionInfo& info() { return info_; }
+    const std::string& save_dir() const { return save_dir_; }
+    client::ClientOptions options;  // the client options the battle was started with (Restart)
 
 private:
     std::unique_ptr<SkirmishSession> inner_;
     MenuArt& art_;
     std::string save_dir_;
     std::shared_ptr<CampaignProgress> progress_;
+    MissionInfo info_;
 };
 
 client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_dir, std::shared_ptr<CampaignProgress> progress, const MissionInfo& info,
@@ -155,97 +180,465 @@ client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_di
     rq.difficulty = progress->difficulty;
     rq.battle_rng_seed = clock_value();
     rq.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
-    rq.crt_rand_state = clock_value() * 2654435761u;
+    // (the program's one C runtime rand() goes on into the battle, as for a skirmish)
+    rq.crt_rand_state = menus_rand().state();
     return [&art, save_dir, progress, info, rq, options](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
         const BattleRequest req = make_mission_request(art.vfs(), info, rq);
         std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, 0, options, lp, error);
         if (!s) return nullptr;
-        return std::make_unique<MissionSession>(std::move(s), art, save_dir, progress);
+        auto m = std::make_unique<MissionSession>(std::move(s), art, save_dir, progress, info);
+        m->options = options;
+        return m;
     };
 }
 
-// --- The briefing of one mission: text pages, narration, then the battle.
-class BriefingScreen : public client::Screen {
+client::BattleLauncher MissionSession::restart_launcher(int difficulty) {
+    // The same mission from its start at the difficulty the restart dialog shows; the mission's
+    // file read again for it (its schema per difficulty), the clocks' inputs taken anew and the
+    // program's rand() going on from where the battle left it.
+    progress_->difficulty = difficulty;
+    Campaign c;
+    std::string err;
+    MissionInfo info;
+    if (load_campaign(art_.vfs(), progress_->campaign, c, err) && progress_->mission >= 0 &&
+        progress_->mission < static_cast<int>(c.missions.size()))
+        load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(progress_->mission)].file, difficulty, info, err);
+    if (info.file.empty()) return {};
+    MissionRequest rq;
+    rq.campaign_side = progress_->side;
+    rq.difficulty = difficulty;
+    rq.battle_rng_seed = clock_value();
+    rq.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
+    rq.crt_rand_state = battle().crt_rand.state();
+    MenuArt& art = art_;
+    const std::string save_dir = save_dir_;
+    std::shared_ptr<CampaignProgress> progress = progress_;
+    const client::ClientOptions opt = options;
+    return [&art, save_dir, progress, info, rq, opt](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
+        const BattleRequest req = make_mission_request(art.vfs(), info, rq);
+        std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, 0, opt, lp, error);
+        if (!s) return nullptr;
+        auto m = std::make_unique<MissionSession>(std::move(s), art, save_dir, progress, info);
+        m->options = opt;
+        return m;
+    };
+}
+
+// --- The mission briefing (MSNBRIEF.GUI): set-up 0x478E80, handler 0x478CB0; each pass the
+// planet (0x478B40) and the panorama (0x478790, which also draws the wind and gravity and the
+// blinking words, 0x4AFF00); the text: 0x476D80 (set-up), 0x4AC4C0 (word wrap), 0x476CD0
+// (colour spans carried over line breaks), 0x476EF0 (one page as label lines).
+//   * The picture bitmaps\mbrief<side prefix>; the interface colours from the game palette.
+//   * The planet's name (map info "Planet"; "Lunar" becomes "Lunar2" for Core) picks one of 15
+//     planets: anims\<planet>brief.GAF holds the rotating planet (<..>Rotate), the panorama strip
+//     (<..>Pan) and the frame around it (Panmask, one frame per side). Unknown names: Green.
+//   * PLANET: every 25 ms of the wall clock: the narration's end turns the narration switch off,
+//     the rotation steps by its frames' durations; the frame centred in the gadget on colour 0.
+//   * PANORAMA: the wind shown (starting at rand() % (max - min + 1) + min) moves by rand() % 5 - 2
+//     whenever its countdown (first rand() % 64, then rand() % 63 passes) runs out, kept within
+//     min..max; "Wind Speed : %d" and "Gravity : %.1f" (gravity / 112) in the side's font and
+//     colour in SOLARSYSTEM's box (filled with colour 0) at +80, +20 / +40; the blinking words;
+//     the strip of all frames (and the first again) from x - scroll, the scroll one pixel on every
+//     third tick, wrapping at the strip's width (kept from one briefing to the next); Panmask's
+//     side frame over the whole screen.
+//   * The text: camps\briefs\<brief>.txt wrapped to TextRegion's width in the side's font with
+//     CR LF breaks, "&X..&" spans (X: G, Y, R) restarted after each break inside them; a page is
+//     TextRegion.h / (font height + 2) lines from row (font height + 2) / 2, at x + 5, in the
+//     side's colour; each span also blinks over its line: its colour (G, Y, R) for a second,
+//     colour 0x5E for a quarter. MOREBAR: "MORE...", "BACK TO START" (last page of several) or
+//     nothing, in the side's second colour; a click on it or the text shows the next page ("More").
+//   * Narration (camps\briefs\<narration>.wav) starts with the screen; the switch (SHUTUP, on)
+//     stops it or starts it again ("Options", then "SmallButton").
+//   * Start: "BigButton", the narration stops, the battle. Previous: the narration stops,
+//     "Previous", the new campaign screen again.
+class BriefingScreen : public client::LayoutScreen {
 public:
     BriefingScreen(MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
+        : client::LayoutScreen(art.layout("MSNBRIEF")), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
 
     void enter(client::FrontEnd& fe) override {
-        if (loaded_) return;
-        loaded_ = true;
+        if (set_up_) return;
+        set_up_ = true;
         Campaign c;
         const int index = progress_->mission;
-        if (!load_campaign(art_.vfs(), progress_->campaign, c, error_) || index < 0 || index >= static_cast<int>(c.missions.size())) {
-            if (error_.empty()) error_ = "no such mission";
-            return;
+        std::string error;
+        ok_ = load_campaign(art_.vfs(), progress_->campaign, c, error) && index >= 0 && index < static_cast<int>(c.missions.size()) &&
+              load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(index)].file, progress_->difficulty, info_, error);
+        side_ = side_index(art_.vfs(), progress_->side) == 1 ? 1 : 0;
+        // (0x4288D0 with its third argument set: the picture's palette goes on the display)
+        background_ = art_.picture("mbrief" + side_prefix(), &palette_);
+        for (int k = 0; k < 256; ++k) colours_table_[static_cast<std::size_t>(k)] = art_.gui_colour(art_.content().palette, k);
+        colours_ = &colours_table_;
+        for (const char* n : {"MOREBAR", "TextRegion"})
+            if (client::Widget* w = widget(n)) w->attribs &= ~0x10;
+        if (client::Widget* s = widget("SHUTUP")) s->stage = 1;
+        // The fonts of the screen's FONT gadgets: 0 smlfont, 1 armfont, 2 corefont.
+        std::vector<std::string> fonts;
+        if (const client::ScreenLayout* L = layout())
+            for (const client::Widget& w : L->widgets)
+                if (w.kind == client::WidgetKind::FontRef) fonts.push_back(w.text);
+        small_font_ = art_.fnt_font("smlfont");
+        side_font_ = art_.fnt_font(side_ == 0 ? "armfont" : "corefont");
+        // The wind shown and its countdown.
+        sim::Lcg15& rnd = menus_rand();
+        // (tests: TA_BRIEF_RAND=S puts rand() on state S here, as gui_harness's srand:S does)
+        if (const char* t = std::getenv("TA_BRIEF_RAND")) rnd.set_state(static_cast<std::uint32_t>(std::strtoul(t, nullptr, 0)));
+        const int span = info_.max_wind - info_.min_wind + 1;
+        const int r1 = static_cast<int>(rnd.next());
+        wind_ = span != 0 ? r1 % span + info_.min_wind : info_.min_wind;
+        countdown_ = static_cast<int>(rnd.next()) % 64;
+        load_planet();
+        now_tick_ = fe.now_ms() * 30 / 1000;
+        if (ok_ && !info_.brief_text.empty() && side_font_) {
+            const client::Widget* t = widget("TextRegion");
+            text_ = carry_spans(wrap_crlf(*side_font_, info_.brief_text, t ? t->w : 360));
+            page_ = -1;
+            paginate();
         }
-        title_ = c.missions[static_cast<std::size_t>(index)].name;
-        if (!load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(index)].file, progress_->difficulty, info_, error_)) return;
-        ok_ = true;
-        lines_ = wrap(info_.brief_text.empty() ? info_.description : info_.brief_text, fe.menu_content().font, fe.width() - 80);
-        std::vector<std::uint8_t> wav;
-        client::Sample s;
-        if (!info_.narration.empty() && art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) && client::decode_wav(wav, s)) {
-            // The narration streams on its own channel at full volume (whatever the sound
-            // settings); leaving the briefing stops it.
-            art_.content().samples.push_back(std::move(s));
-            fe.play_narration(static_cast<int>(art_.content().samples.size()) - 1);
+        start_narration(fe);
+    }
+
+    void frame(client::FrontEnd& fe, std::uint32_t now) override {
+        client::LayoutScreen::frame(fe, now);
+        const std::uint32_t tick = now * 30 / 1000;
+        now_tick_ = tick;
+        // PLANET (0x478B40): every 25 ms of the wall clock.
+        if (now >= planet_next_) {
+            planet_next_ = now + 25;
+            if (now >= narration_end_)
+                if (client::Widget* s = widget("SHUTUP"); s && s->stage != 0) s->stage = 0;
+            if (rotate_ && !rotate_times_.empty() && tick != 0) {
+                // The frame cursor (0x4B8B90): a countdown below 2 moves to the next frame.
+                if (cursor_wait_ < 2) {
+                    if (++cursor_frame_ >= static_cast<int>(rotate_times_.size())) cursor_frame_ = rotate_loop_ ? 0 : static_cast<int>(rotate_times_.size());
+                    if (cursor_frame_ < static_cast<int>(rotate_times_.size())) cursor_wait_ = rotate_times_[static_cast<std::size_t>(cursor_frame_)];
+                } else {
+                    --cursor_wait_;
+                }
+            }
+        }
+        // PANORAMA (0x478790): once per pass.
+        if (pan_) {
+            sim::Lcg15& rnd = menus_rand();
+            if (--countdown_ < 1) {
+                wind_ += static_cast<int>(rnd.next()) % 5 - 2;
+                if (wind_ < info_.min_wind) wind_ = info_.min_wind;
+                if (wind_ > info_.max_wind) wind_ = info_.max_wind;
+                countdown_ = static_cast<int>(rnd.next()) % 63;
+            }
+            int strip = 0;
+            for (const render::Sprite8& f : *pan_) strip += f.width;
+            if (static_cast<std::int32_t>(pan_next_) < static_cast<std::int32_t>(tick)) {
+                if (++pan_scroll_ >= strip) pan_scroll_ = 0;
+                pan_next_ = tick + 2;
+            }
+        }
+        // The blinking words (0x4AFF00): one second in their colour, a quarter in 0x5E.
+        for (Blink& b : blinks_)
+            if (b.next < static_cast<float>(tick)) {
+                b.next = static_cast<float>(tick) + 30.0f * (b.off ? 1.0f : 0.25f);
+                b.off = !b.off;
+            }
+    }
+
+    void draw(client::FrontEnd& fe, render::Image8& out) override {
+        client::LayoutScreen::draw(fe, out);
+        const render::ClipRect all = out.bounds();
+        // The page's lines and MOREBAR.
+        if (side_font_)
+            for (const Line& l : lines_) client::draw_text(out, all, *side_font_, l.text, l.x, l.y, kSideColour[side_][0], -1, 640 - l.x - 5);
+        if (const client::Widget* m = widget("MOREBAR"); m && small_font_ && !more_text_.empty()) {
+            // (0x4A56B0 measures a centred label's text in the interface's picture font while a
+            // picture font is set, then draws it in the label's bit font)
+            const client::Font* measure = fe.menu_content().small_font ? fe.menu_content().small_font : small_font_;
+            const int tx = m->x + m->w / 2 - measure->text_width(more_text_) / 2;
+            client::draw_text(out, all, *small_font_, more_text_, tx, m->y, kSideColour[side_][1], -1, m->w);
+        }
+        // PLANET.
+        if (const client::Widget* p = widget("PLANET")) {
+            client::fill_rect(out, all, p->x, p->y, p->x + p->w - 1, p->y + p->h - 1, colours_table_[static_cast<std::size_t>(p->bg & 0xFF)]);
+            if (rotate_ && cursor_frame_ < static_cast<int>(rotate_->size())) {
+                const render::Sprite8& f = (*rotate_)[static_cast<std::size_t>(cursor_frame_)];
+                render::blit(out, all, f, p->w / 2 - (f.width >> 1) + p->x + f.x_offset, p->h / 2 - (f.height >> 1) + p->y + f.y_offset);
+            }
+        }
+        // PANORAMA: the wind and gravity, the blinking words, the strip, the frame.
+        if (const client::Widget* g = widget("PANORAMA"); g && pan_) {
+            if (const client::Widget* s = widget("SOLARSYSTEM")) {
+                client::fill_rect(out, all, s->x, s->y, s->x + s->w - 1, s->y + s->h - 1, colours_table_[0]);
+                if (side_font_) {
+                    char buf[64];
+                    std::snprintf(buf, sizeof buf, "%s : %d", "Wind Speed", wind_);
+                    client::draw_text(out, all, *side_font_, buf, s->x + 80, s->y + 20, kSideColour[side_][0], -1, s->w - 1 - 80);
+                    std::snprintf(buf, sizeof buf, "%s : %.1f", "Gravity", static_cast<double>(info_.gravity) * 0.008928571428571428);
+                    client::draw_text(out, all, *side_font_, buf, s->x + 80, s->y + 40, kSideColour[side_][0], -1, s->w - 1 - 80);
+                }
+            }
+            if (side_font_)
+                for (const Blink& b : blinks_)
+                    client::draw_text(out, all, *side_font_, b.text, b.x, b.y, b.off ? 0x5E : b.colour, -1, -1);
+            client::fill_rect(out, all, g->x, g->y, g->x + g->w - 1, g->y + g->h - 1, colours_table_[static_cast<std::size_t>(g->bg & 0xFF)]);
+            int x = g->x - pan_scroll_;
+            const int n = static_cast<int>(pan_->size());
+            for (int k = 0; k <= n; ++k) {
+                const render::Sprite8& f = (*pan_)[static_cast<std::size_t>(k % n)];
+                render::blit(out, all, f, x + f.x_offset, g->y + f.y_offset);
+                x += f.width;
+            }
+            if (mask_ && side_ < static_cast<int>(mask_->size())) render::blit(out, all, (*mask_)[static_cast<std::size_t>(side_)], (*mask_)[static_cast<std::size_t>(side_)].x_offset, (*mask_)[static_cast<std::size_t>(side_)].y_offset);
         }
     }
+
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type != client::InputEvent::Type::KeyDown && e.type != client::InputEvent::Type::MouseDown) return;
-        if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kEscape) {
-            // (the previous menu: the narration stops, "Previous")
+        // A click on the text or MOREBAR (labels the pointer reaches through the interface pass).
+        if (e.type == client::InputEvent::Type::MouseDown && e.button == 1) text_down_ = over_text(e.x, e.y);
+        if (e.type == client::InputEvent::Type::MouseUp && e.button == 1 && text_down_ && over_text(e.x, e.y)) more(fe);
+        if (e.type == client::InputEvent::Type::MouseUp) text_down_ = false;
+        client::LayoutScreen::handle(fe, e);
+    }
+
+protected:
+    void draw_surface(client::FrontEnd&, render::Image8&, const client::Widget&) override {}
+    void on_press(client::FrontEnd& fe, client::Widget& w) override {
+        if (named(w, "Start")) {
+            fe.play_sound(art_.sound("BigButton"));
+            if (!ok_) return;
+            mount_cd_archives(art_.vfs(), art_.game_dir());
+            fe.stop_narration();
+            fe.start_battle(mission_launcher(art_, save_dir_, progress_, info_, fe));
+        } else if (named(w, "SHUTUP")) {
+            fe.play_sound(art_.sound("Options"));
+            if (w.stage == 0) {
+                fe.stop_narration();
+                narration_end_ = 0;
+            } else {
+                start_narration(fe);
+            }
+            fe.play_sound(art_.sound("SmallButton"));
+        } else if (named(w, "PrevMenu")) {
             fe.stop_narration();
             fe.play_sound(art_.sound("Previous"));
             fe.pop();
-            return;
-        }
-        const int per_page = std::max(1, (fe.height() - 120) / 14);
-        if (e.type == client::InputEvent::Type::KeyDown && (e.key == client::keys::kRight || e.key == client::keys::kDown)) {
-            // (the text's "more" bar while there is more: "More")
-            if ((page_ + 1) * per_page < static_cast<int>(lines_.size())) {
-                ++page_;
-                fe.play_sound(art_.sound("More"));
-            }
-            return;
-        }
-        if (e.type == client::InputEvent::Type::KeyDown && (e.key == client::keys::kLeft || e.key == client::keys::kUp)) {
-            if (page_ > 0) --page_;
-            return;
-        }
-        // (Start: "BigButton", the narration stops)
-        fe.play_sound(art_.sound("BigButton"));
-        if (!ok_) return;
-        fe.stop_narration();
-        fe.start_battle(mission_launcher(art_, save_dir_, progress_, info_, fe));
-    }
-    void draw(client::FrontEnd& fe, render::Image8& out) override {
-        Pen p(fe, out);
-        p.clear();
-        const client::MenuContent& m = fe.menu_content();
-        p.text(progress_->campaign, 40, 20, m.text_dim);
-        p.text(ok_ ? title_ : error_, 40, 36, m.text_highlight);
-        if (ok_) {
-            p.text(info_.description, 40, 54, m.text_colour, fe.width() - 80);
-            const int per_page = std::max(1, (fe.height() - 120) / 14);
-            for (int k = 0; k < per_page; ++k) {
-                const std::size_t at = static_cast<std::size_t>(page_ * per_page + k);
-                if (at >= lines_.size()) break;
-                p.text(lines_[at], 40, 80 + k * 14, m.text_colour);
-            }
-            p.text("Enter: start   Arrows: pages   Esc: back", 40, fe.height() - 30, m.text_dim);
         }
     }
 
 private:
+    struct Line {
+        std::string text;
+        int x = 0, y = 0;
+    };
+    struct Blink {
+        std::string text;
+        int x = 0, y = 0;
+        std::uint8_t colour = 0;
+        bool off = false;
+        float next = 0;
+    };
+    // Per side: the text colour, then the G, Y and R spans' colours (0x507B70).
+    static constexpr std::uint8_t kSideColour[2][4] = {{0x35, 0x33, 0x40, 0xD0}, {0x75, 0x56, 0x52, 0xD4}};
+
+    static bool named(const client::Widget& w, const char* n) { return stricmp_c(w.name, n) == 0; }
+    std::string side_prefix() {
+        std::vector<std::uint8_t> sd;
+        if (art_.vfs().read("gamedata\\sidedata.tdf", sd)) {
+            const TdfParseResult r = tdf_parse(std::string_view(reinterpret_cast<const char*>(sd.data()), sd.size()));
+            if (r.root)
+                if (const TdfSection* s = r.root->child("SIDE" + std::to_string(side_))) return s->get_string("nameprefix", 32, "");
+        }
+        return side_ == 0 ? "ARM" : "COR";
+    }
+    void load_planet() {
+        static const char* const kNames[] = {"Green planet", "Archipelago", "Wet Desert", "Desert", "Lava", "Red Planet", "Lunar", "Metal",
+                                             "Lunar2", "Ice", "Lush", "Slate", "Water World", "Acid", "Crystal"};
+        static const char* const kBrief[] = {"Greenbrief", "Archibrief", "WDesertbrief", "Desertbrief", "Lavabrief", "Marsbrief", "Lunarbrief", "Metalbrief",
+                                             "Lunar2brief", "Icebrief", "Lushbrief", "Slatebrief", "Waterbrief", "Acidbrief", "Crystalbrief"};
+        static const char* const kPan[] = {"GreenPan", "ArchiPan", "WDesPan", "DDesPan", "LavaPan", "MarsPan", "LunarPan", "MetalPan",
+                                           "Lunar2Pan", "IcePan", "LushPan", "SlatePan", "WaterPan", "AcidPan", "CrystPan"};
+        static const char* const kRotate[] = {"GreenRotate", "ArchiRotate", "WDesertRotate", "DDesRotate", "LavaRotate", "MarsRotate", "LunarRotate", "MetalRotate",
+                                              "Lunar2Rotate", "IceRotate", "LushRotate", "SlateRotate", "WaterRotate", "AcidRotate", "CrystalRotate"};
+        std::string planet = info_.planet;
+        if (planet == "Lunar" && side_ != 0) planet += "2";
+        int k = 0;
+        for (int i = 0; i < 15; ++i)
+            if (planet == kNames[i]) {
+                k = i;
+                break;
+            }
+        const std::string gaf = std::string("anims\\") + kBrief[k] + ".GAF";
+        pan_ = art_.gaf_sequence(gaf, kPan[k]);
+        rotate_ = art_.gaf_sequence(gaf, kRotate[k]);
+        rotate_times_ = art_.sequence_times(gaf, kRotate[k], &rotate_loop_);
+        mask_ = art_.gaf_sequence(gaf, "Panmask");
+        cursor_frame_ = 0;
+        cursor_wait_ = rotate_times_.empty() ? 0 : rotate_times_[0];
+    }
+    void start_narration(client::FrontEnd& fe) {
+        if (info_.narration.empty()) return;
+        if (narration_.pcm.empty()) {
+            std::vector<std::uint8_t> wav;
+            if (!art_.vfs().read("camps\\briefs\\" + info_.narration + ".wav", wav) || !client::decode_wav(wav, narration_)) return;
+        }
+        fe.play_narration_sample(&narration_);
+        const std::size_t frames = narration_.pcm.size() / static_cast<std::size_t>(std::max(1, narration_.channels));
+        narration_end_ = fe.now_ms() + static_cast<std::uint32_t>(frames * 1000 / static_cast<std::size_t>(std::max(1, narration_.rate)));
+    }
+    bool over_text(int x, int y) {
+        for (const char* n : {"TextRegion", "MOREBAR"})
+            if (const client::Widget* w = widget(n); w && x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h) return true;
+        return false;
+    }
+    void more(client::FrontEnd& fe) {
+        if (text_.empty()) return;
+        fe.play_sound(art_.sound("More"));
+        paginate();
+    }
+
+    // 0x4AC4C0: the text broken for `width` in `font`: when the next character is a space, a line
+    // feed or a hyphen and the line so far (its own characters) is at least `width` wide, the
+    // line goes back to its last space or hyphen, which becomes CR LF; a line feed starts a line.
+    static std::string wrap_crlf(const client::Font& font, const std::string& src, int width) {
+        std::string out;
+        std::size_t line = 0, i = 0;
+        auto at = [&](std::size_t k) -> unsigned char { return k < src.size() ? static_cast<unsigned char>(src[k]) : 0; };
+        while (at(i) != 0 && at(i) != 0xFF) {
+            out.push_back(static_cast<char>(at(i)));
+            const unsigned char next = at(i + 1);
+            std::size_t n = i + 1;
+            if (next == ' ' || next == '\n' || next == '-') {
+                if (font.text_width(std::string_view(out).substr(line)) >= width) {
+                    std::size_t j = i;
+                    while (at(j) != ' ' && at(j) != '-') {
+                        out.pop_back();
+                        if (j == 0) break;
+                        --j;
+                    }
+                    if (!out.empty()) out.back() = '\r';
+                    out.push_back('\n');
+                    line = out.size();
+                    n = j + 1;
+                }
+            }
+            if (at(n) == '\n') line = out.size() + 1;
+            i = n;
+        }
+        return out;
+    }
+    // 0x476CD0: a line feed inside a "&X..&" span ends the span before the break and opens it again
+    // after it (the character before the line feed, the CR, becomes the closing '&').
+    static std::string carry_spans(const std::string& in) {
+        std::string out;
+        bool open = false;
+        char colour = 0;
+        for (std::size_t i = 0; i < in.size() && static_cast<unsigned char>(in[i]) != 0xFF; ++i) {
+            const char c = in[i];
+            out.push_back(c);
+            if (c == '&') {
+                colour = i + 1 < in.size() ? in[i + 1] : '\0';
+                open = !open;
+            }
+            if (c == '\n' && open) {
+                if (out.size() >= 2) out[out.size() - 2] = '&';
+                out.back() = '\r';
+                out.push_back('\n');
+                out.push_back('&');
+                out.push_back(colour);
+            }
+        }
+        return out;
+    }
+    // 0x476EF0: the next page (after the last: the first) as lines and blinking words.
+    void paginate() {
+        const client::Widget* t = widget("TextRegion");
+        if (!t || !side_font_ || text_.empty()) return;
+        const int row = side_font_->height + 2;
+        const int lines = t->h / row;
+        auto at = [&](std::size_t k) -> unsigned char { return k < text_.size() ? static_cast<unsigned char>(text_[k]) : 0; };
+        // The position after the n-th line feed (npos: the text ends first).
+        auto after_lines = [&](int n) -> std::size_t {
+            int seen = 0;
+            for (std::size_t k = 0; at(k) != 0 && at(k) != 0xFF; ++k)
+                if (at(k) == '\n' && ++seen == n) return k + 1;
+            return std::string::npos;
+        };
+        ++page_;
+        std::size_t p = 0;
+        if (page_ != 0) {
+            p = after_lines(lines * page_);
+            if (p == std::string::npos) {
+                page_ = 0;
+                p = 0;
+            }
+        }
+        const bool more = after_lines((page_ + 1) * lines) != std::string::npos;
+        more_text_ = more ? "MORE..." : page_ == 0 ? "" : "BACK TO START";
+        lines_.clear();
+        blinks_.clear();
+        bool expect_open = true;
+        int y = row / 2 + t->y;
+        const std::uint32_t tick = now_tick_;
+        for (int k = 0; k < lines; ++k, y += row) {
+            Line l;
+            l.x = t->x + 5;
+            l.y = y;
+            if (at(p) != '\n') {
+                for (;;) {
+                    unsigned char c = at(p);
+                    if (c == 0 || c == 0xFF) break;
+                    if (c == '&') {
+                        if (expect_open) {
+                            const unsigned char letter = at(p + 1);
+                            expect_open = false;
+                            const int ci = letter == 'R' ? 3 : letter == 'Y' ? 2 : letter == 'G' ? 1 : 3;
+                            p += 2;
+                            Blink b;
+                            b.x = side_font_->text_width(l.text) + t->x + 5;
+                            b.y = y;
+                            b.colour = kSideColour[side_][ci];
+                            for (std::size_t q = p; at(q) != '&' && b.text.size() < 0x7F; ++q) b.text.push_back(static_cast<char>(at(q)));
+                            b.next = static_cast<float>(tick) + 30.0f;
+                            blinks_.push_back(b);
+                        } else {
+                            ++p;
+                            expect_open = true;
+                        }
+                    }
+                    l.text.push_back(static_cast<char>(at(p)));
+                    ++p;
+                    if (at(p) == '\n') break;
+                }
+            }
+            ++p;
+            lines_.push_back(std::move(l));
+        }
+    }
+
     MenuArt& art_;
-    std::string save_dir_, title_, error_;
+    std::string save_dir_;
     std::shared_ptr<CampaignProgress> progress_;
     MissionInfo info_;
-    std::vector<std::string> lines_;
-    int page_ = 0;
-    bool loaded_ = false, ok_ = false;
+    const render::Palette* palette_ = nullptr;
+
+public:
+    const render::Palette* palette() const override { return palette_ ? palette_ : client::LayoutScreen::palette(); }
+
+private:
+    bool set_up_ = false, ok_ = false, text_down_ = false;
+    int side_ = 0;
+    std::array<std::uint8_t, 256> colours_table_{};
+    const client::Font *small_font_ = nullptr, *side_font_ = nullptr;
+    int wind_ = 0, countdown_ = 0;
+    const std::vector<render::Sprite8>*pan_ = nullptr, *rotate_ = nullptr, *mask_ = nullptr;
+    std::vector<int> rotate_times_;
+    bool rotate_loop_ = true;
+    int cursor_frame_ = 0, cursor_wait_ = 0;
+    std::uint32_t planet_next_ = 0, narration_end_ = 0, now_tick_ = 0;
+    static inline int pan_scroll_ = 0;              // kept from one briefing to the next (0x51E674)
+    static inline std::uint32_t pan_next_ = 0;      // (0x51E678)
+    client::Sample narration_;
+    std::string text_, more_text_;
+    int page_ = -1;
+    std::vector<Line> lines_;
+    std::vector<Blink> blinks_;
 };
 
 // The save menu's file name line (SAVEGAME\<name>.SAV).
@@ -264,173 +657,207 @@ struct NameLine {
     }
 };
 
-// --- Between missions (ENDMSN, 0x41F0A0 / 0x41EC50): the missions with their results.
-class EndMissionScreen : public client::Screen {
+// The campaign's end of a mission goes through the statistics screen (ta::campaign_end).
+bool MissionSession::after_battle(client::FrontEnd&, client::BattleOutcome) { return false; }
+
+// --- A new campaign (NEWGAME.GUI: set-up 0x478240, handler 0x477AB0). `any` (the AnyMsn button,
+// 0x478240(1)): the Missions list too, to start at any mission.
+//   * Background: playanygame4 (any mission), else newcampaign4 when camps\ holds more than two
+//     campaign files, else newcampaign4x (no campaign list: the side's own "Arm Campaign" /
+//     "Core Campaign"). The picture's indices are shown on the palette already on the display.
+//   * Any mission: the Campaign list and its knob move to y 308, 48 high, the Missions list is 62
+//     high; both lists shown, the Missions list has the focus. Otherwise the Campaign list has the
+//     focus (newcampaign4x: the Difficulty switch).
+//   * Side: registry "side" (0 Arm, 1 Core): the side's button (Arm / Core) and picture (Side0 /
+//     Side1) pressed. The Campaign list holds camps\*.tdf in name order (case-insensitive) whose
+//     [HEADER] campaignside is the side's name or "ALL" ("smlbutton" each time it is filled).
+//   * Difficulty: registry "Difficulty" (0..2) on the switch; a press steps it ("SmlButton").
+//   * Arm / Side0 ("SideSelect"), Core / Side1 ("SideSelect2"): the side, the list again.
+//   * Start, Enter on a list or a double click on the Campaign list (the Missions list in any
+//     mission mode): "bigButton", the archives rescanned, the results string reset, the campaign
+//     and the mission (the first, or the chosen one) loaded, the settings saved, the briefing.
+//   * Previous Menu: "Previous", back to the single player menu.
+class NewCampaignScreen : public client::LayoutScreen {
 public:
-    EndMissionScreen(MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {
-        std::string err;
-        load_campaign(art_.vfs(), progress_->campaign, campaign_, err);
-        // The mission after a won one is selected, else the same one.
-        sel_ = std::min(progress_->mission + (progress_->won ? 1 : 0), std::max(0, static_cast<int>(campaign_.missions.size()) - 1));
-    }
-    void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type != client::InputEvent::Type::KeyDown) return;
-        if (saving_) {
-            if (e.key == client::keys::kEscape) saving_ = false;
-            else if (e.key == client::keys::kEnter && !name_.name.empty()) save_between_missions();
-            else name_.key(e.key);
-            return;
-        }
-        switch (e.key) {
-        case client::keys::kEscape: fe.play_sound(art_.sound("BigButton")); fe.pop(); return;  // (main menu)
-        case client::keys::kUp: sel_ = std::max(0, sel_ - 1); return;
-        case client::keys::kDown: sel_ = std::min(static_cast<int>(campaign_.missions.size()) - 1, sel_ + 1); return;
-        case 'd':  // Easy -> Medium -> Hard -> Easy
-            fe.play_sound(art_.sound("Skirmish"));
-            progress_->difficulty = (progress_->difficulty + 1) % 3;
-            return;
-        case 's': fe.play_sound(art_.sound("BigButton")); saving_ = true; message_.clear(); return;
-        case client::keys::kEnter:
-            fe.play_sound(art_.sound("BigButton"));
-            if (sel_ >= 0 && sel_ < static_cast<int>(campaign_.missions.size())) {
-                progress_->mission = sel_;
-                fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress_));
-            }
-            return;
-        default: return;
-        }
-    }
-    void draw(client::FrontEnd& fe, render::Image8& out) override {
-        static const char* const kDifficulty[3] = {"Easy", "Medium", "Hard"};
-        Pen p(fe, out);
-        p.clear();
-        const client::MenuContent& m = fe.menu_content();
-        p.text(progress_->campaign + (progress_->won ? ": mission won" : ": mission lost"), 40, 20, m.text_highlight);
-        p.text(std::string("Difficulty: ") + kDifficulty[progress_->difficulty % 3] + "   (D)", fe.width() / 2, 20, m.text_colour);
-        for (std::size_t k = 0; k < campaign_.missions.size(); ++k) {
-            const char r = k < progress_->results.size() ? progress_->results[k] : 'U';
-            const std::string mark = r == 'W' ? "[won]  " : r == 'L' ? "[lost] " : "       ";
-            p.row(mark + campaign_.missions[k].name, 40, 50 + static_cast<int>(k) * p.line(), fe.width() - 80, static_cast<int>(k) == sel_);
-        }
-        if (saving_) p.text("Save as: " + name_.name + "_", 40, fe.height() - 50, m.text_colour);
-        else if (!message_.empty()) p.text(message_, 40, fe.height() - 50, m.text_colour);
-        p.text("Arrows: mission   Enter: start   S: save   D: difficulty   Esc: main menu", 40, fe.height() - 30, m.text_dim);
-    }
+    NewCampaignScreen(MenuArt& art, std::string save_dir, bool any) : client::LayoutScreen(art.layout("NEWGAME")), art_(art), save_dir_(std::move(save_dir)), any_(any) {}
 
-private:
-    void save_between_missions() {
-        // GameSave_SaveAll outside a battle: the summary with the next mission's name (the map
-        // info moves on when there is a next mission, whatever the outcome) and BetweenMissions.
-        SaveContext c;
-        c.description = name_.name;
-        c.game_id = static_cast<std::int32_t>(std::time(nullptr));
-        c.game_type = 1;
-        c.campaign = progress_->campaign;
-        const int next = progress_->mission + 1 < static_cast<int>(campaign_.missions.size()) ? progress_->mission + 1 : progress_->mission;
-        c.mission = next < static_cast<int>(campaign_.missions.size()) ? campaign_.missions[static_cast<std::size_t>(next)].name : std::string();
-        c.thumbs = progress_->results;
-        c.difficulty = progress_->difficulty;
-        c.side = side_index(art_.vfs(), progress_->side);
-        c.between_missions = true;
-        std::vector<std::uint8_t> bytes;
-        write_bank(make_between_missions_bank(c), bytes, nullptr, c.bank);
-        message_ = write_file(save_dir_, name_.name, bytes) ? "Saved." : "Could not write the file.";
-        saving_ = false;
-    }
-    MenuArt& art_;
-    std::string save_dir_, message_;
-    std::shared_ptr<CampaignProgress> progress_;
-    Campaign campaign_;
-    int sel_ = 0;
-    bool saving_ = false;
-    NameLine name_;
-};
-
-bool MissionSession::after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) {
-    if (outcome != client::BattleOutcome::Victory && outcome != client::BattleOutcome::Defeat) return false;
-    // 0x41DC20: the mission's result goes into the results string at its index.
-    progress_->won = outcome == client::BattleOutcome::Victory;
-    if (progress_->mission >= 0 && progress_->mission < 25) progress_->results[static_cast<std::size_t>(progress_->mission)] = progress_->won ? 'W' : 'L';
-    fe.push(std::make_unique<EndMissionScreen>(art_, save_dir_, progress_));
-    return true;
-}
-
-// --- A new campaign (0x477AB0): the campaign, then its first mission (any one with the
-// AllMissions setting); the results start over.
-class CampaignScreen : public client::Screen {
-public:
-    CampaignScreen(MenuArt& art, std::string save_dir) : art_(art), save_dir_(std::move(save_dir)) { names_ = list_campaigns(art_.vfs()); }
     void enter(client::FrontEnd& fe) override {
-        difficulty_ = std::clamp(fe.settings().get_int("Difficulty", 1), 0, 2);
-        any_mission_ = fe.settings().get_int("AllMissions", 0) != 0;
-        load_missions();
-    }
-    void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type != client::InputEvent::Type::KeyDown) return;
-        switch (e.key) {
-        case client::keys::kEscape: fe.play_sound(art_.sound("Previous")); fe.pop(); return;
-        case client::keys::kTab:
-            if (any_mission_) focus_ = 1 - focus_;
-            return;
-        case client::keys::kUp:
-            // (the campaign choice: the first side's "SideSelect", the second's "SideSelect2")
-            if (focus_ == 0 && camp_ > 0) --camp_, load_missions(), fe.play_sound(art_.sound(camp_ == 0 ? "SideSelect" : "SideSelect2"));
-            else if (focus_ == 1 && mission_ > 0) --mission_;
-            return;
-        case client::keys::kDown:
-            if (focus_ == 0 && camp_ + 1 < static_cast<int>(names_.size()))
-                ++camp_, load_missions(), fe.play_sound(art_.sound(camp_ == 0 ? "SideSelect" : "SideSelect2"));
-            else if (focus_ == 1 && mission_ + 1 < static_cast<int>(campaign_.missions.size())) ++mission_;
-            return;
-        case 'd':
-            fe.play_sound(art_.sound("SmlButton"));
-            difficulty_ = (difficulty_ + 1) % 3;
-            fe.settings().set_int("Difficulty", difficulty_);
-            return;
-        case client::keys::kEnter: {
-            fe.play_sound(art_.sound("bigButton"));
-            if (camp_ >= static_cast<int>(names_.size())) return;
-            auto progress = std::make_shared<CampaignProgress>();
-            progress->campaign = names_[static_cast<std::size_t>(camp_)];
-            progress->side = campaign_.side.empty() ? "ARM" : campaign_.side;
-            progress->mission = any_mission_ ? mission_ : 0;
-            progress->difficulty = difficulty_;
-            fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress));
-            return;
+        if (set_up_ && !again_) return;
+        if (again_) {
+            // Back from the briefing: the screen is set up anew (state 0xB/0xC sub-state 3 calls
+            // 0x478240 again).
+            again_ = false;
+            widgets_ = layout()->widgets;
+            placed_ = false;
         }
-        default: return;
+        set_up_ = true;
+        auto count = static_cast<int>(list_campaigns(art_.vfs()).size());
+        no_list_ = !any_ && count <= 2;
+        const char* bg = any_ ? "playanygame4" : no_list_ ? "newcampaign4x" : "newcampaign4";
+        background_ = art_.picture(bg);
+        // (the palette on the display stays the main menu's; the interface colours are the layout's)
+        if (any_) {
+            // (changed after the screen was opened: the heights are not cut to whole rows again;
+            // the slider's arrows sit at its new ends)
+            if (client::Widget* w = widget("Campaign")) {
+                w->y = 308;
+                w->h = 48;
+            }
+            if (client::Widget* w = widget("Missions")) w->h = 62;
+            relocate_slider("CampaignKnob", 308, 48);
         }
+        side_ = std::clamp(fe.settings().get_int("side", 0), 0, 1);
+        show_side();
+        if (client::Widget* d = widget("Difficulty")) d->stage = std::clamp(fe.settings().get_int("Difficulty", 1), 0, 2);
+        if (!no_list_ || any_) {
+            for (const char* n : {"Campaign", "CampaignKnob"})
+                if (client::Widget* w = widget(n)) w->active = true;
+            fill_campaigns(fe);
+            if (any_) {
+                for (const char* n : {"Missions", "MissionsKnob"})
+                    if (client::Widget* w = widget(n)) w->active = true;
+                fill_missions();
+            }
+        }
+        first_focus_ = any_ ? "Missions" : no_list_ ? "Difficulty" : "Campaign";
     }
     void draw(client::FrontEnd& fe, render::Image8& out) override {
-        static const char* const kDifficulty[3] = {"Easy", "Medium", "Hard"};
-        Pen p(fe, out);
-        p.clear();
-        const client::MenuContent& m = fe.menu_content();
-        p.text("New campaign", 40, 20, m.text_highlight);
-        p.text(std::string("Difficulty: ") + kDifficulty[difficulty_] + "   (D)", fe.width() / 2, 20, m.text_colour);
-        const int col = fe.width() / 2 - 60;
-        for (std::size_t k = 0; k < names_.size(); ++k) p.row(names_[k], 40, 50 + static_cast<int>(k) * p.line(), col, focus_ == 0 && static_cast<int>(k) == camp_);
-        if (any_mission_)
-            for (std::size_t k = 0; k < campaign_.missions.size(); ++k)
-                p.row(campaign_.missions[k].name, fe.width() / 2, 50 + static_cast<int>(k) * p.line(), col, focus_ == 1 && static_cast<int>(k) == mission_);
-        p.text(any_mission_ ? "Arrows: choose   Tab: list   Enter: start   Esc: back" : "Arrows: choose   Enter: start   Esc: back", 40, fe.height() - 30,
-               m.text_dim);
+        if (!placed_) {
+            place(out.width, out.height);
+            focus_on(first_focus_);  // (0x4A76B0 at the end of the set-up)
+        }
+        client::LayoutScreen::draw(fe, out);
     }
 
-private:
-    void load_missions() {
-        campaign_ = Campaign{};
-        std::string err;
-        if (camp_ < static_cast<int>(names_.size())) load_campaign(art_.vfs(), names_[static_cast<std::size_t>(camp_)], campaign_, err);
-        mission_ = std::min(mission_, std::max(0, static_cast<int>(campaign_.missions.size()) - 1));
+protected:
+    static bool named(const client::Widget& w, const char* n) { return stricmp_c(w.name, n) == 0; }
+    // A vertical slider placed anew at y with height h: its arrows at the two ends, the bar between.
+    void relocate_slider(const char* name, int y, int h) {
+        client::Widget* bar = widget(name);
+        if (!bar) return;
+        client::Widget *up = nullptr, *down = nullptr;
+        for (client::Widget& w : widgets_)
+            if (stricmp_c(w.link, name) == 0 && w.slider_step != 0) (w.slider_step < 0 ? up : down) = &w;
+        if (!up || !down) {
+            bar->y = y;
+            bar->h = h;
+            return;
+        }
+        up->y = y;
+        down->y = y + h - down->h;
+        bar->y = y + up->h;
+        bar->h = h - 2 * up->h;
     }
+    void focus_on(const char* name) {
+        for (std::size_t i = 0; i < widgets_.size(); ++i)
+            if (named(widgets_[i], name)) focus_gadget_ = static_cast<int>(i);
+    }
+    std::string side_name() const {
+        const auto& s = art_.sides();
+        return side_ < static_cast<int>(s.size()) ? s[static_cast<std::size_t>(side_)] : (side_ == 0 ? "ARM" : "CORE");
+    }
+    // 0x477360: the side's button and picture pressed (a radio pair each).
+    void show_side() {
+        for (const char* n : {"Arm", "Side0"})
+            if (client::Widget* w = widget(n)) w->status = side_ == 0;
+        for (const char* n : {"Core", "Side1"})
+            if (client::Widget* w = widget(n)) w->status = side_ == 1;
+    }
+    // 0x476A60: the side's campaigns (and those for every side), in name order.
+    void fill_campaigns(client::FrontEnd& fe) {
+        fe.play_sound(art_.sound("smlbutton"));
+        std::vector<std::string> names = list_campaigns(art_.vfs());
+        std::stable_sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) { return stricmp_c(a, b) < 0; });
+        campaigns_.clear();
+        const std::string side = side_name();
+        for (const std::string& n : names) {
+            Campaign c;
+            std::string err;
+            if (!load_campaign(art_.vfs(), n, c, err) || !c.has_header) continue;
+            if (c.side == side || c.side == "ALL") campaigns_.push_back(n);
+        }
+        if (client::Widget* l = widget("Campaign")) set_list(*l, campaigns_);
+    }
+    // 0x4779E0 / 0x435760: the chosen campaign's missions.
+    void fill_missions() {
+        missions_.clear();
+        const client::Widget* l = widget("Campaign");
+        Campaign c;
+        std::string err;
+        if (l && l->selected >= 0 && l->selected < static_cast<int>(campaigns_.size()) &&
+            load_campaign(art_.vfs(), campaigns_[static_cast<std::size_t>(l->selected)], c, err))
+            for (const CampaignMission& m : c.missions) missions_.push_back(m.name);
+        if (client::Widget* m = widget("Missions")) set_list(*m, missions_);
+    }
+    void choose_side(client::FrontEnd& fe, int side) {
+        fe.play_sound(art_.sound(side == 0 ? "SideSelect" : "SideSelect2"));
+        side_ = side;
+        fe.settings().set_int("side", side);
+        show_side();
+        // The chosen side's picture is drawn through light level 31 from now on (its colour word
+        // set to 0x1F; the other picture keeps whatever it had).
+        if (client::Widget* p = widget(side == 0 ? "Side0" : "Side1")) p->light = 0x1F;
+        if (!no_list_ || any_) fill_campaigns(fe);
+        if (any_) fill_missions();
+    }
+    void on_list_select(client::FrontEnd&, client::Widget& w) override {
+        if (any_ && named(w, "Campaign")) fill_missions();
+    }
+    void on_pick(client::FrontEnd& fe, client::Widget& w, int, bool double_click) override {
+        if (!double_click) return;
+        if (named(w, any_ ? "Missions" : "Campaign")) start(fe);
+    }
+    void on_press(client::FrontEnd& fe, client::Widget& w) override {
+        if (named(w, "Start") || named(w, any_ ? "Missions" : "Campaign")) {
+            start(fe);
+        } else if (named(w, "PrevMenu")) {
+            fe.play_sound(art_.sound("Previous"));
+            fe.pop();
+        } else if (named(w, "Difficulty")) {
+            fe.play_sound(art_.sound("SmlButton"));
+            fe.settings().set_int("Difficulty", w.stage);
+        } else if (named(w, "Side0") || named(w, "Arm")) {
+            choose_side(fe, 0);
+        } else if (named(w, "Side1") || named(w, "Core")) {
+            choose_side(fe, 1);
+        }
+    }
+    void start(client::FrontEnd& fe) {
+        fe.play_sound(art_.sound("bigButton"));
+        mount_cd_archives(art_.vfs(), art_.game_dir());
+        std::string name;
+        if (!no_list_ || any_) {
+            const client::Widget* l = widget("Campaign");
+            if (!l || l->selected < 0 || l->selected >= static_cast<int>(campaigns_.size())) return;
+            name = campaigns_[static_cast<std::size_t>(l->selected)];
+        } else {
+            name = side_ == 0 ? "Arm Campaign" : "Core Campaign";
+        }
+        int mission = 0;
+        if (any_) {
+            const client::Widget* m = widget("Missions");
+            mission = m && m->selected >= 0 ? m->selected : 0;
+        }
+        Campaign c;
+        std::string err;
+        if (!load_campaign(art_.vfs(), name, c, err) || mission >= static_cast<int>(c.missions.size())) return;
+        auto progress = std::make_shared<CampaignProgress>();
+        progress->campaign = name;
+        progress->side = side_name();
+        progress->mission = mission;
+        if (const client::Widget* d = widget("Difficulty")) progress->difficulty = d->stage;
+        fe.settings().set_int("Difficulty", progress->difficulty);
+        fe.apply_settings();  // (the settings saved, 0x430F00)
+        again_ = true;
+        fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress));
+    }
+
     MenuArt& art_;
     std::string save_dir_;
-    std::vector<std::string> names_;
-    Campaign campaign_;
-    int camp_ = 0, mission_ = 0, focus_ = 0, difficulty_ = 1;
-    bool any_mission_ = false;
+    bool any_ = false, no_list_ = false, set_up_ = false, again_ = false;
+    int side_ = 0;
+    const char* first_focus_ = "Campaign";
+    std::vector<std::string> campaigns_, missions_;
 };
 
 // --- Saved games: the load and save menus (both LOADGAME.GUI).
@@ -672,6 +1099,14 @@ private:
         fe.play_sound(art_.sound("smlbutton"));
         const client::Widget* g = widget("GAMENAME");
         const std::string name = g ? g->text : std::string();
+        if (!name.empty() && !session_ && between_) {
+            // Between missions (the campaign's statistics screen): only the summary (0x4326B0).
+            SaveContext c = between_();
+            c.description = name;
+            std::vector<std::uint8_t> bytes;
+            write_bank(make_between_missions_bank(c), bytes, nullptr, c.bank);
+            write_file(dir_, name, bytes);
+        }
         if (!name.empty() && session_) {
             SkirmishSession* sk = dynamic_cast<SkirmishSession*>(session_);
             CampaignProgress* progress = nullptr;
@@ -745,10 +1180,18 @@ private:
             std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, human, options, lp, error);
             if (!s) return nullptr;
             s->client().set_scroll(view->camera_x, view->camera_z);
-            if (progress) return std::make_unique<MissionSession>(std::move(s), art, dir, progress);
+            if (progress) {
+                auto m = std::make_unique<MissionSession>(std::move(s), art, dir, progress);
+                m->options = options;
+                return m;
+            }
             return s;
         });
     }
+public:
+    std::function<SaveContext()> between_;  // a save outside a battle: its summary
+
+private:
     MenuArt& art_;
     std::string dir_;
     client::BattleSession* session_ = nullptr;
@@ -811,13 +1254,97 @@ SaveContext battle_save_context(SkirmishSession& s, const CampaignProgress* camp
     return c;
 }
 
+
+bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOutcome outcome, CampaignEnd& out) {
+    auto* ms = dynamic_cast<MissionSession*>(&session);
+    if (!ms) return false;
+    std::shared_ptr<CampaignProgress> progress = ms->progress_ptr();
+    const std::string save_dir = ms->save_dir();
+    // 0x41DC20: the mission's result into the results string at its index.
+    progress->won = outcome == client::BattleOutcome::Victory;
+    if (outcome == client::BattleOutcome::Victory || outcome == client::BattleOutcome::Defeat)
+        if (progress->mission >= 0 && progress->mission < 25) progress->results[static_cast<std::size_t>(progress->mission)] = progress->won ? 'W' : 'L';
+    Campaign c;
+    std::string err;
+    load_campaign(art.vfs(), progress->campaign, c, err);
+    MissionInfo& info = ms->info();
+    if (info.file.empty() && progress->mission >= 0 && progress->mission < static_cast<int>(c.missions.size()))
+        load_mission(art.vfs(), c.missions[static_cast<std::size_t>(progress->mission)].file, progress->difficulty, info, err);
+    for (const CampaignMission& m : c.missions) out.missions.push_back(m.name);
+    out.results = progress->results;
+    out.mission = progress->mission;
+    out.won = progress->won;
+    out.difficulty = progress->difficulty;
+    const bool has_next = progress->mission + 1 < static_cast<int>(c.missions.size());
+    // (0x41F400 / 0x41F7F0 state 5: the buttons unless the last mission was won; then the movies)
+    out.buttons = !(out.won && !has_next);
+    out.final_win = out.won && !has_next;
+    out.final_movies = {side_index(art.vfs(), progress->side) == 1 ? "4.zrb" : "3.zrb", "5.zrb"};
+    if (out.won && !info.glamour.empty()) {
+        // 0x41DA60: bitmaps\glamour\<glamour>.pcx with its palette; its sound camps\briefs\<..>.wav.
+        out.glamour = art.picture("glamour\\" + info.glamour, &out.glamour_palette);
+        if (!info.glamour_sound.empty()) {
+            std::vector<std::uint8_t> wav;
+            auto smp = std::make_shared<client::Sample>();
+            if (art.vfs().read("camps\\briefs\\" + info.glamour_sound + ".wav", wav) && client::decode_wav(wav, *smp)) out.glamour_sound = smp;
+        }
+    }
+    // "Click to continue." in the side's console font (sidedata "font").
+    {
+        std::vector<std::uint8_t> sd;
+        if (art.vfs().read("gamedata\\sidedata.tdf", sd)) {
+            const TdfParseResult r = tdf_parse(std::string_view(reinterpret_cast<const char*>(sd.data()), sd.size()));
+            if (r.root)
+                if (const TdfSection* sec = r.root->child("SIDE" + std::to_string(side_index(art.vfs(), progress->side))))
+                    out.click_font = art.fnt_font(sec->get_string("font", 32, ""));
+        }
+    }
+    out.start = [&art, progress, save_dir](client::FrontEnd& fe, int mission) {
+        mount_cd_archives(art.vfs(), art.game_dir());
+        progress->mission = mission;
+        progress->won = false;
+        fe.push(std::make_unique<BriefingScreen>(art, save_dir, progress));
+    };
+    out.load = [&art, save_dir](client::FrontEnd& fe) {
+        if (fe.hooks().load_game_menu)
+            if (auto s = fe.hooks().load_game_menu(fe, nullptr)) fe.push(std::move(s));
+    };
+    out.save = [&art, progress, save_dir](client::FrontEnd& fe) {
+        auto s = std::make_unique<SaveGamesScreen>(art, save_dir, nullptr, true, screen_under(fe, nullptr));
+        s->between_ = [&art, progress]() {
+            SaveContext c;
+            c.game_id = static_cast<std::int32_t>(std::time(nullptr));
+            c.game_type = 1;
+            c.campaign = progress->campaign;
+            Campaign camp;
+            std::string e;
+            load_campaign(art.vfs(), progress->campaign, camp, e);
+            const int n = static_cast<int>(camp.missions.size());
+            const int next = progress->mission + 1 < n ? progress->mission + 1 : progress->mission;
+            c.mission = next >= 0 && next < n ? camp.missions[static_cast<std::size_t>(next)].name : std::string();
+            c.thumbs = progress->results;
+            c.difficulty = progress->difficulty;
+            c.side = side_index(art.vfs(), progress->side);
+            c.between_missions = true;
+            return c;
+        };
+        fe.push(std::move(s));
+    };
+    out.set_difficulty = [progress](int d) { progress->difficulty = d; };
+    return true;
+}
+
 void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const std::string& save_dir) {
     // The original rescans the archives when New Campaign is pressed (0x4775C9) and when the
     // load-game dialog closes (0x49257A; its save listing cannot see archives, so rescanning
     // as it opens is the same).
     hooks.campaign_menu = [&art, save_dir](client::FrontEnd&) -> std::unique_ptr<client::Screen> {
         mount_cd_archives(art.vfs(), art.game_dir());
-        return std::make_unique<CampaignScreen>(art, save_dir);
+        return std::make_unique<NewCampaignScreen>(art, save_dir, false);
+    };
+    hooks.any_mission_menu = [&art, save_dir](client::FrontEnd&) -> std::unique_ptr<client::Screen> {
+        mount_cd_archives(art.vfs(), art.game_dir());
+        return std::make_unique<NewCampaignScreen>(art, save_dir, true);
     };
     hooks.load_game_menu = [&art, save_dir](client::FrontEnd& fe, client::BattleSession* s) -> std::unique_ptr<client::Screen> {
         mount_cd_archives(art.vfs(), art.game_dir());

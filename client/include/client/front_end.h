@@ -85,6 +85,8 @@ public:
     virtual bool battle_keys() const { return false; }
     // The network games' tab bar (Tab closes it).
     virtual bool tab_bar() const { return false; }
+    // As the top screen it shows no pointer (movies).
+    virtual bool hides_pointer() const { return false; }
 };
 
 // ---------------------------------------------------------------- battles
@@ -247,6 +249,9 @@ using BattleLauncher = std::function<std::unique_ptr<BattleSession>(const LoadPr
 struct FrontEndHooks {
     // Single-player menu > campaign: the campaign's first screen.
     std::function<std::unique_ptr<Screen>(FrontEnd&)> campaign_menu;
+    // Single-player menu > any mission (shown with the all-missions setting): the same screen
+    // with the mission list.
+    std::function<std::unique_ptr<Screen>(FrontEnd&)> any_mission_menu;
     // Main menu > multiplayer: the connection / lobby screens.
     std::function<std::unique_ptr<Screen>(FrontEnd&)> multiplayer_menu;
     // Single-player menu > load game, and the in-game menu's load button
@@ -308,6 +313,8 @@ public:
     // Narration: its own channel at full volume, whatever the sound settings; a new one
     // replaces the last; stop_narration() ends it.
     virtual void play_narration(int sample) { play_sound(sample); }
+    // The same channel for a sound the caller keeps (it must live until stop_narration()).
+    virtual void play_narration_sample(const Sample* /*sample*/) {}
     virtual void stop_narration() {}
     // Every playing sound stops (the sound mode switched off).
     virtual void stop_sounds() {}
@@ -342,6 +349,9 @@ struct FrontEndSetup {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> game_menu;
     // The tab bar (Tab in network games).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> tab_menu;
+    // Closing the window while a battle runs: the question shown instead of quitting (null:
+    // quit at once).
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> close_prompt;
     MusicPlayer* music = nullptr;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;

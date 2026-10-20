@@ -48,7 +48,10 @@ bool load_campaign(Vfs& vfs, const std::string& name, Campaign& out, std::string
     }
     out = Campaign{};
     out.name = name;
-    if (const TdfSection* h = root->child("HEADER")) out.side = h->get_string("campaignside", 0x100, "");
+    if (const TdfSection* h = root->child("HEADER")) {
+        out.has_header = true;
+        out.side = h->get_string("campaignside", 0x40, "");
+    }
     for (int n = 0;; ++n) {
         const TdfSection* m = root->child("MISSION" + std::to_string(n));
         if (!m) break;
@@ -89,6 +92,9 @@ bool load_mission(Vfs& vfs, const std::string& file, int difficulty, MissionInfo
     out.memory = gh->get_string("memory", 0x80, "");
     out.numplayers = gh->get_string("numplayers", 0x80, "");
     out.planet = gh->get_string("Planet", 0x80, "");
+    out.min_wind = gh->get_int("minwindspeed", 0);
+    out.max_wind = gh->get_int("maxwindspeed", 0);
+    out.gravity = gh->get_int("gravity", 0);
     out.no_movie = gh->get_int("nomovie", 0) != 0;
     out.description = gh->get_string("missiondescription", 0x80, "No description available");
     out.kill_mul = static_cast<float>(gh->get_float("killmul", 0.0));

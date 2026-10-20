@@ -9,6 +9,7 @@
 // client::LayoutScreen, and start battles with SkirmishSession-like sessions.
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -21,6 +22,7 @@
 #include "client/net_menu.h"
 #define TA_CLIENT_HAVE_NET 1
 #endif
+#include "sim/rng.h"
 #include "ta/battle_loader.h"
 #include "ta/client_world.h"
 #include "ta/hpi.h"
@@ -58,6 +60,18 @@ public:
     const std::vector<std::string>& skirmish_maps();
     // Side names from gamedata\sidedata.tdf (ARM, CORE, ...).
     const std::vector<std::string>& sides() const { return sides_; }
+
+    // Movies: Data\<name> beside the game (the original's 1-5.zrb, loose files; empty when
+    // missing). The original plays them only on a full screen; the window front end stands for
+    // one, headless runs do not (unless asked to: tests).
+    std::vector<std::uint8_t> movie(const std::string& name) const;
+    bool full_screen = true;
+    // A bit font fonts\<name>.FNT (null when missing).
+    const client::Font* fnt_font(const std::string& name);
+    // A GAF file's sequence by path and name (null when missing), its frames' offsets kept.
+    const std::vector<render::Sprite8>* gaf_sequence(const std::string& gaf_path, const std::string& name) { return sequence(gaf_path, name); }
+    // GAF frame durations of a sequence (ticks; empty when missing) and its loop byte.
+    std::vector<int> sequence_times(const std::string& gaf_path, const std::string& name, bool* loop = nullptr);
 
 private:
     const std::vector<std::uint8_t>* gaf(const std::string& path);
@@ -134,6 +148,33 @@ void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, c
 // far is at least `width` wide, the last space or hyphen before becomes a line break).
 std::string wrap_for_width(const client::Font& font, const std::string& text, int width);
 
+// The campaign's part of the end of a battle (the end state machine 0x41F7F0, states 5-7, for a
+// mission; docs/RE_MEMORY.md "Campaign"): the glamour picture faded in after a won mission, the
+// ending movies after the last one, the statistics screen's campaign buttons and mission list.
+struct CampaignEnd {
+    bool buttons = false;    // Start, Load / Save Game, the mission list, Difficulty (not after the last mission won)
+    bool final_win = false;  // the last mission won: the ending movies instead of the statistics
+    std::vector<std::string> final_movies;
+    std::vector<std::string> missions;  // the campaign's missions' names
+    std::string results;                // 'U' / 'W' / 'L' per mission
+    int mission = 0;                    // the mission just played
+    bool won = false;
+    int difficulty = 1;
+    const render::Sprite8* glamour = nullptr;  // a won mission's picture (null: none)
+    const render::Palette* glamour_palette = nullptr;
+    std::shared_ptr<client::Sample> glamour_sound;
+    const client::Font* click_font = nullptr;  // "Click to continue."
+    std::function<void(client::FrontEnd&, int mission)> start;  // Start / a mission picked: its briefing
+    std::function<void(client::FrontEnd&)> load, save;          // the load / save menus
+    std::function<void(int difficulty)> set_difficulty;
+};
+// Fills `out` when the battle is a campaign mission (and records the mission's result).
+bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOutcome outcome, CampaignEnd& out);
+
+// The C runtime's rand() of the program's main thread as the menus draw from it (the main
+// menu's sparks, the briefing's wind); what is left of it seeds a battle's rand().
+sim::Lcg15& menus_rand();
+
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);
 // The original's picture folder (registry "Image Output Directory"; by default the game's
@@ -147,6 +188,6 @@ constexpr const char* kScreenshotPrefix = "SHOT";
 
 // The statistics screen on its own for a given table (tests: ta_play --end-screen), with the
 // battle's interface colours made from the game palette.
-std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table);
+std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndTable& table, const CampaignEnd* campaign = nullptr);
 
 }  // namespace ta

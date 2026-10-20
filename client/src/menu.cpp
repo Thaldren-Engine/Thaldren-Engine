@@ -827,7 +827,25 @@ void LayoutScreen::draw_widget(FrontEnd& fe, render::Image8& out, const Widget& 
             } else if (pressed) f = w.stages > 0 ? std::max(0, n - 2) : std::min(1, n - 1);
             else f = w.stages > 0 ? std::min(w.stage, n - 1) : 0;
             const render::Sprite8& s = (*w.frames)[static_cast<std::size_t>(f)];
-            render::blit(out, clip, s, x + s.x_offset, y + s.y_offset);
+            if (w.light > 0 && w.light < 32 && mc.light.size() >= 0x2000) {
+                // Through the light table's level (0x4B8310): every shown pixel p becomes
+                // light[level * 256 + p].
+                const std::uint8_t* row = &mc.light[static_cast<std::size_t>(w.light) * 256];
+                const int sx0 = x + s.x_offset, sy0 = y + s.y_offset;
+                for (int j = 0; j < s.height; ++j) {
+                    const int yy = sy0 + j;
+                    if (yy < clip.y0 || yy > clip.y1) continue;
+                    for (int i = 0; i < s.width; ++i) {
+                        const int xx = sx0 + i;
+                        if (xx < clip.x0 || xx > clip.x1) continue;
+                        const std::uint8_t p = s.at(i, j);
+                        if (s.has_key && p == s.key) continue;
+                        out.row(yy)[xx] = row[p];
+                    }
+                }
+            } else {
+                render::blit(out, clip, s, x + s.x_offset, y + s.y_offset);
+            }
         } else {
             // A filled box with a two-pixel bevel (interface colours of the screen): filled with
             // colour 20 (grayed: 19); top and left edges in colour 17 and bottom and right in
