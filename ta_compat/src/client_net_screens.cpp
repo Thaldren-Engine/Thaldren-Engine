@@ -2855,11 +2855,16 @@ protected:
             return;
         }
         if (int s = row_of(n, "ALLY"); s >= 0) {
-            // The local player's alliance with that player (0x23); leaving them allied by team
-            // leaves the team (0x446E90, team 5, 0x24). The sound and a line for everyone.
-            const bool now = me.allied[static_cast<std::size_t>(s)] == 0;
+            // The local player's alliance with that player (0x23). On a teammate the local player
+            // then leaves its team: 0x446E90 breaks every alliance in it (forced, so the toggled
+            // byte is 0 again), team 5, 0x452BD0 sends it (0x24). The sound and the line read the
+            // byte afterwards (the +0x113 test, byte * 2 == 3, never holds).
+            bool now = me.allied[static_cast<std::size_t>(s)] == 0;
             room.set_allied(s, now);
-            if (me.team != 5 && me.team == st_.slots[static_cast<std::size_t>(s)].team) leave_team(local);
+            if (me.team != 5 && me.team == st_.slots[static_cast<std::size_t>(s)].team) {
+                room.set_ally_team_of(local, net::room::kNoTeam);
+                now = false;
+            }
             sfx(fe, art_, now ? "Ally" : "Multi");
             say_line(std::string(" ") + (now ? "allied with" : "broke alliance with") + " " + st_.slots[static_cast<std::size_t>(s)].name);
             return;
@@ -2868,8 +2873,7 @@ protected:
             sfx(fe, art_, "Ally");
             const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
             const int team = (q.team + 1) % 6;
-            leave_team(s);
-            room.set_ally_team_of(s, static_cast<std::uint8_t>(team));
+            room.set_ally_team_of(s, static_cast<std::uint8_t>(team));  // (0x446E90 first, forced)
             return;
         }
         if (int s = row_of(n, "RES"); s >= 0) {
@@ -2950,13 +2954,6 @@ protected:
         room.set_option_word(opt);
     }
     // 0x446E90: a player leaving its ally team breaks the alliances with the team's members.
-    void leave_team(int s) {
-        const LoungeSlot& q = st_.slots[static_cast<std::size_t>(s)];
-        if (q.team == 5 || s != st_.local) return;
-        for (int k = 0; k < 10; ++k)
-            if (k != s && st_.slots[static_cast<std::size_t>(k)].playing() && st_.slots[static_cast<std::size_t>(k)].team == q.team)
-                live_->room->set_allied(k, false);
-    }
     // START on the host (0x447B10): enough game CDs, not everyone in one team, a map; watchers
     // leave when watching is not allowed (status 9); then the game is marked playing (option bit
     // 0x10, the session closes to newcomers) and the start goes out (0x08).
