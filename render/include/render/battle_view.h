@@ -184,6 +184,11 @@ struct BattleScene {
     // Optional, with pose_cache: each unit's plain sprite (the cached pieces) kept while its
     // drawn pose and every other input of the sprite stay the same.
     struct UnitSpriteCache* sprite_cache = nullptr;
+    // Optional: receives every unit drawn through the model path, feature stand-ins included
+    // (the original's 0x45AC20, which brings the unit's and its visible cargo's poses up to
+    // date in the simulation's own state; the owner hands the battle's own units among them
+    // to sim::Battle::units_drawn).
+    std::vector<const sim::Unit*>* drawn_units = nullptr;
 };
 
 struct UnitSpriteCache {

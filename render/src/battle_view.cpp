@@ -194,6 +194,7 @@ void draw_unit(const BattleScene& s, const UnitInstance& ui, DrawList& out) {
         }
     }
     if (u.carrier || !ui.model) return;  // carried units are drawn with their carrier
+    if (s.drawn_units) s.drawn_units->push_back(&u);
     const Camera& c = s.camera;
     const ClipRect clip = c.view_clip();
     const LookUnit lu = look_unit(s, ui);

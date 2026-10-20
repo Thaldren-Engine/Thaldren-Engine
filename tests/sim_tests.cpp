@@ -1283,6 +1283,42 @@ void test_motion() {
 // Map features through the battle: a tree catches fire, burns out into its burnt
 // type, a wreck lands on dry ground and another sinks; a script blows a piece off
 // (battle RNG draws, the debris cache) and shatters another into a shard.
+// Drawing a unit (0x45AC20) brings its pose up to date in the simulation's state, and the
+// poses of the units on board that are not hidden; a carried unit's own draw does nothing.
+void test_units_drawn() {
+    sim::HeightMap hm(8, 8);
+    NullOutside outside;
+    sim::BattleRng rng;
+    sim::Battle b(outside, hm, rng);
+    sim::PoseModel model;
+    model.nodes.resize(1);
+    model.nodes[0].name = "base";
+    model.nodes[0].vertices = {{0x10000, 0, 0}};
+    model.root = 0;
+    b.units.resize(5);
+    for (std::uint16_t i = 0; i < 5; ++i) {
+        b.units[i].id = i;
+        b.units[i].pose.build(model, {});
+        b.units[i].pose.sync(0, 0, 0);
+    }
+    b.units[1].heading = 100;  // more than 7 away: synced
+    b.units[4].heading = 5;    // within 7: kept
+    b.units[1].cargo_head = &b.units[2];
+    b.units[2].carrier = &b.units[1];
+    b.units[2].cargo_next = &b.units[3];
+    b.units[3].carrier = &b.units[1];
+    b.units[2].heading = 300;
+    b.units[3].heading = 400;
+    b.units[3].flags = 0x20000;  // hidden on board
+    b.units_drawn({2});          // a carried unit is drawn with its carrier: nothing
+    CHECK_EQ(b.units[2].pose.base_angle[1], 0);
+    b.units_drawn({1, 4});
+    CHECK_EQ(b.units[1].pose.base_angle[1], 100);
+    CHECK_EQ(b.units[2].pose.base_angle[1], 300);
+    CHECK_EQ(b.units[3].pose.base_angle[1], 0);
+    CHECK_EQ(b.units[4].pose.base_angle[1], 0);
+}
+
 void test_features_and_effects() {
     sim::HeightMap hm(16, 16);
     for (int z = 0; z < 16; ++z)
@@ -1855,6 +1891,7 @@ int main() {
     test_motion();
     test_route_search();
     test_features_and_effects();
+    test_units_drawn();
     test_economy();
     test_sight();
     test_ai();

@@ -208,7 +208,22 @@ render::DrawList GameClient::draw() {
         const int sy = render::screen_y(scene.camera, ui.unit->pos[1], ui.unit->pos[2]);
         if (sx > -64 && sx < w + 64 && sy > -64 && sy < h + 64) on_screen_.push_back({ui.unit->id, sx, sy});
     }
+    std::vector<const sim::Unit*> drawn;
+    scene.drawn_units = &drawn;
     render::DrawList list = render::build_draw_list(scene);
+    {
+        // The original's unit drawing (0x45AC20) brings the drawn units' poses up to date in
+        // the simulation's state (debris and shards start from them): the battle's own units
+        // among those drawn (feature stand-ins are not battle units).
+        std::vector<std::uint16_t> ids;
+        if (!b_.units.empty()) {
+            const sim::Unit* lo = b_.units.data();
+            const sim::Unit* hi = lo + b_.units.size();
+            for (const sim::Unit* u : drawn)
+                if (u >= lo && u < hi) ids.push_back(static_cast<std::uint16_t>(u - lo));
+        }
+        b_.units_drawn(ids);
+    }
     const render::ClipRect screen{0, 0, w - 1, h - 1};
 
     // Interface art: the side panel, the top and bottom bars (repeated across wider screens).
