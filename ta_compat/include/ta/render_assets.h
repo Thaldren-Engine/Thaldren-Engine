@@ -52,6 +52,13 @@ public:
     };
     Hit find(const std::string& name);
 
+    // The model texture animation cursors (the original's list at model load, 0x42A140: one per
+    // primitive with an animated texture that is not team coloured), advanced once per
+    // simulation step (0x415B30, stage 8 of the step) with the GAF frame durations.
+    std::int32_t add_cursor(const render::ModelTexture* texture);
+    void advance_cursors();
+    const std::vector<std::uint16_t>& cursor_frames() const { return cursor_frames_; }
+
 private:
     struct Gaf {
         std::vector<std::uint8_t> data;
@@ -60,6 +67,12 @@ private:
     std::vector<Gaf> gafs_;   // textures, then logos last
     bool has_logos_ = false;
     std::map<std::pair<int, int>, std::unique_ptr<render::ModelTexture>> cache_;
+    struct Cursor {
+        const render::ModelTexture* texture = nullptr;  // null: stopped (a sequence that does not loop ended)
+        std::uint16_t countdown = 0;
+    };
+    std::vector<Cursor> cursors_;
+    std::vector<std::uint16_t> cursor_frames_;
 };
 
 // Drawable model for a 3DO tree, pieces indexed like to_pose_model(root).

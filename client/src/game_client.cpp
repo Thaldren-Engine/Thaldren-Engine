@@ -293,6 +293,7 @@ int GameClient::frame(std::uint32_t now_ms) {
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
     for (int k = 0; k < steps; ++k) {
         step_battle(b_);
+        if (c_.after_step) c_.after_step();
         camera_step();  // the step's camera stage: following, easing, shake
     }
     end_frame(b_);  // once per frame, after the frame's steps (even none)

@@ -45,7 +45,11 @@ const Sprite8* texture_frame(const ModelPrimitive& prim, const LookUnit& u, bool
     std::size_t f = 0;
     if (tex->animated) {
         if (tex->team_coloured) f = u.team_colour;
-        else if (use_cursor) f = u.texture_frame % tex->frames.size();
+        else if (use_cursor) {
+            if (prim.cursor >= 0 && u.cursor_frames && static_cast<std::size_t>(prim.cursor) < u.cursor_frames->size())
+                f = (*u.cursor_frames)[static_cast<std::size_t>(prim.cursor)];
+            else f = u.texture_frame % tex->frames.size();
+        }
     }
     return f < tex->frames.size() ? &tex->frames[f] : nullptr;
 }

@@ -18,6 +18,8 @@ struct ModelTexture {
     std::vector<Sprite8> frames;
     bool team_coloured = false;  // frame = the owner's colour index
     bool animated = false;       // more than one frame
+    std::vector<std::uint16_t> durations;  // per frame, in simulation steps (the GAF frame entries)
+    std::uint8_t loop = 0;                 // the sequence starts over at its end (else it stops)
 };
 
 struct ModelPrimitive {
@@ -26,6 +28,7 @@ struct ModelPrimitive {
     std::uint8_t colour = 0;            // palette index for flat polygons
     bool flat = false;                  // flat colour; otherwise textured (quads only)
     const ModelTexture* texture = nullptr;
+    std::int32_t cursor = -1;           // this primitive's animation cursor (index into the cursor frames), -1: none
 };
 
 struct ModelPiece {
@@ -41,9 +44,10 @@ struct Model {
 struct ModelDrawParams {
     int depth_bias = 50;               // added to the vertex height for the depth value (75 more for diggers)
     std::uint8_t team_colour = 0;      // frame index for team-coloured textures
-    std::uint32_t animation_frame = 0; // global animation counter for animated textures
+    std::uint32_t animation_frame = 0; // global animation counter for animated textures (without cursors)
     bool all_pieces = false;           // draw cached and uncached pieces (units under construction)
     bool direct_cursor = true;         // pieces drawn straight onto the frame take the animation cursor (else frame 0)
+    const std::vector<std::uint16_t>* cursor_frames = nullptr;  // each primitive cursor's current frame
 };
 
 // Projects one transformed point (unit space, 16.16) the way the sprite

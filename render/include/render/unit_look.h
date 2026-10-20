@@ -42,7 +42,8 @@ struct LookUnit {
     sim::PoseState pose;                  // synced copy (never the simulation's own)
     std::array<std::int32_t, 3> pos{};    // 16.16 world
     std::uint8_t team_colour = 0;
-    std::uint32_t texture_frame = 0;      // texture animation cursor
+    std::uint32_t texture_frame = 0;      // texture animation counter (without cursors)
+    const std::vector<std::uint16_t>* cursor_frames = nullptr;  // each primitive cursor's current frame
     std::uint32_t type_flags = 0;
     bool structure = false;               // claims its footprint through a yard map
     bool zbuffer = false;                 // the type asks for a depth plane

@@ -138,6 +138,7 @@ LookUnit look_unit(const BattleScene& s, const UnitInstance& ui) {
     lu.pos = u.pos;
     lu.team_colour = ui.params.team_colour;
     lu.texture_frame = ui.params.animation_frame;
+    lu.cursor_frames = ui.params.cursor_frames;
     lu.type_flags = ui.type_flags | (ui.shadow ? 0u : look_type_flags::kNoShadow);
     lu.structure = (u.flags & 0x20000000u) != 0;
     lu.zbuffer = (u.draw_flags & 1u) != 0;

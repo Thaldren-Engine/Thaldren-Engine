@@ -178,6 +178,8 @@ bool tnt_feature_cells(const std::vector<std::uint8_t>& tnt, std::vector<TntFeat
 void TextureLibrary::load(Vfs& vfs) {
     gafs_.clear();
     cache_.clear();
+    cursors_.clear();
+    cursor_frames_.clear();
     auto add = [&](const std::string& path) {
         Gaf g;
         if (!vfs.read(path, g.data)) return false;
@@ -192,6 +194,40 @@ void TextureLibrary::load(Vfs& vfs) {
         add("textures\\" + name);
     }
     has_logos_ = add("textures\\logos.GAF");
+}
+
+std::int32_t TextureLibrary::add_cursor(const render::ModelTexture* texture) {
+    // Started on frame 0 with that frame's duration (0x4B8B30).
+    Cursor c;
+    c.texture = texture;
+    c.countdown = texture && !texture->durations.empty() ? texture->durations[0] : 0;
+    cursors_.push_back(c);
+    cursor_frames_.push_back(0);
+    return static_cast<std::int32_t>(cursors_.size() - 1);
+}
+
+void TextureLibrary::advance_cursors() {
+    // Each cursor (0x4B8B90, from the last to the first): a countdown of 2 or more counts down;
+    // otherwise the next frame shows with its own duration, and past the last frame a looping
+    // sequence starts over while any other stops (the cursor keeps no sequence).
+    for (std::size_t i = cursors_.size(); i-- > 0;) {
+        Cursor& c = cursors_[i];
+        if (!c.texture) continue;
+        if (c.countdown >= 2) {
+            --c.countdown;
+            continue;
+        }
+        std::uint16_t f = static_cast<std::uint16_t>(cursor_frames_[i] + 1);
+        if (f >= c.texture->frames.size()) {
+            if (!c.texture->loop) {
+                c.texture = nullptr;
+                continue;
+            }
+            f = 0;
+        }
+        cursor_frames_[i] = f;
+        c.countdown = f < c.texture->durations.size() ? c.texture->durations[f] : 0;
+    }
 }
 
 TextureLibrary::Hit TextureLibrary::find(const std::string& name) {
@@ -211,6 +247,17 @@ TextureLibrary::Hit TextureLibrary::find(const std::string& name) {
             rd(gafs_[g].data, 12 + s * 4, entry);
             rd(gafs_[g].data, entry, frames);
             slot->animated = frames >= 2;
+            if (slot->durations.empty() && frames > 0) {
+                // The sequence entry's loop byte (+2) and each frame's duration (+0x28 + 8 i + 4).
+                std::uint8_t loop = 0;
+                rd(gafs_[g].data, entry + 2, loop);
+                slot->loop = loop;
+                for (std::uint16_t i = 0; i < frames; ++i) {
+                    std::uint32_t d = 0;
+                    rd(gafs_[g].data, entry + 0x28 + 8u * i + 4, d);
+                    slot->durations.push_back(static_cast<std::uint16_t>(d));
+                }
+            }
             slot->team_coloured = logos && frames == 10;
             hit.texture = slot.get();
             hit.from_logos = logos;
@@ -245,6 +292,8 @@ void add_pieces(const Model3doPiece* p, TextureLibrary& lib, render::Model& m) {
                     if (hit.frames < 2) flags &= ~2u;
                     else flags |= 2u;
                     prim.texture = hit.texture;
+                    // An animated texture gets this primitive's own cursor, unless team coloured.
+                    if (hit.frames >= 2 && !(flags & 4u)) prim.cursor = lib.add_cursor(hit.texture);
                 } else {
                     colour = 0xD1;
                     flags |= 1u;

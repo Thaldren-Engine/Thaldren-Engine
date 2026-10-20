@@ -12,12 +12,18 @@ namespace {
 // Integer part of a 16.16 value as the original takes it: the high half as a signed short.
 inline int hi16(std::int32_t v) { return static_cast<std::int16_t>(static_cast<std::uint32_t>(v) >> 16); }
 
-const Sprite8* pick_frame(const ModelTexture* tex, const ModelDrawParams& p, bool use_animation) {
+const Sprite8* pick_frame(const ModelPrimitive& prim, const ModelDrawParams& p, bool use_animation) {
+    const ModelTexture* tex = prim.texture;
     if (!tex || tex->frames.empty()) return nullptr;
     std::size_t f = 0;
     if (tex->animated) {
         if (tex->team_coloured) f = p.team_colour;
-        else if (use_animation) f = p.animation_frame % tex->frames.size();
+        else if (use_animation) {
+            // The primitive's own cursor (advanced once per simulation step), else the counter.
+            if (prim.cursor >= 0 && p.cursor_frames && static_cast<std::size_t>(prim.cursor) < p.cursor_frames->size())
+                f = (*p.cursor_frames)[static_cast<std::size_t>(prim.cursor)];
+            else f = p.animation_frame % tex->frames.size();
+        }
     }
     if (f >= tex->frames.size()) return nullptr;  // the original reads past the frame table
     return &tex->frames[f];
@@ -33,7 +39,7 @@ void draw_piece(RasterTarget& t, const ModelPiece& piece, const std::vector<Rast
         if (prim.flat) {
             if (!vs.empty()) fill_polygon(t, vs.data(), static_cast<int>(vs.size()), prim.colour);
         } else if (vs.size() == 4) {
-            if (const Sprite8* f = pick_frame(prim.texture, p, use_animation)) textured_quad(t, vs.data(), *f);
+            if (const Sprite8* f = pick_frame(prim, p, use_animation)) textured_quad(t, vs.data(), *f);
         }
     }
 }
@@ -95,7 +101,7 @@ Sprite8 rasterize_model_sprite(const Model& model, const sim::PoseState& pose, c
 Sprite8 rasterize_model_sprite_depth(const Model& model, const sim::PoseState& pose, const ModelDrawParams& params,
                                      std::vector<std::uint8_t>& depth) {
     // Same bounds and order as the plain sprite, drawn with a depth plane (cleared to 0).
-    Sprite8 s = rasterize_model_sprite(model, pose, ModelDrawParams{params.depth_bias, params.team_colour, params.animation_frame, true});
+    Sprite8 s = rasterize_model_sprite(model, pose, ModelDrawParams{params.depth_bias, params.team_colour, params.animation_frame, true, true, params.cursor_frames});
     std::fill(s.pixels.begin(), s.pixels.end(), static_cast<std::uint8_t>(1));
     depth.assign(s.pixels.size(), 0);
     RasterTarget t;

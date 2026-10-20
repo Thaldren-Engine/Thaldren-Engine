@@ -104,6 +104,7 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
                     pv.model = &fm->model;
                     pv.params.team_colour = request_.start.players[0].colour;
                     pv.params.animation_frame = frame_counter;
+                    pv.params.cursor_frames = &textures_.cursor_frames();
                     pv.ground = false;
                     pv.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(f.pos[0] >> 16), static_cast<std::int16_t>(f.pos[2] >> 16)));
                     pv.type_flags = defs_.units.empty() ? 0u : defs_.units[0].type_flags;
@@ -221,6 +222,7 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
         ui.model = &types_[t.type_index]->model;
         ui.params.team_colour = request_.start.players[static_cast<std::size_t>(t.owner) % 10].colour;
         ui.params.animation_frame = frame_counter;
+        ui.params.cursor_frames = &textures_.cursor_frames();
         ui.ground = (u.flags & 3u) == 1u;
         ui.ground_height = std::max(0, hm_.sample(static_cast<std::int16_t>(ux), static_cast<std::int16_t>(uz)));
         ui.shadow = true;
