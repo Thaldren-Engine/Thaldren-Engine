@@ -36,13 +36,14 @@ Audit of everything the original TotalA.exe (3.1) does in the simulation area ag
 ## Summary
 | Status | Before (2026-10-20 audit) | After this round |
 |---|---|---|
-| VERIFIED | 118 | 118 |
-| BUILT | 14 | 14 |
-| PARTIAL | 3 | 3 |
-| MISSING | 7 | 7 |
-| N/A | 16 | 16 |
+| VERIFIED | 64 | 65 |
+| BUILT | 4 | 14 |
+| PARTIAL | 4 | 1 |
+| MISSING | 7 | 0 |
+| N/A | 14 | 13 |
 
-(Counts are rows of the tables below. "After" is updated as items land; see the change log at the end.)
+(Counts are rows of the tables below; one row often stands for a whole group of keys or routines.
+The one PARTIAL left is the AI profile text's non-profile lines, 7.5. See the change log at the end.)
 
 ---
 
@@ -66,7 +67,7 @@ routines are differential-tested with real definitions (column "consumer").
 | weapon1-3, explodeas, selfdestructas, selfdestructcountdown, kamikaze, kamikazedistance, shootme, wpri/wsec/wspe_badtargetcategory, nochasecategory, category, firestandorders, standingfireorder, mobilestandorders, standingmoveorder, defaultmissiontype, antiweapons, commander, immunetoparalyzer, cantbetransported, transportsize, transportcapacity, teleporter, isfeature, corpse, soundcategory | VERIFIED | weapons_harness, targeting_harness, combat_harness (death explosions, self-destruct), orders_harness (kamikaze, transports, teleport), create_harness (standing orders), feature_harness (corpse/wrecks) |
 | showplayername, sortbias, noshadow, zbuffer, digger, downloadable (menu), armoredstate (script value 20 path verified) | N/A (interface / drawing; the simulation-relevant halves verified above) | CLIENT / RENDERER areas |
 | Build options (sidedata `[CANBUILD]`, download menus `0x42DCF0`) | VERIFIED | unitdef_check (shared scratch list quirk) |
-| Sort order of the table (`0x42D2E0`) with **duplicate unit names** | PARTIAL → see 7.2 | the original sorts with the 1998 STL sort (unstable); the engine used a stable sort (identical for the stock data, which has no duplicates) |
+| Sort order of the table (`0x42D2E0`) with **duplicate unit names** | VERIFIED (was PARTIAL; see 7.2) | sort_harness against the original's sort routines |
 
 ### 1.2 Weapon definitions (`weapons\*.tdf`)
 Importer `ta_compat/src/weapondefs.cpp`; `weapondef_check`: all 256 slots identical to the live game
@@ -169,33 +170,42 @@ Importer `ta_compat/src/featuredefs.cpp`; `feature_check`: 434 features, 8,307 f
 |---|---|---|
 | Battle generator `0x4B6C30` / seed `0x4B6CA0` | VERIFIED | cob_harness and every harness compare its state |
 | 55 battle-generator callers | VERIFIED / BUILT (all built; `0x40AD20` is dead code) | sweep above |
-| 26 C runtime rand() callers | VERIFIED for the simulation ones; frame-driven ones (lightning drawing, speech queue, CD audio) are inputs by design | RE_MEMORY "Simulation completeness" |
+| 26 C runtime rand() callers | VERIFIED for the simulation ones; lightning drawing now fed back by the client (7.4); speech queue modelled by the client; CD audio and the debug overlay are inputs | RE_MEMORY "Simulation completeness" |
 
 ## 7. Items that were open in this round
 
 ### 7.1 Console commands with a simulation effect (debug list `0x501FD0`, bits 4)
 Only reachable after the "+Now Film Chris Include Reload Assert" switch; each was registered but did
-nothing ("not built" in `ta_compat/src/console_commands.cpp`).
+nothing ("not built" in `ta_compat/src/console_commands.cpp`). Smoke evidence: `ta_play --headless`
+scripts typing the lines on Moon Quartet (4 players, seed 7); the summary line printed by ta_play:
+BurnAll 105 feature cells → 0; Feature armsolar_dead +1 cell; BurnOne on it −1; Search 200 3.5 →
+divisor 200, base 3; Kill 3 → player 3's units gone and goals inactive; Reload armpw and
+ReloadAIProfiles ran without a fault. Not differential-tested (they need the original's whole battle
+state: pointer record, feature table, selection).
 
-| Command | Original | Status before | Status after |
+| Command | Original | Before | After |
 |---|---|---|---|
-| BurnAll | `0x416390` → `0x424840`: every map cell holding a feature id below 0xFFFB or a feature part (0xFFFE) has its feature removed as by `Feature_RemoveFromCell(cell, 1)` | MISSING | pending |
-| BurnOne | `0x4163A0`: when the feature id under the pointer (GS+0x2CBC) is below 0xFFFB, the feature of the pointer's cell (GS+0x2C8E/0x2C90) is removed the same way | MISSING | pending |
-| Feature `<name>` | `0x4163D0`: the first loaded feature type whose name matches (stricmp, `0x422DD0`; only types this battle loaded) is placed at the pointer's cell with owner nibble 10 | MISSING | pending |
-| Assign `<mission> <a> <b>` | `0x416310`: mission kind by name (`MissionOrder_FindByName`); if found, the selection routine `0x48CF30` with no intent, that kind, no position, parameters atol(word 1) (the mission's own name, so normally 0) and atol(word 2) | MISSING | pending |
-| Search `<n> [f]` | `0x416780`: route search object +0x48 (budget divisor) = n when n ≠ 0; with exactly three words +0x54 (base) = ftol(atof(word 2)) | MISSING | pending |
-| Reload `<unit>` | `0x417490`: with a known type: every unit of it is killed through the kill packet (`0x486E80`, kind 8), then its FBI and script are read again (`0x42D1F0`, only when the type is "can be made") | MISSING | pending |
-| ReloadAIProfiles | `0x4174D0` → `0x40A100`: for every active computer player (controller 2), the profile defaults of its table (`Ai_ResetProfile` `0x409470`, by slot), then the battle's whole profile load again (`0x4648E0`) | MISSING | pending |
-| SeaLevel, TreeDeath, Kill, AI, Control, IWin, ILose, Move, default command | | VERIFIED / BUILT | unchanged |
+| BurnAll | `0x416390` → `0x424840`: every map cell holding a feature id below 0xFFFB or a feature part (0xFFFE) has its feature removed by `Feature_RemoveFromCell(cell, 1)` (force) | MISSING | BUILT (smoke) |
+| BurnOne | `0x4163A0`: when the feature id under the pointer (GS+0x2CBC, `0x421E60`: a part resolved to its anchor) is below 0xFFFB, the pointer's cell (GS+0x2C8E/0x2C90) loses its feature the same way | MISSING | BUILT (smoke) |
+| Feature `<name>` | `0x4163D0`: the first type of this battle's feature table named so (stricmp, `0x422DD0`) is placed at the pointer's cell with owner nibble 10 | MISSING | BUILT (smoke) |
+| Assign `<mission> <a> <b>` | `0x416310`: mission kind by name (`MissionOrder_FindByName`); if found, the selection routine `0x48CF30` with no intent, that kind, no position, parameters atol(word 1) (the mission's own name, so normally 0) and atol(word 2) | MISSING | BUILT (the pointer record's Shift bit is taken as clear: the chat line has the keyboard) |
+| Search `<n> [f]` | `0x416780`: route search +0x48 (work divisor) = n when n ≠ 0; with exactly three words +0x54 (base scale) = ftol(atof(word 2)) | MISSING | BUILT (smoke) |
+| Reload `<unit>` | `0x417490`: with a known type: every table entry of it gets the kill packet (`0x486E80`, kind 8), then `0x42D1F0` (type word bit 23 set): the FBI read again over the record (`0x42BF40` in place), the script reloaded | MISSING | BUILT (`ta::reload_unit_properties`; a corpse the battle did not load is the original's crash → feature fault; the old script is kept for dying units where the original frees it under them) |
+| ReloadAIProfiles | `0x4174D0` → `0x40A100`: for every active computer player (controller 2), `Ai_ResetProfile` `0x409470` on the table of its slot, then the battle's whole profile load `0x4648E0` | MISSING | BUILT (smoke) |
+| Kill (both forms) ends with `0x4904B0` on GS+0x391ED: the map's goals switched off | found in this audit | PARTIAL | BUILT (`MissionGoals::active = false`) |
+| SeaLevel, TreeDeath, AI, Control, IWin, ILose, Move, default command (unit rows) | | VERIFIED / BUILT | unchanged |
 | Edge, Film, PrintWeights, Save, MemDump, Mem, DPrint, Assert, DebugBreak | | N/A (view, files, saves: other areas) | |
 
 ### 7.2 Unit table order with duplicate unit names
 `GameData_LoadAll` `0x42D2E0` compacts the compatible units (stable) and sorts records 1.. with the
-1998 STL sort: quicksort loop `0x432D40` (partitions of more than 16, median of first / middle /
-last, unguarded partition, recursion on the smaller side), then insertion sort `0x432FB0` of the
-first 16 and unguarded linear insertion of the rest, all by `stricmp(unitname) < 0`. Equal names
-therefore end in an order that depends on the whole table. Status before: PARTIAL (stable sort).
-After: pending.
+1998 template-library sort: quicksort loop `0x432D40` (ranges of more than 16, pivot = copy of the
+median of first / middle / last, unguarded partition, recursion on the smaller side), insertion sort
+`0x432FB0` of the first 16 and unguarded linear insertion of the rest, comparator `0x42DB60`
+(stricmp of the names < 0). Equal names end where that algorithm leaves them.
+Before: PARTIAL (stable sort). **After: VERIFIED** — `ta::sort_like_original` (`ta/stl98_sort.h`);
+`tools/orig_harness/sort_harness` runs the original's two routines and comparator on random records
+with many equal names: smoke 2 × 48 cases (81 with equal names) identical; a stable sort would
+differ in 17 of 48. unitdef_check unchanged (25,617 fields, 0 differences).
 
 ### 7.3 Feature consistency in network games (branch `worktree-agent-ac56a4e808c5568aa`)
 Reviewed the simulation half of commit 66daf6b and the uncommitted test in its worktree:
@@ -203,17 +213,29 @@ Reviewed the simulation half of commit 66daf6b and the uncommitted test in its w
 side record (host flag), as `0x4244B0` reads it on every call (sync_settings runs at the start of
 every battle entry point, so a change of viewed player is seen as in the original);
 `sim::damage_feature` / `apply_feature_packet` (already on master) follow the original's host /
-other-machine rules. No simulation change needed. The network half (addressing requests to the
-host, `net_play features`, `dplay_play`, `ta_capture dump_features`) is the NETWORK agent's to
-merge; status of this row: BUILT on that branch, merge owned by NETWORK.
+other-machine rules (feature_harness ran both roles: 12 scenarios identical). No simulation change
+needed. The network half (addressing requests to the host, `net_play features`, `dplay_play`,
+`ta_capture dump_features`) and the merge of the branch are the NETWORK agent's. Status: BUILT on
+that branch.
 
-### 7.4 Remaining PARTIAL / inputs (by design)
+### 7.4 Drawing's effects on the simulation
+| Item | Before | After | Notes |
+|---|---|---|---|
+| Pose sync when a unit is drawn (`0x45AC20`: base angles more than 7 apart, transforms when dirty; the unit and its cargo without flag 0x20000; nothing for a carried unit) | PARTIAL | BUILT | `Battle::units_drawn(ids)`, fed by the client from `BattleScene::drawn_units` after drawing (feature stand-ins excluded). Debris and shards start from these transforms. sim_tests `test_units_drawn`. Which units are drawn is the renderer's (RENDERER area, 1:1 by its own checks) |
+| Lightning drawing's rand() draws (`0x49BE60`, three per segment of a visible lightning shot) | N/A (input) | BUILT | the renderer returns its copy's state (`BattleScene::crt_rand_after`), the client sets the battle's `crt_rand` to it after drawing |
+| Speech queue rand() | BUILT (client) | unchanged | `GameClient` speech model draws the battle's rand() |
+| CD audio sync rand() (`0x4CDB40`), debug overlay (`0x418310`) | N/A (input) | unchanged | music timing / debug display: wall clock and debug switches |
+
+### 7.5 Remaining PARTIAL / inputs (by design)
 | Item | Status | Reason |
 |---|---|---|
-| Base-angle sync when a unit is drawn (`0x45AC20`, up to 7 angle units of difference later visible to the simulation) | PARTIAL | the original's drawing changes simulation state; the engine syncs only at simulation query points. Needs the camera as an input (which units were drawn each frame); not taken in yet |
-| Lightning drawing's rand() draws, speech queue, CD audio | N/A (input) | frame/camera dependent in the original itself; whole-game replay feeds them |
-| Stale stack words (AI site height, reclaim site y, air repair patrol site, kill word of "+kill") | N/A (input) | run-varying; replay feeds them |
+| AI profile text with lines other than plan/weight/limit | PARTIAL | the original runs profile text through the whole command registry with every bit allowed, so a unit name creates units at the pointer and any console command runs; the importer carries out plan/weight/limit and include files and only notes the rest (the stock profiles have none). Needs the client's command table at battle load |
+| Stale stack words (AI site height, reclaim site y, air repair patrol site, kill word of "+kill", Reload's YardMap buffer) | N/A (input) | run-varying; the whole-game replay feeds the first two |
 | Wreck level of units without a Killed function | VERIFIED | "Stale stack word" |
 
 ## Change log
-- 2026-10-20: audit written.
+- 2026-10-20: audit written (commit 81a2918).
+- 2026-10-20: debug console commands BurnAll, BurnOne, Feature, Assign, Search, Reload, ReloadAIProfiles; Kill switches goals off (d0ab6d0).
+- 2026-10-20: unit table sort as the original, sort_harness (f567fb6).
+- 2026-10-20: drawn units' pose sync (6fd8cd7); lightning rand() draws fed back (2682023).
+- After each: sim_tests, render_tests, compat_tests, unitdef_check; whole-game replays g8 (3,000 steps), s2 (4,500), g9 (2,759) identical; game_flow golden identical.
