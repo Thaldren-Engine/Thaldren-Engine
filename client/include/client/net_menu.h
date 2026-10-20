@@ -114,6 +114,31 @@ public:
         return static_cast<int>(net_->timeout_seconds()) - static_cast<int>(since / 30) + 120;
     }
     void reject_player(int slot, int reason) override { net_->reject(slot, static_cast<std::uint8_t>(reason)); }
+    bool host() const override {
+        for (int k = 0; k < 10; ++k) {
+            const net::RoomPlayer& r = net_->room()[static_cast<std::size_t>(k)];
+            if (r.net_id && (r.flags & net::room::kHost)) {
+                const int c = inner_->battle().players[static_cast<std::size_t>(k)].controller;
+                return c == 1 || c == 2;
+            }
+        }
+        return false;
+    }
+    std::uint16_t local_options() const override { return net_->room()[static_cast<std::size_t>(local_ < 0 || local_ > 9 ? 0 : local_)].options; }
+    void set_local_options(std::uint16_t o) override {
+        if (local_ < 0 || local_ > 9) return;
+        net::RoomPlayer r = net_->room()[static_cast<std::size_t>(local_)];
+        r.options = o;
+        net_->set_local_record(local_, r);
+    }
+    void set_allied_victory(int slot, bool on) override {
+        BattleSession::set_allied_victory(slot, on);
+        if (slot < 0 || slot > 9) return;
+        net::RoomPlayer r = net_->room()[static_cast<std::size_t>(slot)];
+        const std::uint16_t before = r.cd;
+        r.cd = static_cast<std::uint16_t>((r.cd & ~2u) | (on ? 2u : 0u));  // (+0x9D bit 1)
+        if (r.cd != before) net_->set_local_record(slot, r);
+    }
     bool computer(int slot) const override { return slot >= 0 && slot < 10 && net_->room()[static_cast<std::size_t>(slot)].kind == 2; }
     // The players' names (the session's) and this machine's player: chat lines carry the
     // sender's name, lines to one player that player's name.

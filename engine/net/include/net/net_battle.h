@@ -77,6 +77,13 @@ public:
     // Reject, reason 6 lost): packet 0x1B {net id, reason} to everybody from this machine's first
     // player; the player then counts as leaving here (as when the packet is received).
     void reject(int slot, std::uint8_t reason);
+    // A local player's side record changed by an in-battle screen (the allied victory flag, the
+    // host's watching switch): kept and announced with the other local records (0x450F90).
+    void set_local_record(int slot, const RoomPlayer& r) {
+        if (slot < 0 || slot > 9) return;
+        room_[static_cast<std::size_t>(slot)] = r;
+        announce_records();
+    }
     // "<name> has modified his executable.  Game integrity breached." (0x27).
     std::function<void(int slot)> on_modified_executable;
     std::function<void(int slot, const std::string& text)> on_chat;

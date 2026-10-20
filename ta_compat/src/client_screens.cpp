@@ -1907,6 +1907,127 @@ private:
     int slot_ = -1;
 };
 
+// The host's kick question (0x446080: YESORNO.GUI with flags 0x100, centred; TITLE "Reject %s?",
+// CHOICE1 "Yes" sends the player away with status 1 "rejected", CHOICE2 "No").
+class RejectQuestion : public LayoutScreen {
+public:
+    RejectQuestion(MenuArt& art, client::BattleSession& s, int slot) : LayoutScreen(art.layout("YESORNO")), art_(art), s_(s), slot_(slot) {
+        open_centred_ = -1;
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
+        if (Widget* w = widget("TITLE")) w->text = "Reject " + s.player_name(slot) + "?";
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "CHOICE1")) s_.reject_player(slot_, 1);
+        if (is(w, "CHOICE1") || is(w, "CHOICE2")) fe.pop();
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    int slot_ = 0;
+};
+
+// The host's control screen of network games (CONTROL.GUI, 0x4466B0 from the tab bar; flags
+// 0x800; not for a watcher). The other players' rows (0x447380 without the local player): PLAYERk
+// with the name, LOGOk the colour logo; a row's button brings the kick question (0x446080).
+// WATCHING shows and toggles the local side record's watching switch (bit 0x80, "Options",
+// announced at once); OK ("Options"): with watching switched off, every remote watcher is sent
+// away (status 9).
+class ControlScreen : public LayoutScreen {
+public:
+    ControlScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("CONTROL")), art_(art), s_(s) {
+        logos_ = s.content().team_logos;
+        const sim::Battle& b = s.battle();
+        const int local = b.settings.local_player;
+        for (int k = 0; k < 10; ++k) {
+            const std::string n = std::to_string(k);
+            Widget* player = widget("PLAYER" + n);
+            Widget* logo = widget("LOGO" + n);
+            for (Widget* w : {player, logo})
+                if (w) w->active = false;
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            if (k == local || !p.active || p.controller < 1 || p.controller > 3 || p.state == 10 ||
+                b.settings.player_sight[static_cast<std::size_t>(k)].watching || (p.alive_count == 0 && p.units_created != 0))
+                continue;
+            if (player) {
+                player->active = true;
+                set_caption(*player, s.player_name(k));
+            }
+            if (logo) {
+                logo->active = true;
+                logo->stage = s.content().player_colour[static_cast<std::size_t>(k)];
+            }
+        }
+        show_switches();
+        s.client().dim_panel(true);
+    }
+    ~ControlScreen() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!logos_ || w.stage < 0 || w.stage >= static_cast<int>(logos_->size()) || w.name.rfind("LOGO", 0) != 0) return;
+        const render::Sprite8& s = (*logos_)[static_cast<std::size_t>(w.stage)];
+        const Widget& h = widgets_.front();
+        const int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+        const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+        const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+        render::RasterTarget t;
+        t.pixels = out.pixels.data();
+        t.pitch = out.width;
+        t.clip = {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+        render::textured_quad_uv(t, v, uv, s);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (w.name.rfind("PLAYER", 0) == 0 && w.name.size() == 7) {
+            const int k = w.name[6] - '0';
+            if (k >= 0 && k <= 9 && art_.layout("YESORNO")) fe.push(std::make_unique<RejectQuestion>(art_, s_, k));
+            return;
+        }
+        if (is(w, "WATCHING")) {
+            sfx(fe, art_, "Options");
+            s_.set_local_options(static_cast<std::uint16_t>(s_.local_options() ^ 0x80));
+            show_switches();
+            return;
+        }
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            if (!(s_.local_options() & 0x80)) {
+                const sim::Battle& b = s_.battle();
+                for (int k = 0; k < 10; ++k)
+                    if (b.players[static_cast<std::size_t>(k)].active && b.players[static_cast<std::size_t>(k)].controller == 3 &&
+                        b.victory.sides[static_cast<std::size_t>(k)].watching)
+                        s_.reject_player(k, 9);
+            }
+            fe.pop();
+        }
+    }
+
+private:
+    // WATCHING shows bit 0x80 of the local options, GAMEOPEN (display only) bit 0x8000 inverted.
+    void show_switches() {
+        const std::uint16_t o = s_.local_options();
+        if (Widget* w = widget("WATCHING")) w->stage = (o & 0x80) ? 1 : 0;
+        if (Widget* w = widget("GAMEOPEN")) w->stage = (o & 0x8000) ? 0 : 1;
+    }
+
+    MenuArt& art_;
+    client::BattleSession& s_;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+};
+
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
@@ -1923,13 +2044,13 @@ public:
         if (!opened_) sfx(fe, art_, "SmallButton");
         opened_ = true;
         // (0x495010: Allies and Share in a network game for a player not watching; Control also
-        // needs the host's rights, not built)
+        // needs the host's rights)
         client::BattleSession* bs = fe.session();
         const bool can = bs && bs->network() &&
                          !bs->battle().settings.player_sight[static_cast<std::size_t>(bs->battle().settings.local_player)].watching;
         if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu || !can;
         if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu || !can;
-        if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu;
+        if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu || !can || !bs->host();
     }
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kTab) {
@@ -2308,6 +2429,13 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.hooks.timeout_dialog = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         if (!s.network() || !art.layout("TIMEOUT") || s.timed_out_player() < 0) return nullptr;
         return std::make_unique<TimeoutDialog>(art, s);
+    };
+    setup.hooks.control_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        const sim::Battle& b = s.battle();
+        if (!s.network() || !s.host() || !art.layout("CONTROL") ||
+            b.settings.player_sight[static_cast<std::size_t>(b.settings.local_player)].watching)
+            return nullptr;
+        return std::make_unique<ControlScreen>(art, s);
     };
     setup.hooks.unit_info = [&art](FrontEnd&, client::BattleSession& s, std::uint16_t type) -> std::unique_ptr<client::Screen> {
         if (!art.layout("UNITINFOX")) return nullptr;
