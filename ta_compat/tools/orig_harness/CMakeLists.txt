@@ -726,6 +726,11 @@ target_compile_options(render_harness PRIVATE /W4 /permissive- /fp:precise)
 add_executable(gui_harness gui_harness.cpp)
 target_compile_options(gui_harness PRIVATE /W4 /permissive-)
 target_link_libraries(gui_harness PRIVATE user32 gdi32)
+# Movies: the game's smackw32.dll vs client::SmackerFile (pictures, palettes, frame audio).
+add_executable(movie_harness movie_harness.cpp ${ROOT}/client/src/smacker.cpp)
+target_include_directories(movie_harness PRIVATE ${ROOT}/client/include)
+target_compile_options(movie_harness PRIVATE /W4 /permissive-)
+target_link_libraries(movie_harness PRIVATE user32 winmm)
 # Unit state packets (whole states, goal states) vs sim/net_units.h.
 add_executable(netstate_harness
     netstate_harness.cpp
