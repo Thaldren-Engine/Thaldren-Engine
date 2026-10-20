@@ -95,7 +95,7 @@ struct UnitDefContext {
     std::array<MoveInfo, 32> movement_classes{};
     std::vector<std::string> sound_categories;         // section names of gamedata\sound.tdf
     std::vector<std::string> mission_names = default_mission_names();  // sorted lookup names (index = mission type)
-    std::string language = "english";                  // key prefix for localized strings
+    std::string language = Vfs::game_language();       // key prefix for localized strings
 
     // The game's mission table sorted by lookup name (verified against a live dump).
     static std::vector<std::string> default_mission_names();

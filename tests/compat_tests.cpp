@@ -11,6 +11,7 @@
 #include "ta/hpi.h"
 #include "ta/inflate.h"
 #include "ta/tdf.h"
+#include "ta/translate.h"
 
 namespace {
 
@@ -136,6 +137,29 @@ void test_crt_atof_quirks() {
     CHECK(ta::crt_atof("  12.5e1") == 125.0);
 }
 
+// The translation table (0x4C54F0 / 0x4C5740): section name = base text (case-sensitive), the
+// language's field (any case) = its translation; empty ones skipped, later sections replace.
+void test_translations() {
+    const std::string tdf =
+        "/* comment */\n[KILLS]\n{\nGerman = ABSCHUSSE;\nFrench = VICTIMES;\n}\n"
+        "[Kills]\n{\ngerman = Abschusse;\n}\n[Empty]\n{\nGerman = ;\n}\n"
+        "[Twice]\n{\nGerman = one;\n}\n[Twice]\n{\nGerman = two;\n}\n";
+    ta::load_translations(tdf, "German");
+    CHECK(ta::translate("KILLS") == "ABSCHUSSE");
+    CHECK(ta::translate("Kills") == "Abschusse");
+    CHECK(ta::translate("kills") == "kills");
+    CHECK(ta::translate("Empty") == "Empty");
+    CHECK(ta::translate("Twice") == "two");
+    CHECK(ta::translate("Other") == "Other");
+    ta::load_translations(std::string(), "GERMAN");  // the language already loaded: kept
+    CHECK(ta::translate("KILLS") == "ABSCHUSSE");
+    ta::load_translations(tdf, "french");
+    CHECK(ta::translate("KILLS") == "VICTIMES");
+    CHECK(ta::translate("Kills") == "Kills");
+    ta::load_translations(tdf, "english");  // no english fields: every text as it is
+    CHECK(ta::translate("KILLS") == "KILLS");
+}
+
 } // namespace
 
 int main() {
@@ -149,6 +173,7 @@ int main() {
     test_checksum();
     test_lz77();
     test_inflate();
+    test_translations();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

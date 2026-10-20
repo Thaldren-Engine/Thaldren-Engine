@@ -18,6 +18,10 @@
 //   --damage-bars       health bars over own units
 //   --cpu               draw on the CPU (no GPU backend)
 //   --no-sound          (also the original's -s / /s)
+//   -d / -df            the original's display switches: -d a windowed display (no movies, the
+//                       fixed list of screen sizes); -df (and no switch) the full screen
+//   WORD                a word that is no switch is the language (the original's bare word;
+//                       else the setting "language", else english): german, french, ...
 //   --seed N            the battle's random seed
 //   --headless          no window: run --frames N frames at 30 per second with --script FILE
 //                       (see client/front.h) and write --shots a,b,c as <--out PREFIX>NNNN.bmp
@@ -55,6 +59,7 @@
 #include <functional>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -80,6 +85,7 @@
 #include "ta/client_net_screens.h"
 #include "ta/console_commands.h"
 #include "ta/client_world.h"
+#include "ta/translate.h"
 
 namespace {
 
@@ -190,7 +196,9 @@ int pointer_selftest() {
 int main(int argc, char** argv) {
     // The game folder: the first argument when it isn't an option, else the executable's own
     // folder (the program placed in the game folder, as the original runs).
-    const bool dir_given = argc >= 2 && argv[1][0] != '-' && argv[1][0] != '/';
+    // (A first word that names no folder is the original's language word, below.)
+    std::error_code dir_ec;
+    const bool dir_given = argc >= 2 && argv[1][0] != '-' && argv[1][0] != '/' && std::filesystem::is_directory(argv[1], dir_ec);
     const std::string game_dir = dir_given ? std::string(argv[1]) : own_folder(argc > 0 ? argv[0] : nullptr);
     {
         std::ifstream probe(game_dir + "\\TotalA.exe", std::ios::binary);
@@ -221,11 +229,40 @@ int main(int argc, char** argv) {
     int sw_timeout = 30, sw_send_error = 0, sw_rate = 0;
     bool sw_rate_set = false;
     auto startup = std::make_shared<client::NetMenuConfig::Startup>();
+    // -d / -df (0x49EE30: 0x51FB48 = 3 / 2; the window set-up 0x49E830 keeps the full screen
+    // unless it is 3) and the bare word (0x51FB50, the language).
+    int display_switch = 0;
+    std::string language_word;
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
+        if (!a.empty() && a[0] != '-' && a[0] != '/') {
+            language_word = a;  // the last one counts
+            continue;
+        }
         if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && a[1] != '-') {
+            // The 1998 debug library's own switches (0x4DA0E0; dash only, case-insensitive
+            // prefixes) are taken by it first and do nothing here: "-dprinton" is not -d.
+            static const char* const kLibrarySwitches[] = {
+                "-memfussy", "-memnofussy", "-memfrontalign", "-gonzo", "-memset", "-memnoset", "-fpufussy",
+                "-fpunofussy", "-dprinton", "-dprintoff", "-dprintfile", "-memorystatus", "-performancestatus",
+                "-disableimagehlp", "-enableimagehlp", "-disableimagehlplines", "-enableimagehlplines", "-debughelper",
+                "-saveresources"};
+            bool library = false;
+            for (const char* sw : kLibrarySwitches) {
+                const std::size_t n = std::char_traits<char>::length(sw);
+                if (a.size() < n) continue;
+                bool same = true;
+                for (std::size_t k = 0; k < n && same; ++k)
+                    same = std::tolower(static_cast<unsigned char>(a[k])) == static_cast<unsigned char>(sw[k]);
+                if (same) library = true;
+            }
+            if (library) continue;
             const char l = static_cast<char>(std::tolower(static_cast<unsigned char>(a[1])));
+            if (l == 'd') {
+                display_switch = a.size() > 2 && (a[2] == 'f' || a[2] == 'F') ? 2 : 3;
+                continue;
+            }
             auto value = [&]() -> std::string { return a.size() > 2 ? a.substr(2) : next(); };
             auto number = [&](const std::string& v) { return !v.empty() && v[0] != '-' ? std::atoi(v.c_str()) : -1; };
             if (l == 't') {
@@ -355,6 +392,20 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    // The language (0x49E830): the bare word, else the setting "language" (63 characters), else
+    // english; every file system made from here on looks for "<dir>-<language>" files first.
+    {
+        std::string language = language_word;
+        if (language.empty()) {
+            client::Settings s;
+            s.load(settings_path);
+            language = s.get_text("language", "").substr(0, 63);
+            if (language.empty()) language = "english";
+        }
+        ta::Vfs::set_game_language(language);
+        std::printf("language %s, %s display\n", language.c_str(), display_switch == 3 ? "windowed" : "full-screen");
+    }
+    front.windowed_display = display_switch == 3;
     setup.players.clear();
     for (int p = 0; p < players; ++p) setup.players.push_back({p == 0 ? side : 1 - side, p != 0 && ai, -1});
     setup.human = 0;
@@ -382,7 +433,11 @@ int main(int argc, char** argv) {
         }
         // Movies need a full screen in the original; the window stands for one, a headless run
         // has no screen (tests: --movies).
-        art.full_screen = movies >= 0 ? movies != 0 : !front.headless;
+        // -d: a windowed display, never a full screen.
+        art.full_screen = display_switch == 3 ? false : movies >= 0 ? movies != 0 : !front.headless;
+        // The translations for the language (0x4C54F0, right after the archives are mounted).
+        ta::load_translations(art.vfs(), ta::Vfs::game_language());
+        client::LayoutScreen::caption_translation() = [](const std::string& t) { return ta::translate(t); };
         client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
         client::FrontEndSetup fes;
         fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options

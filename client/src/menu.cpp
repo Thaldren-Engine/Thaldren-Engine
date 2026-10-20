@@ -1123,8 +1123,27 @@ void LayoutScreen::reassign_quick_keys(const std::vector<Widget>& before) {
     }
 }
 
-void LayoutScreen::set_caption(Widget& w, const std::string& text) {
+std::function<std::string(const std::string&)>& LayoutScreen::caption_translation() {
+    static std::function<std::string(const std::string&)> f;
+    return f;
+}
+
+void LayoutScreen::set_caption(Widget& w, const std::string& text_in) {
+    const auto& tr = caption_translation();
+    const std::string text = tr ? tr(text_in) : text_in;
     w.text = text;
+    if (tr && w.kind == WidgetKind::Button && w.stages > 0 && text.find('|') != std::string::npos) {
+        std::string joined;
+        std::size_t at = 0;
+        for (;;) {
+            const std::size_t bar = text.find('|', at);
+            joined += tr(text.substr(at, bar == std::string::npos ? std::string::npos : bar - at));
+            if (bar == std::string::npos) break;
+            joined += '|';
+            at = bar + 1;
+        }
+        w.text = joined;
+    }
     if (w.kind != WidgetKind::Button || (w.attribs & 0x10000)) return;
     w.quickkey = w.quickkey_char = 0;
     if (w.stages > 0) return;

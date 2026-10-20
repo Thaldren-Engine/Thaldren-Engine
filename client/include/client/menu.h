@@ -176,6 +176,9 @@ public:
     // Sets a gadget's caption the way the original does: a plain button (no attribute 0x10000)
     // takes a new quick key from it (the first character, not a space, no other gadget has).
     void set_caption(Widget& w, const std::string& text);
+    // The program's text translation (a game's language table; none: texts as given). Captions
+    // set through set_caption go through it as a whole, and a staged switch's '|' parts each.
+    static std::function<std::string(const std::string&)>& caption_translation();
     void frame(FrontEnd& fe, std::uint32_t now_ms) override;
 
     // Text lists (spec: docs/RE_MEMORY.md, "Client", "Lists"). set_list gives a list its rows: the

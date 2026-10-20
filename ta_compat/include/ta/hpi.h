@@ -208,7 +208,12 @@ public:
     // The game's localized path builder: when the language is set, "dir-<language>\\name"
     // (extension replaced by `ext` when given) is used if it opens; otherwise "dir\\name".
     std::string virtual_path(std::string_view dir, std::string_view name, std::string_view ext);
-    std::string language = "english";  // the game's registry value "language" (default "english")
+    std::string language = game_language();  // the program's language (below) when the Vfs is made
+
+    // The program's language (the original's 0x51FB50, set once at start-up, 0x49E830): the
+    // command line's bare word, else the registry value "language", else "english".
+    static const std::string& game_language();
+    static void set_game_language(const std::string& language);
 
 private:
     class Finder;

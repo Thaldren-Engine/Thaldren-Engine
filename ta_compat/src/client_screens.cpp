@@ -17,6 +17,7 @@
 #include "sim/rng.h"
 #include "sim/victory.h"
 #include "sim/x87.h"
+#include "ta/translate.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/tdf.h"
@@ -60,7 +61,7 @@ void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, i
 // bottom edges, the Enter and Escape default and the focus. OK closes it (no sound).
 class MessageBox : public LayoutScreen {
 public:
-    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under) : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(std::move(text)) {
+    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under) : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(translate(text)) {
         if (under) {
             under_ = *under;
             has_under_ = true;
