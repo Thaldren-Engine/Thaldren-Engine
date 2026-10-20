@@ -211,8 +211,8 @@ public:
     virtual void selection_changed() {}
     // Aircraft, transports and teleporters (sim/unit_missions.h): the network notice of a unit
     // script function started by name with arguments (0x456200; -1 when the script has none),
-    // and the trail of dots of a teleported unit (presentation; its particles draw the C
-    // runtime rand() in the effect sweep, which is not modelled).
+    // and the trail of dots of a teleported unit (presentation only: the battle itself starts
+    // the dots, whose particles draw the C runtime rand() in the effect sweep, before this).
     virtual void broadcast_script_call_named(Unit&, std::int16_t, std::int32_t, std::int32_t, std::int32_t, std::int32_t,
                                              std::int32_t) {}
     virtual void teleport_trail(const std::array<std::int32_t, 3>&, const std::array<std::int32_t, 3>&) {}
