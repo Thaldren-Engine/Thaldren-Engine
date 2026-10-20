@@ -356,81 +356,196 @@ bool MissionSession::after_battle(client::FrontEnd& fe, client::BattleOutcome ou
     return true;
 }
 
-// --- A new campaign (0x477AB0): the campaign, then its first mission (any one with the
-// AllMissions setting); the results start over.
-class CampaignScreen : public client::Screen {
+// --- A new campaign (NEWGAME.GUI: set-up 0x478240, handler 0x477AB0). `any` (the AnyMsn button,
+// 0x478240(1)): the Missions list too, to start at any mission.
+//   * Background: playanygame4 (any mission), else newcampaign4 when camps\ holds more than two
+//     campaign files, else newcampaign4x (no campaign list: the side's own "Arm Campaign" /
+//     "Core Campaign"). The picture's indices are shown on the palette already on the display.
+//   * Any mission: the Campaign list and its knob move to y 308, 48 high, the Missions list is 62
+//     high; both lists shown, the Missions list has the focus. Otherwise the Campaign list has the
+//     focus (newcampaign4x: the Difficulty switch).
+//   * Side: registry "side" (0 Arm, 1 Core): the side's button (Arm / Core) and picture (Side0 /
+//     Side1) pressed. The Campaign list holds camps\*.tdf in name order (case-insensitive) whose
+//     [HEADER] campaignside is the side's name or "ALL" ("smlbutton" each time it is filled).
+//   * Difficulty: registry "Difficulty" (0..2) on the switch; a press steps it ("SmlButton").
+//   * Arm / Side0 ("SideSelect"), Core / Side1 ("SideSelect2"): the side, the list again.
+//   * Start, Enter on a list or a double click on the Campaign list (the Missions list in any
+//     mission mode): "bigButton", the archives rescanned, the results string reset, the campaign
+//     and the mission (the first, or the chosen one) loaded, the settings saved, the briefing.
+//   * Previous Menu: "Previous", back to the single player menu.
+class NewCampaignScreen : public client::LayoutScreen {
 public:
-    CampaignScreen(MenuArt& art, std::string save_dir) : art_(art), save_dir_(std::move(save_dir)) { names_ = list_campaigns(art_.vfs()); }
+    NewCampaignScreen(MenuArt& art, std::string save_dir, bool any) : client::LayoutScreen(art.layout("NEWGAME")), art_(art), save_dir_(std::move(save_dir)), any_(any) {}
+
     void enter(client::FrontEnd& fe) override {
-        difficulty_ = std::clamp(fe.settings().get_int("Difficulty", 1), 0, 2);
-        any_mission_ = fe.settings().get_int("AllMissions", 0) != 0;
-        load_missions();
-    }
-    void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
-        if (e.type != client::InputEvent::Type::KeyDown) return;
-        switch (e.key) {
-        case client::keys::kEscape: fe.play_sound(art_.sound("Previous")); fe.pop(); return;
-        case client::keys::kTab:
-            if (any_mission_) focus_ = 1 - focus_;
-            return;
-        case client::keys::kUp:
-            // (the campaign choice: the first side's "SideSelect", the second's "SideSelect2")
-            if (focus_ == 0 && camp_ > 0) --camp_, load_missions(), fe.play_sound(art_.sound(camp_ == 0 ? "SideSelect" : "SideSelect2"));
-            else if (focus_ == 1 && mission_ > 0) --mission_;
-            return;
-        case client::keys::kDown:
-            if (focus_ == 0 && camp_ + 1 < static_cast<int>(names_.size()))
-                ++camp_, load_missions(), fe.play_sound(art_.sound(camp_ == 0 ? "SideSelect" : "SideSelect2"));
-            else if (focus_ == 1 && mission_ + 1 < static_cast<int>(campaign_.missions.size())) ++mission_;
-            return;
-        case 'd':
-            fe.play_sound(art_.sound("SmlButton"));
-            difficulty_ = (difficulty_ + 1) % 3;
-            fe.settings().set_int("Difficulty", difficulty_);
-            return;
-        case client::keys::kEnter: {
-            fe.play_sound(art_.sound("bigButton"));
-            if (camp_ >= static_cast<int>(names_.size())) return;
-            auto progress = std::make_shared<CampaignProgress>();
-            progress->campaign = names_[static_cast<std::size_t>(camp_)];
-            progress->side = campaign_.side.empty() ? "ARM" : campaign_.side;
-            progress->mission = any_mission_ ? mission_ : 0;
-            progress->difficulty = difficulty_;
-            fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress));
-            return;
+        if (set_up_) return;
+        set_up_ = true;
+        auto count = static_cast<int>(list_campaigns(art_.vfs()).size());
+        no_list_ = !any_ && count <= 2;
+        const char* bg = any_ ? "playanygame4" : no_list_ ? "newcampaign4x" : "newcampaign4";
+        background_ = art_.picture(bg);
+        // (the palette on the display stays the main menu's; the interface colours are the layout's)
+        if (any_) {
+            // (changed after the screen was opened: the heights are not cut to whole rows again;
+            // the slider's arrows sit at its new ends)
+            if (client::Widget* w = widget("Campaign")) {
+                w->y = 308;
+                w->h = 48;
+            }
+            if (client::Widget* w = widget("Missions")) w->h = 62;
+            relocate_slider("CampaignKnob", 308, 48);
         }
-        default: return;
+        side_ = std::clamp(fe.settings().get_int("side", 0), 0, 1);
+        show_side();
+        if (client::Widget* d = widget("Difficulty")) d->stage = std::clamp(fe.settings().get_int("Difficulty", 1), 0, 2);
+        if (!no_list_ || any_) {
+            for (const char* n : {"Campaign", "CampaignKnob"})
+                if (client::Widget* w = widget(n)) w->active = true;
+            fill_campaigns(fe);
+            if (any_) {
+                for (const char* n : {"Missions", "MissionsKnob"})
+                    if (client::Widget* w = widget(n)) w->active = true;
+                fill_missions();
+            }
         }
+        first_focus_ = any_ ? "Missions" : no_list_ ? "Difficulty" : "Campaign";
     }
     void draw(client::FrontEnd& fe, render::Image8& out) override {
-        static const char* const kDifficulty[3] = {"Easy", "Medium", "Hard"};
-        Pen p(fe, out);
-        p.clear();
-        const client::MenuContent& m = fe.menu_content();
-        p.text("New campaign", 40, 20, m.text_highlight);
-        p.text(std::string("Difficulty: ") + kDifficulty[difficulty_] + "   (D)", fe.width() / 2, 20, m.text_colour);
-        const int col = fe.width() / 2 - 60;
-        for (std::size_t k = 0; k < names_.size(); ++k) p.row(names_[k], 40, 50 + static_cast<int>(k) * p.line(), col, focus_ == 0 && static_cast<int>(k) == camp_);
-        if (any_mission_)
-            for (std::size_t k = 0; k < campaign_.missions.size(); ++k)
-                p.row(campaign_.missions[k].name, fe.width() / 2, 50 + static_cast<int>(k) * p.line(), col, focus_ == 1 && static_cast<int>(k) == mission_);
-        p.text(any_mission_ ? "Arrows: choose   Tab: list   Enter: start   Esc: back" : "Arrows: choose   Enter: start   Esc: back", 40, fe.height() - 30,
-               m.text_dim);
+        if (!placed_) {
+            place(out.width, out.height);
+            focus_on(first_focus_);  // (0x4A76B0 at the end of the set-up)
+        }
+        client::LayoutScreen::draw(fe, out);
     }
 
-private:
-    void load_missions() {
-        campaign_ = Campaign{};
-        std::string err;
-        if (camp_ < static_cast<int>(names_.size())) load_campaign(art_.vfs(), names_[static_cast<std::size_t>(camp_)], campaign_, err);
-        mission_ = std::min(mission_, std::max(0, static_cast<int>(campaign_.missions.size()) - 1));
+protected:
+    static bool named(const client::Widget& w, const char* n) { return stricmp_c(w.name, n) == 0; }
+    // A vertical slider placed anew at y with height h: its arrows at the two ends, the bar between.
+    void relocate_slider(const char* name, int y, int h) {
+        client::Widget* bar = widget(name);
+        if (!bar) return;
+        client::Widget *up = nullptr, *down = nullptr;
+        for (client::Widget& w : widgets_)
+            if (stricmp_c(w.link, name) == 0 && w.slider_step != 0) (w.slider_step < 0 ? up : down) = &w;
+        if (!up || !down) {
+            bar->y = y;
+            bar->h = h;
+            return;
+        }
+        up->y = y;
+        down->y = y + h - down->h;
+        bar->y = y + up->h;
+        bar->h = h - 2 * up->h;
     }
+    void focus_on(const char* name) {
+        for (std::size_t i = 0; i < widgets_.size(); ++i)
+            if (named(widgets_[i], name)) focus_gadget_ = static_cast<int>(i);
+    }
+    std::string side_name() const {
+        const auto& s = art_.sides();
+        return side_ < static_cast<int>(s.size()) ? s[static_cast<std::size_t>(side_)] : (side_ == 0 ? "ARM" : "CORE");
+    }
+    // 0x477360: the side's button and picture pressed (a radio pair each).
+    void show_side() {
+        for (const char* n : {"Arm", "Side0"})
+            if (client::Widget* w = widget(n)) w->status = side_ == 0;
+        for (const char* n : {"Core", "Side1"})
+            if (client::Widget* w = widget(n)) w->status = side_ == 1;
+    }
+    // 0x476A60: the side's campaigns (and those for every side), in name order.
+    void fill_campaigns(client::FrontEnd& fe) {
+        fe.play_sound(art_.sound("smlbutton"));
+        std::vector<std::string> names = list_campaigns(art_.vfs());
+        std::stable_sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) { return stricmp_c(a, b) < 0; });
+        campaigns_.clear();
+        const std::string side = side_name();
+        for (const std::string& n : names) {
+            Campaign c;
+            std::string err;
+            if (!load_campaign(art_.vfs(), n, c, err) || !c.has_header) continue;
+            if (c.side == side || c.side == "ALL") campaigns_.push_back(n);
+        }
+        if (client::Widget* l = widget("Campaign")) set_list(*l, campaigns_);
+    }
+    // 0x4779E0 / 0x435760: the chosen campaign's missions.
+    void fill_missions() {
+        missions_.clear();
+        const client::Widget* l = widget("Campaign");
+        Campaign c;
+        std::string err;
+        if (l && l->selected >= 0 && l->selected < static_cast<int>(campaigns_.size()) &&
+            load_campaign(art_.vfs(), campaigns_[static_cast<std::size_t>(l->selected)], c, err))
+            for (const CampaignMission& m : c.missions) missions_.push_back(m.name);
+        if (client::Widget* m = widget("Missions")) set_list(*m, missions_);
+    }
+    void choose_side(client::FrontEnd& fe, int side) {
+        fe.play_sound(art_.sound(side == 0 ? "SideSelect" : "SideSelect2"));
+        side_ = side;
+        fe.settings().set_int("side", side);
+        show_side();
+        // The chosen side's picture is drawn through light level 31 from now on (its colour word
+        // set to 0x1F; the other picture keeps whatever it had).
+        if (client::Widget* p = widget(side == 0 ? "Side0" : "Side1")) p->light = 0x1F;
+        if (!no_list_ || any_) fill_campaigns(fe);
+        if (any_) fill_missions();
+    }
+    void on_list_select(client::FrontEnd&, client::Widget& w) override {
+        if (any_ && named(w, "Campaign")) fill_missions();
+    }
+    void on_pick(client::FrontEnd& fe, client::Widget& w, int, bool double_click) override {
+        if (!double_click) return;
+        if (named(w, any_ ? "Missions" : "Campaign")) start(fe);
+    }
+    void on_press(client::FrontEnd& fe, client::Widget& w) override {
+        if (named(w, "Start") || named(w, any_ ? "Missions" : "Campaign")) {
+            start(fe);
+        } else if (named(w, "PrevMenu")) {
+            fe.play_sound(art_.sound("Previous"));
+            fe.pop();
+        } else if (named(w, "Difficulty")) {
+            fe.play_sound(art_.sound("SmlButton"));
+            fe.settings().set_int("Difficulty", w.stage);
+        } else if (named(w, "Side0") || named(w, "Arm")) {
+            choose_side(fe, 0);
+        } else if (named(w, "Side1") || named(w, "Core")) {
+            choose_side(fe, 1);
+        }
+    }
+    void start(client::FrontEnd& fe) {
+        fe.play_sound(art_.sound("bigButton"));
+        mount_cd_archives(art_.vfs(), art_.game_dir());
+        std::string name;
+        if (!no_list_ || any_) {
+            const client::Widget* l = widget("Campaign");
+            if (!l || l->selected < 0 || l->selected >= static_cast<int>(campaigns_.size())) return;
+            name = campaigns_[static_cast<std::size_t>(l->selected)];
+        } else {
+            name = side_ == 0 ? "Arm Campaign" : "Core Campaign";
+        }
+        int mission = 0;
+        if (any_) {
+            const client::Widget* m = widget("Missions");
+            mission = m && m->selected >= 0 ? m->selected : 0;
+        }
+        Campaign c;
+        std::string err;
+        if (!load_campaign(art_.vfs(), name, c, err) || mission >= static_cast<int>(c.missions.size())) return;
+        auto progress = std::make_shared<CampaignProgress>();
+        progress->campaign = name;
+        progress->side = side_name();
+        progress->mission = mission;
+        if (const client::Widget* d = widget("Difficulty")) progress->difficulty = d->stage;
+        fe.settings().set_int("Difficulty", progress->difficulty);
+        fe.apply_settings();  // (the settings saved, 0x430F00)
+        fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress));
+    }
+
     MenuArt& art_;
     std::string save_dir_;
-    std::vector<std::string> names_;
-    Campaign campaign_;
-    int camp_ = 0, mission_ = 0, focus_ = 0, difficulty_ = 1;
-    bool any_mission_ = false;
+    bool any_ = false, no_list_ = false, set_up_ = false;
+    int side_ = 0;
+    const char* first_focus_ = "Campaign";
+    std::vector<std::string> campaigns_, missions_;
 };
 
 // --- Saved games: the load and save menus (both LOADGAME.GUI).
@@ -817,7 +932,11 @@ void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const st
     // as it opens is the same).
     hooks.campaign_menu = [&art, save_dir](client::FrontEnd&) -> std::unique_ptr<client::Screen> {
         mount_cd_archives(art.vfs(), art.game_dir());
-        return std::make_unique<CampaignScreen>(art, save_dir);
+        return std::make_unique<NewCampaignScreen>(art, save_dir, false);
+    };
+    hooks.any_mission_menu = [&art, save_dir](client::FrontEnd&) -> std::unique_ptr<client::Screen> {
+        mount_cd_archives(art.vfs(), art.game_dir());
+        return std::make_unique<NewCampaignScreen>(art, save_dir, true);
     };
     hooks.load_game_menu = [&art, save_dir](client::FrontEnd& fe, client::BattleSession* s) -> std::unique_ptr<client::Screen> {
         mount_cd_archives(art.vfs(), art.game_dir());

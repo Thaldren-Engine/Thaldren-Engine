@@ -395,6 +395,10 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
                 w.w = w.frames->front().width;
                 w.h = w.frames->front().height;
             }
+            // A switch's attributes become "left-aligned caption" (only 0x4000 kept) when the
+            // screen loads (0x4A81E0, after splitting its captions at '|'): NEWGAME's centred
+            // Difficulty switch shows its caption at the left like every other switch.
+            if (w.stages > 0) w.attribs = (w.attribs & 0x4000) | 1;
         } else if (w.kind == WidgetKind::ScrollBar) {
             // Slider art: the SLIDERS sequence (the screen's GAF, else commongui), offsets
             // dropped; frames from 0 for a vertical slider (w <= h), from 10 for a horizontal one:

@@ -37,6 +37,7 @@ struct CampaignMission {
 struct Campaign {
     std::string name;  // file name without ".tdf"
     std::string side;  // campaignside
+    bool has_header = false;  // the file has a [HEADER] (campaign lists show only those)
     std::vector<CampaignMission> missions;
 };
 

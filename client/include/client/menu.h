@@ -78,6 +78,9 @@ struct Widget {
     std::string link;   // label -> button it belongs to, scroll bar -> list box
     int sound = -1;     // sample played when pressed (-1: none; the screen plays its own)
     bool hot = true;    // takes the pointer (false: the pointer reaches what lies under it)
+    // A button's art drawn through this light-table level (0: as it is). The original keeps it
+    // in the gadget's colour word, which loading clears; screens set it (0x4B8310).
+    int light = 0;
 };
 
 // One screen's description.

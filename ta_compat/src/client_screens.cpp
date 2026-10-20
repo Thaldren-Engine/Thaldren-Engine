@@ -648,11 +648,36 @@ private:
     std::string shown_;
 };
 
+// The last characters typed on a screen (the interface pass 0x4A9FD0 keeps the last 15 key codes
+// its special keys left over, upper-cased, in the layout and then calls the screen's typing
+// hook): the single player menu's DRDEATH and the skirmish set-up's "*III" .. "*X".
+struct TypedTail {
+    std::string last = std::string(15, '\0');
+    // Takes one event's key codes; true when any went in.
+    bool take(const client::InputEvent& e) {
+        bool any = false;
+        for (int c : client::menu_key_codes(e)) {
+            // (Tab, Enter, Escape, Space and the arrows are the interface's own keys)
+            if (c == 9 || c == 13 || c == 27 || c == 0x20 || (c >= 0xF4 && c <= 0xF7)) continue;
+            last.erase(0, 1);
+            last.push_back(static_cast<char>(c >= 'a' && c <= 'z' ? c - 0x20 : c));
+            any = true;
+        }
+        return any;
+    }
+    bool ends_with(const char* s) const {
+        const std::size_t n = std::char_traits<char>::length(s);
+        return last.compare(last.size() - n, n, s) == 0;
+    }
+    void clear() { last.assign(15, '\0'); }
+};
+
 // ------------------------------------------------------------------ skirmish (SKIRMISH.GUI)
 class Skirmish : public LayoutScreen {
 public:
     Skirmish(MenuArt& art, client::Settings& s) : LayoutScreen(art.layout("SKIRMISH")), art_(art) {
         load(s);
+        described_ = widgets_.size();
         build_rows();
     }
     void enter(FrontEnd& fe) override {
@@ -824,7 +849,34 @@ protected:
                 }
             if (Widget* t = widget("HELPTEXT")) t->text = h;
         }
+        if (typed_.take(e)) player_count_cheat(fe);
         LayoutScreen::handle(fe, e);
+    }
+
+    // 0x47B9F0: "*" and a roman numeral typed sets the number of rows (3..10): the settings
+    // saved, NumSkirmishPlayers written, the rows read again and rebuilt, "SkirmishCheat", the
+    // focus to the next gadget. (Rows 5..7's numerals begin the next ones': the typing goes on.)
+    void player_count_cheat(FrontEnd& fe) {
+        int n = 0;
+        if (typed_.ends_with("*IV")) n = 4;
+        else if (typed_.ends_with("*V")) n = 5;
+        else if (typed_.ends_with("*VI")) n = 6;
+        else if (typed_.ends_with("*VII")) n = 7;
+        else if (typed_.ends_with("*VIII")) n = 8;
+        else if (typed_.ends_with("*III")) n = 3;
+        else if (typed_.ends_with("*IX")) n = 9;
+        else if (typed_.ends_with("*X")) n = 10;
+        if (n == 0) return;
+        if (n == 3 || n == 4 || n >= 8) typed_.clear();
+        client::Settings& s = fe.settings();
+        save(s);
+        s.set_int("NumSkirmishPlayers", n);
+        fe.apply_settings();
+        load(s);
+        widgets_.resize(described_);
+        build_rows();
+        sfx(fe, art_, "SkirmishCheat");
+        move_focus(1);
     }
 
     void draw_over(FrontEnd&, render::Image8& out) override {
@@ -1019,6 +1071,8 @@ private:
     std::string map_;
     std::map<std::string, std::string> help_;
     const std::vector<render::Sprite8>* colours_ = nullptr;
+    TypedTail typed_;
+    std::size_t described_ = 0;  // the description's gadgets (the rows come after them)
 };
 
 // ------------------------------------------------------------------ single player (SINGLE.GUI)
@@ -1028,16 +1082,31 @@ public:
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("NewCamp")) w->grayed = !fe.hooks().campaign_menu;
         if (Widget* w = widget("LoadGame")) w->grayed = !fe.hooks().load_game_menu;
+        // AnyMsn is shown with the all-missions setting (0x4777A0).
+        if (Widget* w = widget("AnyMsn")) w->active = fe.settings().get_int("AllMissions", 0) & 1;
+    }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        // 0x477510: DRDEATH typed switches the all-missions setting (and AnyMsn) and writes it.
+        if (typed_.take(e) && typed_.ends_with("DRDEATH") && typed_.last.compare(8, 7, "DRDEATH") == 0) {
+            const bool on = !(fe.settings().get_int("AllMissions", 0) & 1);
+            fe.settings().set_int("AllMissions", on ? 1 : 0);
+            if (Widget* w = widget("AnyMsn")) w->active = on;
+            fe.apply_settings();
+        }
+        LayoutScreen::handle(fe, e);
     }
 
 protected:
     void on_press(FrontEnd& fe, Widget& w) override {
-        if (is(w, "NewCamp") || is(w, "LoadGame") || is(w, "AnyMsn")) sfx(fe, art_, "BigButton");
+        if (is(w, "NewCamp") || is(w, "LoadGame")) sfx(fe, art_, "BigButton");
+        else if (is(w, "AnyMsn")) sfx(fe, art_, "bigButton");
         else if (is(w, "Skirmish")) sfx(fe, art_, "Skirmish");
         else if (is(w, "Options")) sfx(fe, art_, "Options");
         else if (is(w, "PrevMenu")) sfx(fe, art_, "Previous");
         if (is(w, "NewCamp")) {
             if (fe.hooks().campaign_menu) fe.push(fe.hooks().campaign_menu(fe));
+        } else if (is(w, "AnyMsn")) {
+            if (fe.hooks().any_mission_menu) fe.push(fe.hooks().any_mission_menu(fe));
         } else if (is(w, "LoadGame")) {
             if (fe.hooks().load_game_menu) {
                 if (auto next = fe.hooks().load_game_menu(fe, nullptr)) fe.push(std::move(next));
@@ -1056,6 +1125,7 @@ protected:
 
 private:
     MenuArt& art_;
+    TypedTail typed_;
 };
 
 // ------------------------------------------------------------------ movies (0x426780)

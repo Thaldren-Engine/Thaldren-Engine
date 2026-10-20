@@ -54,8 +54,8 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | # | Item | Before | After / evidence |
 |---|---|---|---|
 | 4.1 | New Campaign ("BigButton" → NEWGAME), Load Game ("BigButton"), Skirmish ("skirmish"), Options ("options"), Previous Menu ("Previous") | BUILT-UNVERIFIED (New Campaign goes to the engine's own text screen) | |
-| 4.2 | AnyMsn shown only with `AllMissions`; "bigButton" → NEWGAME in any-mission mode | PARTIAL (button not hidden by the setting; goes to the text screen) | |
-| 4.3 | Typing DRDEATH toggles AnyMsn and writes `AllMissions` (`0x477510`) | MISSING | |
+| 4.2 | AnyMsn shown only with `AllMissions`; "bigButton" → NEWGAME in any-mission mode | PARTIAL (button not hidden by the setting; goes to the text screen) | BUILT-UNVERIFIED (AnyMsn shown by AllMissions; opens the any-mission screen, verified above) |
+| 4.3 | Typing DRDEATH toggles AnyMsn and writes `AllMissions` (`0x477510`) | MISSING | BUILT-UNVERIFIED (typed-key tail of the interface pass; DRDEATH toggles AllMissions) |
 | 4.4 | Registry `side` sets the local player's side (record +0x95) | MISSING | |
 | 4.5 | Spanish: the Skirmish button's quick key becomes 's' | N/A — English data only | |
 | 4.6 | CD checks ("Please insert the Campaign CD (Disc 2) and try again", Multiplayer CD) | N/A — the Steam version's check always passes (`0x50289C` = 1) | |
@@ -64,8 +64,8 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Item | Before | After / evidence |
 |---|---|---|---|
-| 5.1 | New campaign screen NEWGAME.GUI (`0x478240`, handler `0x477AB0`): background newcampaign4 (more than 2 campaigns) / newcampaign4x / playanygame4 (any mission); Side0/Side1 pictures and Arm/Core buttons ("SideSelect" / "SideSelect2"), Campaign list (+knob) by side, Missions list (+knob) in any-mission mode (Campaign list moved to y 308, height 48, Missions height 62), Difficulty switch ("SmlButton", registry `Difficulty`), Start ("bigButton"), Previous Menu ("Previous") | PARTIAL (a text screen of the engine's own: wrong art, keys, no sides) | |
-| 5.2 | Campaign list = `camps\*.tdf` whose [HEADER] campaignside matches the chosen side (`0x476A60`) | PARTIAL (all campaigns listed) | |
+| 5.1 | New campaign screen NEWGAME.GUI (`0x478240`, handler `0x477AB0`): background newcampaign4 (more than 2 campaigns) / newcampaign4x / playanygame4 (any mission); Side0/Side1 pictures and Arm/Core buttons ("SideSelect" / "SideSelect2"), Campaign list (+knob) by side, Missions list (+knob) in any-mission mode (Campaign list moved to y 308, height 48, Missions height 62), Difficulty switch ("SmlButton", registry `Difficulty`), Start ("bigButton"), Previous Menu ("Previous") | PARTIAL (a text screen of the engine's own: wrong art, keys, no sides) | BUILT+VERIFIED (gui_harness 0x478240(0) after main/single/rescan vs ta_play headless: new campaign, after Core, after Arm, any mission: 0 of 307,200 pixels differ each; newcampaign4x untestable: 14 campaigns installed) |
+| 5.2 | Campaign list = `camps\*.tdf` whose [HEADER] campaignside matches the chosen side (`0x476A60`) | PARTIAL (all campaigns listed) | BUILT+VERIFIED (same comparisons: ARM list incl. EXAMPLE/Krogoth, CORE list) |
 | 5.3 | Start: mission status string reset (`0x41DA30`), the campaign loaded, the mission (0 or the chosen one), records +0x96 set, prefs saved, → briefing | PARTIAL | |
 | 5.4 | Mission briefing MSNBRIEF.GUI (`0x478E80`, handler `0x478CB0`): the planet's rotating picture (`<planet>Rotate`), the panorama (`<planet>Pan`, `0x478790`), the planet's name and gravity / wind texts, the brief text in pages with colour mark-up (`0x476CD0`…`0x476EF0`), MORE / BACK TO START, narration, SHUTUP, Start, Previous | PARTIAL (a text screen: no art, no planet, no panorama, own keys) | |
 | 5.5 | Briefing music by locale (`0x476C70`) and glamour sound (`0x476CA0`) | MISSING | |
@@ -84,7 +84,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | # | Item | Before | After / evidence |
 |---|---|---|---|
 | 6.1 | Skirmish set-up (SKIRMISH.GUI) rows, options, Start checks and messages | BUILT-UNVERIFIED (gui_harness renders it; rules as read) | |
-| 6.2 | Roman numeral player-count cheat (III…X) | BUILT-UNVERIFIED | |
+| 6.2 | Roman numeral player-count cheat (III…X) | BUILT-UNVERIFIED | BUILT-UNVERIFIED (was missing: '*III'..'*X' typed in the skirmish set-up, 0x47B9F0) |
 | 6.3 | Select map (SELMAP.GUI) | BUILT-UNVERIFIED | |
 | 6.4 | Load / save menus (LOADGAME.GUI) | BUILT+VERIFIED (commits 47505c4, 386c140) | |
 | 6.5 | Saves in the original's format; re-save byte difference | BUILT-UNVERIFIED (save_check reports re-save differences) | |

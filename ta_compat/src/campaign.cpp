@@ -48,7 +48,10 @@ bool load_campaign(Vfs& vfs, const std::string& name, Campaign& out, std::string
     }
     out = Campaign{};
     out.name = name;
-    if (const TdfSection* h = root->child("HEADER")) out.side = h->get_string("campaignside", 0x100, "");
+    if (const TdfSection* h = root->child("HEADER")) {
+        out.has_header = true;
+        out.side = h->get_string("campaignside", 0x40, "");
+    }
     for (int n = 0;; ++n) {
         const TdfSection* m = root->child("MISSION" + std::to_string(n));
         if (!m) break;

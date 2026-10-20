@@ -219,6 +219,9 @@ using BattleLauncher = std::function<std::unique_ptr<BattleSession>(const LoadPr
 struct FrontEndHooks {
     // Single-player menu > campaign: the campaign's first screen.
     std::function<std::unique_ptr<Screen>(FrontEnd&)> campaign_menu;
+    // Single-player menu > any mission (shown with the all-missions setting): the same screen
+    // with the mission list.
+    std::function<std::unique_ptr<Screen>(FrontEnd&)> any_mission_menu;
     // Main menu > multiplayer: the connection / lobby screens.
     std::function<std::unique_ptr<Screen>(FrontEnd&)> multiplayer_menu;
     // Single-player menu > load game, and the in-game menu's load button
