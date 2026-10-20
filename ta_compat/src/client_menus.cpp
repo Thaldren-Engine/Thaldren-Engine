@@ -10,6 +10,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 
 #include "client/audio.h"
 #include "client/canvas.h"
@@ -260,6 +261,21 @@ const render::Sprite8* MenuArt::picture(const std::string& name, const render::P
 int MenuArt::sound(const std::string& name) {
     const auto it = sound_index_.find(upper(name));
     return it == sound_index_.end() ? -1 : it->second;
+}
+
+std::vector<std::uint8_t> MenuArt::movie(const std::string& name) const {
+    // The original builds "<CD>\Data\<name>.zrb" (on the Steam version the CD is the game
+    // folder itself) and plays it when the file is there (0x426780, 0x41D7B0).
+    std::vector<std::uint8_t> bytes;
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::path(game_dir_) / "Data" / name;
+    const auto size = std::filesystem::file_size(p, ec);
+    if (ec || size == 0) return bytes;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return bytes;
+    bytes.resize(static_cast<std::size_t>(size));
+    if (!in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) bytes.clear();
+    return bytes;
 }
 
 const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {

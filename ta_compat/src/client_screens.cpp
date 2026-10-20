@@ -9,6 +9,7 @@
 #include <ctime>
 
 #include "client/canvas.h"
+#include "client/movie.h"
 #include "render/raster.h"
 #include "sim/battle.h"
 #include "sim/economy.h"
@@ -1057,6 +1058,22 @@ private:
     MenuArt& art_;
 };
 
+// ------------------------------------------------------------------ movies (0x426780)
+// Plays the movies in turn, each with a player of its own (a key ends the one playing; the next
+// starts), then runs `after`. A movie whose file is missing is passed over, as the original's
+// existence check does.
+void play_movies(FrontEnd& fe, MenuArt& art, std::vector<std::string> names, bool repeat_first, std::function<void(FrontEnd&)> after) {
+    while (!names.empty()) {
+        std::vector<std::uint8_t> bytes = art.movie(names.front());
+        names.erase(names.begin());
+        if (bytes.empty()) continue;
+        auto next = [&art, names, after](FrontEnd& f) mutable { play_movies(f, art, std::move(names), false, std::move(after)); };
+        fe.push(std::make_unique<client::MovieScreen>(std::move(bytes), repeat_first, std::move(next)));
+        return;
+    }
+    if (after) after(fe);
+}
+
 // ------------------------------------------------------------------ main menu (MAINMENU.GUI)
 class MainMenu : public LayoutScreen {
 public:
@@ -1075,6 +1092,26 @@ public:
         // The menus' ambience: "BGM" looping (it keeps playing through the menus until a battle
         // loads; a second start does nothing while it plays).
         fe.play_sound_loop(art_.sound("BGM"));
+        if (!started_) {
+            // The program's first state (0x426E80 state 0): on a full screen, the first start
+            // (registry "PlayMovie", default 1) plays 1.zrb and 2.zrb and clears the setting;
+            // later starts play 1.zrb (unless a lobby switch started the program).
+            started_ = true;
+            if (art_.full_screen) {
+                std::vector<std::string> names = {"1.zrb"};
+                if (fe.settings().get_int("PlayMovie", 1) != 0) {
+                    names.push_back("2.zrb");
+                    fe.settings().set_int("PlayMovie", 0);
+                    fe.apply_settings();  // (saved: 0x430F00)
+                }
+                play_movies(fe, art_, names, false, {});
+            }
+        }
+    }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        // (the INTRO button reads whether Shift is held when it is pressed)
+        shift_ = e.shift;
+        LayoutScreen::handle(fe, e);
     }
     void frame(FrontEnd&, std::uint32_t) override {
         // The sparks run along the circuit lines of the picture: one move per pass of the
@@ -1179,12 +1216,21 @@ protected:
             if (fe.hooks().multiplayer_menu) fe.push(fe.hooks().multiplayer_menu(fe));
         } else if (is(w, "EXIT")) {
             fe.quit();
+        } else if (is(w, "INTRO") || is(w, "Credits")) {
+            // (0x425D80) Only on a full screen; the CD check passes on the Steam version. INTRO
+            // plays 2.zrb (again and again while Shift was held, until a key), the credits 5.zrb;
+            // then the main menu again.
+            if (!art_.full_screen) {
+                show_message(fe, art_, "Debug:  You must be in full-screen mode to play a movie.");
+                return;
+            }
+            play_movies(fe, art_, {is(w, "INTRO") ? "2.zrb" : "5.zrb"}, is(w, "INTRO") && shift_, {});
         }
-        // INTRO and the credits play movies (not built).
     }
 
 private:
     MenuArt& art_;
+    bool started_ = false, shift_ = false;
     std::array<Spark, 100> sparks_{};
     int pending_ = 0;        // passes whose spark move is still to be drawn
     render::Image8 shown_;  // the screen as the last pass left it

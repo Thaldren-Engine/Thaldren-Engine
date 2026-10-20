@@ -24,6 +24,9 @@
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
 //   --no-pointer        frames without the pointer (as the original's screen surface has them)
 //   --realtime          headless: run the frames at wall-clock speed (network games)
+//   --movies / --no-movies  play the movies (the intro at the start, INTRO, credits, the
+//                       campaigns' endings) or not; default: the window plays them, headless
+//                       runs do not (the original plays them only on a full screen)
 //   --saves DIR         the saved games' directory (default <game_dir>\SAVEGAME, the original's)
 //   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
 //                       (the format of gui_harness's endmsn:)
@@ -207,6 +210,7 @@ int main(int argc, char** argv) {
     front.title = "Total Annihilation";
     std::string end_screen_file, saves_dir, dump_pages_dir, loading_test_file;
     bool loading_trace = false;
+    int movies = -1;  // --movies / --no-movies (default: the window plays them, headless runs not)
     std::vector<std::string> net_screens;
     std::string key_sweep;  // --key-sweep KEYS:MODS
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
@@ -279,6 +283,8 @@ int main(int argc, char** argv) {
         else if (a == "--gpu-check") front.gpu_check = true;
         else if (a == "--no-pointer") front.draw_pointer = false;
         else if (a == "--realtime") front.realtime = true;
+        else if (a == "--movies") movies = 1;
+        else if (a == "--no-movies") movies = 0;
         else if (a == "--dump-build-pages") {
             dump_pages_dir = next();
             direct = true;
@@ -316,6 +322,9 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s\n", err.c_str());
             return 1;
         }
+        // Movies need a full screen in the original; the window stands for one, a headless run
+        // has no screen (tests: --movies).
+        art.full_screen = movies >= 0 ? movies != 0 : !front.headless;
         client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
         client::FrontEndSetup fes;
         fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options

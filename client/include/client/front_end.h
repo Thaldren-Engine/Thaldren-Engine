@@ -83,6 +83,8 @@ public:
     // Open alone over a battle, it leaves the keys to the battle's own key handling (a bar that
     // takes the pointer only); Tab still reaches it.
     virtual bool battle_keys() const { return false; }
+    // As the top screen it shows no pointer (movies).
+    virtual bool hides_pointer() const { return false; }
 };
 
 // ---------------------------------------------------------------- battles
@@ -273,6 +275,8 @@ public:
     // Narration: its own channel at full volume, whatever the sound settings; a new one
     // replaces the last; stop_narration() ends it.
     virtual void play_narration(int sample) { play_sound(sample); }
+    // The same channel for a sound the caller keeps (it must live until stop_narration()).
+    virtual void play_narration_sample(const Sample* /*sample*/) {}
     virtual void stop_narration() {}
     // Every playing sound stops (the sound mode switched off).
     virtual void stop_sounds() {}

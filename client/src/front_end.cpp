@@ -124,6 +124,9 @@ public:
     void play_narration(int sample) override {
         if (sample >= 0) menu_sounds_.push_back({sample, MenuSound::Narration});
     }
+    void play_narration_sample(const Sample* sample) override {
+        if (sample) menu_sounds_.push_back({-1, MenuSound::Narration, sample});
+    }
     void stop_narration() override { menu_sounds_.push_back({-1, MenuSound::StopNarration}); }
     void stop_sounds() override { menu_sounds_.push_back({-1, MenuSound::StopAll}); }
     MusicPlayer* music() override { return s_.music; }
@@ -336,7 +339,7 @@ public:
         const std::vector<Sample>& ms = s_.content->samples;
         const bool fx_on = fx_volume_ != 0 && sound_mode_ != 0;
         for (const MenuSound& m : menu_sounds_) {
-            const Sample* smp = m.sample >= 0 && static_cast<std::size_t>(m.sample) < ms.size() ? &ms[static_cast<std::size_t>(m.sample)] : nullptr;
+            const Sample* smp = m.direct ? m.direct : m.sample >= 0 && static_cast<std::size_t>(m.sample) < ms.size() ? &ms[static_cast<std::size_t>(m.sample)] : nullptr;
             switch (m.kind) {
             case MenuSound::Plain:
             case MenuSound::Loop:
@@ -388,6 +391,7 @@ private:
 
     void add_pointer(render::DrawList& list) {
         if (!draw_pointer_ || pointer_off_) return;
+        if (!stack_.empty() && stack_.back()->hides_pointer() && !in_battle()) return;
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
             if (pointer_.ended) return;
@@ -485,6 +489,7 @@ private:
     struct MenuSound {
         int sample = -1;
         enum Kind : std::uint8_t { Plain, Loop, File, Narration, StopNarration, StopAll } kind = Plain;
+        const Sample* direct = nullptr;  // a sound the caller keeps (instead of `sample`)
     };
     std::vector<MenuSound> menu_sounds_;
     int frame_no_ = -1;

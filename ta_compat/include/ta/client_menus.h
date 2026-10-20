@@ -59,6 +59,12 @@ public:
     // Side names from gamedata\sidedata.tdf (ARM, CORE, ...).
     const std::vector<std::string>& sides() const { return sides_; }
 
+    // Movies: Data\<name> beside the game (the original's 1-5.zrb, loose files; empty when
+    // missing). The original plays them only on a full screen; the window front end stands for
+    // one, headless runs do not (unless asked to: tests).
+    std::vector<std::uint8_t> movie(const std::string& name) const;
+    bool full_screen = true;
+
 private:
     const std::vector<std::uint8_t>* gaf(const std::string& path);
     client::Font gaf_font(const std::string& path);

@@ -16,7 +16,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | # | Item (original) | Before | After / evidence |
 |---|---|---|---|
 | 1.1 | State machine `0x426E80`: GS+0x2BBE top state, +0x2BBF/+0x2BC0 sub-state; a sub-state change runs `0x4256D0` first | PARTIAL (screens are a stack; transitions per screen) | |
-| 1.2 | State 0 start: when the display is full screen, `PlayMovie` (registry, default 1) set → `1.zrb`, then state 1 (`2.zrb`), `PlayMovie` = 0 saved; else (no lobby switch `-c`/`-n`) `1.zrb` only; then the main menu | MISSING (no movies) | |
+| 1.2 | State 0 start: when the display is full screen, `PlayMovie` (registry, default 1) set → `1.zrb`, then state 1 (`2.zrb`), `PlayMovie` = 0 saved; else (no lobby switch `-c`/`-n`) `1.zrb` only; then the main menu | MISSING (no movies) | BUILT-UNVERIFIED (main menu's first entry; headless ta_play --movies: 1.zrb, a key, 2.zrb, Enter, main menu; PlayMovie written 0) |
 | 1.3 | State 1 (`2.zrb`), state 3 (`5.zrb`, credits), state 4 (`3.zrb` + `5.zrb`, Arm campaign won), state 5 (`4.zrb` + `5.zrb`, Core campaign won) → main menu | MISSING | |
 | 1.4 | Main menu sub-states: 1 run, 5 → single player, 6 → multiplayer, 7 → state 0 (intro again), 8 quit, 9 → credits | PARTIAL (no movie states) | |
 | 1.5 | "Code segment checksum error found when switching FE states" message (`0x4256D0`, `0x428BC0`) | N/A — the check of the original's own code bytes; nothing to check in the engine | |
@@ -29,13 +29,13 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Item | Before | After / evidence |
 |---|---|---|---|
-| 2.1 | Smacker decoder: header, frame sizes/types, the four Huffman trees with their 3-value caches, palette records, video blocks (mono, full, skip, fill), ring frame | MISSING | |
-| 2.2 | Smacker audio: DPCM tracks (8/16-bit, mono/stereo), all 7 tracks opened (`SmackOpen` flags 0xFE100) | MISSING | |
-| 2.3 | Playback: files `Data\<n>.zrb` (loose files); sounds stopped and the screen cleared first; the pointer hidden; frame at x 0, y (480 − height) / 2; Y-interlaced files leave every other line black; palette taken on frames that carry one; the movie's own frame rate | MISSING | |
-| 2.4 | Keys: any typed character ends the movie (and the Shift-started loop); Alt+F4 ends the program; mouse buttons do nothing | MISSING | |
-| 2.5 | INTRO button (`0x425D80`): "smlButton", full-screen and CD checks, Shift held → the intro repeats until a key | MISSING (button does nothing) | |
-| 2.6 | Credits button → `5.zrb` (same checks) | MISSING | |
-| 2.7 | "Debug: You must be in full-screen mode to play a movie." when windowed | MISSING | |
+| 2.1 | Smacker decoder: header, frame sizes/types, the four Huffman trees with their 3-value caches, palette records, video blocks (mono, full, skip, fill), ring frame | MISSING | BUILT+VERIFIED (movie_harness vs smackw32.dll: 1-5.zrb, 11,407 frames, 0 pixel / palette differences) |
+| 2.2 | Smacker audio: DPCM tracks (8/16-bit, mono/stereo), all 7 tracks opened (`SmackOpen` flags 0xFE100) | MISSING | BUILT+VERIFIED (movie_harness: SmackGetTrackData of every frame, 16.8 MB, 0 differences; 16-bit / mono paths unexercised by the game's files) |
+| 2.3 | Playback: files `Data\<n>.zrb` (loose files); sounds stopped and the screen cleared first; the pointer hidden; frame at x 0, y (480 − height) / 2; Y-interlaced files leave every other line black; palette taken on frames that carry one; the movie's own frame rate | MISSING | BUILT+VERIFIED placement (movie_harness compares the 640x480 placement); pacing / sound start BUILT-UNVERIFIED (client::MovieScreen) |
+| 2.4 | Keys: any typed character ends the movie (and the Shift-started loop); Alt+F4 ends the program; mouse buttons do nothing | MISSING | BUILT-UNVERIFIED (MovieScreen::typed_character; Alt+F4 = the window's close, which quits) |
+| 2.5 | INTRO button (`0x425D80`): "smlButton", full-screen and CD checks, Shift held → the intro repeats until a key | MISSING (button does nothing) | BUILT-UNVERIFIED (headless: INTRO click -> 2.zrb; Shift -> repeat) |
+| 2.6 | Credits button → `5.zrb` (same checks) | MISSING | BUILT-UNVERIFIED (headless: Credits hot spot -> 5.zrb at y 88) |
+| 2.7 | "Debug: You must be in full-screen mode to play a movie." when windowed | MISSING | BUILT-UNVERIFIED (headless without --movies shows the message box) |
 | 2.8 | Error texts "Could not open movie file, please check filename in INI.", "Could not setup Direct Draw to play movie.", "Smacker Error", stats.txt | N/A — DirectDraw / SDK diagnostics (a missing file is skipped as the original's existence check does) | |
 
 ## 3. Main menu (MAINMENU.GUI, `0x4263B0`, handler `0x425D80`)
@@ -44,7 +44,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 |---|---|---|---|
 | 3.1 | Layout, FrontendX, version label "v3.1", sparks | BUILT+VERIFIED (gui_harness passes; sparks exact) | |
 | 3.2 | SINGLE ("BigButton"), MULTI ("BigButton", multiplayer data check), EXIT | BUILT-UNVERIFIED | |
-| 3.3 | INTRO / Credits | MISSING → see 2.5, 2.6 | |
+| 3.3 | INTRO / Credits | MISSING → see 2.5, 2.6 | BUILT-UNVERIFIED (see 2.5, 2.6) |
 | 3.4 | Music mood 4 (silent), BGM loop | BUILT-UNVERIFIED | |
 | 3.5 | "Close Windows CD Player?" (YESORNO over the menu, `0x426200`) | N/A — the Windows 95 CD player owning the drive | |
 | 3.6 | Warp hot keys / WARPLEVELS (`0x4269D0`, `\Warp.ini`) | N/A — needs a `Warp.ini` the game does not ship (developer start) — to be confirmed | |
