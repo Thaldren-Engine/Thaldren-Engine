@@ -177,6 +177,11 @@ public:
 
     void handle(const InputEvent& e) {
         if (e.type == InputEvent::Type::Quit) {
+            if (session_ && !ended_ && !pending_ && s_.close_prompt)
+                if (std::unique_ptr<Screen> q = s_.close_prompt(*this, *session_)) {
+                    push(std::move(q));
+                    return;
+                }
             quit_ = true;
             return;
         }

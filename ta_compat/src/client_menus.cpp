@@ -680,6 +680,14 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
     o.clock = s.get_int("clock", 0) != 0;
     o.sound_mode = s.get_int("Sound Mode", 1);
     o.fx_volume = s.get_int("fxvol", 27);
+    // the display switches (0x42F9A0: bits of the options word, all on but DitheredFog)
+    o.screen_chat = s.get_int("screenchat", 1) != 0;
+    o.antialias = (s.get_int("Anti-Alias", 1) & 1) != 0;
+    o.shadows = (s.get_int("Shadows", 1) & 1) != 0;
+    o.feature_shadows = (s.get_int("FeatureShadows", 1) & 1) != 0;
+    o.unit_shadows = (s.get_int("VehicleShadows", 1) & 1) != 0;
+    o.shading = (s.get_int("Shading", 1) & 1) != 0;
+    o.dithered_fog = (s.get_int("DitheredFog", 0) & 1) != 0;
     return o;
 }
 

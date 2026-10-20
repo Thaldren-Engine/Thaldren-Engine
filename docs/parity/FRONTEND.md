@@ -95,7 +95,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 |---|---|---|---|
 | 7.1 | Pages SOUND / MUSIC / INTERFACE / VISUALS, OK / Cancel / Restore / Undo | BUILT-UNVERIFIED | |
 | 7.2 | SELVMODE.GUI (screen size dialog, `0x45E5E0(1)`) | PARTIAL (the slider is on the visuals page; the separate dialog not built) | |
-| 7.3 | Anti-alias registry name "Anti-Alias" | PARTIAL (engine key "Anti Alias") | |
+| 7.3 | Anti-alias registry name "Anti-Alias" | PARTIAL (engine key "Anti Alias") | BUILT-UNVERIFIED (key renamed 'Anti-Alias', the string at 0x504618 of the original) |
 
 ## 8. Settings (registry `0x42F9A0`, writer `0x430F00`) → the settings file
 
@@ -103,8 +103,8 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 |---|---|---|---|
 | 8.1 | Interface Type 0 (clamped ≤ 1), DisplaymodeWidth/Height 640/480, side 0, Difficulty 1, scrollspeed 32 | PARTIAL (side missing) | |
 | 8.2 | SingleCommanderDeath / SingleMapping / SingleLineOfSight / SingleLOSType 1; MultiCommanderDeath / MultiMapping / MultiLineOfSight / MultiLOSType 1 | MISSING | |
-| 8.3 | screenchat 1, damagebars 0, Sound Mode 1, MixingBuffers 8, RestoreVolume / WaveOutVolume / CDAudioVolume | PARTIAL (screenchat missing; the volume restore is the 1998 mixer: N/A) | |
-| 8.4 | Anti-Alias 1, Shadows 1, FeatureShadows 1, VehicleShadows 1, Shading 1, DitheredFog 0, Gamma 12 (10 reads as 12), SwitchAlt 0 | PARTIAL (Shadows, VehicleShadows, DitheredFog, the 10→12 rule missing) | |
+| 8.3 | screenchat 1, damagebars 0, Sound Mode 1, MixingBuffers 8, RestoreVolume / WaveOutVolume / CDAudioVolume | PARTIAL (screenchat missing; the volume restore is the 1998 mixer: N/A) | BUILT-UNVERIFIED (screenchat 1 read into the client's options; the volume restore stays N/A) |
+| 8.4 | Anti-Alias 1, Shadows 1, FeatureShadows 1, VehicleShadows 1, Shading 1, DitheredFog 0, Gamma 12 (10 reads as 12), SwitchAlt 0 | PARTIAL (Shadows, VehicleShadows, DitheredFog, the 10→12 rule missing) | BUILT-UNVERIFIED (Anti-Alias, Shadows, FeatureShadows, VehicleShadows, Shading 1 / DitheredFog 0 read into the client's options as bit 0 of each value; Gamma 10 shows as 12 on the visuals page) |
 | 8.5 | Password, Nickname, Game Name, Image Output Directory (`<user>_images`-like default), Movie Output Rate 10 | PARTIAL (Nickname only) | |
 | 8.6 | textlines 10, textscroll 10, mousespeed 10, gamespeed 10, unitchat 10, unitchattext 5, musicmode 1, cdmode 4, ackfx 1, buildfx 1, speechfx 1, fxvol 27, musicvol 32, clock 0 | PARTIAL (mousespeed, ackfx, buildfx missing) | |
 | 8.7 | NumSkirmishPlayers 4, Skirmish… values, SkirmishMap (first map), `Total Annihilation\Skirmish` Player%d… | BUILT-UNVERIFIED | |
@@ -126,9 +126,9 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 
 | # | Item | Before | After / evidence |
 |---|---|---|---|
-| 10.1 | Close / Alt+F4 in a battle → "Surrender this battle and exit to Windows?" (YESORNO) | MISSING (the engine quits at once) | |
+| 10.1 | Close / Alt+F4 in a battle → "Surrender this battle and exit to Windows?" (YESORNO) | MISSING (the engine quits at once) | BUILT+VERIFIED headless (ta_play script 'quit' in a campaign battle: YESORNO 'Surrender this battle and exit to Windows?' over the battle, Yes quits, No closes; the original's battle state sets close handler 0x4609A0 -> 0x460680 with intent 2; menus and end screens still quit at once) |
 | 10.2 | Close in the menus → network cleanup, end flag 4, quit (with the lobby's status text when set) | BUILT-UNVERIFIED (quits) | |
-| 10.3 | Alt+F4 during a movie → quit | MISSING (no movies) | |
+| 10.3 | Alt+F4 during a movie → quit | MISSING (no movies) | BUILT-UNVERIFIED (a close during a movie quits: the movie runs outside a battle) |
 | 10.4 | Window can't be moved (SC_MOVE refused) | N/A — a full-screen DirectDraw window; the engine's window is a platform window | |
 | 10.5 | Error texts: "Error: Environment Initialization Failed! Check your DirectX setup", "Error: Sound system initialization failed.", "No sound driver is available for use.", "Out of memory! Your hard disk may be full", "Unable to start the loading thread!", "Can't load GAMEDATA.TDF", "Can't load MOVEINFO.TDF", "No [%s] in GAMEDATA/SIDEDATA.TDF for side:%s", the mission file errors | PARTIAL (the engine reports its own texts) | |
 

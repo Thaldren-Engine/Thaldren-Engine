@@ -209,7 +209,7 @@ protected:
                 else if (is(w, "SCREEN")) set(w, 65, s.get_int("scrollspeed", 0x20));
                 else if (is(w, "TXTSCROL")) set(w, 20, s.get_int("textscroll", 10));
                 else if (is(w, "MAXLINES")) set(w, 30, s.get_int("textlines", 10));
-                else if (is(w, "GAMMA")) set(w, 20, s.get_int("Gamma", 12));
+                else if (is(w, "GAMMA")) set(w, 20, s.get_int("Gamma", 12) == 10 ? 12 : s.get_int("Gamma", 12));  // (0x42F9A0 reads 10 as 12)
             } else if (w.kind == WidgetKind::Button && w.stages > 0) {
                 if (is(w, "SPEECH")) w.stage = s.get_int("speechfx", 1) ? std::clamp(s.get_int("unitchat", 10) / 5, 0, 2) : 0;
                 else if (is(w, "MODE")) w.stage = std::clamp(s.get_int("Sound Mode", 1), 0, 2);
@@ -219,7 +219,7 @@ protected:
                 else if (is(w, "TRACKMODE")) w.stage = std::clamp(s.get_int("cdmode", 4) - 1, 0, 3);
                 else if (is(w, "TRACKTYPE") && m) w.stage = m->types()[static_cast<std::size_t>(std::clamp(track_, 0, m->track_count()))];
                 else if (is(w, "SHADING")) w.stage = s.get_int("Shading", 1) ? 1 : 0;
-                else if (is(w, "ANTI")) w.stage = s.get_int("Anti Alias", 1) ? 1 : 0;
+                else if (is(w, "ANTI")) w.stage = s.get_int("Anti-Alias", 1) ? 1 : 0;
                 else if (is(w, "BSHADOWS")) w.stage = s.get_int("FeatureShadows", 1) ? 1 : 0;
             }
         }
@@ -304,7 +304,7 @@ protected:
         } else if (is(w, "SHADING")) {
             s.set_int("Shading", w.stage);
         } else if (is(w, "ANTI")) {
-            s.set_int("Anti Alias", w.stage);
+            s.set_int("Anti-Alias", w.stage);
         } else if (is(w, "BSHADOWS")) {
             s.set_int("FeatureShadows", w.stage);
         } else if (is(w, "CDPLAY")) {
@@ -354,7 +354,7 @@ protected:
             if (is(w, "LEFTCLICK")) s.set_int("Interface Type", 0);
             if (is(w, "GAMMA")) s.set_int("Gamma", 12);
             if (is(w, "SHADING")) s.set_int("Shading", 1);
-            if (is(w, "ANTI")) s.set_int("Anti Alias", 1);
+            if (is(w, "ANTI")) s.set_int("Anti-Alias", 1);
             if (is(w, "BSHADOWS")) s.set_int("FeatureShadows", 1);
             if (is(w, "VIDSLDR") && !in_battle_) {
                 s.set_int("DisplaymodeWidth", 640);
@@ -2096,6 +2096,12 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.game_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("ARMOPT")) return nullptr;
         return std::make_unique<GameMenu>(art);
+    };
+    // Closing the window in a battle (the battle state's close handler 0x4609A0): the exit
+    // question "Surrender this battle and exit to Windows?" over whatever is open.
+    setup.close_prompt = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
+        if (!art.layout("YESORNO")) return nullptr;
+        return std::make_unique<YesOrNo>(art, 2);
     };
     setup.tab_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("TABMENU")) return nullptr;

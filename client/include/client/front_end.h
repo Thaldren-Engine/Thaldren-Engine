@@ -317,6 +317,9 @@ struct FrontEndSetup {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> game_menu;
     // The tab bar (Tab in network games).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> tab_menu;
+    // Closing the window while a battle runs: the question shown instead of quitting (null:
+    // quit at once).
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> close_prompt;
     MusicPlayer* music = nullptr;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;
