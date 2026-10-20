@@ -222,6 +222,9 @@ public:
     bool synching(int slot) const;
     // Loading: whether this machine heard "loaded" (0x15) from the player (GS+0x29A4).
     bool heard_loaded(int slot) const { return slot >= 0 && slot < 10 && heard_loaded_[static_cast<std::size_t>(slot)]; }
+    // A probe answer (0x07) was heard from the record of `slot` (its byte +0x21 bit 0; the
+    // original sets it and never reads it).
+    bool probe_answered(int slot) const { return slot >= 0 && slot < 10 && (record21_[static_cast<std::size_t>(slot)] & 1) != 0; }
     // The original's order of a network start: the host's 0x08, then every machine loads its
     // data and only then runs the loading handshake (start positions 0x1E / 0x1F, "loaded" 0x15;
     // 0x4568C0 is called once the loading thread is done). With `defer` the handshake waits for
@@ -295,6 +298,7 @@ private:
     bool pending_map_ready_ = false;
     // Loading handshake (GS+0x29A4 loaded, +0x29D0 position answered, +0x29FC positions).
     std::array<bool, 10> heard_loaded_{}, position_acked_{};
+    std::array<std::uint8_t, 10> record21_{};  // the records' byte +0x21 (bit 0: a 0x07 heard)
     std::array<std::int32_t, 10> positions_{};
     bool positions_made_ = false;
     // Unit definition exchange.

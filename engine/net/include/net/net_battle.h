@@ -99,8 +99,19 @@ public:
     std::function<void(int)> on_speed;
     // Alliance change (packet 0x23) from local player `from` to player `to`.
     void send_alliance(int from, int to, bool allied);
-    // A player left (packet 0x1B); `reason` as the original's status codes.
+    // A player was sent away here (0x453010: a status 0x1B received or sent, a session player
+    // destroyed); `reason` as the original's status codes. The original shows nothing for it.
     std::function<void(int slot, int reason)> on_player_left;
+    // A received 0x1C named a known player: the original's console line "Player %s has
+    // disconnected" (the record's session name; kind 4, from the packet's sender `from`).
+    std::function<void(int slot, int from)> on_disconnected;
+    // Probe answers (0x07, case 5 of 0x453D40): the sender record's byte +0x21 gets bit 0. The
+    // original never reads that bit (no reader of record +0x21 bit 0 in TotalA.exe); kept as state.
+    bool probe_answered(int slot) const { return slot >= 0 && slot < 10 && (record21_[static_cast<std::size_t>(slot)] & 1) != 0; }
+    // A received 0x1C named this machine's human (0x453D40 case 0x1A sets GS+0x3923B bit 2).
+    bool local_disconnected() const { return disconnected_; }
+    // The player's leaving byte (record +0x22: the reason it was sent away, 0 none).
+    std::uint8_t leaving(int slot) const { return slot >= 0 && slot < 10 ? leaving_[static_cast<std::size_t>(slot)] : 0; }
 
     // Each remote player's last unit state step (the record's +0x18) and how far the slowest
     // is behind this machine (the step budget slows down when it is 900 steps or more).
@@ -215,15 +226,18 @@ private:
     // Net_SendPacketToPlayer: from a playing player to a remote one.
     bool send_to(std::int32_t from, std::int32_t to, const std::uint8_t* p, std::size_t n);
     int slot_of(std::int32_t net_id) const;  // 10 when none
-    // 0x452CC0 for another machine's player that left the session: its whole team killed here
-    // (0x486F10), this machine's alliance bytes toward it cleared and its record freed.
-    void remove_remote_player(int slot);
-    // 0x452CC0 for a player of any machine: a remote one as above; one of this machine's has
-    // its team killed and its session player destroyed.
+    // 0x452CC0 (player `slot`, in the battle: GS+0x2A44 bit 2 set): its team killed (0x486F10),
+    // every local record's alliance bytes toward it (+0x108, +0x113) and its own (+0x108..+0x112)
+    // cleared, its CD bit (side +0x9D bit 2) cleared; another machine's record is freed (controller
+    // 0, side kind 0, net id -1, group 0); one of this machine's stays (no session player is
+    // destroyed here). When its side record had the host flag, the human record (controller 1 or
+    // 3) with the highest net id gets the host flag too (the old one keeps its own).
     void remove_player(int slot);
     // 0x453010 (player `slot`, `reason`): the player is sent away once (a status 0x1B to
-    // everybody, then 0x452CC0): this machine's human takes every player of this machine with
-    // it; a remote human every record of its machine group; a computer player only itself.
+    // everybody, then 0x452CC0): this machine's human sends a status for every player of this
+    // machine (only the first goes out: the sender is leaving after it) and runs 0x452CC0 for
+    // the human each time; a remote human runs it for every record of its machine group; a
+    // computer player for itself.
     void send_away(int slot, std::uint8_t reason);
     std::int32_t first_local_net_id() const;
     bool plays(int slot) const;
@@ -251,6 +265,8 @@ private:
     void send_view_state(int player, int to, bool ask);  // 0x4573D0 (to: -1 every remote human)
     bool remote_human(int slot) const;
     std::array<std::uint8_t, 11> leaving_{};
+    std::array<std::uint8_t, 11> record21_{};  // the records' byte +0x21 (bit 0: a 0x07 heard)
+    bool disconnected_ = false;                // GS+0x3923B bit 2 from a 0x1C naming the local human
     std::array<RoomPlayer, 10> room_{};
     bool have_room_ = false, watch_sent_ = false, per_group_ = false, timeout_disabled_ = false;
     std::uint32_t timeout_seconds_ = 0, pause_clock_ = 0;

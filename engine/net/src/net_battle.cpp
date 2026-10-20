@@ -92,6 +92,7 @@ void NetBattle::apply_side_record(int s, const RoomPlayer& r) {
     sim::VictorySide& side = battle_->victory.sides[static_cast<std::size_t>(s)];
     side.watching = r.watching();
     side.human = r.kind == 1;
+    side.host = (r.flags & room::kHost) != 0;  // the whole side record is copied (+0x97 too)
 }
 
 void NetBattle::announce_records() {
@@ -376,21 +377,55 @@ void NetBattle::reject(int slot, std::uint8_t reason) {
 }
 
 void NetBattle::remove_player(int slot) {
+    // 0x452CC0 in the battle (GS+0x2A44 bit 2 is set from the game start on).
     if (!battle_ || slot < 0 || slot > 9) return;
-    sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(slot)];
-    if (!p.active) return;
+    sim::Battle& b = *battle_;
+    sim::PlayerSlot& p = b.players[static_cast<std::size_t>(slot)];
+    if (!p.active || p.controller < 1 || p.controller > 3) return;
+    const u8 state = p.state;
+    if (state == 10) return;
+    const std::size_t s = static_cast<std::size_t>(slot);
+    const bool was_host = b.victory.sides[s].host;
+    // Every local record forgets its alliance toward it (+0x108 and +0x113 at its index).
+    for (std::size_t k = 0; k < 10 && k < b.players.size(); ++k) {
+        const sim::PlayerSlot& q = b.players[k];
+        if (!q.active || (q.controller != 1 && q.controller != 2)) continue;
+        if (k < b.alliances.size() && state < 16) b.alliances[k][state] = 0;
+        allied_by_[k][s] = 0;
+    }
+    b.kill_team(slot);  // 0x486F10
     if (p.controller == 3) {
-        remove_remote_player(slot);
-        return;
+        // Another machine's record is freed (0x463C60(record, 0): controller and side kind 0;
+        // net id -1, group +0xC 0). One of this machine's stays as it is in the battle: no
+        // session player is destroyed here.
+        p.active = false;
+        p.controller = 0;
+        p.net_id = -1;
+        room_[s].kind = 0;
+        room_[s].group = 0;
     }
-    if (p.controller == 1 || p.controller == 2) {
-        battle_->kill_team(slot);
-        const std::int32_t id = p.net_id;
-        if (id && id != -1) transport_.destroy_player(id);
+    // (GS+0x2A3C, the session's player count, goes down by one: only the menus read it.)
+    room_[s].cd = static_cast<std::uint16_t>(room_[s].cd & ~4u);  // side +0x9D bit 2
+    if (s < b.alliances.size())
+        for (std::size_t k = 0; k < 11; ++k) b.alliances[s][k] = 0;  // its own +0x108..+0x112
+    if (!was_host) return;
+    // Its side record had the host flag: the human record (local 1 or remote 3) with the highest
+    // net id (unsigned, above 0) gets it too; a local record removed here still counts, and the
+    // old record keeps its flag (0x450030 still finds the first flagged record).
+    std::uint32_t best = 0;
+    for (std::size_t k = 0; k < 10 && k < b.players.size(); ++k) {
+        const sim::PlayerSlot& q = b.players[k];
+        if (q.active && (q.controller == 3 || q.controller == 1) && best < static_cast<std::uint32_t>(q.net_id))
+            best = static_cast<std::uint32_t>(q.net_id);
     }
+    const int h = slot_of(static_cast<std::int32_t>(best));
+    if (h == 10) return;
+    b.victory.sides[static_cast<std::size_t>(h)].host = true;
+    room_[static_cast<std::size_t>(h)].flags |= room::kHost;
 }
 
 void NetBattle::send_away(int slot, std::uint8_t reason) {
+    // 0x453010.
     if (!battle_ || slot < 0 || slot > 9) return;
     sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(slot)];
     const std::size_t s = static_cast<std::size_t>(slot);
@@ -400,37 +435,42 @@ void NetBattle::send_away(int slot, std::uint8_t reason) {
         pk[5] = reason;
         broadcast(first_local_net_id(), pk, 6);
     };
-    auto gone = [&](int k) {
+    auto gone = [&](int k, bool tell) {
         leaving_[static_cast<std::size_t>(k)] = reason;
-        if (on_player_left) on_player_left(k, reason);
+        if (tell && on_player_left) on_player_left(k, reason);
     };
     if (p.active && !leaving_[s]) {
         if (p.controller == 1) {
-            // This machine's human: every player this machine runs leaves.
+            // This machine's human: a status for each player this machine runs, all from the
+            // first of them (refused once that one is leaving: only the first goes out), and
+            // 0x452CC0 for the human each time; its computer players' teams are not killed.
+            const std::int32_t human = p.net_id;
             for (int k = 0; k < 10 && static_cast<std::size_t>(k) < battle_->players.size(); ++k) {
                 const sim::PlayerSlot& q = battle_->players[static_cast<std::size_t>(k)];
                 if (!q.active || (q.controller != 1 && q.controller != 2)) continue;
                 status(q.net_id);
-                remove_player(k);
-                gone(k);
+                remove_player(slot_of(human));
+                gone(k, true);
             }
         } else if (p.controller == 2) {
             status(p.net_id);
             remove_player(slot);
-            gone(slot);
+            gone(slot, true);
         } else if (p.controller == 3) {
             status(p.net_id);
             if (room_[s].kind != 1) {
                 remove_player(slot);
-                gone(slot);
+                gone(slot, true);
             } else {
-                // A remote human: its machine's whole group.
+                // A remote human: every record of its machine group (+0xC), active or not
+                // (freed records have group 0); each gets the leaving byte.
                 const std::int32_t group = room_[s].group;
-                for (int k = 0; k < 10 && static_cast<std::size_t>(k) < battle_->players.size(); ++k)
-                    if (room_[static_cast<std::size_t>(k)].group == group && battle_->players[static_cast<std::size_t>(k)].active) {
-                        remove_player(k);
-                        gone(k);
-                    }
+                for (int k = 0; k < 10 && static_cast<std::size_t>(k) < battle_->players.size(); ++k) {
+                    if (room_[static_cast<std::size_t>(k)].group != group) continue;
+                    const bool was = battle_->players[static_cast<std::size_t>(k)].active;
+                    remove_player(k);
+                    gone(k, was);
+                }
             }
         }
     }
@@ -460,42 +500,24 @@ void NetBattle::send_alliance(int from, int to, bool allied) {
 
 // ------------------------------------------------------------------ receiving
 
-void NetBattle::remove_remote_player(int slot) {
-    sim::Battle& b = *battle_;
-    if (slot < 0 || slot > 9 || static_cast<std::size_t>(slot) >= b.players.size()) return;
-    sim::PlayerSlot& p = b.players[static_cast<std::size_t>(slot)];
-    if (!p.active || p.state == 10) return;
-    const u8 state = p.state;
-    for (std::size_t k = 0; k < b.players.size() && k < 10; ++k) {
-        const sim::PlayerSlot& q = b.players[k];
-        if (q.active && (q.controller == 1 || q.controller == 2) && k < b.alliances.size() && state < 16) b.alliances[k][state] = 0;
-    }
-    b.kill_team(slot);
-    p.active = false;
-    p.net_id = -1;
-}
-
 void NetBattle::network_input() {
     // 0x453D40: every packet that is due, then the session's bookkeeping.
     if (!battle_) return;
     transport_.pump();
-    // The session's own messages first: a destroyed player of the game (system message 5,
-    // 0x4550D5) that another machine ran leaves here (0x452CC0), and every machine is told
-    // "has disconnected" (packet 0x1C) by this machine's first player.
+    // The session's own messages first: a destroyed player of the game (system message 5, a
+    // player: 0x453D40's system branch) is sent away with reason 1 (0x453010: its status 0x1B
+    // to everybody, 0x452CC0 by the rules there) and its record gets controller 0 (0x463C60).
+    // (The original sends no 0x1C for it; the host also refreshes the session's description.)
     SessionEvent ev;
     while (transport_.next_event(ev)) {
         if (ev.kind != SessionEvent::Kind::PlayerDestroyed) continue;
         const int s = slot_of(ev.id);
         if (s == 10) continue;
-        const sim::PlayerSlot& lp = battle_->players[static_cast<std::size_t>(s)];
-        if (lp.active && lp.controller == 3) {
-            remove_remote_player(s);
-            leaving_[static_cast<std::size_t>(s)] = 1;
-            if (on_player_left) on_player_left(s, 0x1C);
-        }
-        u8 pk[5] = {packet::kDisconnect};
-        put32(pk + 1, static_cast<std::uint32_t>(ev.id));
-        broadcast(first_local_net_id(), pk, 5);
+        sim::PlayerSlot& lp = battle_->players[static_cast<std::size_t>(s)];
+        if (!lp.active || lp.controller < 1 || lp.controller > 3 || lp.state == 10) continue;
+        send_away(s, room::kLeft);
+        lp.controller = 0;
+        room_[static_cast<std::size_t>(s)].kind = 0;
     }
     const FrameReceiver::ReadFn read = [this](std::int32_t& f, std::int32_t& t, std::vector<std::uint8_t>& m) {
         Message msg;
@@ -517,13 +539,23 @@ void NetBattle::network_input() {
             ++counters_.refused;
             continue;
         }
-        if (from == 10 || to == 10) {
-            ++counters_.refused;  // the original answers "unknown player" (status 6)
+        if (from == 10) {
+            // (The original reads a "record 10" past the table here, GS+0x2851; 0x453010 on the
+            // unknown id returns before sending anything.)
+            ++counters_.refused;
             continue;
         }
         const sim::PlayerSlot& fp = battle_->players[static_cast<std::size_t>(from)];
         if (!(fp.active && fp.controller == 3 && fp.state != 10)) {
+            // A known sender that is not a present remote player goes to 0x453010(sender, 6)
+            // (a local one is only ignored): an inactive record just gets the leaving byte; one
+            // out of the game (state 10) is sent away (status 6 to everybody, its group if human).
+            if (fp.controller != 1 && fp.controller != 2) send_away(from, 6);
             ++counters_.refused;
+            continue;
+        }
+        if (to == 10 || !battle_->players[static_cast<std::size_t>(to)].active || battle_->players[static_cast<std::size_t>(to)].state == 10) {
+            ++counters_.refused;  // the addressee is no record in the game: dropped, nothing said
             continue;
         }
         last_heard_[static_cast<std::size_t>(from)] = clock_;
@@ -577,6 +609,10 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
         send_to(first_local_net_id(), b.players[static_cast<std::size_t>(from)].net_id, r, 1);
         break;
     }
+    case packet::kProbeReply:
+        // Case 5: the sender record's byte +0x21 gets bit 0 (never read by the original).
+        record21_[static_cast<std::size_t>(from)] |= 1;
+        break;
     case packet::kUnitCreated:
         b.apply_unit_packet(from, p);
         break;
@@ -725,11 +761,26 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
         break;
     }
     case packet::kDisconnect: {
-        // "Player %s has disconnected" (0x1C): that player is out.
-        const int s = slot_of(static_cast<std::int32_t>(get32(p + 1)));
-        if (s != 10 && !plays(s)) {
-            leaving_[static_cast<std::size_t>(s)] = 1;
-            if (on_player_left) on_player_left(s, 0x1C);
+        // Case 0x1A: a player this machine knows (controller not 0) is shown as "Player %s has
+        // disconnected"; it goes through 0x452CC0 when it is another machine's or the loading
+        // is not under way (GS+0x38D75 bit 0 clear or bit 1 set), and this machine passes the
+        // 0x1C on from its own player (GS+0x2A42) once (afterwards the record is not found).
+        // Naming this machine's human sets GS+0x3923B bit 2. No leaving byte is written.
+        const std::int32_t id = static_cast<std::int32_t>(get32(p + 1));
+        const int s = slot_of(id);
+        if (s != 10) {
+            if (on_disconnected) on_disconnected(s, from);
+            const sim::PlayerSlot& q = b.players[static_cast<std::size_t>(s)];
+            if ((q.active && q.controller == 3) || phase_ != Phase::Loading) remove_player(s);
+            u8 pk[5] = {packet::kDisconnect};
+            put32(pk + 1, static_cast<std::uint32_t>(id));
+            const int l = b.settings.local_player;
+            if (l >= 0 && l < 10) broadcast(b.players[static_cast<std::size_t>(l)].net_id, pk, 5);
+            for (int k = 0; k < 10; ++k)
+                if (b.players[static_cast<std::size_t>(k)].controller == 1) {
+                    if (b.players[static_cast<std::size_t>(k)].net_id == id) disconnected_ = true;
+                    break;
+                }
         }
         break;
     }

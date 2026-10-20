@@ -10,9 +10,9 @@ Engine smoke tools: `net_tests`, `net_play` (loop / duel / features / tcp / udp)
 (DirectPlay wire protocol, also against a real `TotalA.exe` under the capture tool's offscreen
 mode), harnesses `net_harness`, `netstate_harness`, `feature_harness`.
 
-Counts over the 84 rows below (2026-10-20). On master 14456bf: 35 BUILT+VERIFIED, 24
-BUILT-UNVERIFIED, 9 PARTIAL, 13 MISSING, 3 NOT-APPLICABLE. Now: 40 BUILT+VERIFIED, 30
-BUILT-UNVERIFIED, 5 PARTIAL, 6 MISSING, 3 NOT-APPLICABLE (rows changed this round are marked
+Counts over the 85 rows below (2026-10-20). On master 14456bf: 35 BUILT+VERIFIED, 24
+BUILT-UNVERIFIED, 9 PARTIAL, 13 MISSING, 3 NOT-APPLICABLE. Now (recounted 2026-10-20 after the
+leave-path round): 40 BUILT+VERIFIED, 37 BUILT-UNVERIFIED, 4 PARTIAL, 1 MISSING, 3 NOT-APPLICABLE (rows changed this round are marked
 *2026-10-20*; the feature rows of section 1 count as changed: master had no host role, broadcast
 requests, no comparison tool and no regression test).
 
@@ -35,12 +35,12 @@ requests, no comparison tool and no regression test).
 | Type | Original handler | Status | Notes |
 |---|---|---|---|
 | table of sizes/phases, frame split, size-0 hang | `0x451FD0`, `0x463790` | BUILT+VERIFIED | net_harness, net_tests |
-| sender checks (known, present remote, addressee playing; "unknown" status 6) | `0x453D40` top | BUILT-UNVERIFIED | engine counts it refused; status 6 to the sender not sent in battle |
+| sender checks (known, present remote; addressee in the game) | `0x453D40` top | BUILT-UNVERIFIED *2026-10-20* | a known sender that is not a present remote player goes to `0x453010(sender, 6)` (a local one is ignored): an inactive record only gets the leaving byte, one with state 10 is sent away (status 6 to everybody); an unknown id sends nothing (the "unknown" status never reaches the sender); the addressee check comes after. net_tests (both cases). Not reproduced: for an unknown sender the original reads a "record 10" past the table (GS+0x2851), an input |
 | 0x02 ping (echo with time, latency) | `0x4565A0` | BUILT-UNVERIFIED | |
 | 0x03, 0x04, 0x25, 0x2B | no case | NOT-APPLICABLE | the original ignores them too |
 | 0x05 chat (shown when the addressee is human) | `0x463CA0` | BUILT+VERIFIED | with the original both ways (room and battle) |
 | 0x06 probe → 0x07 from the first local playing record to the session's player | case 4 | BUILT-UNVERIFIED | |
-| 0x07 probe answer: sender record +0x21 bit 0 | case 5 | MISSING | nothing reads it in the engine; the byte's reader not found yet |
+| 0x07 probe answer: sender record +0x21 bit 0 | case 5 | BUILT-UNVERIFIED *2026-10-20* | was MISSING. The bit is set and never read in the original (no reader at GS+0x1B81..+0x1B87 or through a record pointer); the room and the battle keep it per record, not cleared on free (`probe_answered`). net_tests: the room's periodic probes, a battle probe |
 | 0x08 game start (sets GS+0x2A44 bit 2, ends the loop) | case 6 | BUILT+VERIFIED | with the original |
 | 0x09 unit create | `0x4861D0` | BUILT+VERIFIED | with the original; netstate_harness |
 | 0x0A transport | `0x4876..` | BUILT-UNVERIFIED | orders_harness for the routine |
@@ -56,8 +56,8 @@ requests, no comparison tool and no regression test).
 | 0x17 / 0x18 logos | `0x4526C0` / `0x452570` / `0x4523E0` | BUILT+VERIFIED | with the original (logo 0xFF crash found) |
 | 0x19 pause / speed | case 0x17 | BUILT-UNVERIFIED | |
 | 0x1A unit definition exchange | `Sync_*` | BUILT+VERIFIED | with the original; gui_harness |
-| 0x1B status (player leaving, `0x453010`) | case 0x19 | BUILT-UNVERIFIED *2026-10-20* | received or sent (time-out Reject): `NetBattle::send_away` — once per player: status relayed to everybody, this machine's human takes its machine's players with it, a remote human its machine group, a computer player itself; each removed by `0x452CC0` (team killed, alliance bytes toward it cleared, record freed; this machine's session players destroyed). Open: the per-reason texts (status 7 "You need a unit you don't have") |
-| 0x1C disconnect ("Player %s has disconnected") | | BUILT-UNVERIFIED | |
+| 0x1B status (player leaving, `0x453010`) | case 0x19 | BUILT-UNVERIFIED *2026-10-20* | received or sent (time-out Reject, sender check, session "player destroyed"): `NetBattle::send_away` — the status from the first local record (refused once it is leaving); this machine's human: a status per local player (only the first goes out) and `0x452CC0` for the human each time (its computer players' teams are not killed; was: all of them killed and their session players destroyed); a remote human: every record of its group; a computer player: itself. Status 7 ("You need a unit you don't have"): the original never sends it (no caller passes 7, no other writer of +0x22), nor does the engine; a received 7 shows the text (`out_text`). net_tests |
+| 0x1C disconnect ("Player %s has disconnected") | case 0x1A | BUILT-UNVERIFIED *2026-10-20* | the line (session name, kind 4, `on_disconnected`); `0x452CC0` for it when remote or not loading; passed on once from the local player; naming the local human sets GS+0x3923B bit 2 (`local_disconnected`; its use by the client not read). Was: only marked leaving. Nothing in the original starts a 0x1C (`0x452800`, the same body, has no caller); the engine sent one on a session "player destroyed": removed. net_tests |
 | 0x1D frame timing (`0x461620`) | phase mask 0 | NOT-APPLICABLE | never accepted by the phase table |
 | 0x1E / 0x1F start positions | cases 0x1C / 0x1D | BUILT+VERIFIED | with the original |
 | 0x20 side record (found by owner id at +0x91) | case 0x1E | BUILT+VERIFIED | with the original |
@@ -114,9 +114,9 @@ requests, no comparison tool and no regression test).
 |---|---|---|
 | room records, ready, map, options, start condition `0x456760` | BUILT+VERIFIED | with the original both ways |
 | room drawn 1:1 | BUILT+VERIFIED (CLIENT/FRONTEND) | gui_harness comparisons |
-| row order: each machine shows its own player in row 0 | MISSING | engine rooms use the host's slot order |
+| row order: each machine shows its own player in row 0 | BUILT-UNVERIFIED *2026-10-20* | built in b0e1351 (`display_row`: the host its slot table, a joiner its own player first, then the others in slot order); the row was stale. No net_tests case (screen code) |
 | a joining machine adding a computer player (PLAYER on a free or blocked row, `0x447B10`) | BUILT-UNVERIFIED *2026-10-20* | any machine adds one unless the game is closed ("Can't add another player when game is closed.", 500 wide), the commander mode is 0x1000, or `0x457B90` finds one this machine already runs (controller 2 only; was: any computer player anywhere, and the host only). A joiner asks the session for its player ("AI:" + its name, 16 characters, data byte 0x13 = 0x50); its side record goes out until the host seats it; it is the joiner's to run and to remove. net_tests loopback (seated at the same slot on both machines, removed again); not tried against the original |
-| Exit to Windows in a network battle (`0x451B60`): every player this machine runs has its team killed and its session player destroyed; the other machines, on the session's "player destroyed" (system message 5, `0x4550D5`), run `0x452CC0` for it (team killed there, their alliance bytes toward it cleared, the record freed) and send "has disconnected" (0x1C) | BUILT-UNVERIFIED *2026-10-20* | loopback host + join: the host exits to Windows from the exit menu, the joiner frees both host-side records (human and computer player) with their units; was: ignored until the time-out. Open: the other leave paths of the original (status 0x1B, `0x453010`) also kill the leaver's team, the engine still only marks those players as leaving |
+| Exit to Windows in a network battle (`0x451B60`): `0x452CC0` for every player this machine runs (team killed; in the battle the record and session player stay), then the session closed (`0x46C190`), which destroys them for the others; the other machines, on the session's "player destroyed" (system message 5), send it away with reason 1 (`0x453010`: status 0x1B, `0x452CC0` for its whole machine group: teams killed, alliance bytes toward it cleared, records freed) and set its controller to 0 | BUILT-UNVERIFIED *2026-10-20* | loopback host + join: the host exits to Windows from the exit menu, the joiner frees both host-side records (human and computer player) with their units. Corrected 2026-10-20: no 0x1C is sent for it (`0x4550D5` is in the 0x1C receiver), the other leave paths (0x1B) now kill teams and free records as the original does (the "Open" note is closed); net_tests: session destroy. Not done: GS+0x2BEE bit 0 and the host's session-description refresh after it |
 | alliances of the room carried into the battle (team rule `0x446C70` every room frame, forced breaks `0x446E90`, `0x452960`) | BUILT-UNVERIFIED *2026-10-20* | was MISSING (the battle derived alliances from teams only). net_tests: team rule, a hand-made alliance, a forced break, the battle start's table |
 | ALLY toggle on a teammate leaves the team | BUILT-UNVERIFIED *2026-10-20* | `0x447B10` "ALLY%d" re-read: the leaving record is the local one (`0x2A42`); after the toggle (`0x452960`) a shared team other than 5 runs `0x446E90` (every alliance in it broken, forced), team 5, `0x452BD0` (0x24); the sound and line read the byte afterwards, so "broke alliance with" and Multi. Was: alliances broken unforced, the team kept. Same fix for TEAMICONS (no unforced pass before the room's forced one). Room tests and battle_menus_check unchanged; the lounge press itself not driven |
 | restrictions dialog | BUILT+VERIFIED | gui_harness pixel comparison |
@@ -141,7 +141,7 @@ requests, no comparison tool and no regression test).
 | watch mode | BUILT-UNVERIFIED | |
 | pause / speed | BUILT-UNVERIFIED | |
 | chat recipients (`0x453360`) | BUILT+VERIFIED | two-machine menus run |
-| players leaving / host leaving (no one decides features after) | BUILT-UNVERIFIED | |
+| players leaving / host leaving: a leaving host's flag passes to the record (controller 1 or 3) with the highest net id (`0x452CC0`) | BUILT-UNVERIFIED *2026-10-20* | was "no one decides features after": the new flag makes that machine decide feature damage itself; others still address the old host where it comes first (`0x450030`), as the original; machines can disagree (each sees its own computer players as controller 2). Side records (0x20) now carry the host flag into the battle. net_tests. Open: the kill routine's stale word for a remote team killed here (`Battle::kill_team` records a fault; the word is the network code's stack, an input) |
 | time-outs (`0x453C20`) | BUILT-UNVERIFIED | |
 | in-battle time-out dialog (TIMEOUT.GUI) | BUILT-UNVERIFIED | re-checked 2026-10-20: built (hooks.timeout_dialog, client_screens.cpp); the row was stale |
 | end-of-game statistics exchange (`0x4572A0`) | BUILT-UNVERIFIED *2026-10-20* | was MISSING; net_play smoke: settles in 5 passes |
@@ -151,5 +151,6 @@ requests, no comparison tool and no regression test).
 ## Remaining, in order
 1. (done 2026-10-20: row order, a joiner's computer player.)
 2. Serial with the original into the battle (the original exits while loading under the capture tool); the original hosting over serial.
-3. Status 7. (Restrictions Load/Save List files done 2026-10-20.)
+3. (done 2026-10-20: Restrictions Load/Save List files; status 7 — the original never sends it.)
 4. Our host + the original joining with shots fired (feature maps); 3+ machines with the original; passwords against the original.
+5. Leave paths (*2026-10-20*, the rest): the kill routine's stale word when a remote team is killed by `0x452CC0` (network code stack, an input: `kill_team` records a fault); the "record 10" read for an unknown sender (GS+0x2851); after a session "player destroyed" GS+0x2BEE bit 0 and the host's session-description refresh (`0x451090` / `0x4C9890`); what the client does with GS+0x3923B bit 2 (`local_disconnected`).
