@@ -473,30 +473,16 @@ public:
         const std::string text = translate(text_in);
         // Measured in the interface's caption font (the labels then draw in the small one).
         const client::Font* f = art.content().font;
-        // Word wrap: at the end of a word, when the line is at least as wide as the limit, the line
-        // breaks at its last space or hyphen.
-        std::string line;
-        for (std::size_t i = 0; i <= text.size(); ++i) {
-            if (i < text.size() && text[i] != ' ' && text[i] != '\n') {
-                line += text[i];
-                continue;
-            }
-            const bool nl = i < text.size() && text[i] == '\n';
-            if (f && f->text_width(line) >= width) {
-                const auto at = line.find_last_of(" -", line.size() - 1);
-                if (at != std::string::npos && at > 0) {
-                    lines_.push_back(line.substr(0, line[at] == '-' ? at + 1 : at));
-                    line = line.substr(at + 1);
-                }
-            }
-            if (nl || i == text.size()) {
-                lines_.push_back(line);
-                line.clear();
-            } else {
-                line += ' ';
-            }
+        // Word wrap (0x4AC4C0): at the end of a word, when the line is at least as wide as the
+        // limit, its last space or hyphen becomes "\r\n"; the result is cut into labels at each
+        // '\n' (strtok: no empty ones), a broken line keeping its '\r' (counted by the box's width,
+        // 0x4A5030, and by the label's centring).
+        const std::string wrapped = f ? wrap_for_width(*f, text, width, true) : text;
+        for (std::size_t at = 0; at <= wrapped.size();) {
+            const std::size_t nl = std::min(wrapped.find('\n', at), wrapped.size());
+            if (nl > at) lines_.push_back(wrapped.substr(at, nl - at));
+            at = nl + 1;
         }
-        while (lines_.size() > 1 && lines_.back().empty()) lines_.pop_back();
         int w = width;
         if (fit) {
             w = 0;
@@ -1756,19 +1742,7 @@ struct LiveRoom {
 };
 
 // Why a machine is out of the room (0x452C40), shown over the game list.
-std::string out_text(int reason) {
-    switch (reason) {
-    case 3: return "The game is closed";
-    case 4: return "You did not have the correct password";
-    case 5: return "The game is full";
-    case 6: return "You have lost connection with the game";
-    case 7: return "You need a unit you don't have for this game";
-    case 8: return "You need a newer version of the game to enter";
-    case 9: return "No watching is allowed for this game";
-    case 10: return "The creator has left the game";
-    default: return "You were rejected from the game";
-    }
-}
+std::string out_text(int reason) { return leave_reason_text(reason); }
 
 // Writes a room in the room file format (read_lounge / gui_harness lounge:).
 void write_lounge(const std::string& path, const struct LoungeState& st);

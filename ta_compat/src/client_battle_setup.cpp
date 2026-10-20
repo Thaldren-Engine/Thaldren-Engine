@@ -36,6 +36,9 @@ struct ClientWorld::Outside : sim::QuietBattleOutside {
     void kill_counted(std::uint8_t slot, sim::Unit& v) override {
         if (w->client_) w->client_->on_kill_counted(slot, v);
     }
+    void player_out_notice(int p, std::uint32_t r) override {
+        if (w->client_) w->client_->on_player_out(p, r);
+    }
     void under_attack_notice(sim::Unit& u) override {
         if (w->client_) w->client_->on_under_attack(u);
     }

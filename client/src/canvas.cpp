@@ -63,7 +63,9 @@ int Font::text_width(std::string_view text) const {
     int w = 0;
     for (unsigned char c : text) {
         if (c == 0 || c == '\n') break;
-        if (glyphs[c].present) w += glyphs[c].width;
+        // (A control character a picture font has a frame for counts its width, as the
+        // original's measure 0x4A5030 sums every byte's frame: the '\r' a word wrap leaves.)
+        if (glyphs[c].present || c < 0x20) w += glyphs[c].width;
     }
     return w;
 }

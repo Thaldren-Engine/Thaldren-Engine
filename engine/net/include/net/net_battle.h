@@ -187,6 +187,7 @@ public:
     void forget_fog(sim::Unit& u) override { inner_.forget_fog(u); }
     void victory_unit_destroyed(sim::Unit& u) override { inner_.victory_unit_destroyed(u); }
     void player_out_of_units(int p) override { inner_.player_out_of_units(p); }
+    void player_out_notice(int p, std::uint32_t r) override { inner_.player_out_notice(p, r); }
     void commander_died(int p) override { inner_.commander_died(p); }
     std::uint32_t clock_ticks() override { return inner_.clock_ticks(); }
     void on_activate_flags_changed(sim::Unit& u, std::uint8_t g, std::uint8_t l) override;

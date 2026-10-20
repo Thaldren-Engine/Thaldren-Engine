@@ -88,6 +88,25 @@ bool GameClient::panel_player(int k) const {
            !b_.settings.player_sight[static_cast<std::size_t>(k)].watching;
 }
 
+void GameClient::on_player_out(int p, std::uint32_t r) {
+    // The player's live unit count reached 0 (0x486C00 -> 0x47BD70 in a skirmish, 0x450380 in a
+    // network game): "%s %s" of the side's name ("Core" when the side byte is set, else "Arm";
+    // not translated) or the record's name, and a text picked by the battle's rand() (rand() % 3
+    // of three, rand() & 7 of eight; translated), as a console line of kind 4 with the record's
+    // index byte +0x146 (its logo and the MessageArrived beep). The network game's line is left
+    // out while this machine's own record is marked rejected (+0x22 = 1; not the case here).
+    static const char* const kSkirmish[3] = {"forces have been obliterated", "vermin have been exterminated", "forces have gone to a better place"};
+    static const char* const kNetwork[8] = {"has left the scene",   "has been shown the door", "has gone to a better place", "has bowed out",
+                                            "has terminated",       "has been eradicated",     "has been liquidated",        "has been obliterated"};
+    if (p < 0 || p >= 10) return;
+    const bool skirmish = b_.settings.provider == 2;
+    const std::string who = skirmish ? (c_.player_sides[static_cast<std::size_t>(p)] ? "Core" : "Arm") : c_.player_names[static_cast<std::size_t>(p)];
+    const std::string what = tr(skirmish ? kSkirmish[r % 3] : kNetwork[r & 7]);
+    char line[200];
+    std::snprintf(line, sizeof line, "%s %s", who.c_str(), what.c_str());
+    message(line, kChat, b_.players[static_cast<std::size_t>(p)].state);
+}
+
 void GameClient::on_kill_counted(int a, const sim::Unit& victim) {
     // The end of the kill handler (0x4866D0): in skirmish and network games a counted kill may
     // move the attacker up the ranking: the best rank among players (with a controller, not

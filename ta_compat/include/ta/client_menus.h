@@ -143,14 +143,18 @@ client::ClientOptions client_options(const client::Settings& settings, int width
 client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* settings_from);
 #endif
 
+// Why a player is out of a network game (0x452C40, the leaving byte's reason; untranslated).
+std::string leave_reason_text(int reason);
+
 // The original's message box (MSGBOX.GUI, 0x4ABD90) over the screen shown: the text word-wrapped
 // to `width` pixels (the caller's: 320 for most), one centred line per row, OK; the screen under
 // it dimmed — `under` its box (null: the whole frame).
 void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under = nullptr, int width = 320);
 
 // Text broken for a width as the original's 0x4AC4C0 does (at the end of a word, when the line so
-// far is at least `width` wide, the last space or hyphen before becomes a line break).
-std::string wrap_for_width(const client::Font& font, const std::string& text, int width);
+// far is at least `width` wide, the last space or hyphen before becomes a line break: "\r\n" in the
+// original's buffer; with `cr` the '\r' is kept, as callers that cut the text at '\n' get it).
+std::string wrap_for_width(const client::Font& font, const std::string& text, int width, bool cr = false);
 
 // The campaign's part of the end of a battle (the end state machine 0x41F7F0, states 5-7, for a
 // mission; docs/RE_MEMORY.md "Campaign"): the glamour picture faded in after a won mission, the

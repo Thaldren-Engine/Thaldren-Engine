@@ -123,7 +123,15 @@ struct UnitDefTable {
     CategoryRegistry categories;
     std::vector<std::string> notes;    // diagnostics (e.g. duplicate unit names)
     std::vector<DownloadMenuEntry> download_menus;
+    // 0x42A8D0's end: some definitions were dropped and none for a failed copyright line or a
+    // loose file under the CD check (those set its "tampered" flag): the program then shows
+    // "Incompatible units found. ..." (a system message box, 0x4B6B80).
+    bool incompatible_notice = false;
 };
+
+// The enumeration's verdict alone (the stubs of every units\*.FBI; no properties loaded): whether
+// 0x42A8D0 would show "Incompatible units found. ..." (UnitDefTable::incompatible_notice).
+bool unit_files_incompatible_notice(Vfs& vfs, const UnitDefContext& ctx);
 
 // Loads weapon slot names, movement classes and sound categories into ctx
 // (mission names and language must be supplied by the caller).

@@ -27,6 +27,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
@@ -205,6 +206,8 @@ public:
     virtual int timed_out_player() const { return -1; }
     virtual int timeout_seconds_left(int /*slot*/) const { return 0; }
     virtual void reject_player(int /*slot*/, int /*reason*/) {}
+    // The local player's leaving byte (record +0x22: why it was sent away, 0 none; network games).
+    virtual int local_leaving_reason() const { return 0; }
     // The host's control screen: whether this machine created the game (0x457A50: the first
     // record with the creator flag is one of this machine's players) and the local side record's
     // option word (+0x9B; bit 0x80 the watching switch), changed and announced.
@@ -291,6 +294,13 @@ struct FrontEndHooks {
     // A network battle's time-out dialog (TIMEOUT.GUI, 0x453A50): opened while a remote player is
     // silent past the time-out; it closes itself when nobody is.
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> timeout_dialog;
+    // A network battle's local player put in watch mode (0x464F80): kind 1 the question "You're
+    // out!  Continue Watching?" (YESORNO.GUI), 2 the box that its computer players keep it there.
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session, int kind)> watch_dialog;
+    // The unit definitions enumerated (0x42BD10 at the top of each front-end pass, 0x496BB0: at
+    // the first pass and at the first after a battle's data was loaded); the hook may show the
+    // incompatible units message (system_message).
+    std::function<void(FrontEnd&)> enumerate_units;
 };
 
 // ---------------------------------------------------------------- front end
@@ -359,6 +369,9 @@ public:
     // The loading screen's state while a battle loads (null otherwise): a network game's
     // launcher fills in its players and their progress.
     virtual LoadingState* loading() { return nullptr; }
+    // The system's own message box (0x4B6B80: MessageBoxA with no owner, MB_OK | MB_TOPMOST):
+    // shown at once and waited for (headless: printed).
+    virtual void system_message(const std::string& title, const std::string& text) { std::printf("system message: %s: %s\n", title.c_str(), text.c_str()); }
 };
 
 // ---------------------------------------------------------------- running it
