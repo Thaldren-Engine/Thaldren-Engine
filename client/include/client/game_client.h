@@ -314,9 +314,9 @@ public:
     void set_lag_throttled(bool on) { budget_.lag_throttled = on; }
     // The pointer's animation: the look shown and its frame (tests); a new look (not the one
     // shown) starts at its first frame.
-    CursorKind pointer_kind() const { return cursor_shown_; }
+    int pointer_id_shown() const { return cursor_shown_; }  // the pointer look number (see pointer_id)
     bool pointer_ended() const { return cursor_clock_.ended; }
-    void set_pointer(CursorKind k);
+    void set_pointer(int id);
     int pointer_frame() const { return cursor_clock_.frame; }
     // One pass of the pointer's animation with `dt` ticks (1/30 s) of wall clock since the last
     // (frame() does this; tests drive it directly).
@@ -384,8 +384,7 @@ private:
     const Panel* current_panel() const;
     bool button_enabled(const Button& b) const;
     int button_stage(const Button& b) const;
-    CursorKind cursor_kind() const;
-    int cursor_id_for(const sim::Unit& u, std::uint8_t intent, const sim::Unit* target, const sim::Vec3i& pos) const;
+    int pointer_id() const;
 
     // Drawing.
     void draw_overlay(render::Image8& o, std::vector<std::uint8_t>& written);
@@ -436,7 +435,7 @@ private:
     bool place_valid_ = false;
     // The pointer's look and animation (the original changes the look only when it differs;
     // a new look starts at its first frame).
-    CursorKind cursor_shown_ = CursorKind::Normal;
+    int cursor_shown_ = 19;  // pointer look number (CURSORS.GAF by number; 19 plain)
     FrameClock cursor_clock_;
     bool cursor_set_ = false;
     // The top bar's rates as last refreshed (energy made, used, metal made, used) and the timer

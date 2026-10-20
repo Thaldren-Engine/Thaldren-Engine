@@ -288,6 +288,9 @@ int GameClient::frame(std::uint32_t now_ms) {
     }
     const std::uint32_t dt = scaled - last_scaled_;
     last_scaled_ = scaled;
+    // The interface type is the original's one global (GS+0x37EFA): both the default command's
+    // resolution and the pointer read it.
+    b_.targeting().env.command_mode = opt_.right_click_orders ? 1 : 0;
     if (mdrag_) view_drag_step();  // (the input pass, before the steps)
     int steps = budget_.update(now_ms, network.remote_lag ? network.remote_lag() : 0);
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
@@ -321,7 +324,7 @@ int GameClient::frame(std::uint32_t now_ms) {
     // The pointer over the view in placement mode: the placement check of this pass (the
     // pointer's look stays as it was); otherwise the pointer's look follows what it is over.
     if (mode_ == Action::BuildUnit && in_view(mouse_x_, mouse_y_)) update_placement();
-    else set_pointer(cursor_kind());
+    else set_pointer(pointer_id());
     // An order (or placement) given with Shift kept its mode: letting Shift go ends it.
     if (mode_kept_ && !shift_ && !keys_down_[keys::kShift]) end_order_mode();
     advance_pointer(dt);
@@ -932,36 +935,14 @@ void GameClient::give_order(Action mode, const InputEvent& e) {
     (void)command_selected(b_, opt_.player, intent, target, &pos, e.shift);
 }
 
-int GameClient::cursor_id_for(const sim::Unit& u, std::uint8_t intent, const sim::Unit* target, const sim::Vec3i& pos) const {
-    // The pointer a command would show, by the mission it resolves to (lower = preferred).
-    sim::Unit& mu = const_cast<sim::Unit&>(u);
-    const std::uint8_t kind = sim::resolve_mission(b_.targeting(), intent, mu, const_cast<sim::Unit*>(target), &pos);
-    using namespace sim::mission;
-    switch (kind) {
-    case kAttackChase: case kAttackNoMove: case kAirToGround: case kAirToGroundHover: case kAirToAir: case kAirStrike:
-    case kAttackKamikaze: case kAttackUnitType: return 1;
-    case kAttackSpecial: return 2;
-    case kCapture: return 4;
-    case kFollowGround: case kAirFollow: return 5;
-    case kRepairUnit: case kAirRepairUnit: case kHelpBuild: case kAirHelpBuild: return 6;
-    case kPatrol: case kAirPatrol: case kRepairPatrol: case kAirRepairPatrol: case kQueuedPatrol: return 7;
-    case kAirPickup: return 8;
-    case kTeleport: return 9;
-    case kResurrect: return 10;
-    case kReclaim: case kReclaimUnit: case kAirReclaim: case kAirReclaimUnit: return 11;
-    case kGroundPickup: return 12;
-    case kGroundUnload: case kAirUnload: case kAirLanding: return 13;
-    case kMoveGround: case kAirMove: case kQueuedMove: return 14;
-    default: return 19;
-    }
-}
-
-CursorKind GameClient::cursor_kind() const {
-    if (mouse_x_ < 128 || !in_view(mouse_x_, mouse_y_)) return CursorKind::Normal;
-    if (dragging_) return CursorKind::Normal;
-    const sim::Unit* target = hover_ ? &b_.units[hover_] : nullptr;
-    const bool any = selected_count() > 0;
-    if (!any) return target && selectable(*target) ? CursorKind::Select : CursorKind::Normal;
+int GameClient::pointer_id() const {
+    // The pointer's look number (0x48D220): over the view, the lowest look (0x43E490,
+    // sim::pointer_look) of the local player's selected units for the current intent, the unit
+    // under the pointer left out; with none, the select look over an own selectable unit for
+    // the default command, else the plain pointer (19).
+    if (mouse_x_ < 128 || !in_view(mouse_x_, mouse_y_)) return 19;
+    if (dragging_) return 19;
+    sim::Unit* target = hover_ ? const_cast<sim::Unit*>(&b_.units[hover_]) : nullptr;
     std::uint8_t intent = sim::intent::kDefault;
     switch (mode_) {
     case Action::Move: intent = sim::intent::kMove; break;
@@ -976,36 +957,17 @@ CursorKind GameClient::cursor_kind() const {
     case Action::Special: intent = sim::intent::kSpecialAttack; break;
     default: break;
     }
-    if (mode_ == Action::None) {
-        if (target && selectable(*target)) return CursorKind::Select;
-        if (opt_.right_click_orders) {
-            // Interface type 1: the plain pointer, red over enemies, green over allies.
-            if (target) {
-                const int a = b_.ticks[target->id].owner;
-                const bool ally = b_.alliances[static_cast<std::size_t>(opt_.player)][b_.players[static_cast<std::size_t>(a)].state] != 0;
-                return ally ? CursorKind::Normal : CursorKind::Red;
-            }
-            return CursorKind::Normal;
-        }
-    }
     const sim::Vec3i pos = world_at(mouse_x_, mouse_y_);
+    sim::Battle& b = const_cast<sim::Battle&>(b_);
     int best = 19;
+    bool any = false;
     for (std::size_t i = 1; i < b_.units.size(); ++i)
-        if (b_.ticks[i].type_index != 0 && b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected) && &b_.units[i] != target)
-            best = std::min(best, cursor_id_for(b_.units[i], intent, target, pos));
-    switch (best) {
-    case 1: case 2: return CursorKind::Attack;
-    case 3: return CursorKind::TooFar;
-    case 4: return CursorKind::Capture;
-    case 5: return CursorKind::Guard;
-    case 6: return CursorKind::Repair;
-    case 7: return CursorKind::Patrol;
-    case 8: case 12: return CursorKind::Load;
-    case 10: case 11: return CursorKind::Reclaim;
-    case 13: return CursorKind::Unload;
-    case 14: return CursorKind::Move;
-    default: return CursorKind::Normal;
-    }
+        if (b_.ticks[i].type_index != 0 && b_.ticks[i].owner == opt_.player && (b_.units[i].flags & kSelected) && &b_.units[i] != target) {
+            any = true;
+            best = std::min(best, sim::pointer_look(b.targeting(), b.weapon_context(), intent, b.units[i], target, pos));
+        }
+    if (any) return best;
+    return intent == sim::intent::kDefault && target && selectable(*target) ? 15 : 19;
 }
 
 // ---- input -------------------------------------------------------------------------------------
@@ -1715,18 +1677,19 @@ void GameClient::update_placement() {
     place_h_ = fits ? height : sim::structure_place_height(con, t, static_cast<std::int16_t>(cx), static_cast<std::int16_t>(cz));
 }
 
-void GameClient::set_pointer(CursorKind k) {
+void GameClient::set_pointer(int id) {
     // A new look starts at its first frame with that frame's time; the same look goes on.
-    if (cursor_set_ && k == cursor_shown_) return;
+    if (id < 1 || static_cast<std::size_t>(id) >= c_.cursors.by_number.size()) id = 19;
+    if (cursor_set_ && id == cursor_shown_) return;
     cursor_set_ = true;
-    cursor_shown_ = k;
-    cursor_clock_.start(c_.cursors.timing[static_cast<std::size_t>(k)]);
+    cursor_shown_ = id;
+    cursor_clock_.start(c_.cursors.by_number_timing[static_cast<std::size_t>(id)]);
 }
 
 void GameClient::advance_pointer(std::uint32_t dt) {
     // Wall-clock ticks (1/30 s) since the last pass step the look's frames by their own times
     // (see FrameClock; a look that does not loop ends: no pointer shown).
-    cursor_clock_.step(c_.cursors.timing[static_cast<std::size_t>(cursor_shown_)], dt);
+    cursor_clock_.step(c_.cursors.by_number_timing[static_cast<std::size_t>(cursor_shown_)], dt);
 }
 
 } // namespace client

@@ -67,7 +67,7 @@ summary at the end gives the counts after this round.
 | 2.8 | Chat line (TALK.GUI) | `0x494050`, `0x493BF0` | BUILT+VERIFIED | gui_harness `talk` |
 | 2.9 | Chat recipient panel (TALK2.GUI, SENDTO) | `0x493AE0` | MISSING | network games only |
 | 2.10 | Paste into the chat line (Ctrl+V / Insert) | `0x4AB720` | BUILT-UNVERIFIED | Ctrl+V (0xBF) and Insert (0xEE) in the chat line and every menu text field: the line replaced by the clipboard text (max - 1 characters, then shortened to the field width), the insertion point kept; smoke: ta_play headless with a scripted clipboard (`clip TEXT`), pasted line shown, a key typed after it goes in at the kept point |
-| 2.11 | Pointer looks, animation, every mode | `0x48D220`, `0x43E490`, `0x4AB5D0` | PARTIAL | animation verified (frame_harness); the per-unit pointer rules `0x43E490` only partly |
+| 2.11 | Pointer looks, animation, every mode | `0x48D220`, `0x43E490`, `0x4AB5D0` | BUILT+VERIFIED | animation of all 20 numbered looks (frame_harness, 0 differ); the per-unit rules `sim::pointer_look` against `0x43E490` (targeting_harness op 11: 620 looks, 0 differ); the client draws the looks by number |
 | 2.12 | Space-held game info panel (Game Time, Total Units / Max, Game Speed) sliding up from the bottom bar | `0x4689C0` | BUILT+VERIFIED | frame_harness `--hud` panels check: 11 scenes, 0 differing pixels |
 | 2.13 | Space-held (or F4) kills / losses scoreboard sliding in from the left (skirmish, network) | `0x4948E0` | BUILT+VERIFIED | same check (both game types, F4, flashes, ranks with gaps: ranks equal after drawing); the kill ranking and lead message from the battle's kill hook |
 | 2.14 | F1 unit info screen (UNITINFOX.GUI: picture, name, costs, build time, statistics, speed, acceleration, turn rate, description lines) | `0x4942E0`, `0x489280` | BUILT+VERIFIED | gui_harness `battle unitinfo:` against ta_play frames: 7 types, 0 of 61,750 pixels each |
@@ -147,5 +147,5 @@ Counts after this round (2026-10-20): 99 items (2.50 added) — BUILT+VERIFIED 3
 PARTIAL 7, MISSING 9, NOT-APPLICABLE 4 (start: 26 / 17 / 18 / 33 / 4 of 98). Left open: +contour, +light,
 ShowRanges, +makeposter (1.23-1.25, 2.42, 4.1, 4.3, 4.4, 4.7), the chat recipient panel TALK2.GUI (2.9),
 the campaign's in-battle briefing page (2.15), air shadows, depth-plane water clipping, hidden
-features, plasma sizes (1.6, 1.7, 1.10, 1.11), the per-unit pointer rules (2.11) and settings saved
+features, plasma sizes (1.6, 1.7, 1.10, 1.11) and settings saved
 after some commands (4.10).

@@ -1156,29 +1156,26 @@ int main(int argc, char** argv) {
         // ticks since the last pass) and the client's (GameClient::advance_pointer) are run side
         // by side over random tick counts from the same start (0x4B8B30: frame 0 and its time).
         {
-            static const std::pair<client::CursorKind, const char*> kLooks[] = {
-                {client::CursorKind::Normal, "cursornormal"},   {client::CursorKind::Select, "cursorselect"},
-                {client::CursorKind::Move, "cursormove"},       {client::CursorKind::Attack, "cursorattack"},
-                {client::CursorKind::Guard, "cursordefend"},    {client::CursorKind::Patrol, "cursorpatrol"},
-                {client::CursorKind::Repair, "cursorrepair"},   {client::CursorKind::Reclaim, "cursorreclamate"},
-                {client::CursorKind::Capture, "cursorcapture"}, {client::CursorKind::Load, "cursorload"},
-                {client::CursorKind::Unload, "cursorunload"},   {client::CursorKind::FindSite, "cursorfindsite"},
-                {client::CursorKind::TooFar, "cursortoofar"},   {client::CursorKind::Busy, "cursorhourglass"},
-                {client::CursorKind::Red, "cursorred"},
-            };
+            // Every numbered look (1 attack .. 20 busy; the client draws the pointer by number).
+            static const char* const kLooks[21] = {nullptr,          "cursorattack",   "cursorairstrike", "cursortoofar",   "cursorcapture",
+                                                   "cursordefend",   "cursorrepair",   "cursorpatrol",    "cursorpickup",   "cursorteleport",
+                                                   "cursorrevive",   "cursorreclamate", "cursorload",     "cursorunload",   "cursormove",
+                                                   "cursorselect",   "cursorfindsite", "cursorred",       "cursorgrn",      "cursornormal",
+                                                   "cursorhourglass"};
             std::vector<u8> cf;
             ta::GafDirectory dir;
             if (vfs.read("anims\\CURSORS.GAF", cf) && ta::gaf_read_directory(cf, dir)) {
                 const u32 cur = o.alloc(16);
                 long long steps = 0, mismatches = 0;
                 int looks = 0;
-                for (const auto& [kind, name] : kLooks) {
+                for (int kind = 1; kind <= 20; ++kind) {
+                    const char* name = kLooks[kind];
                     const int i = ta::gaf_find_sequence(dir, name);
                     if (i < 0) continue;
                     const u32 seq = o.gaf("anims\\CURSORS.GAF", cf) + Original::gaf_entry(cf, i);
                     ++looks;
                     o.call(0x004B8B30, 0, {cur, seq, 0});
-                    gc.set_pointer(kind == client::CursorKind::Normal ? client::CursorKind::Red : client::CursorKind::Normal);
+                    gc.set_pointer(kind == 19 ? 17 : 19);
                     gc.set_pointer(kind);
                     for (int k = 0; k < 300; ++k) {
                         const u32 dt = static_cast<u32>(rnd(0, 9) ? rnd(0, 3) : rnd(4, 60));

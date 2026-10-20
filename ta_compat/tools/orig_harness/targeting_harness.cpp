@@ -60,7 +60,7 @@ constexpr u32 kCallNamed = 0x004B0940;
 constexpr u32 kRegisterMissions = 0x0043C050, kMissionBegin = 0x00512344, kMissionEnd = 0x00512348;
 constexpr u32 kAlloc = 0x004B4F10, kConstruct = 0x0043A0C0, kPrepend = 0x0043ACB0;
 constexpr u32 kRefresh = 0x0040B2C0, kEnemies = 0x0040AD80, kBest = 0x0040B7B0, kFireAtWill = 0x0043B700,
-              kIssueAttack = 0x0043B1F0, kResolve = 0x0043F0E0, kRetarget = 0x00406F80, kWeaponPass = 0x004089A0;
+              kIssueAttack = 0x0043B1F0, kResolve = 0x0043F0E0, kPointerLook = 0x0043E490, kRetarget = 0x00406F80, kWeaponPass = 0x004089A0;
 constexpr u32 kUnitVtable = 0x004FD698;
 constexpr u32 kUnitSize = 0x118, kPlayerSize = 0x14B, kOrderBlock = 0x58;
 constexpr int kMaxUnits = 18;
@@ -261,7 +261,7 @@ enum : u32 {
     dName = 0x20, dFootprintX = 0x14A, dBuildOptions = 0x156, dModelMaxY = 0x16E, dCob = 0x18E, dMaxWaterDepth = 0x1BE,
     dMinWaterDepth = 0x1C0, dWeapon1 = 0x1EE, dMaxDamage = 0x1FA, dSight = 0x202, dLeash = 0x214, dTransportSize = 0x22A,
     dTransportCap = 0x22B, dBadTarget = 0x231, dNoChase = 0x23D, dTypeFlags = 0x241, dCanDo = 0x245, kDefSize = 0x249,
-    wRange = 0xDC, wVelocity = 0x68, wMinAngle = 0xC8, wFlags = 0x111,
+    wRange = 0xDC, wVelocity = 0x68, wMinAngle = 0xC8, wFlags = 0x111, wEnergyPerShot = 0xC0, wMetalPerShot = 0xC4,
     gGravity = 0x14263, gUnitsEnd = 0x1435B, gSea = 0x1427F, gTick = 0x38A47, gLocalPlayer = 0x2A42, gLocalView = 0x2A43,
     gUnitLimit = 0x37EE6, gOptions = 0x37F30, gCommandMode = 0x37EFA, gFeatureCount = 0x14253,
     oKind = 0x04, oStep = 0x05, oWait = 0x06, oWake = 0x0A, oUnit = 0x0E, oLink = 0x12, oPos = 0x22, oScratch = 0x2E, oParams = 0x36,
@@ -423,6 +423,7 @@ struct World : sim::UnitWorld, sim::CombatSystems, sim::OrderSystems, sim::Missi
 struct Stats {
     std::size_t scenarios = 0, ops = 0, mismatches = 0, failures = 0, faults = 0;
     std::map<std::string, std::size_t> by_op;
+    std::map<int, std::size_t> pointer_looks;
     std::size_t targets_found = 0, attack_orders = 0, resolved_nonzero = 0, retargets_aimed = 0, refreshes = 0, listed = 0, pass_changes = 0;
     std::map<int, std::size_t> resolved_kinds;
     std::map<int, std::size_t> intents;  // resolutions by intent
@@ -453,7 +454,11 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         wt.velocity = static_cast<i32>(0x10000 + g() % 0x400000);
         wt.min_barrel_angle = static_cast<float>(g() % 1000) / 1000.0f - 0.5f;
         wt.range = static_cast<i32>(g() % 8 == 0 ? g() % 0x10000 : 100 + g() % 1200);
+        wt.energy_per_shot = g() % 3 == 0 ? 0.0f : static_cast<float>(g() % 2000);
+        wt.metal_per_shot = g() % 3 == 0 ? 0.0f : static_cast<float>(g() % 200);
         std::vector<std::uint8_t> wd(0x200, 0);
+        std::memcpy(&wd[wEnergyPerShot], &wt.energy_per_shot, 4);
+        std::memcpy(&wd[wMetalPerShot], &wt.metal_per_shot, 4);
         std::memcpy(&wd[wFlags], &wt.flags, 4);
         std::memcpy(&wd[wVelocity], &wt.velocity, 4);
         std::memcpy(&wd[wMinAngle], &wt.min_barrel_angle, 4);
@@ -619,6 +624,15 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
     sim::TargetingEnvironment tenv;
     sim::TargetingState tstate_t;
     sim::Targeting targeting{units, tstate, players, allied, ttypes, mission_types, map, 0, missions, tenv, world, tstate_t};
+    // The weapon range check of the pointer's look (0x49AA80) reads only the sea level and gravity.
+    struct NoWeaponSystems : sim::WeaponSystems {
+        std::int32_t fire(sim::Unit&, int, sim::Unit*, sim::WorldPos&) override { return 0; }
+        void network_send(std::int32_t, const std::uint8_t*, std::int32_t) override {}
+        void stockpile_used(sim::Unit&) override {}
+    } no_weapon_systems;
+    sim::WeaponEnvironment wenv;
+    wenv.gravity = menv.gravity;
+    sim::Weapons weapons{units, tstate, players, wenv, no_weapon_systems};
     world.units_base = L.units;
     world.shots_base = L.shots;
     world.units = &units;
@@ -700,6 +714,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         const u32 at = unit_addr(i);
         const int o = tstate[static_cast<std::size_t>(i)].owner;
         r.w32(at + uOwner, L.gs + 0x1B63 + static_cast<u32>(o) * kPlayerSize);
+        r.w32(at + 0xEC, L.gs + 0x1B63 + static_cast<u32>(o) * kPlayerSize);  // the resource slot's player
         const u8 os = static_cast<u8>(o);
         r.write(at + uOwnerSlot, &os, 1);
         r.w32(at + uDef, L.empty_def);
@@ -1056,6 +1071,16 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         const u8 opt = static_cast<u8>((g() & 0xFB) | (tenv.target_everything ? 4 : 0));
         r.write(L.gs + gOptions, &opt, 1);
         r.w32(L.gs + gCommandMode, static_cast<u32>(tenv.command_mode));
+        // Stored resources (the special attack's look compares them with the third weapon's cost).
+        for (int p = 0; p < 10; ++p) {
+            sim::PlayerSlot& s = players[static_cast<std::size_t>(p)];
+            s.energy_stored = static_cast<float>(g() % 2500);
+            s.metal_stored = static_cast<float>(g() % 250);
+            const u32 at = L.gs + 0x1B63 + static_cast<u32>(p) * kPlayerSize;
+            r.write(at + 0x8C, &s.energy_stored, 4);
+            r.write(at + 0x98, &s.metal_stored, 4);
+        }
+        wenv.sea_level = tenv.sea_level;
     };
     auto random_pos = [&]() -> std::array<i32, 3> {
         if (g() % 3 == 0 && !feature_cells.empty()) {  // on a feature cell
@@ -1141,7 +1166,7 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
         sim::Unit& u = units[static_cast<std::size_t>(i)];
         // Operation mix (by the op numbers below): refresh x3, enemies, best target x2, fire at will,
         // attack order, resolution x2, retargeting x3, weapon-target pass x3, tweaks x2, a death.
-        static constexpr int kMix[] = {0, 0, 0, 1, 2, 2, 3, 4, 5, 6, 7, 7, 7, 8, 8, 8, 9, 9, 10};
+        static constexpr int kMix[] = {0, 0, 0, 1, 2, 2, 3, 4, 5, 6, 7, 7, 7, 8, 8, 8, 9, 9, 10, 11, 11, 11};
         const int op = kMix[g() % (sizeof kMix / sizeof kMix[0])];
         std::string what;
         u32 result = 0;
@@ -1234,6 +1259,22 @@ bool run_scenario(harness::Remote& r, const Layout& L, std::vector<LoadedType>& 
             ++st.intents[intent];
             ++st.resolved_kinds[kind];
             what = "resolve";
+        } else if (op == 11) {  // the pointer's look (0x43E490, stdcall intent byte, unit, target, &pos)
+            const u8 intent = static_cast<u8>(1 + g() % 15);
+            const int ti = g() % 4 == 0 ? 0 : any_unit();
+            const auto pos = random_pos();
+            sim::Unit* tu = ti ? &units[static_cast<std::size_t>(ti)] : nullptr;
+            const int look = sim::pointer_look(targeting, weapons, intent, u, tu, pos);
+            if (engine_faulted()) return true;
+            r.write(L.out, pos.data(), 12);
+            if (!r.call(kPointerLook, 0, {intent, unit_addr(i), ti ? unit_addr(ti) : 0u, L.out}, &result)) return fail("pointer look");
+            if (static_cast<int>(result) != look) {
+                std::printf("scenario %u step %d: pointer look differs for intent %u (orig %u ours %d)\n", seed, step, intent, result, look);
+                ++st.mismatches;
+                return true;
+            }
+            ++st.pointer_looks[look];
+            what = "pointer look";
         } else if (op == 7) {  // retargeting (the victim is alive and not dying, as the damage routine requires)
             if (!is_alive(i) || (u.flags & 0x4000u)) continue;
             const int ai = g() % 5 == 0 ? 0 : any_unit();
@@ -1360,6 +1401,8 @@ int main(int argc, char** argv) {
     for (const auto& [k, v] : st.intents) std::printf(" %d:%zu", k, v);
     std::printf("\nresolved kinds:");
     for (const auto& [k, v] : st.resolved_kinds) std::printf(" %d:%zu", k, v);
+    std::printf("\npointer looks:");
+    for (const auto& [k, v] : st.pointer_looks) std::printf(" %d:%zu", k, v);
     std::printf("\nmismatching scenarios %zu, engine faults %zu, original failures %zu\n", st.mismatches, st.faults, st.failures);
     return st.mismatches || st.failures ? 1 : 0;
 }

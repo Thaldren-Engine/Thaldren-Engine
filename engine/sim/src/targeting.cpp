@@ -1,5 +1,6 @@
 #include "sim/targeting.h"
 
+#include "sim/construction.h"
 #include "sim/weapons.h"
 
 namespace sim {
@@ -440,6 +441,108 @@ std::uint8_t resolve_mission(Targeting& t, std::uint8_t what, Unit& unit, Unit* 
         if (ttype(t, unit).has_build_options && has_motion(t, unit)) return by_layer(t, unit, mission::kAirMobileBuild, mission::kMobileBuild);
         return 0;
     default: return 0;
+    }
+}
+
+namespace {
+
+// One of the local player's own finished, selectable units, not being handed over and not
+// carried (or carried by a unit with flag 0x40000000): clicking it selects it.
+bool own_selectable(Targeting& t, const Unit& target) {
+    const UnitTickState& tt = tick_of(t, target);
+    return static_cast<u8>(tt.owner) == t.env.local_player && (target.flags & 0x20u) && is_zero(target.build_fraction_left) &&
+           tt.transfer_holdoff == 0 && (!target.carrier || (target.carrier->flags & 0x40000000u));
+}
+
+// Pickup look: 8 for an aircraft, 12 for a ground transport.
+int pickup_look(Targeting& t, const Unit& unit) { return (type_flags(t, unit) & targeting_type_flags::kCanFly) ? 8 : 12; }
+
+}  // namespace
+
+int pointer_look(Targeting& t, Weapons& w, std::uint8_t intent, Unit& unit, Unit* target, const std::array<i32, 3>& pos) {
+    bool enemy = false, ally = false;
+    if (target) {
+        if (allied_with(t, tick_of(t, unit).owner, *target)) ally = true;
+        else enemy = true;
+    }
+    const u32 ab = abilities(t, unit);
+    const u32 tf = type_flags(t, unit);
+    const bool mobile = has_motion(t, unit);
+    auto attack = [&]() -> int {
+        // A first weapon that is dropped: the air strike look.
+        const WeaponType* first = ttype(t, unit).first_weapon;
+        if ((ab & targeting_abilities::kAttack) && first && (first->flags & weapon_flags::kDropped)) return 2;
+        if (!(ab & targeting_abilities::kAttack)) return 19;
+        if (mobile) return 1;
+        const WeaponType* w0 = unit.weapons[0].type;
+        if (!w0) return 3;  // (the original reads the missing weapon)
+        if (target) return weapon_reaches_unit(t.missions, unit, *target, 0) ? 1 : 3;
+        if (!weapon_in_range(w, unit, 0, unit.pos, pos)) return 3;
+        return (w0->flags & kToAir) ? 3 : 1;
+    };
+    auto reclaim = [&]() -> int {
+        if ((ab & targeting_abilities::kReclaim) && wreck_at(t, unit, pos)) return 11;
+        if (target && can_reclaim(t.missions, unit, *target)) return 11;
+        return 19;
+    };
+    switch (intent) {
+    case intent::kDefault:
+        if (t.env.command_mode == 1) {
+            if (target && own_selectable(t, *target)) return 15;
+            if (enemy) return 17;
+            if (ally) return 18;
+            if ((ab & targeting_abilities::kResurrect) && wreck_at(t, unit, pos)) return 18;
+            if ((ab & targeting_abilities::kReclaim) && wreck_at(t, unit, pos)) return 18;
+            return 19;
+        }
+        if ((ab & targeting_abilities::kAttack) && enemy) return attack();
+        if ((ab & targeting_abilities::kReclaim) && enemy) return reclaim();
+        if (target) {
+            if (can_help(t, unit, target) && !is_zero(target->build_fraction_left)) return 6;
+            if (own_selectable(t, *target)) return 15;
+        }
+        if ((ab & targeting_abilities::kResurrect) && wreck_at(t, unit, pos)) return 10;
+        if ((ab & targeting_abilities::kReclaim) && wreck_at(t, unit, pos)) return 11;
+        return (ab & targeting_abilities::kMove) ? 14 : 19;
+    case intent::kMove:
+        if (!(ab & targeting_abilities::kMove)) return 19;
+        if ((ab & targeting_abilities::kResurrect) && wreck_at(t, unit, pos)) return 10;
+        if (target && mobile) {
+            if (ab & targeting_abilities::kCapture) {
+                if (enemy) return 4;
+            } else if (enemy && can_reclaim(t.missions, unit, *target)) {
+                return 11;
+            }
+            if (ally && can_help(t, unit, target)) return 6;
+            if ((tf & targeting_type_flags::kCanFly) && (type_flags(t, *target) & targeting_type_flags::kAirBase)) return 13;
+            if (can_pick_up(t, unit, *target)) return pickup_look(t, unit);
+            if ((ab & targeting_abilities::kGuard) && ally) return 5;
+        }
+        return 14;
+    case intent::kAttack: return attack();
+    case intent::kSpecialAttack: {
+        if (!(ab & targeting_abilities::kSpecialAttack)) return 19;
+        // The third weapon's cost against the owner's stored energy and metal.
+        const WeaponType* w2 = unit.weapons[2].type;
+        if (!w2) return 3;  // (the original reads the missing weapon)
+        const PlayerSlot& p = owner_of(t, unit);
+        if (p.energy_stored < w2->energy_per_shot) return 3;
+        return w2->metal_per_shot <= p.metal_stored ? 1 : 3;
+    }
+    case intent::kUnload: return (ab & targeting_abilities::kLoad) ? 13 : 19;
+    case intent::kPickup: return target && can_pick_up(t, unit, *target) ? pickup_look(t, unit) : 19;
+    case intent::kGuard:
+        if (!(ab & targeting_abilities::kGuard) || !ally) return 19;
+        if (tf & targeting_type_flags::kCanFly) return 5;
+        return (type_flags(t, *target) & targeting_type_flags::kCanFly) ? 19 : 5;
+    case intent::kRepair: return can_help(t, unit, target) ? 6 : 19;
+    case intent::kPatrol: return (ab & targeting_abilities::kPatrol) ? 7 : 19;
+    case intent::kTeleport: return 9;
+    case intent::kReclaim: return reclaim();
+    case intent::kCapture:
+        return (ab & targeting_abilities::kCapture) && target && tick_of(t, *target).owner != tick_of(t, unit).owner ? 4 : 19;
+    case intent::kBuild: return ttype(t, unit).has_build_options && mobile ? 16 : 19;
+    default: return 19;
     }
 }
 

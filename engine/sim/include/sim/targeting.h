@@ -28,6 +28,8 @@
 
 namespace sim {
 
+struct Weapons;
+
 // A set of unit types as one bit per type (index = a type's category bit).
 using CategoryMask = std::array<std::uint32_t, 16>;
 
@@ -156,6 +158,14 @@ Unit* fire_at_will_target(Targeting& t, Unit& unit);
 bool issue_attack_order(Targeting& t, Unit& unit, Unit& target, bool forced);
 // The mission kind `what` (an intent value) means for this unit on `target` / at `pos` (0 = none).
 std::uint8_t resolve_mission(Targeting& t, std::uint8_t what, Unit& unit, Unit* target, const std::array<std::int32_t, 3>* pos);
+// The pointer look a command would show for this selected unit (0x43E490): `intent` as for
+// resolve_mission, `target` the unit under the pointer (or none), `pos` the pointer's world
+// position; the default command follows the interface type (env.command_mode, as resolution does). The
+// number indexes the pointer looks (1 attack, 2 air strike, 3 out of range, 4 capture, 5 guard,
+// 6 repair, 7 patrol, 8 air pickup, 9 teleport, 10 resurrect, 11 reclaim, 12 load, 13 unload,
+// 14 move, 15 select, 16 build, 17 enemy, 18 ally, 19 normal); the lowest over the selection wins.
+int pointer_look(Targeting& t, Weapons& w, std::uint8_t intent, Unit& unit, Unit* target, const std::array<std::int32_t, 3>& pos);
+
 // The victim of an attack answers it.
 void retarget_attack(Targeting& t, Unit* attacker, Unit& victim);
 
