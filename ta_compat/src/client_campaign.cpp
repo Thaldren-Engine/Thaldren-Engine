@@ -251,14 +251,27 @@ client::BattleLauncher MissionSession::restart_launcher(int difficulty) {
 //     stops it or starts it again ("Options", then "SmallButton").
 //   * Start: "BigButton", the narration stops, the battle. Previous: the narration stops,
 //     "Previous", the new campaign screen again.
+//
+// In a battle (the game menu's Mission button in a campaign, 0x4609B0): BRIEFING.GUI at its own
+// place, the picture "igmbrief" in its box (without its palette), the same text pages (0x476D80)
+// without planet, panorama, wind or narration; the blink table is made (0x4AFC60) but nothing
+// draws it there; a click on the text or MOREBAR ("Options") shows the next page, OK
+// ("Options") closes it (0x45F770).
 class BriefingScreen : public client::LayoutScreen {
 public:
-    BriefingScreen(MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress)
-        : client::LayoutScreen(art.layout("MSNBRIEF")), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)) {}
+    BriefingScreen(MenuArt& art, std::string save_dir, std::shared_ptr<CampaignProgress> progress, bool in_game = false)
+        : client::LayoutScreen(art.layout(in_game ? "BRIEFING" : "MSNBRIEF")), art_(art), save_dir_(std::move(save_dir)), progress_(std::move(progress)),
+          in_game_(in_game) {
+        if (in_game_) background_in_box_ = true;
+    }
 
     void enter(client::FrontEnd& fe) override {
         if (set_up_) return;
         set_up_ = true;
+        if (in_game_) {
+            enter_in_game();
+            return;
+        }
         Campaign c;
         const int index = progress_->mission;
         std::string error;
@@ -346,13 +359,13 @@ public:
         const render::ClipRect all = out.bounds();
         // The page's lines and MOREBAR.
         if (side_font_)
-            for (const Line& l : lines_) client::draw_text(out, all, *side_font_, l.text, l.x, l.y, kSideColour[side_][0], -1, 640 - l.x - 5);
+            for (const Line& l : lines_) client::draw_text(out, all, *side_font_, l.text, l.x + ox_, l.y + oy_, kSideColour[side_][0], -1, 640 - l.x - 5);
         if (const client::Widget* m = widget("MOREBAR"); m && small_font_ && !more_text_.empty()) {
             // (0x4A56B0 measures a centred label's text in the interface's picture font while a
             // picture font is set, then draws it in the label's bit font)
             const client::Font* measure = fe.menu_content().small_font ? fe.menu_content().small_font : small_font_;
-            const int tx = m->x + m->w / 2 - measure->text_width(more_text_) / 2;
-            client::draw_text(out, all, *small_font_, more_text_, tx, m->y, kSideColour[side_][1], -1, m->w);
+            const int tx = m->x + m->w / 2 - measure->text_width(more_text_) / 2 + ox_;
+            client::draw_text(out, all, *small_font_, more_text_, tx, m->y + oy_, kSideColour[side_][1], -1, m->w);
         }
         // PLANET.
         if (const client::Widget* p = widget("PLANET")) {
@@ -389,6 +402,28 @@ public:
         }
     }
 
+    void enter_in_game() {
+        Campaign c;
+        const int index = progress_->mission;
+        std::string error;
+        ok_ = load_campaign(art_.vfs(), progress_->campaign, c, error) && index >= 0 && index < static_cast<int>(c.missions.size()) &&
+              load_mission(art_.vfs(), c.missions[static_cast<std::size_t>(index)].file, progress_->difficulty, info_, error);
+        side_ = side_index(art_.vfs(), progress_->side) == 1 ? 1 : 0;
+        background_ = art_.picture("igmbrief", nullptr);
+        for (int k = 0; k < 256; ++k) colours_table_[static_cast<std::size_t>(k)] = art_.gui_colour(art_.content().palette, k);
+        colours_ = &colours_table_;
+        for (const char* n : {"MOREBAR", "TextRegion"})
+            if (client::Widget* w = widget(n)) w->attribs &= ~0x10;
+        small_font_ = art_.fnt_font("smlfont");
+        side_font_ = art_.fnt_font(side_ == 0 ? "armfont" : "corefont");
+        if (ok_ && !info_.brief_text.empty() && side_font_) {
+            const client::Widget* t = widget("TextRegion");
+            text_ = carry_spans(wrap_crlf(*side_font_, info_.brief_text, t ? t->w : 360));
+            page_ = -1;
+            paginate();
+        }
+    }
+
     void handle(client::FrontEnd& fe, const client::InputEvent& e) override {
         // A click on the text or MOREBAR (labels the pointer reaches through the interface pass).
         if (e.type == client::InputEvent::Type::MouseDown && e.button == 1) text_down_ = over_text(e.x, e.y);
@@ -400,6 +435,13 @@ public:
 protected:
     void draw_surface(client::FrontEnd&, render::Image8&, const client::Widget&) override {}
     void on_press(client::FrontEnd& fe, client::Widget& w) override {
+        if (in_game_) {
+            if (named(w, "OK")) {
+                fe.play_sound(art_.sound("Options"));
+                fe.pop();
+            }
+            return;
+        }
         if (named(w, "Start")) {
             fe.play_sound(art_.sound("BigButton"));
             if (!ok_) return;
@@ -484,12 +526,12 @@ private:
     }
     bool over_text(int x, int y) {
         for (const char* n : {"TextRegion", "MOREBAR"})
-            if (const client::Widget* w = widget(n); w && x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h) return true;
+            if (const client::Widget* w = widget(n); w && x >= w->x + ox_ && x < w->x + ox_ + w->w && y >= w->y + oy_ && y < w->y + oy_ + w->h) return true;
         return false;
     }
     void more(client::FrontEnd& fe) {
         if (text_.empty()) return;
-        fe.play_sound(art_.sound("More"));
+        fe.play_sound(art_.sound(in_game_ ? "Options" : "More"));
         paginate();
     }
 
@@ -616,6 +658,7 @@ private:
     std::string save_dir_;
     std::shared_ptr<CampaignProgress> progress_;
     MissionInfo info_;
+    bool in_game_ = false;
     const render::Palette* palette_ = nullptr;
 
 public:
@@ -1354,6 +1397,11 @@ void install_campaign_hooks(client::FrontEndHooks& hooks, MenuArt& art, const st
             return nullptr;
         }
         return std::make_unique<SaveGamesScreen>(art, save_dir, s, false, screen_under(fe, s));
+    };
+    hooks.mission_briefing = [&art](client::FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        auto* ms = dynamic_cast<MissionSession*>(&s);
+        if (!ms || !art.layout("BRIEFING")) return nullptr;
+        return std::make_unique<BriefingScreen>(art, std::string(), std::make_shared<CampaignProgress>(ms->progress()), true);
     };
     hooks.save_game_command = [save_dir](client::BattleSession& s, const std::string& name) {
         // 0x417430: savegame\<name>.sav (the folder made first) with 0x4326B0's summary

@@ -1696,8 +1696,10 @@ protected:
         else if (is(w, "HELP") && art_.layout("HELP")) {
             const Widget& h = widgets_.front();
             fe.push(std::make_unique<HelpScreen>(art_, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        } else if (is(w, "MISSION") && s && s->battle().settings.provider == 1 && fe.hooks().mission_briefing) {
+            // A campaign: the mission's briefing pages (BRIEFING.GUI, 0x4609B0) over this menu.
+            if (auto b = fe.hooks().mission_briefing(fe, *s)) fe.push(std::move(b));
         } else if (is(w, "MISSION") && s && s->battle().settings.provider != 1 && art_.layout("GAMEOPTIONS")) {
-            // (campaigns show the mission's briefing pages instead, BRIEFING.GUI: not built)
             const Widget& h = widgets_.front();
             fe.push(std::make_unique<GameSettingsScreen>(art_, *s, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
         }
