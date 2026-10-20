@@ -146,7 +146,16 @@ public:
     void surrender() override { inner_->surrender(); }
     std::vector<client::PlayerStats> stats() override { return inner_->stats(); }
     bool end_table(client::EndTable& t) override { return inner_->end_table(t); }
-    std::string battle_name() const override { return inner_->battle_name(); }
+    std::string battle_name() const override {
+        // The map info's name (+0xA14) of a mission: the campaign's [MISSIONn] missionname, the
+        // language's key first (0x435DA0 provider 1, 0x435F48).
+        Campaign c;
+        std::string err;
+        if (progress_ && load_campaign(art_.vfs(), progress_->campaign, c, err) && progress_->mission >= 0 &&
+            progress_->mission < static_cast<int>(c.missions.size()))
+            return c.missions[static_cast<std::size_t>(progress_->mission)].name;
+        return info_.name;
+    }
     int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(client::FrontEnd& fe, client::BattleOutcome outcome) override;
     // The exit menu's Restart (0x460340): the same mission again at the dialog's difficulty
