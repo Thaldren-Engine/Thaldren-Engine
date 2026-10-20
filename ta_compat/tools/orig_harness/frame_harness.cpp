@@ -1499,9 +1499,13 @@ int main(int argc, char** argv) {
         // battle's own table is put back after the scene.
         const sim::ProjectileTable saved_shots = b.projectiles;
         {
+            // (Render type 2, the lens (MINDGUN, no stock unit carries it), is left out: its frame
+            // GS+0x1AB9B is made by the battle-start routine 0x420620, which does not run here,
+            // and the engine does not draw it.)
             std::vector<int> armed;
             for (int slot = 0; slot < 256; ++slot)
-                if (!world.weapons_.slots[static_cast<std::size_t>(slot)].name.empty() && static_cast<std::size_t>(slot) < world.lb_->weapons.size())
+                if (!world.weapons_.slots[static_cast<std::size_t>(slot)].name.empty() && static_cast<std::size_t>(slot) < world.lb_->weapons.size() &&
+                    world.weapons_.slots[static_cast<std::size_t>(slot)].render_type != 2)
                     armed.push_back(slot);
             const int extra = armed.empty() ? 0 : rnd(0, opt.shots);
             for (int k = 0; k < extra && b.projectiles.count < sim::kMaxProjectiles; ++k) {
