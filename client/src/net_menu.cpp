@@ -407,6 +407,7 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
 
 int NetBattleSession::frame(std::uint32_t now_ms) {
     net_->set_clock(now_clock(now_ms));
+    inner_->client().set_net_totals(net_->counters().bytes_sent, net_->counters().bytes_received);
     if (net_->paused()) {
         // The original's frame loop while paused: flush, read the network (to hear the unpause).
         net_->network_flush();

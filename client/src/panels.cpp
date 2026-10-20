@@ -157,8 +157,9 @@ void GameClient::panels_frame(std::uint32_t now_ms) {
     // 0x4948E0 (skirmish and network games, every frame): the flashes fade by 2 whenever the
     // interface clock (1/30 s) has passed the time kept, which then becomes the clock + 1; the
     // panel moves a quarter of the way (at least 1) to 125 (out) or 0.
-    if (b_.settings.provider != 2 && b_.settings.provider != 3) return;
     const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now_ms) * 30 / 1000);
+    bps_.now = ticks;
+    if (b_.settings.provider != 2 && b_.settings.provider != 3) return;
     if (static_cast<std::int32_t>(ticks - score_next_tick_) > 0) {
         score_next_tick_ = ticks + 1;
         for (std::size_t k = 0; k < 10; ++k) {
@@ -302,6 +303,50 @@ void GameClient::draw_panels(render::DrawList& list) {
             list.blit(list.keep(keyed_layer(a, bb)), 0, 0, view, false);
         }
     }
+    if (opt_.bps) draw_bps(list);
+}
+
+void GameClient::draw_bps(render::DrawList& list) {
+    // 0x416150: the rates are remade once more than 30 ticks of the 1/30 s clock have passed:
+    // (total x 30 - total then x 30) / ticks, in unsigned 32 bits.
+    BpsState& s = bps_;
+    const std::uint32_t passed = s.now - s.tick;
+    if (passed > 30) {
+        s.send_rate = (s.sent * 30u - s.prev_sent * 30u) / passed;
+        s.receive_rate = (s.received * 30u - s.prev_received * 30u) / passed;
+        s.prev_sent = s.sent;
+        s.prev_received = s.received;
+        s.tick = s.now;
+    }
+    // 0x468380 (after the game information panel, clipped to the view): in the side's font and
+    // the interface's colour 15, "Send - %1.1f K/s" (the rate x 0.001) at (129, height - 95), and
+    // under it (one font height down) a box 129 .. 193 x 8 rows high, outlined, filled from the
+    // left by rate x 100 / 5600 percent (at most 100); then "Receive - ..." one row below the
+    // box and its box the same way. The text routine draws a line only when it fits the frame.
+    if (!side_ || !side_->font) return;
+    const Font& f = *side_->font;
+    const int w = opt_.width, h = opt_.height;
+    const render::ClipRect view = view_rect();
+    const std::uint8_t colour = c_.hud[15];
+    render::Image8 a(w, h, 0), bb(w, h, 255);
+    int y = h - 0x5F;
+    for (int k = 0; k < 2; ++k) {
+        const std::uint32_t rate = k == 0 ? s.send_rate : s.receive_rate;
+        char text[64];
+        std::snprintf(text, sizeof text, k == 0 ? "Send - %1.1f K/s" : "Receive - %1.1f K/s", static_cast<double>(rate) * 0.001);
+        const int tw = f.text_width(text);
+        const int y0 = y + f.height, y1 = y0 + 8;
+        std::uint32_t pct = rate * 100u / 5600u;
+        int fill = static_cast<int>(pct);
+        if (fill > 99) fill = 100;
+        for (render::Image8* o : {&a, &bb}) {
+            if (!(0x81 < 0 || y < 0 || 0x81 + tw > w - 1 || y + f.height > h - 1)) draw_text(*o, o->bounds(), f, text, 0x81, y, colour);
+            outline_rect(*o, view, 0x81, y0, 0xC1, y1, colour);
+            if (fill > 0) fill_rect(*o, view, 0x81, y0, (0xC1 - 0x81) * fill / 100 + 0x81, y1, colour);
+        }
+        y = y1 + 1;
+    }
+    list.blit(list.keep(keyed_layer(a, bb)), 0, 0, view, false);
 }
 
 }  // namespace client

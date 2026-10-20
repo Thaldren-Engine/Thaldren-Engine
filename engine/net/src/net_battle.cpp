@@ -30,7 +30,10 @@ void NetBattle::attach(sim::Battle& battle) {
 }
 
 SendFn NetBattle::send_fn() {
-    return [this](std::int32_t from, std::int32_t to, std::vector<std::uint8_t> m) { transport_.send(from, to, std::move(m)); };
+    return [this](std::int32_t from, std::int32_t to, std::vector<std::uint8_t> m) {
+        counters_.bytes_sent += static_cast<std::uint32_t>(m.size());
+        transport_.send(from, to, std::move(m));
+    };
 }
 
 bool NetBattle::plays(int s) const {
@@ -405,6 +408,7 @@ void NetBattle::network_input() {
     const FrameReceiver::ReadFn read = [this](std::int32_t& f, std::int32_t& t, std::vector<std::uint8_t>& m) {
         Message msg;
         if (!transport_.receive(msg)) return false;
+        counters_.bytes_received += static_cast<std::uint32_t>(msg.bytes.size());
         f = msg.from;
         t = msg.to;
         m = std::move(msg.bytes);

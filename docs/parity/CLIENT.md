@@ -48,7 +48,7 @@ summary at the end gives the counts after this round.
 | 1.24 | `+light` (light direction for the shaded path) | option table | MISSING | |
 | 1.25 | ShowRanges (`+showranges`, GS+0x391BF) | read by the drawing | MISSING | switch kept, nothing drawn |
 | 1.26 | Debug grid views (F11 debug mode, GS+0x14280 1–4), frame-rate line, profile bars | `0x418310`, `0x46B900` | NOT-APPLICABLE | debug-only (need the "+Now Film…" switch); not player features |
-| 1.27 | BPS display (`+bps`) | `0x468380` | MISSING | "Send / Receive %1.1fK/s" bars |
+| 1.27 | BPS display (`+bps`) | `0x468380` | BUILT+VERIFIED | frame_harness `--hud` bps check: 12 scenes (640 x 480, 1024 x 768), rates none / small / past 5600 / huge, 0 differing pixels; byte totals from NetBattle (messages to and from the transport) |
 | 1.28 | Paused sign, victory / defeat signs | frame | BUILT-UNVERIFIED | `hud.cpp` |
 | 1.29 | Network "waiting" sign (GS+0x38A51 bit 1 frame at (w − 16, h − 80)) | frame | MISSING | |
 | 1.30 | CPU and GPU paths identical | — | BUILT+VERIFIED | `battle_view --gpu`, `--gpu-check` on every client screenshot |
@@ -133,7 +133,7 @@ summary at the end gives the counts after this round.
 | 4.5 | +film / +filmspeed | MISSING | see 2.40 |
 | 4.6 | +cdplay / +cdstop / +musicmode | MISSING | see 3.8 |
 | 4.7 | +showranges | MISSING | see 1.25 |
-| 4.8 | +bps | MISSING | see 1.27 |
+| 4.8 | +bps | BUILT+VERIFIED | see 1.27 (the command sets the client option) |
 | 4.9 | +screenchat, +clock, +noshake, +dither, +shading, +antialias, +shadow, +tshadow, +fshadow | BUILT-UNVERIFIED | switches the client reads (noshake waits for 1.21) |
 | 4.10 | Settings the original saves after a command (DitheredFog, Shading, …) | PARTIAL | not written to the settings file |
 

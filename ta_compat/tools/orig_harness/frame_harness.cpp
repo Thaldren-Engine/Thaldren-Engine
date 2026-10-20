@@ -2365,6 +2365,54 @@ int main(int argc, char** argv) {
                     r.w32(rec + 0, p.active ? 1u : 0u);
                 }
             }
+            // The +bps display (0x468380): random send and receive rates (none, small, past the
+            // bars' 5600, huge), drawn with the rates kept (no remaking within the second); the
+            // pixels it changes in either frame compared.
+            if (!diff) {
+                std::vector<u8> o0, o1;
+                gc.options_mut().bps = false;
+                const render::Image8 c0 = client_frame();
+                r.w32(gs + 0x391C3, 0);
+                bool ok2 = original_frame(o0);
+                auto pick = [&]() -> u32 {
+                    switch (rnd(0, 4)) {
+                    case 0: return 0;
+                    case 1: return static_cast<u32>(rnd(1, 999));
+                    case 2: return static_cast<u32>(rnd(1000, 5599));
+                    case 3: return static_cast<u32>(rnd(5600, 200000));
+                    default: return static_cast<u32>(rnd(0, 0x7FFFFFFF)) * 2u + static_cast<u32>(rnd(0, 1));
+                    }
+                };
+                client::GameClient::BpsState bs = gc.bps_state();
+                bs.send_rate = pick();
+                bs.receive_rate = pick();
+                bs.tick = bs.now;
+                gc.set_bps_state(bs);
+                gc.options_mut().bps = true;
+                const render::Image8 c1 = client_frame();
+                r.w32(gs + 0x391C3, 1);
+                r.w32(0x00511A48, bs.send_rate);
+                r.w32(0x00511A50, bs.receive_rate);
+                // (the original's clock: GetTickCount x the display's tick rate / 1000, 32 bits)
+                const u32 rate = r.r32(o.display + 0xE8);
+                r.w32(0x00511DDC, static_cast<u32>(GetTickCount() * rate / 1000u));
+                ok2 = ok2 && original_frame(o1);
+                if (!ok2) {
+                    std::printf("  hud: bps: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 pimg(W, H, 0);
+                    long long changed = 0;
+                    const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                    std::printf("  hud: bps (send %u, receive %u): %lld of %lld changed pixels differ\n", bs.send_rate, bs.receive_rate, pd, changed);
+                    if (pd) dump("bps", o1, c1, pimg);
+                    if (changed && std::getenv("FH_SHOTS")) dump("bpsok", o1, c1, pimg);
+                    st.pixels += pd;
+                    differs(pd);
+                }
+                gc.options_mut().bps = false;
+                r.w32(gs + 0x391C3, 0);
+            }
             // The console: random lines added by the original's routine (0x463CA0) and the
             // client's (kinds 1, 2, 4, 8, senders, characters 1..255, any length), random line
             // counts and screen chat, the oldest lines expired at random later steps (0x463EF0);

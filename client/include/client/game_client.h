@@ -73,6 +73,7 @@ struct ClientOptions {
     bool radar_everything = false;   // the minimap shows every unit (cheat)
     bool show_ranges = false;        // weapon range circles (not drawn yet)
     bool scoreboard = false;         // F4: the kills and losses panel stays out (visual option bit 0x80)
+    bool bps = false;                // +bps: the network send / receive rates over the view (GS+0x391C3)
     bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
 };
 
@@ -258,6 +259,18 @@ public:
         kill_flash_ = s.kill_flash;
         loss_flash_ = s.loss_flash;
         rank_ = s.rank;
+    }
+    // The +bps display (0x468380 with the rates of 0x416150): the totals of bytes sent and
+    // received (fed by a network session every pass), the totals and clock (1/30 s) of the last
+    // rate update, the rates (bytes a second) and the clock now.
+    struct BpsState {
+        std::uint32_t sent = 0, received = 0, prev_sent = 0, prev_received = 0, tick = 0, send_rate = 0, receive_rate = 0, now = 0;
+    };
+    BpsState bps_state() const { return bps_; }
+    void set_bps_state(const BpsState& s) { bps_ = s; }
+    void set_net_totals(std::uint32_t sent, std::uint32_t received) {
+        bps_.sent = sent;
+        bps_.received = received;
     }
     // Tests: one camera stage (0x41CA10) from the given view, target and followed unit (0: none),
     // with the battle's shake offsets as they are; returns the state after it.
@@ -457,6 +470,8 @@ private:
     bool panel_player(int k) const;          // a player the kills and losses panel lists
     void panels_frame(std::uint32_t now_ms);
     void draw_panels(render::DrawList& list);
+    BpsState bps_;
+    void draw_bps(render::DrawList& list);
     // The shade and light tables as mixing tables (made once; the draw list keeps them by address).
     render::BlendTable shade8_, light31_, light20_;
     // 0x4A50E0 with a picture font: characters from 0x20 that have a glyph, each drawn at its

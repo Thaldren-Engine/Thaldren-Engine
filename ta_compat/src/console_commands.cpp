@@ -300,7 +300,10 @@ void ConsoleCommands::Impl::build() {
         st.compression = !st.compression;
         say(std::string("Ok.  Outgoing packet compression turned ") + (st.compression ? "ON" : "OFF"));
     });
-    add("BPS", [this](const Words&) { st.bps = !st.bps; });
+    add("BPS", [this](const Words&) {
+        st.bps = !st.bps;
+        c.options_mut().bps = st.bps;
+    });
     add("SFX", [this](const Words&) { b().fx_lists.spawning_off = !b().fx_lists.spawning_off; });
 
     // ---- cheats (bit 2): skirmish, and network games whose host allows them ----

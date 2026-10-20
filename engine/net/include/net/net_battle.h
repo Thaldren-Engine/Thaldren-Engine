@@ -31,6 +31,9 @@ namespace net {
 struct NetCounters {
     std::uint64_t packets_sent = 0, packets_received = 0, refused = 0, state_packets = 0, chat = 0;
     std::array<std::uint64_t, 0x2D> by_type{};
+    // Bytes of the messages handed to and taken from the transport (the original's 0x415F40
+    // totals behind the +bps display).
+    std::uint32_t bytes_sent = 0, bytes_received = 0;
 };
 
 class NetBattle final : public sim::BattleOutside {
