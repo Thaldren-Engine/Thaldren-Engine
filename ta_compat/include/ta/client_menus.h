@@ -144,9 +144,9 @@ client::NetMenuConfig network_config(MenuArt& art, client::FrontEnd* settings_fr
 #endif
 
 // The original's message box (MSGBOX.GUI, 0x4ABD90) over the screen shown: the text word-wrapped
-// to 320 pixels, one centred line per row, OK; the screen under it dimmed — `under` its box
-// (null: the whole frame).
-void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under = nullptr);
+// to `width` pixels (the caller's: 320 for most), one centred line per row, OK; the screen under
+// it dimmed — `under` its box (null: the whole frame).
+void show_message(client::FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under = nullptr, int width = 320);
 
 // Text broken for a width as the original's 0x4AC4C0 does (at the end of a word, when the line so
 // far is at least `width` wide, the last space or hyphen before becomes a line break).

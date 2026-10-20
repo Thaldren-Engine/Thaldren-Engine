@@ -18,6 +18,7 @@
 #include "sim/victory.h"
 #include "sim/x87.h"
 #include "ta/translate.h"
+#include "ta/battle_loader.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/tdf.h"
@@ -54,14 +55,15 @@ void draw_run_time_labels(FrontEnd& fe, render::Image8& out, const std::vector<W
 void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, int x, int y, int width, int attribs);
 
 // The original's message box (0x4ABD90): MSGBOX.GUI opened with flag 0x800 (the screen under it
-// dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to 320
-// pixels (0x4AC4C0) and cut at the line breaks into labels ("TEXT", centred across the box, from
+// dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to the
+// caller's width (0x4AC4C0; 320 for most, 480 for the skirmish refusals) and cut at the line breaks into labels ("TEXT", centred across the box, from
 // y 20, one row every 5 + the font's height); the box as wide as the widest line + 20 and
 // lines x 25 + OK's height + 40 high, centred on the screen; OK at 15 pixels from the right and
 // bottom edges, the Enter and Escape default and the focus. OK closes it (no sound).
 class MessageBox : public LayoutScreen {
 public:
-    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under) : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(translate(text)) {
+    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under, int width = 320)
+        : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(translate(text)), width_(width) {
         if (under) {
             under_ = *under;
             has_under_ = true;
@@ -83,7 +85,7 @@ protected:
         const client::Font* lf = mc.font ? mc.font : mc.small_font;
         std::vector<std::string> lines;
         if (lf) {
-            const std::string wrapped = wrap_for_width(*lf, text_, 320);
+            const std::string wrapped = wrap_for_width(*lf, text_, width_);
             std::size_t at = 0;
             while (at <= wrapped.size()) {
                 const std::size_t nl = wrapped.find('\n', at);
@@ -132,6 +134,7 @@ private:
     MenuArt& art_;
     std::string text_;
     render::ClipRect under_{};
+    int width_ = 320;
     bool has_under_ = false;
 };
 
@@ -158,8 +161,8 @@ std::string wrap_for_width(const client::Font& f, const std::string& t, int widt
     return out;
 }
 
-void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under) {
-    if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text, under));
+void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under, int width) {
+    if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text, under, width));
     else std::printf("message: %s\n", text.c_str());
 }
 
@@ -1005,7 +1008,9 @@ protected:
         } else if (is(w, "Difficulty")) {
             difficulty_ = (difficulty_ + 1) % 3;
         } else if (is(w, "SelectMap")) {
-            fe.push(std::make_unique<SelectMap>(art_, map_, [this](const std::string& m) { map_ = m; }));
+            // 0x47AAF0: without a map to list (0x434BF0 counts none) a 320-wide box instead.
+            if (art_.skirmish_maps().empty()) show_message(fe, art_, translate("There are no skirmish maps to choose from"));
+            else fe.push(std::make_unique<SelectMap>(art_, map_, [this](const std::string& m) { map_ = m; }));
         } else if (is(w, "PrevMenu")) {
             save(fe.settings());
             fe.apply_settings();
@@ -1021,13 +1026,27 @@ protected:
     }
 
     void start(FrontEnd& fe) {
+        // 0x47AE60 (Start): the player count GS+0x2A3C = computer players + 1, the map info loaded
+        // with it (0x435A20); then the refusals, each a 480-wide box (0x4ABD90 with 0x1E0, OK,
+        // fitted; the text translated): no map info, no player or no computer player, more
+        // players than the picked schema's start positions (0x437300 < GS+0x2A3C), one allied
+        // group (0x479760).
         int humans = 0, computers = 0;
         for (const Row& r : rows_) {
             humans += r.kind == 1;
             computers += r.kind == 2;
         }
+        const int start_positions = map_start_position_count(art_.vfs(), map_, computers + 1);
+        if (start_positions < 0) {
+            show_message(fe, art_, translate("The terrain for the selected map does not exist."), nullptr, 0x1E0);  // (0x47B0CB)
+            return;
+        }
         if (humans == 0 || computers == 0) {
-            show_message(fe, art_, translate("There must be at least one player and one computer opponent"));  // (0x47B0CB)
+            show_message(fe, art_, translate("There must be at least one player and one computer opponent"), nullptr, 0x1E0);  // (0x47B0CB)
+            return;
+        }
+        if (start_positions < computers + 1) {
+            show_message(fe, art_, translate("There are too many players enabled for this map"), nullptr, 0x1E0);  // (0x47B008)
             return;
         }
         // Everyone in one alliance (other than "none") is refused.
@@ -1043,7 +1062,7 @@ protected:
                 else if (group != r.ally) one_group = false;
             }
         if (one_group && group >= 0) {
-            show_message(fe, art_, translate("All players may not be in the same allied group."));  // (0x47B0CB)
+            show_message(fe, art_, translate("All players may not be in the same allied group."), nullptr, 0x1E0);  // (0x47B0CB)
             return;
         }
         save(fe.settings());

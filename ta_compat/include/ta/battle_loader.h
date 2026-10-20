@@ -103,4 +103,10 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& request
                                           std::string& error,
                                           const std::function<void(sim::Battle&)>& before_start = {});
 
+// The map info a skirmish start loads (0x435A20 -> 0x435DA0, map info kind 2) with `players` as
+// the player count GS+0x2A3C: the start positions of the schema it picks (0x436860 / 0x436C30:
+// the schema's specials named StartPos*, counted by 0x437300); -1 when the map's .ota does not
+// open (0x435A20 returns null: "The terrain for the selected map does not exist.").
+int map_start_position_count(Vfs& vfs, const std::string& map, int players);
+
 }  // namespace ta
