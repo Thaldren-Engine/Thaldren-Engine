@@ -1940,13 +1940,17 @@ protected:
     void build_rows() {
         const int local = st_.local;
         built_local_ = local;
-        for (int row = 0; row < 10; ++row)
+        // Each machine shows its own records in its own order (the original's record order: its
+        // own player first on a joining machine, then the others as they came, i.e. the host's
+        // order): the gadgets keep the slot's number, the row only places them.
+        for (int row_slot = 0; row_slot < 10; ++row_slot)
             for (int t = 0; t < 10; ++t) {
+                const int row = row_slot;
                 const int ti = index_of(kTemplates[t]);
                 if (ti < 0) continue;
                 Widget w = widgets_[static_cast<std::size_t>(ti)];
                 w.name = std::string(kTemplates[t]).substr(0, std::strlen(kTemplates[t]) - 1) + std::to_string(row);
-                w.y += 20 * row;
+                w.y += 20 * display_row(row);
                 w.active = true;
                 if (t == 0) {
                     if (row == local) {
@@ -1995,6 +1999,14 @@ protected:
         w.quickkey = w.quickkey_char = 0;  // (no underlined key)
     }
     Widget* row_widget(const char* prefix, int row) { return widget(std::string(prefix) + std::to_string(row)); }
+    // Where a slot's row is shown: the host shows its slot table as it is; a joining machine shows
+    // its own player in row 0 and the others after it in slot order.
+    int display_row(int slot) const {
+        if (host_) return slot;
+        const int local = st_.local;
+        if (slot == local) return 0;
+        return slot < local ? slot + 1 : slot;
+    }
 
     // The host's option word (or this machine's own when there is no host).
     std::uint16_t host_options() const {
