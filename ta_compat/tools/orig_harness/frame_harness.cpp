@@ -408,6 +408,9 @@ struct Options {
     int steps = 300;      // steps between scenes
     int players = 4;
     int shots = 12;       // extra shots per scene (up to)
+    // --shards N: each scene's world effects replaced by N shards of random units' textured
+    // quads (no art, no glow, no debris), as 0x421700 leaves them, on both sides.
+    int shards = 0;
     bool fog = true;
     bool dither = false;  // --dither: the dithered fog option (visual option 0x40)
     bool mapping = true;  // --no-mapping: line of sight without the mapping option (everything explored)
@@ -457,6 +460,7 @@ int main(int argc, char** argv) {
         else if (a == "--dither") opt.dither = true;
         else if (a == "--no-mapping") opt.mapping = false;
         else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
+        else if (a == "--shards" && k + 1 < argc) opt.shards = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
         else if (a == "--minimap") opt.minimap = true;
@@ -1517,6 +1521,60 @@ int main(int argc, char** argv) {
                 p.ground_height = static_cast<std::int16_t>(gh);
             }
         }
+        // --shards: the battle's world effects replaced for this scene by shards of random
+        // units' textured quads (a random frame of an animated texture as the copied cursor's,
+        // a random owner), put back after the scene.
+        struct ShardPick {
+            std::size_t type;
+            int node, prim;
+            u32 frame;
+        };
+        std::vector<ShardPick> shard_picks;
+        std::unique_ptr<sim::EffectsState> saved_fx;
+        if (opt.shards > 0) {
+            saved_fx = std::make_unique<sim::EffectsState>(b.effects);
+            b.effects.count = 0;
+            b.effects.debris_block.fill(-1);
+            for (sim::Shard& s : b.effects.shards) s.free = 0xFF;
+            std::vector<ShardPick> cands;
+            for (std::size_t k = 1; k < world.types_.size(); ++k) {
+                const ta::ClientUnitType* t = world.types_[k].get();
+                if (!t || !t->ok || !t->assets) continue;
+                for (std::size_t n = 0; n < t->model.pieces.size(); ++n) {
+                    const render::ModelPiece& pc = t->model.pieces[n];
+                    for (std::size_t q = static_cast<std::size_t>(pc.first_drawn); q < pc.primitives.size(); ++q) {
+                        const render::ModelPrimitive& p = pc.primitives[q];
+                        if (p.indices.size() == 4 && !p.flat && p.texture && !p.texture->frames.empty())
+                            cands.push_back({k, static_cast<int>(n), static_cast<int>(q), 0});
+                    }
+                }
+            }
+            for (int k = 0; k < opt.shards && !cands.empty() && k < sim::kMaxShards; ++k) {
+                ShardPick pk = cands[static_cast<std::size_t>(rnd(0, static_cast<int>(cands.size()) - 1))];
+                if (!unit_type(pk.type)) continue;
+                const render::ModelTexture* tex = world.types_[pk.type]->model.pieces[static_cast<std::size_t>(pk.node)].primitives[static_cast<std::size_t>(pk.prim)].texture;
+                if (tex->animated && !tex->team_coloured) pk.frame = static_cast<u32>(rnd(0, static_cast<int>(tex->frames.size()) - 1));
+                const int slot = static_cast<int>(shard_picks.size());
+                sim::WorldEffect& e = b.effects.effects[static_cast<std::size_t>(b.effects.count++)];
+                e = sim::WorldEffect();
+                e.shard = slot;
+                const int wx = sx + rnd(-30, W - 128 + 30), wz = sy + rnd(-30, H - 64 + 30);
+                const int gh = std::max(0, world.hm_.sample(static_cast<std::int16_t>(wx), static_cast<std::int16_t>(wz)));
+                e.pos = {(wx << 16) | rnd(0, 0xFFFF), ((gh + rnd(0, 120)) << 16) | rnd(0, 0xFFFF), (wz << 16) | rnd(0, 0xFFFF)};
+                for (auto& a : e.angle) a = static_cast<std::int16_t>(rnd(-32768, 32767));
+                sim::Shard& sh = b.effects.shards[static_cast<std::size_t>(slot)];
+                sh.free = 0;
+                const int size = rnd(2, 24);
+                for (auto& pt : sh.points)
+                    for (auto& v : pt) v = rnd(-size, size) * 65536 + rnd(0, 0xFFFF);
+                sh.model = &world.types_[pk.type]->assets->pose_model;
+                sh.node = pk.node;
+                sh.primitive = pk.prim;
+                sh.owner = rnd(0, std::max(1, opt.players) - 1);
+                world.shard_frame_[static_cast<std::size_t>(slot)] = static_cast<std::int32_t>(pk.frame);
+                shard_picks.push_back(pk);
+            }
+        }
         // Engine frame: the client's battle view (its scene and draw list; the interface around and
         // over it belongs to the front end and is not compared).
         render::BattleScene scene;
@@ -1902,8 +1960,61 @@ int main(int argc, char** argv) {
                 r.write(gs + 0x37E60, ff.data(), ff.size());
             }
         }
+        // --shards: the world effects and their shard objects (0x420620's layout: 8 points, 6
+        // faces of 4 indices from the table at 0x502BF8, no selection primitive; each face a copy
+        // of the source primitive, a team texture turned into the owner's frame as 0x421700 does).
+        if (opt.shards > 0) {
+            const u32 cnt = static_cast<u32>(b.effects.count);
+            const u32 objs = o.alloc(cnt * 0x34 + 16), verts = o.alloc(cnt * 96 + 16), prims = o.alloc(cnt * 6 * 0x20 + 16);
+            std::vector<u8> eff(cnt * 0x54 + 4, 0);
+            for (u32 k = 0; k < cnt; ++k) {
+                const sim::WorldEffect& e = b.effects.effects[k];
+                const sim::Shard& sh = b.effects.shards[static_cast<std::size_t>(e.shard)];
+                const ShardPick& pk = shard_picks[static_cast<std::size_t>(e.shard)];
+                std::vector<u32> nodes;
+                Original::walk(r, type_model[pk.type], nodes);
+                std::vector<u8> sp(0x20, 0);
+                r.read(r.r32(nodes[static_cast<std::size_t>(pk.node)] + 0x28) + static_cast<u32>(pk.prim) * 0x20, sp.data(), 0x20);
+                const u32 flags = get_at<u32>(sp, 0x1C);
+                std::vector<u8> pb(6 * 0x20, 0);
+                for (u32 f = 0; f < 6; ++f) {
+                    std::memcpy(&pb[f * 0x20], sp.data(), 0x20);
+                    put_at<u32>(pb, f * 0x20 + 4, 4);
+                    put_at<u32>(pb, f * 0x20 + 0xC, 0x00502BF8u + 8 * f);
+                    if (!(flags & 1) && (flags & 2) && !(flags & 4)) put_at<u32>(pb, f * 0x20 + 0x10, pk.frame);
+                    if (!(flags & 1) && (flags & 2) && (flags & 4)) {
+                        const u32 seq = get_at<u32>(pb, f * 0x20 + 0x18);
+                        const u8 colour = world.request().start.players[static_cast<std::size_t>(sh.owner) % 10].colour;
+                        u16 frames = 0;
+                        r.read(seq, &frames, 2);
+                        put_at<u32>(pb, f * 0x20 + 0x10, colour < frames ? r.r32(seq + 0x28 + 8u * colour) : 0u);
+                        put_at<u32>(pb, f * 0x20 + 0x1C, flags & ~2u);
+                    }
+                }
+                r.write(prims + k * 0xC0, pb.data(), pb.size());
+                std::vector<u8> ob(0x34, 0);
+                put_at<u32>(ob, 4, 8);
+                put_at<u32>(ob, 8, 6);
+                put_at<u32>(ob, 0xC, 0xFFFFFFFFu);
+                put_at<u32>(ob, 0x24, verts + k * 96);
+                put_at<u32>(ob, 0x28, prims + k * 0xC0);
+                r.write(objs + k * 0x34, ob.data(), ob.size());
+                r.write(verts + k * 96, sh.points.data(), 96);
+                const std::size_t e0 = static_cast<std::size_t>(k) * 0x54;
+                put_at<u32>(eff, e0, objs + k * 0x34);
+                for (int a = 0; a < 3; ++a) put_at<i32>(eff, e0 + 0x1C + 4 * static_cast<std::size_t>(a), e.pos[static_cast<std::size_t>(a)]);
+                for (int a = 0; a < 3; ++a) put_at<i16>(eff, e0 + 0x4C + 2 * static_cast<std::size_t>(a), e.angle[static_cast<std::size_t>(a)]);
+            }
+            if (cnt) r.write(gs + 0x1491F, eff.data(), cnt * 0x54);
+            r.w32(gs + 0x1491B, cnt);
+        }
         // The original's frame.
-        if (!o.call(kVisibleList, 0, {}) || !o.call(kDrawFrame, 0, {1, 0})) {
+        const bool frame_ok = o.call(kVisibleList, 0, {}) && o.call(kDrawFrame, 0, {1, 0});
+        if (opt.shards > 0) {
+            r.w32(gs + 0x1491B, 0);
+            b.effects = *saved_fx;
+        }
+        if (!frame_ok) {
             ++st.failures;
             std::printf("scene %d: original frame failed\n", sc);
             if (const char* dbg = std::getenv("FH_DUMP")) {

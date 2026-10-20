@@ -72,6 +72,7 @@ struct EffectInstance {
     std::array<std::array<std::int32_t, 3>, 8> points{};  // around pos, 16.16
     std::array<std::int16_t, 3> angle{};                   // x, y, z spin angles
     const ModelPrimitive* look = nullptr;                  // the shattered quad's colour / texture
+    std::int32_t look_frame = -1;  // the quad's animation cursor frame when it shattered (the shard's copy stays there)
     std::uint8_t team_colour = 0;
 };
 
