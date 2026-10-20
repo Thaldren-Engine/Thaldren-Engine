@@ -666,12 +666,12 @@ std::shared_ptr<const client::Sample> MenuArt::music_track(int n) {
 
 std::string image_output_dir(const std::string& game_dir, const client::Settings& settings) {
     // 0x42F9A0: the registry's "Image Output Directory", else "%s\%s" of the program's folder
-    // and the user's name (GetUserNameA), "user images" when there is none.
+    // and the user's name (GetUserNameA), "user_images" when there is none.
     const std::string set = settings.get_text("Image Output Directory", "");
     if (!set.empty()) return set;
     const char* user = std::getenv("USERNAME");
     if (!user || !*user) user = std::getenv("USER");
-    return game_dir + "\\" + (user && *user ? std::string(user) : std::string("user images"));
+    return game_dir + "\\" + (user && *user ? std::string(user) : std::string("user_images"));
 }
 
 client::ClientOptions client_options(const client::Settings& s, int width, int height) {

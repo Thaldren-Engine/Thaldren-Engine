@@ -72,7 +72,7 @@ summary at the end gives the counts after this round.
 | 2.13 | Space-held (or F4) kills / losses scoreboard sliding in from the left (skirmish, network) | `0x4948E0` | BUILT+VERIFIED | same check (both game types, F4, flashes, ranks with gaps: ranks equal after drawing); the kill ranking and lead message from the battle's kill hook |
 | 2.14 | F1 unit info screen (UNITINFOX.GUI: picture, name, costs, build time, statistics, speed, acceleration, turn rate, description lines) | `0x4942E0`, `0x489280` | BUILT+VERIFIED | gui_harness `battle unitinfo:` against ta_play frames: 7 types, 0 of 61,750 pixels each |
 | 2.15 | Game menu Help / Briefing pages (mission text) | `0x4609B0` | BUILT-UNVERIFIED | Help and Settings verified earlier; *2026-10-20*: in a campaign the Mission button opens BRIEFING.GUI (`0x4609B0` → handler `0x45F770`): at its own place, "igmbrief" in the box, the mission's text pages as the briefing's (`0x476D80`/`0x476EF0`; the blink table is made but nothing draws it here), a click on the text or MOREBAR ("Options") the next page, OK ("Options") closes. Smoke: Arm mission 1 — pages 1 and 2 in the box. Not compared with gui_harness |
-| 2.16 | Game clock option | frame | BUILT-UNVERIFIED | |
+| 2.16 | Game clock option | frame | BUILT-UNVERIFIED | *2026-10-20*: the text as `Render_DrawBattleFrame` (`0x46A1D0`) makes it: "%s : %02d:%02d:%02d" of "Game Time" with the game steps split as the information panel does (was "Game Time: hh:mm:ss"); at x 130, y = height − 34 − font height |
 | 2.17 | Selection: click, Shift toggle, double click (same type on screen), drag box | `0x48C7F0`, `0x48C390` | BUILT-UNVERIFIED | sounds checked by sound_harness |
 | 2.18 | Pick test (model base rectangle, smallest rank) | `0x48CD80`, `0x48C6A0` | BUILT-UNVERIFIED | |
 | 2.19 | Group keys: select (CTRL_F rule: an armed member drops the group's CTRL_F units), Shift adds; the order mode returns to default | `0x48D9A0`, `0x495860` | BUILT-UNVERIFIED | CTRL_F rule and the mode reset built as read |
@@ -87,7 +87,7 @@ summary at the end gives the counts after this round.
 | 2.28 | F4 toggles the scoreboard (visual bit 0x80) | `0x495E90` | BUILT+VERIFIED | part of the panels check |
 | 2.29 | F12 clears the console | `0x463C80` | BUILT-UNVERIFIED | built as read |
 | 2.30 | `~ ! # * damage bars toggle (saved to the settings) | `0x495E90`, `0x430F00` | BUILT-UNVERIFIED | saved through the front end's settings |
-| 2.31 | + / − game speed (not in F11 debug mode, not for watchers) | `0x490DF0` | BUILT-UNVERIFIED | watcher rule added |
+| 2.31 | + / − game speed (not in F11 debug mode, not for watchers) | `0x490DF0` | BUILT-UNVERIFIED | watcher rule added; *2026-10-20*: the console line only when the speed changes (not at 1 or 20 again), "Game Speed Normal" or "%s  %c%d\n" ("Game Speed", '+' above normal and ' ' below, the speed less 10 with its own minus, the newline part of the line; was "Game Speed  -3") |
 | 2.32 | Pause key (packet 0x19) | `0x495E90` | BUILT-UNVERIFIED | |
 | 2.33 | Esc: order mode → default, else deselect; closes the game menu | `0x495E90` | BUILT+VERIFIED | battle_menus_check |
 | 2.34 | Enter: chat line (SmallButton) | `0x495E90` | BUILT+VERIFIED | gui_harness `talk` |

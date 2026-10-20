@@ -524,6 +524,26 @@ void show_net_message(FrontEnd& fe, MenuArt& art, const std::string& text, int w
     else std::printf("message: %s\n", text.c_str());
 }
 
+// A message left for the menu loop (0x425730 into the buffer 0x511FB8, shown by 0x426E80): a box
+// as wide as the text + 20 (0x4A5030 in the current font), the text not translated.
+void show_loop_message(FrontEnd& fe, MenuArt& art, const char* text) {
+    const client::Font* f = art.content().font;
+    show_net_message(fe, art, text, (f ? f->text_width(text) : 0) + 20);
+}
+
+// The service could not be used (0x426E80 state 0x14: 0x450D80 failed): the text for the menu
+// loop and back to the provider list (state 0x0F).
+constexpr const char* kServiceError = "An error occurred trying to use this service";
+
+// A player could not be added (0x451220): 500 wide; the host's record on this machine asks to
+// re-create the session, otherwise to re-join it.
+void show_add_player_failed(FrontEnd& fe, MenuArt& art, bool host) {
+    show_net_message(fe, art,
+                     host ? "Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-create the game session.\n"
+                          : "Direct Play failed to add new player.\n\nRecommended you go to previous screen and re-join the game session.\n",
+                     500);
+}
+
 // ------------------------------------------------------------------ shared state of the part
 // The session service's providers as the original lists them (the system's provider list in the
 // order seen with the original program: serial, modem, TCP/IP; no IPX on current systems), here
@@ -888,6 +908,7 @@ protected:
     }
     void on_press(FrontEnd& fe, Widget& w) override;
     void join(FrontEnd& fe, bool watch);
+    void rebuild();
     std::shared_ptr<NetPart> part_;
     std::vector<GameEntry> games_;
 };
@@ -994,7 +1015,7 @@ void enter_room(FrontEnd& fe, std::shared_ptr<NetPart> part, bool host) {
         }
     }
     if (id == 0 || id == -1) {  // (session ids are any 32-bit value: XORed with the session key)
-        show_net_message(fe, part->art, "Direct Play failed to add new player");
+        show_add_player_failed(fe, part->art, host);
         return;
     }
     // The original's battle room (LOUNGE2) over the session.
@@ -1010,7 +1031,13 @@ void TcpAsk::ok(FrontEnd& fe) {
     fe.pop();
     // The game list at that address (the original: the session service's games found there).
     std::string err;
-    if (!part_->test && open_provider(*part_, err)) find_games(*part_);
+    if (!part_->test) {
+        if (!open_provider(*part_, err)) {
+            show_loop_message(fe, art_, kServiceError);
+            return;
+        }
+        find_games(*part_);
+    }
     fe.push(make_selgame(part_, found_entries(*part_)));
 }
 
@@ -1032,7 +1059,7 @@ void SerialAsk::on_press(FrontEnd& fe, Widget& w) {
     fe.pop();
     std::string err;
     if (!part_->test && !open_provider(*part_, err)) {
-        show_net_message(fe, art_, err);
+        show_loop_message(fe, art_, kServiceError);
         return;
     }
     if (host) {
@@ -1061,7 +1088,7 @@ void ModemAsk::on_press(FrontEnd& fe, Widget& w) {
     fe.pop();
     std::string err;
     if (!part_->test && !open_provider(*part_, err)) {
-        show_net_message(fe, art_, err);
+        show_loop_message(fe, art_, kServiceError);
         return;
     }
     if (part_->answer) {
@@ -1110,13 +1137,18 @@ void SelGame::on_press(FrontEnd& fe, Widget& w) {
     }
 }
 
+// 0x4437C0 (WATCH, JOINGAME, a double click on the list): the game's description is taken; a
+// session of another version only leaves the text for the menu loop (0x425730), which shows it in
+// a message box as wide as the text + 20 (0x426E80, state 0x10 with 0x4A5030), no sound; a closed
+// (flags bit 31) or playing (bit 20) session only plays "Previous"; then the empty-name refusal,
+// the password, Watch's bit 0x40 and the join (state 0x13 / 0x12).
 void SelGame::join(FrontEnd& fe, bool watch) {
     ListState* L = list("GAMENAME");
     int row = L ? L->selected : -1;
     if (row < 0 || row >= static_cast<int>(games_.size())) return;
     const GameEntry& g = games_[static_cast<std::size_t>(row)];
-    if (g.major != 3) {
-        show_net_message(fe, art_, "You do not have a compatible version of Total Annihilation to join this game.");
+    if (g.major != 3) {  // (the description's version byte against the program's, GS+1)
+        show_loop_message(fe, art_, "You do not have a compatible version for this game.");
         return;
     }
     if ((g.options & 0x8000) || (g.options & 0x10)) {
@@ -1145,13 +1177,15 @@ void SelGame::join(FrontEnd& fe, bool watch) {
         for (std::size_t k = 0; k < part_->found.size(); ++k)
             if (entry_of(part_->found[k]).name == want) found = static_cast<int>(k);
         if (found < 0) {
-            show_net_message(fe, art_, "Unable to join the game");
+            rebuild();
             return;
         }
         row = found;
     }
     if (!part_->test && part_->session && row < static_cast<int>(part_->found.size())) {
-        // 0x4517B0: open the session (join), then this machine's player.
+        // 0x4517B0 / 0x4C9FD0: open the session (join), then this machine's player. A failed
+        // open (whatever the reason, a wrong password too) shows nothing: the state goes back to
+        // 0 and the game list is built anew (0x443CB0, the games asked for again).
         net::dplay::Session& s = *part_->session;
         s.join(part_->found[static_cast<std::size_t>(row)], part_->password);
         const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -1160,11 +1194,24 @@ void SelGame::join(FrontEnd& fe, bool watch) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         if (s.state() != net::dplay::Session::State::Joined) {
-            show_net_message(fe, art_, s.result() == net::dplay::kErrInvalidPassword ? "Incorrect password" : "Unable to join the game");
+            std::string err;
+            open_provider(*part_, err);
+            rebuild();
             return;
         }
     }
     enter_room(fe, part_, false);
+}
+
+// 0x443CB0 again: the games asked for anew, the fields from the kept name and password, the
+// list taking the focus.
+void SelGame::rebuild() {
+    if (!part_->test && part_->session) find_games(*part_);
+    if (!part_->test) games_ = found_entries(*part_);
+    set_edit("NICKNAME", part_->nickname);
+    set_edit("PASSWORD", part_->password);
+    focus_edit("GAMENAME");
+    fill();
 }
 
 void NewMulti::next(FrontEnd& fe) {
@@ -1197,15 +1244,17 @@ void NewMulti::next(FrontEnd& fe) {
         if (!part_->session) {
             part_->address.clear();
             if (!open_provider(*part_, err)) {
-                show_net_message(fe, art_, err);
+                show_add_player_failed(fe, art_, true);
                 return;
             }
         }
+        // (0x451540 does not look at the open's result; the player's creation (0x451220) then
+        // fails with the host's text.)
         net::dplay::HostSettings hs;
         hs.session_name = part_->game_name;
         hs.password = part_->password;
         if (!part_->session->host(hs, err)) {
-            show_net_message(fe, art_, err);
+            show_add_player_failed(fe, art_, true);
             part_->session.reset();
             return;
         }

@@ -829,7 +829,7 @@ protected:
             }
         };
         stage("StartLocation", fixed_ ? 0 : 1,
-              fixed_ ? "Commanders are placed at pre-determined locations." : "Commanders are randomly placed on the map.");
+              fixed_ ? "Commanders are placed at pre-determined locations." : "Commanders are randomly placed on the battle field.");
         stage("CommanderDeath", commander_ends_ ? 0 : 1,
               commander_ends_ ? "Game ends when commander is destroyed." : "Game continues after Commander is destroyed.");
         stage("Mapping", mapping_ ? 0 : 1, mapping_ ? "Terrain is blacked out until explored." : "Terrain is visible.");
