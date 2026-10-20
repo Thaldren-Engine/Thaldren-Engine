@@ -817,3 +817,8 @@ add_executable(vfs_harness
 )
 target_include_directories(vfs_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
 target_compile_options(vfs_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# The unit table's sort (0x42D2E0: 0x432D40 / 0x432FB0) against ta::sort_like_original.
+add_executable(sort_harness sort_harness.cpp)
+target_include_directories(sort_harness PRIVATE ${ROOT}/ta_compat/include)
+target_compile_options(sort_harness PRIVATE /W4 /permissive- /fp:precise)

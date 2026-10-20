@@ -8,6 +8,7 @@
 #include "sim/x87.h"
 #include "ta/featuredefs.h"
 #include "ta/model3do.h"
+#include "ta/stl98_sort.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -517,11 +518,11 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
         if (units[i].type_flags & unit_flags::kVersionCompatible) kept.push_back(std::move(units[i]));
         else table.notes.push_back("incompatible: " + units[i].source_file);
     }
-    std::stable_sort(kept.begin() + 1, kept.end(),
-                     [](const UnitDefRecord& a, const UnitDefRecord& b) { return stricmp_c(a.unit_name, b.unit_name) < 0; });
+    sort_like_original(kept, 1, kept.size(),
+                       [](const UnitDefRecord& a, const UnitDefRecord& b) { return stricmp_c(a.unit_name, b.unit_name) < 0; });
     for (std::size_t i = 2; i < kept.size(); ++i) {
         if (stricmp_c(kept[i - 1].unit_name, kept[i].unit_name) == 0)
-            table.notes.push_back("duplicate unit name (order not yet reproduced exactly): " + kept[i].unit_name);
+            table.notes.push_back("duplicate unit name (kept in the original's sort order): " + kept[i].unit_name);
     }
     for (std::size_t i = 0; i < kept.size(); ++i) kept[i].index = static_cast<std::uint16_t>(i);
 
