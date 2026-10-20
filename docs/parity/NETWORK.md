@@ -115,7 +115,7 @@ requests, no comparison tool and no regression test).
 | room records, ready, map, options, start condition `0x456760` | BUILT+VERIFIED | with the original both ways |
 | room drawn 1:1 | BUILT+VERIFIED (CLIENT/FRONTEND) | gui_harness comparisons |
 | row order: each machine shows its own player in row 0 | MISSING | engine rooms use the host's slot order |
-| a joining machine adding a computer player (Alt + an unused row) | MISSING | |
+| a joining machine adding a computer player (PLAYER on a free or blocked row, `0x447B10`) | BUILT-UNVERIFIED *2026-10-20* | any machine adds one unless the game is closed ("Can't add another player when game is closed.", 500 wide), the commander mode is 0x1000, or `0x457B90` finds one this machine already runs (controller 2 only; was: any computer player anywhere, and the host only). A joiner asks the session for its player ("AI:" + its name, 16 characters, data byte 0x13 = 0x50); its side record goes out until the host seats it; it is the joiner's to run and to remove. net_tests loopback (seated at the same slot on both machines, removed again); not tried against the original |
 | Exit to Windows in a network battle (`0x451B60`): every player this machine runs has its team killed and its session player destroyed; the other machines, on the session's "player destroyed" (system message 5, `0x4550D5`), run `0x452CC0` for it (team killed there, their alliance bytes toward it cleared, the record freed) and send "has disconnected" (0x1C) | BUILT-UNVERIFIED *2026-10-20* | loopback host + join: the host exits to Windows from the exit menu, the joiner frees both host-side records (human and computer player) with their units; was: ignored until the time-out. Open: the other leave paths of the original (status 0x1B, `0x453010`) also kill the leaver's team, the engine still only marks those players as leaving |
 | alliances of the room carried into the battle (team rule `0x446C70` every room frame, forced breaks `0x446E90`, `0x452960`) | BUILT-UNVERIFIED *2026-10-20* | was MISSING (the battle derived alliances from teams only). net_tests: team rule, a hand-made alliance, a forced break, the battle start's table |
 | ALLY toggle on a teammate leaves the team | MISSING | `0x447B10` "ALLY%d": which record leaves is ambiguous in the decompile; to check in gui_harness |
@@ -149,7 +149,7 @@ requests, no comparison tool and no regression test).
 | Control screen (ownership) network side | BUILT-UNVERIFIED | |
 
 ## Remaining, in order
-1. Row order (own player in row 0) and a joiner adding a computer player (room).
+1. (done 2026-10-20: row order, a joiner's computer player.)
 2. Serial with the original into the battle (the original exits while loading under the capture tool); the original hosting over serial.
 3. Restrictions Load/Save List files; status 7; the ALLY-on-a-teammate rule.
 4. Our host + the original joining with shots fired (feature maps); 3+ machines with the original; passwords against the original.

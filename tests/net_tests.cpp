@@ -295,6 +295,43 @@ static void test_room() {
     CHECK(late.refused() && late.local_slot() < 0);
 }
 
+// A joining machine adds its own computer player (0x447B10 on a free row): the host seats it,
+// every machine sees it, only the joiner runs it (one per machine is the lounge's rule).
+static void test_room_joiner_computer() {
+    net::LoopbackHub hub;
+    net::Transport& th = hub.add_machine();
+    net::Transport& t1 = hub.add_machine();
+    net::BattleRoom host(th, true, 0x100, "Host");
+    net::BattleRoom a(t1, false, 0x200, "Alice");
+    host.set_map("Moon Quartet");
+    host.set_map_ready(true);
+    std::uint32_t clock = 100;
+    auto run = [&](int n) {
+        for (int k = 0; k < n; ++k) {
+            clock += 2;
+            host.frame(clock);
+            a.frame(clock);
+        }
+    };
+    run(30);
+    CHECK(a.local_slot() >= 0);
+    CHECK(a.add_own_computer());
+    run(30);
+    int seen_host = -1, seen_a = -1;
+    for (int s = 0; s < 10; ++s) {
+        if (host.players()[static_cast<std::size_t>(s)].kind == 2) seen_host = s;
+        if (a.players()[static_cast<std::size_t>(s)].kind == 2) seen_a = s;
+    }
+    CHECK(seen_host >= 0 && seen_host == seen_a);
+    if (seen_a >= 0) {
+        CHECK(a.runs(seen_a) && !host.runs(seen_a));
+        CHECK(a.players()[static_cast<std::size_t>(seen_a)].name == "AI:Alice");
+        CHECK(a.remove_computer(seen_a, 1));
+        run(30);
+        CHECK(host.players()[static_cast<std::size_t>(seen_a)].net_id == 0);
+    }
+}
+
 static void test_room_shuffle() {
     // Start positions shuffled on the host's C runtime rand() (two players: one draw decides).
     int shuffled = 0;
@@ -552,6 +589,7 @@ int main() {
     test_frame_order();
     test_loopback();
     test_room();
+    test_room_joiner_computer();
     test_room_shuffle();
     std::printf("net_tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

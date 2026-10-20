@@ -20,6 +20,7 @@
 // +0xA5, version +0xA7/+0xA8, map checksum +0xA9. The player's name (the session's player name
 // in the original) travels at +0x40, a place the original was not seen to read.
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -129,6 +130,10 @@ public:
     void set_game_name(const std::string& name);
     // Host: a computer player in the given free slot (-1 when taken), its logo the first free one.
     int add_computer_at(int slot, std::uint8_t side);
+    // A joining machine's computer player (0x447B10 on a free row, 0x451220): its session player is
+    // asked for; once the session makes it, its side record goes out until the host's slot table
+    // seats it. Returns false when one is already coming.
+    bool add_own_computer();
     // Host: a computer player's slot freed (status 1, "left").
     bool remove_computer(int slot, std::uint8_t reason = room::kLeft);
     // Host: an empty slot closed to newcomers ("[BLOCKED]"; slot table id -1) or opened again.
@@ -235,6 +240,8 @@ public:
     const std::array<RoomPlayer, 10>& players() const { return players_; }
     int local_slot() const { return local_slot_; }
     bool is_host() const { return host_; }
+    // Whether this machine runs the player in a slot (its own, or a computer player it made).
+    bool runs(int slot) const { return slot >= 0 && slot < 10 && mine(players_[static_cast<std::size_t>(slot)]); }
     bool refused() const { return refused_; }
     std::function<void(const std::string& line)> on_chat;
     std::function<void(int slot)> on_player_left;
@@ -245,7 +252,12 @@ private:
     void init(const std::string& name);
     RoomPlayer& me() { return players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)]; }
     int slot_of(std::int32_t net_id) const;
-    bool mine(const RoomPlayer& p) const { return p.net_id == net_id_ || (host_ && p.kind == 2); }
+    // This machine's players: its own and the computer players it made (whichever machine).
+    bool mine(const RoomPlayer& p) const {
+        return p.net_id && (p.net_id == net_id_ || std::find(own_computers_.begin(), own_computers_.end(), p.net_id) != own_computers_.end());
+    }
+    std::vector<std::int32_t> own_computers_;  // session ids of the computer players this machine runs
+    bool computer_coming_ = false;             // a joining machine's computer player asked for
     std::int32_t first_human_id() const;
     void send_all(std::int32_t from, const std::uint8_t* p, std::size_t n);
     void send_one(std::int32_t from, std::int32_t to, const std::uint8_t* p, std::size_t n);

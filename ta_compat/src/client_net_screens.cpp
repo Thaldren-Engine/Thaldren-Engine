@@ -2417,7 +2417,7 @@ protected:
             }
             ++count;
             const bool own = p.net_id == room.net_id();
-            const bool mine = own || (room.is_host() && p.kind == 2);
+            const bool mine = own || room.runs(s);
             q.used = true;
             q.controller = own ? 1 : mine ? 2 : 3;
             // (A computer player's name is its session player's: "AI:" and its machine's player.)
@@ -2822,13 +2822,18 @@ protected:
                 show_net_message(fe, art_, "Can't add another player when game is closed.", 500);
                 return;
             }
+            // 0x457B90: one computer player per machine (this machine's records, controller 2).
             int computers = 0;
-            for (const LoungeSlot& c : st_.slots) computers += c.used && (c.controller == 2 || (c.controller == 3 && c.kind == 2));
-            if ((opt & 0x1800) != 0x1000 && computers == 0 && host_) {
-                // 0x451220: a computer player in this slot, the first logo nobody plays.
-                if (room.add_computer_at(s, 0) >= 0) computer_since_[room.players()[static_cast<std::size_t>(s)].net_id] = clock_;
+            for (const LoungeSlot& c : st_.slots) computers += c.used && c.controller == 2;
+            if ((opt & 0x1800) != 0x1000 && computers == 0) {
+                if (host_) {
+                    // 0x451220: a computer player in this slot, the first logo nobody plays.
+                    if (room.add_computer_at(s, 0) >= 0) computer_since_[room.players()[static_cast<std::size_t>(s)].net_id] = clock_;
+                } else {
+                    // A joining machine's: its session player, then the host seats it.
+                    room.add_own_computer();
+                }
             }
-            // (A joining machine's computer player: not built.)
             return;
         }
         if (int s = row_of(n, "SIDE"); s >= 0) {

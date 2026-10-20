@@ -321,7 +321,7 @@ int BattleRoom::add_computer_at(int slot, std::uint8_t side) {
 }
 
 bool BattleRoom::remove_computer(int slot, std::uint8_t reason) {
-    if (!host_ || slot < 0 || slot > 9) return false;
+    if (slot < 0 || slot > 9) return false;
     RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
     if (!p.net_id || p.kind != 2 || !mine(p)) return false;
     u8 st[6] = {packet::kStatus};
@@ -329,6 +329,7 @@ bool BattleRoom::remove_computer(int slot, std::uint8_t reason) {
     st[5] = reason;
     send_all(net_id_, st, 6);
     transport_.destroy_player(p.net_id);
+    own_computers_.erase(std::remove(own_computers_.begin(), own_computers_.end(), p.net_id), own_computers_.end());
     p = RoomPlayer{};
     dirty_ = true;
     return true;
@@ -464,6 +465,23 @@ void BattleRoom::broadcast_records() {
         at[5] = p.ally_team;
         send_all(p.net_id, at, 6);
     }
+    // A joining machine's own computer players not seated yet: their records ask the host for a
+    // place (as the join request does for its human).
+    if (!host_)
+        for (const std::int32_t id : own_computers_) {
+            if (slot_of(id) >= 0 || local_slot_ < 0) continue;
+            RoomPlayer p;
+            p.net_id = id;
+            p.name = ("AI:" + me().name).substr(0, 16);
+            p.kind = 2;
+            p.side = me().side;
+            p.options = room::kNonCampaign | room::kReady;
+            p.map_ready = true;
+            u8 pk[186] = {packet::kSideRecord};
+            const auto r = encode_side_record(p);
+            std::memcpy(pk + 1, r.data(), r.size());
+            send_all(id, pk, 186);
+        }
     if (local_slot_ < 0 && !refused_) {
         // Not seated yet: the join request is our record.
         RoomPlayer p;
@@ -935,6 +953,19 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
             const int old = slot_of(id);
             next[static_cast<std::size_t>(s)] = old >= 0 ? players_[static_cast<std::size_t>(old)] : RoomPlayer{};
             next[static_cast<std::size_t>(s)].net_id = id;
+            if (old < 0 && std::find(own_computers_.begin(), own_computers_.end(), id) != own_computers_.end() && local_slot_ >= 0) {
+                // This machine's computer player seated by the host.
+                RoomPlayer& m = next[static_cast<std::size_t>(s)];
+                m.name = ("AI:" + me().name).substr(0, 16);
+                m.kind = 2;
+                m.side = me().side;
+                m.options = room::kNonCampaign | room::kReady;
+                m.map = me().map;
+                m.map_checksum = me().map_checksum;
+                m.map_ready = true;
+                m.group = me().group;
+                dirty_ = true;
+            }
             if (id == net_id_ && local_slot_ < 0) {
                 RoomPlayer& m = next[static_cast<std::size_t>(s)];
                 m.name = pending_name_;
@@ -1127,6 +1158,16 @@ void BattleRoom::session_events() {
     while (transport_.next_event(e)) {
         switch (e.kind) {
         case SessionEvent::Kind::PlayerCreated: {
+            if (e.local && computer_coming_ && e.id != net_id_) {
+                // This machine's computer player made by the session (add_own_computer).
+                computer_coming_ = false;
+                own_computers_.push_back(e.id);
+                std::vector<std::int32_t> ids = own_computers_;
+                ids.push_back(net_id_);
+                transport_.set_local_players(ids);
+                dirty_ = true;
+                break;
+            }
             if (e.local || !host_ || slot_of(e.id) >= 0) break;
             // 0x453D40, the session's "player created" message on the host: the newcomer's data
             // (21 bytes: the password typed, then the words 0 and 0x50) must match, else it is
@@ -1189,7 +1230,28 @@ std::int32_t BattleRoom::computer_id(int slot) {
     const std::string name = ("AI:" + players_[static_cast<std::size_t>(local_slot_ < 0 ? 0 : local_slot_)].name).substr(0, 16);
     const std::int32_t id = transport_.create_player(name, data);
     // (Session ids are any 32-bit value, XORed with the session's key: 0 and -1 mean none.)
-    return id != 0 && id != -1 ? id : net_id_ + 0x1000 + slot;
+    const std::int32_t got = id != 0 && id != -1 ? id : net_id_ + 0x1000 + slot;
+    own_computers_.push_back(got);
+    return got;
+}
+
+bool BattleRoom::add_own_computer() {
+    if (host_ || computer_coming_ || local_slot_ < 0) return false;
+    std::vector<u8> data(21, 0);
+    data[0x13] = 0x50;
+    const std::string name = ("AI:" + me().name).substr(0, 16);
+    std::int32_t id = transport_.create_player(name, data);
+    if (id == -1) id = net_id_ + 0x1000;  // (no session players: a made-up id, as add_computer's)
+    if (id != 0) {
+        own_computers_.push_back(id);
+        std::vector<std::int32_t> ids = own_computers_;
+        ids.push_back(net_id_);
+        transport_.set_local_players(ids);
+    } else {
+        computer_coming_ = true;  // (the session's "player created" brings its id)
+    }
+    dirty_ = true;
+    return true;
 }
 
 void BattleRoom::publish_session_info() {
