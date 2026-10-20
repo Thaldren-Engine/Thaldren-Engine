@@ -12,7 +12,9 @@
 
 #include "net/frames.h"
 #include "net/lobby.h"
+#include "net/net_battle.h"
 #include "net/protocol.h"
+#include "sim/battle_quiet.h"
 #include "net/transport.h"
 #include "sim/bitstream.h"
 
@@ -315,6 +317,12 @@ static void test_room_joiner_computer() {
     };
     run(30);
     CHECK(a.local_slot() >= 0);
+    // The periodic probes (0x06) were answered (0x07): each machine's record of the other has
+    // its byte +0x21 bit 0 (0x453D40 case 5).
+    for (int s = 0; s < 10; ++s) {
+        if (host.players()[static_cast<std::size_t>(s)].net_id == 0x200) CHECK(host.probe_answered(s));
+        if (a.players()[static_cast<std::size_t>(s)].net_id == 0x100) CHECK(a.probe_answered(s));
+    }
     CHECK(a.add_own_computer());
     run(30);
     int seen_host = -1, seen_a = -1;
@@ -581,8 +589,141 @@ static void test_dplay() {
     }
 }
 
+// A transport over the loopback hub that can also deliver the session's own messages.
+struct EventTransport : net::Transport {
+    net::Transport& in;
+    std::deque<net::SessionEvent> events;
+    explicit EventTransport(net::Transport& t) : in(t) {}
+    void send(std::int32_t f, std::int32_t t, std::vector<std::uint8_t> b) override { in.send(f, t, std::move(b)); }
+    bool receive(net::Message& m) override { return in.receive(m); }
+    void set_local_players(const std::vector<std::int32_t>& ids) override { in.set_local_players(ids); }
+    bool next_event(net::SessionEvent& e) override {
+        if (events.empty()) return false;
+        e = events.front();
+        events.pop_front();
+        return true;
+    }
+};
+
+// Two machines in a battle: A runs slot 0 (human, id 101, the host) and slot 1 (computer, 102),
+// B runs slot 2 (human, 201) and slot 3 (computer, 202). Packets go out at once (no frames).
+struct LeaveRig {
+    net::LoopbackHub hub;
+    EventTransport ta{hub.add_machine()}, tb{hub.add_machine()};
+    sim::HeightMap hm{16, 16};
+    sim::QuietBattleOutside qa, qb;
+    sim::BattleRng ra, rb;
+    sim::Battle a{qa, hm, ra}, b{qb, hm, rb};
+    net::NetTiming timing() {
+        net::NetTiming t;
+        t.frame_timing = false;
+        return t;
+    }
+    net::NetBattle na{qa, ta, timing()}, nb{qb, tb, timing()};
+    LeaveRig() {
+        std::array<net::RoomPlayer, 10> room{};
+        const std::int32_t ids[4] = {101, 102, 201, 202};
+        for (int s = 0; s < 4; ++s) {
+            room[static_cast<std::size_t>(s)].net_id = ids[s];
+            room[static_cast<std::size_t>(s)].kind = (s & 1) ? 2 : 1;
+            room[static_cast<std::size_t>(s)].group = s < 2 ? 1 : 2;
+        }
+        room[0].flags = net::room::kHost;
+        for (sim::Battle* x : {&a, &b}) {
+            x->alliances.assign(10, {});
+            for (int s = 0; s < 4; ++s) {
+                sim::PlayerSlot& p = x->players[static_cast<std::size_t>(s)];
+                p.active = true;
+                p.state = static_cast<std::uint8_t>(s);
+                p.net_id = ids[s];
+            }
+            x->victory.sides[0].host = true;
+        }
+        a.players[0].controller = 1, a.players[1].controller = 2, a.players[2].controller = 3, a.players[3].controller = 3;
+        b.players[0].controller = 3, b.players[1].controller = 3, b.players[2].controller = 1, b.players[3].controller = 2;
+        a.settings.local_player = 0;
+        b.settings.local_player = 2;
+        na.attach(a);
+        nb.attach(b);
+        na.set_room(room);
+        nb.set_room(room);
+    }
+    void pump() {
+        for (int k = 0; k < 3; ++k) {
+            na.poll();
+            nb.poll();
+        }
+    }
+};
+
+static void test_battle_leave_paths() {
+    {
+        // 0x07 probe answers set the sender record's +0x21 bit 0 (case 5).
+        LeaveRig r;
+        r.ta.send(101, 0, {0x06});
+        r.pump();
+        CHECK(r.na.probe_answered(2) && !r.nb.probe_answered(0));
+    }
+    {
+        // B's time-out Reject sends A's human away (0x453010, remote human): A's whole machine
+        // group freed on B, the host flag passed to the highest human id (B's 201).
+        LeaveRig r;
+        r.b.alliances[2][0] = 1;
+        r.b.alliances[3][1] = 1;
+        r.a.alliances[0][2] = 1;
+        r.nb.reject(0, 6);
+        CHECK(!r.b.players[0].active && !r.b.players[1].active && r.b.players[0].controller == 0);
+        CHECK(r.nb.leaving(0) == 6 && r.nb.leaving(1) == 6);
+        CHECK(r.b.alliances[2][0] == 0 && r.b.alliances[3][1] == 0);
+        CHECK(r.b.victory.sides[2].host && (r.nb.room()[2].flags & net::room::kHost));
+        r.pump();
+        // A hears its own human named (0x1B): a status for each local player from the first, so
+        // only the first goes out; 0x452CC0 runs for the human each time: its computer player
+        // stays (not freed, controller 2), the human stays in the record with its own alliance
+        // row cleared; the host flag goes to the highest id among controllers 1 and 3: on A
+        // that is B's computer player (202, a remote record here), the old flag stays.
+        CHECK(r.na.counters().packets_sent == 1);  // (by_type counts both ways)
+        CHECK(r.na.leaving(0) == 6 && r.na.leaving(1) == 6);
+        CHECK(r.a.players[0].active && r.a.players[0].controller == 1);
+        CHECK(r.a.players[1].active && r.a.players[1].controller == 2);
+        CHECK(r.a.alliances[0][2] == 0);
+        CHECK(r.a.victory.sides[3].host && r.a.victory.sides[0].host && !r.a.victory.sides[2].host);
+    }
+    {
+        // A session "player destroyed" (system message 5) for B's human on A: sent away with
+        // reason 1 (status 0x1B, B's group freed), controller 0; no 0x1C.
+        LeaveRig r;
+        r.ta.events.push_back({net::SessionEvent::Kind::PlayerDestroyed, 201});
+        r.na.poll();
+        CHECK(!r.a.players[2].active && !r.a.players[3].active && r.a.players[2].controller == 0);
+        CHECK(r.na.leaving(2) == 1 && r.na.counters().by_type[0x1B] == 1 && r.na.counters().by_type[0x1C] == 0);
+    }
+    {
+        // A received 0x1C (case 0x1A): the named player through 0x452CC0, passed on once from
+        // this machine's own player; naming this machine's human sets the disconnected flag.
+        LeaveRig r;
+        int shown = -1;
+        r.nb.on_disconnected = [&](int s, int) { shown = s; };
+        r.b.alliances[2][3] = 1;
+        r.nb.set_phase(net::Phase::Loading);
+        r.ta.send(101, 0, {0x1C, 202, 0, 0, 0});
+        r.nb.poll();
+        CHECK(shown == 3 && r.b.alliances[2][3] == 1);  // loading: a local player is not removed
+        r.nb.set_phase(net::Phase::Battle);
+        r.ta.send(101, 0, {0x1C, 202, 0, 0, 0});
+        r.nb.poll();
+        CHECK(r.b.alliances[2][3] == 0 && r.nb.counters().packets_sent == 2 && !r.nb.local_disconnected());
+        r.na.poll();
+        CHECK(!r.a.players[3].active && r.na.counters().packets_sent == 1);  // passed on once
+        r.ta.send(101, 0, {0x1C, 201, 0, 0, 0});
+        r.nb.poll();
+        CHECK(r.nb.local_disconnected());
+    }
+}
+
 int main() {
     test_dplay();
+    test_battle_leave_paths();
     test_bitstream();
     test_codec();
     test_frames();

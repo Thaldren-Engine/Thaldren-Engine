@@ -418,8 +418,12 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     // The dropped messages draw the program's one rand(): the battle's while it runs.
     session_->sender.set_rand([this]() { return static_cast<std::int32_t>(inner_->battle().crt_rand.next()); });
     c.network.set_send_error = [this](int percent) { session_->sender.set_send_error(percent); };
-    net_->on_player_left = [this](int slot, int) {
-        inner_->client().message("Player " + std::to_string(slot + 1) + " left", GameClient::kPlayerNote, static_cast<std::uint8_t>(slot));
+    // Only a received 0x1C shows a line ("Player %s has disconnected" with the record's session
+    // name, kind 4, from the packet's sender: 0x453D40 case 0x1A); a player sent away (0x453010)
+    // shows nothing.
+    net_->on_disconnected = [this](int slot, int from) {
+        inner_->client().message("Player " + names_[static_cast<std::size_t>(slot)] + " has disconnected", GameClient::kChat,
+                                 static_cast<std::uint8_t>(from));
     };
 }
 

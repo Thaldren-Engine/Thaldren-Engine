@@ -837,6 +837,11 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         send_one(net_id_, from, r, 1);
         break;
     }
+    case packet::kProbeReply:
+        // 0x453D40 case 5: the sender record's byte +0x21 gets bit 0. Nothing in the original
+        // reads that bit; it is not cleared when the record is freed or seated again.
+        if (fs >= 0) record21_[static_cast<std::size_t>(fs)] |= 1;
+        break;
     case packet::kSideRecord: {
         RoomPlayer r = decode_side_record(p + 1);
         r.net_id = from;
