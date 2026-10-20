@@ -94,7 +94,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | # | Item | Before | After / evidence |
 |---|---|---|---|
 | 7.1 | Pages SOUND / MUSIC / INTERFACE / VISUALS, OK / Cancel / Restore / Undo | BUILT-UNVERIFIED | |
-| 7.2 | SELVMODE.GUI (screen size dialog, `0x45E5E0(1)`) | PARTIAL (the slider is on the visuals page; the separate dialog not built) | |
+| 7.2 | SELVMODE.GUI (screen size dialog, `0x45E5E0(1)`) | PARTIAL (the slider is on the visuals page; the separate dialog not built) | N/A *2026-10-20*: never opened by 3.1. The only use of "SELVMODE.GUI" (0x506A78) is the `param_1 != 0` branch of `0x45E5E0`, and all three callers pass 0 (`0x45E325`, `0x45E42D`: `push 0`; `0x45FD17`: `push edi` with EDI cleared at `0x45FC66`); no other reference; the 3.1 archives hold no SELVMODE.GUI. The screen size is the visuals page's VIDSLDR slider (built) |
 | 7.3 | Anti-alias registry name "Anti-Alias" | PARTIAL (engine key "Anti Alias") | BUILT-UNVERIFIED (key renamed 'Anti-Alias', the string at 0x504618 of the original) |
 
 ## 8. Settings (registry `0x42F9A0`, writer `0x430F00`) → the settings file
