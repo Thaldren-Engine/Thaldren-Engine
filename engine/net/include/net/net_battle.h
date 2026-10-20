@@ -31,6 +31,9 @@ namespace net {
 struct NetCounters {
     std::uint64_t packets_sent = 0, packets_received = 0, refused = 0, state_packets = 0, chat = 0;
     std::array<std::uint64_t, 0x2D> by_type{};
+    // Bytes of the messages handed to and taken from the transport (the original's 0x415F40
+    // totals behind the +bps display).
+    std::uint32_t bytes_sent = 0, bytes_received = 0;
 };
 
 class NetBattle final : public sim::BattleOutside {
@@ -69,6 +72,21 @@ public:
         timeout_disabled_ = disabled;
     }
     std::function<void(int slot)> on_timeout;
+    // The time-out dialog's figures (0x453640): when a remote player was last heard (the clock's
+    // 1/30 s) and the time-out in seconds.
+    std::uint32_t last_heard(int slot) const { return slot >= 0 && slot < 11 ? last_heard_[static_cast<std::size_t>(slot)] : 0; }
+    std::uint32_t timeout_seconds() const { return timeout_seconds_; }
+    // Another machine's player sent away (0x453010 for a remote player: the time-out dialog's
+    // Reject, reason 6 lost): packet 0x1B {net id, reason} to everybody from this machine's first
+    // player; the player then counts as leaving here (as when the packet is received).
+    void reject(int slot, std::uint8_t reason);
+    // A local player's side record changed by an in-battle screen (the allied victory flag, the
+    // host's watching switch): kept and announced with the other local records (0x450F90).
+    void set_local_record(int slot, const RoomPlayer& r) {
+        if (slot < 0 || slot > 9) return;
+        room_[static_cast<std::size_t>(slot)] = r;
+        announce_records();
+    }
     // "<name> has modified his executable.  Game integrity breached." (0x27).
     std::function<void(int slot)> on_modified_executable;
     std::function<void(int slot, const std::string& text)> on_chat;

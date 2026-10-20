@@ -396,6 +396,10 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     net_->on_chat = [this](int slot, const std::string& text) {
         inner_->client().message(text, GameClient::kPlayerNote, static_cast<std::uint8_t>(slot));
     };
+    // A silent remote player past the time-out (0x453C20, -1: nobody): the time-out dialog.
+    net_->on_timeout = [this](int slot) { timed_out_ = slot; };
+    // The original's time-out: 30 seconds (the command line's -t gives 30..300, 0x49EE30).
+    if (net_->timeout_seconds() == 0) net_->set_timeout(30);
     net_->on_player_left = [this](int slot, int) {
         inner_->client().message("Player " + std::to_string(slot + 1) + " left", GameClient::kPlayerNote, static_cast<std::uint8_t>(slot));
     };
@@ -403,6 +407,7 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
 
 int NetBattleSession::frame(std::uint32_t now_ms) {
     net_->set_clock(now_clock(now_ms));
+    inner_->client().set_net_totals(net_->counters().bytes_sent, net_->counters().bytes_received);
     if (net_->paused()) {
         // The original's frame loop while paused: flush, read the network (to hear the unpause).
         net_->network_flush();

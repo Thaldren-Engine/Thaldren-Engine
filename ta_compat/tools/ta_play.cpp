@@ -335,6 +335,12 @@ int main(int argc, char** argv) {
         fes.height = 480;
         fes.settings_path = settings_path;
         ta::make_front_end(art, &music, fes);
+        {
+            client::Settings s;
+            s.load(settings_path);
+            fes.shot_dir = ta::screenshot_dir(game_dir, s);
+            fes.shot_prefix = ta::kScreenshotPrefix;
+        }
         // Campaign, briefings and the saved games: <game dir>\SAVEGAME\<name>.sav as the original
         // keeps them (--saves DIR: another directory).
         {
@@ -571,6 +577,12 @@ int main(int argc, char** argv) {
     client::GameClient game(world->battle(), world->content(), opt);
     world->attach(&game);
     const auto commands = ta::install_console_commands(game, *world);
+    {
+        client::Settings s;
+        s.load(settings_path);
+        front.shot_dir = ta::screenshot_dir(game_dir, s);
+        front.shot_prefix = ta::kScreenshotPrefix;
+    }
     const auto at = world->start_position(0);
     game.center_on({at[0] << 16, 0, at[1] << 16});
     game.set_pointer_hidden(!front.draw_pointer);  // --no-pointer: frames as the original's screen surface has them
@@ -606,9 +618,10 @@ int main(int argc, char** argv) {
     for (std::size_t i = 1; i < b.units.size(); ++i) {
         if (b.ticks[i].type_index == 0) continue;
         const sim::Unit& u = b.units[i];
-        std::printf("  unit %zu player %d %s at (%d, %d) hp %d flags %08x built %.2f order %d\n", i, b.ticks[i].owner,
+        std::printf("  unit %zu player %d %s at (%d, %d) hp %d flags %08x built %.2f order %d secondary %d group %u\n", i, b.ticks[i].owner,
                     world->defs().units[b.ticks[i].type_index].unit_name.c_str(), u.pos[0] >> 16, u.pos[2] >> 16, u.hit_points, u.flags,
-                    static_cast<double>(1.0f - u.build_fraction_left), u.orders ? u.orders->kind : -1);
+                    static_cast<double>(1.0f - u.build_fraction_left), u.orders ? u.orders->kind : -1,
+                    u.secondary_orders ? u.secondary_orders->kind : -1, static_cast<unsigned>(u.group));
     }
     for (std::int32_t k = 0; k < b.projectiles.count; ++k) {
         const sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(k)];

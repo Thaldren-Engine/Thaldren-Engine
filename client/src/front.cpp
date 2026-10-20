@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "client/audio.h"
+#include "client/menu.h"
 #include "client/sound_desk.h"
 #include "render/draw_list.h"
 #include "render/presenter.h"
@@ -19,6 +20,30 @@
 #endif
 
 namespace client {
+
+void use_system_clipboard() {
+#ifdef CLIENT_HAVE_SDL
+    // The clipboard's text (UTF-8) in the game's 8-bit set: characters below 256 as they are,
+    // others '?' (as the system's conversion to the ANSI set replaces what it cannot show).
+    clipboard_text = [](std::string& out) {
+        if (!SDL_HasClipboardText()) return false;
+        char* t = SDL_GetClipboardText();
+        if (!t) return false;
+        out.clear();
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(t);
+        while (*p) {
+            unsigned cp = *p++;
+            int more = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
+            if (more) cp &= 0x3Fu >> more;
+            for (; more > 0 && (*p & 0xC0) == 0x80; --more) cp = (cp << 6) | (*p++ & 0x3Fu);
+            out.push_back(cp < 0x100 ? static_cast<char>(cp) : '?');
+        }
+        SDL_free(t);
+        return true;
+    };
+#endif
+}
+
 namespace {
 
 int key_by_name(const std::string& s) {
@@ -32,6 +57,7 @@ int key_by_name(const std::string& s) {
     if (s == "enter") return keys::kEnter;
     if (s == "backspace") return keys::kBackspace;
     if (s == "delete") return keys::kDelete;
+    if (s == "insert") return keys::kInsert;
     if (s == "home") return keys::kHome;
     if (s == "end") return keys::kEnd;
     if (s == "space") return ' ';
@@ -103,8 +129,9 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
                 e.type = InputEvent::Type::MouseUp;
                 out.push_back({frame, e});
             }
-        } else if (ev == "key" || ev == "keyup") {
-            e.type = ev == "key" ? InputEvent::Type::KeyDown : InputEvent::Type::KeyUp;
+        } else if (ev == "key" || ev == "keyup" || ev == "hold") {
+            // (hold: the key goes down and stays down until a keyup)
+            e.type = ev == "keyup" ? InputEvent::Type::KeyUp : InputEvent::Type::KeyDown;
             e.key = key_by_name(w[2]);
             out.push_back({frame, e});
             if (ev == "key" && e.key < 0x100) {  // characters are typed: down and up
@@ -127,6 +154,16 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
                 k.type = InputEvent::Type::KeyUp;
                 out.push_back({frame, k});
             }
+        } else if (ev == "clip") {
+            // clip TEXT: the clipboard's text for the run (the rest of the line, words joined
+            // by single spaces) for the paste keys of headless runs.
+            static std::string scripted;
+            scripted.clear();
+            for (std::size_t i = 2; i < w.size(); ++i) scripted += (i > 2 ? " " : "") + w[i];
+            if (!clipboard_text) clipboard_text = [](std::string& o) {
+                o = scripted;
+                return true;
+            };
         } else if (ev == "quit") {
             e.type = InputEvent::Type::Quit;
             out.push_back({frame, e});
@@ -162,13 +199,24 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
     std::size_t cmds = 0, lines = 0;
     SoundDesk desk;
     desk.set_log(true);
+    bool shot_pending = false;
+    render::DrawList last_shown;  // the frame shown last (the screenshot key)
     for (int f = 0; f < o.frames && !client.quit_requested(); ++f) {
         const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);
         for (; next < o.script.size() && o.script[next].frame <= f; ++next) {
             InputEvent e = o.script[next].event;
             e.time_ms = now;
+            if (is_screenshot_key(e)) {
+                shot_pending = true;
+                continue;
+            }
             client.handle(e);
         }
+        if (shot_pending && last_shown.width > 0) {
+            const std::string path = save_numbered_picture(o.shot_dir, o.shot_prefix, render::execute(last_shown, content.blend), content.palette);
+            std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
+        }
+        shot_pending = false;
         const auto t0 = clock::now();
         total_steps += client.frame(now);
         const auto t1 = clock::now();
@@ -220,6 +268,11 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
             }
 #endif
         }
+        last_shown = std::move(list);
+        if (client.film_due()) {
+            save_numbered_picture(client.film_folder(), "FRAM", render::execute(last_shown, content.blend), content.palette);
+            client.film_written(now);
+        }
     }
     std::printf("headless: %d frames, %d simulation steps\n", o.frames, total_steps);
     return 0;
@@ -238,6 +291,7 @@ int translate_key(SDL_Keycode k) {
     case SDLK_TAB: return keys::kTab;
     case SDLK_BACKSPACE: return keys::kBackspace;
     case SDLK_DELETE: return keys::kDelete;
+    case SDLK_INSERT: return keys::kInsert;
     case SDLK_HOME: return keys::kHome;
     case SDLK_END: return keys::kEnd;
     case SDLK_KP_PLUS: return '+';
@@ -341,6 +395,8 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     SDL_HideCursor();
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
+    use_system_clipboard();   // the paste keys
+    client.warp_pointer = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
@@ -363,6 +419,8 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     const std::uint64_t start = SDL_GetTicks();
     std::size_t next = 0;
+    bool shot_pending = false;
+    render::DrawList last_shown;  // the frame shown last (the screenshot key)
     for (int f = 0; (o.frames == 0 || f < o.frames) && !client.quit_requested(); ++f) {
         const std::uint32_t now = static_cast<std::uint32_t>(SDL_GetTicks() - start);
         for (; next < o.script.size() && o.script[next].frame <= f; ++next) {
@@ -409,12 +467,21 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
                 continue;
             default: continue;
             }
+            if (is_screenshot_key(e)) {
+                shot_pending = true;  // (taken before the next pass draws: the frame shown last)
+                continue;
+            }
             client.handle(e);
         }
         {
             const SDL_Keymod mod = SDL_GetModState();
             client.poll_modifiers((mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_ALT) != 0);
         }
+        if (shot_pending && last_shown.width > 0) {
+            const std::string path = save_numbered_picture(o.shot_dir, o.shot_prefix, render::execute(last_shown, content.blend), content.palette);
+            std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
+        }
+        shot_pending = false;
         client.frame(now);
         desk.tick(now);
         for (const SoundEvent& e : client.take_sounds())
@@ -440,6 +507,11 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             SDL_RenderPresent(sr);
         } else {
             SDL_Delay(10);
+        }
+        last_shown = std::move(list);
+        if (client.film_due()) {
+            save_numbered_picture(client.film_folder(), "FRAM", render::execute(last_shown, content.blend), content.palette);
+            client.film_written(now);
         }
     }
     gpu.reset();

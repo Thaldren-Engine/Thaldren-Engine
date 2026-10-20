@@ -12,9 +12,11 @@
 #include "client/movie.h"
 #include "render/raster.h"
 #include "sim/battle.h"
+#include "sim/construction.h"
 #include "sim/economy.h"
 #include "sim/rng.h"
 #include "sim/victory.h"
+#include "sim/x87.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/tdf.h"
@@ -47,6 +49,8 @@ sim::Lcg15& menu_rand() {
 // ------------------------------------------------------------------ message box (MSGBOX.GUI)
 void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h);
 void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
+void draw_run_time_labels(FrontEnd& fe, render::Image8& out, const std::vector<Widget>& widgets, std::size_t first, int ox, int oy);
+void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, int x, int y, int width, int attribs);
 
 // The original's message box (0x4ABD90): MSGBOX.GUI opened with flag 0x800 (the screen under it
 // dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to 320
@@ -1498,6 +1502,147 @@ private:
     render::ClipRect under_;
 };
 
+// The game menu's help pages (HELP, 0x4609B0: HELP.GUI with flags 0x1881 — centred right of the
+// side panel, the game menu dimmed under it —, the "dhelp" picture, handler 0x45FAC0). A page
+// (0x45F8C0, 17 lines a page; the run-time labels of the page before go first) reads
+// gamedata\help.tdf [Help] "Line<n>" for n = page x 17 .. page x 17 + 16: a line read as
+// "key|text" (one starting with '|' is " " with an empty text; strncpy of 128 pads the rest)
+// becomes two labels at (40, y) width 78 and (125, y) width 300, attribute 1, y from 50 by 18
+// per line read. "Page" (a staged button) shows the page of its stage; OK closes ("Options").
+class HelpScreen : public LayoutScreen {
+public:
+    HelpScreen(MenuArt& art, render::ClipRect under) : LayoutScreen(art.layout("HELP")), art_(art), under_(under) {
+        open_centred_ = -2;
+        background_in_box_ = true;
+        base_ = widgets_.size();
+        std::vector<std::uint8_t> f;
+        if (art.vfs().read("gamedata\\help.tdf", f)) {
+            text_ = std::string(reinterpret_cast<const char*>(f.data()), f.size());
+            loaded_ = true;
+        }
+        fill(0);
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override { draw_run_time_labels(fe, out, widgets_, base_, ox_, oy_); }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            fe.pop();
+        } else if (is(w, "Page")) {
+            sfx(fe, art_, "Options");
+            fill(w.stage);
+        }
+    }
+
+private:
+    void fill(int page) {
+        widgets_.resize(base_);
+        if (!loaded_) return;
+        const auto doc = tdf_parse(std::string_view(text_));
+        const TdfSection* help = doc.root ? doc.root->child("Help") : nullptr;
+        if (!help) return;
+        int y = 0x32;
+        for (int n = page * 17; n < page * 17 + 17; ++n) {
+            bool found = false;
+            std::string line = help->get_string("Line" + std::to_string(n), 0x80, "", &found);
+            if (!found) continue;
+            std::string key, rest;
+            if (!line.empty() && line[0] == '|') {
+                key = " ";
+            } else {
+                const std::size_t bar = line.find('|');
+                key = line.substr(0, bar);
+                rest = bar == std::string::npos ? std::string() : line.substr(bar + 1);
+            }
+            add_run_time_label(widgets_, key, 0x28, y, 0x4E, 1);
+            add_run_time_label(widgets_, rest, 0x7D, y, 300, 1);
+            y += 0x12;
+        }
+    }
+
+    MenuArt& art_;
+    render::ClipRect under_;
+    std::size_t base_ = 0;
+    std::string text_;
+    bool loaded_ = false;
+};
+
+// The game menu's settings page outside campaigns (MISSION, 0x45F1D0: GAMEOPTIONS.GUI with flags
+// 0x1881, the "GameSettings" picture, handler 0x45F190: OK). Rows of two run-time labels, the
+// name at (18, y) width 110 and the value at (140, y) width 120 (attribute 1): Commander Death
+// (y 90), Starting Locations (108), Mapping Mode (126), Line of Sight (144), then network games
+// Cheat Codes (162) and Watching (180), other games Difficulty (162); then Map, Starting Metal,
+// Starting Energy and Max Units 18 apart. The values: the commander mode (Game Continues / Game
+// Ends / Deathmatch); skirmish start locations from its set-up, others from the host's side
+// record (bit 0x4000: Random / Fixed); Mapped / Unmapped (GS+0x14281 bit 0); Permanent (bit 1
+// clear), else True (bit 2) or Circular; the host record's cheats (0x2000) and watching (0x80)
+// switches (Disallowed / Allowed); Easy / Medium / Hard; the map's name; the starting resources
+// (network games: the host record's words x 100; else the local player's set-up) and the unit
+// limit, in decimal.
+class GameSettingsScreen : public LayoutScreen {
+public:
+    GameSettingsScreen(MenuArt& art, client::BattleSession& s, render::ClipRect under)
+        : LayoutScreen(art.layout("GAMEOPTIONS")), art_(art), under_(under) {
+        base_ = widgets_.size();
+        open_centred_ = -2;
+        background_in_box_ = true;
+        const sim::Battle& b = s.battle();
+        const client::Content& c = s.content();
+        const bool net = b.settings.provider == 3;
+        const std::uint16_t host = s.host_options();
+        static const char* const kMode[] = {"Game Continues", "Game Ends", "Deathmatch"};
+        static const char* const kLevel[] = {"Easy", "Medium", "Hard"};
+        auto row = [&](const char* name, const std::string& value, int y) {
+            add_run_time_label(widgets_, name, 0x12, y, 0x6E, 1);
+            add_run_time_label(widgets_, value, 0x8C, y, 0x78, 1);
+        };
+        const int mode = b.settings.game_mode;
+        row("Commander Death:", mode >= 0 && mode < 3 ? kMode[mode] : "", 0x5A);
+        const bool fixed = b.settings.provider == 2 ? c.game_info.fixed_locations : (host & 0x4000) != 0;
+        row("Starting Locations:", fixed ? "Fixed" : "Random", 0x6C);
+        row("Mapping Mode:", b.settings.explore ? "Unmapped" : "Mapped", 0x7E);
+        row("Line of Sight:", !b.settings.fog_of_war ? "Permanent" : b.settings.true_sight ? "True" : "Circular", 0x90);
+        int y = 0xB4;
+        if (net) {
+            row("Cheat Codes:", (host & 0x2000) ? "Allowed" : "Disallowed", 0xA2);
+            row("Watching:", (host & 0x80) ? "Allowed" : "Disallowed", 0xB4);
+            y = 0xC6;
+        } else {
+            const int d = b.settings.ai_difficulty;
+            row("Difficulty:", d >= 0 && d < 3 ? kLevel[d] : "", 0xA2);
+        }
+        row("Map:", s.battle_name(), y);  // (the map info's name, +0xA14)
+        row("Starting Metal:", std::to_string(c.game_info.start_metal), y + 0x12);
+        row("Starting Energy:", std::to_string(c.game_info.start_energy), y + 0x24);
+        row("Max Units:", std::to_string(static_cast<unsigned>(b.settings.unit_limit)), y + 0x36);
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override { draw_run_time_labels(fe, out, widgets_, base_, ox_, oy_); }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    render::ClipRect under_;
+    std::size_t base_ = 0;
+};
+
 class GameMenu : public LayoutScreen {
 public:
     explicit GameMenu(MenuArt& art) : LayoutScreen(art.layout("ARMOPT")), art_(art) {}
@@ -1543,6 +1688,14 @@ protected:
             if (next) fe.push(std::move(next));
         }
         else if (is(w, "PREFS")) fe.push(std::make_unique<OptionsMenu>(art_, true));
+        else if (is(w, "HELP") && art_.layout("HELP")) {
+            const Widget& h = widgets_.front();
+            fe.push(std::make_unique<HelpScreen>(art_, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        } else if (is(w, "MISSION") && s && s->battle().settings.provider != 1 && art_.layout("GAMEOPTIONS")) {
+            // (campaigns show the mission's briefing pages instead, BRIEFING.GUI: not built)
+            const Widget& h = widgets_.front();
+            fe.push(std::make_unique<GameSettingsScreen>(art_, *s, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        }
         else if (is(w, "EXIT") && art_.layout("EXITMENU")) {
             // (the exit menu opens over this one, which keeps its focus, dimmed: gui_harness)
             focus_gadget_ = focus_before_press_;
@@ -1558,6 +1711,614 @@ private:
     client::MusicPlayer* music_ = nullptr;
 };
 
+// The unit information screen (F1, 0x4942E0; UNITINFOX.GUI opened centred right of the side
+// panel, its stock panel): the type's picture (unitpics\<unitname>.PCX, its own indices on the
+// game palette) in HOTR, its name in NAME, and labels (TEXT, attributes 0x411) of the costs and
+// statistics: "Cost", "Energy", "Metal", "Build Time" at x 130 / 140, y 32, 47, 62, 77,
+// "Statistics", "Max Velocity", "Acceleration", "Turn Rate" at y 92 .. 137, and the values at x
+// 240 from y 32, 15 apart (0x489280): a line break, the energy and metal costs (truncated), the
+// build time, a line break, then "N/A" three times for a type that does not move, else the speed
+// "%.1f m/s " (30 x speed x 0.4), the acceleration "%.2f m/s/s" (the same), the turn rate
+// "%.0f deg/s" (30 x rate x 360 / 65536). OK closes it ("smlbutton"). It leaves the battle its
+// keys and running; the pointer outside its box reaches the battle.
+// Labels made at run time (0x4AB1B0: kind 5 "TEXT", colour word 15; kept inactive here, after the
+// layout's own gadgets from `first` on, and drawn by this): the label drawing puts their glyphs through light level 15 (0x4B8310), from the
+// label's top edge, in the small font, clipped to the screen's box and the label's width.
+void draw_run_time_labels(FrontEnd& fe, render::Image8& out, const std::vector<Widget>& widgets, std::size_t first, int ox, int oy) {
+    const client::MenuContent& mc = fe.menu_content();
+    const client::Font* lf = mc.small_font ? mc.small_font : mc.font;
+    if (!lf || widgets.empty()) return;
+    const Widget& h = widgets.front();
+    const render::ClipRect c{ox, oy, ox + h.w - 1, oy + h.h - 1};
+    for (std::size_t i = first; i < widgets.size(); ++i) {
+        const Widget& w = widgets[i];
+        if (w.active || w.kind != WidgetKind::Label || w.name != "TEXT") continue;
+        int x = ox + w.x, width = w.w;
+        const int y = oy + w.y + lf->raise;
+        for (const unsigned char ch : w.text) {
+            const client::Glyph& g = lf->glyphs[ch];
+            if (ch < 0x20 || !g.present) continue;
+            if (width < g.width) break;
+            const int rows = g.rows > 0 ? g.rows : lf->height;
+            if (ch != ' ')
+                for (int r = 0; r < rows; ++r)
+                    for (int k = 0; k < g.width; ++k) {
+                        const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                        if (at >= g.ink.size() || !g.ink[at]) continue;
+                        std::uint8_t v = g.colours.empty() ? 15 : g.colours[at];
+                        if (mc.light.size() >= 0x2000) v = mc.light[static_cast<std::size_t>(15 * 256 + v)];
+                        client::put_pixel(out, c, x + g.left + k, y + g.top + r, v);
+                    }
+            if ((width -= g.width) < 0) break;
+            x += g.width;
+        }
+    }
+}
+
+// A run-time label (0x4AB1B0) at (x, y) of the given width (-1: to 5 pixels from the box's right).
+void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, int x, int y, int width, int attribs) {
+    Widget w;
+    w.kind = WidgetKind::Label;
+    w.name = "TEXT";
+    w.x = x;
+    w.y = y;
+    w.w = width >= 0 ? width : (widgets.empty() ? 0 : widgets.front().w) - x - 5;
+    w.h = 0xF;
+    w.fg = 0xF;
+    w.attribs = attribs;
+    w.text = text;
+    w.active = false;  // (drawn by draw_run_time_labels)
+    widgets.push_back(w);
+}
+
+class UnitInfo : public LayoutScreen {
+public:
+    UnitInfo(MenuArt& art, client::BattleSession& s, std::uint16_t type) : LayoutScreen(art.layout("UNITINFOX")), art_(art) {
+        base_ = widgets_.size();
+        open_centred_ = -2;
+        const client::Content& c = s.content();
+        if (type >= c.types.size()) return;
+        const client::UnitTypeLook& t = c.types[type];
+        std::vector<std::uint8_t> f;
+        render::Palette pp{};
+        if (art.vfs().read("unitpics\\" + t.unit_name + ".PCX", f) && decode_pcx(f, picture_, &pp)) has_picture_ = true;
+        picture_.has_key = false;
+        picture_.x_offset = picture_.y_offset = 0;
+        if (Widget* w = widget("NAME")) w->text = t.display_name;
+        // (tests: the values a comparison with the original's screen puts into its definition)
+        std::printf("unit info %s:%d:%d:%d:%d:%d\n", t.unit_name.c_str(), static_cast<int>(t.build_time), static_cast<int>(t.max_velocity),
+                    static_cast<int>(t.acceleration), static_cast<int>(t.turn_rate), t.mobile ? 1 : 0);
+        const int header_w = widgets_.empty() ? 0 : widgets_.front().w;
+        auto label = [&](const std::string& text, int x, int y) {
+            Widget w;
+            w.kind = WidgetKind::Label;
+            w.name = "TEXT";
+            w.x = x;
+            w.y = y;
+            w.w = header_w - x - 5;
+            w.h = 0xF;
+            w.fg = 0xF;
+            w.attribs = 0x411;
+            w.text = text;
+            w.active = false;  // (drawn by draw_over: its glyphs through light level 15)
+            widgets_.push_back(w);
+        };
+        label("Cost", 0x82, 0x20);
+        label("Energy", 0x8C, 0x2F);
+        label("Metal", 0x8C, 0x3E);
+        label("Build Time", 0x8C, 0x4D);
+        label("Statistics", 0x82, 0x5C);
+        label("Max Velocity", 0x8C, 0x6B);
+        label("Acceleration", 0x8C, 0x7A);
+        label("Turn Rate", 0x8C, 0x89);
+        auto ftol = [](double v) { return static_cast<int>(sim::x87::ftol32(v)); };
+        std::vector<std::string> values = {"\n", std::to_string(ftol(t.cost_energy)), std::to_string(ftol(t.cost_metal)), std::to_string(t.build_time), "\n"};
+        if (!t.mobile) {
+            values.insert(values.end(), {"N/A", "N/A", "N/A"});
+        } else {
+            char b[64];
+            // (x87: 30 x (speed x 2^-16 as a float) x 0.4, printed from the double)
+            const float v = static_cast<float>(static_cast<double>(t.max_velocity) * (1.0 / 65536.0));
+            std::snprintf(b, sizeof b, "%.1f %s ", static_cast<double>(30.0 * static_cast<double>(v) * 0.4), "m/s");
+            values.push_back(b);
+            const float a = static_cast<float>(static_cast<double>(t.acceleration) * (1.0 / 65536.0));
+            std::snprintf(b, sizeof b, "%.2f %s", static_cast<double>(30.0 * static_cast<double>(a) * 0.4), "m/s/s");
+            values.push_back(b);
+            std::snprintf(b, sizeof b, "%.0f %s", static_cast<double>(30.0 * t.turn_rate * 0.0054931640625), "deg/s");
+            values.push_back(b);
+        }
+        int y = 0x20;
+        for (const std::string& v : values) {
+            label(v, 0xF0, y);
+            y += 0xF;
+        }
+    }
+    bool see_through() const override { return true; }
+    bool battle_keys() const override { return true; }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        const bool pointer = e.type == client::InputEvent::Type::MouseMove || e.type == client::InputEvent::Type::MouseDown ||
+                             e.type == client::InputEvent::Type::MouseUp;
+        if (pointer && placed_ && !widgets_.empty()) {
+            const Widget& h = widgets_.front();
+            if ((e.x < ox_ || e.y < oy_ || e.x >= ox_ + h.w || e.y >= oy_ + h.h) && held_ < 0) {
+                if (client::BattleSession* s = fe.session()) s->client().handle(e);
+                if (e.type != client::InputEvent::Type::MouseMove) return;
+            }
+        }
+        LayoutScreen::handle(fe, e);
+    }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+        (void)fe;
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override { draw_run_time_labels(fe, out, widgets_, base_, ox_, oy_); }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!has_picture_ || !is(w, "HOTR")) return;
+        const Widget& h = widgets_.front();
+        render::blit(out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, picture_, ox_ + w.x, oy_ + w.y);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "DONE")) {
+            sfx(fe, art_, "smlbutton");
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    render::Sprite8 picture_;
+    bool has_picture_ = false;
+    std::size_t base_ = 0;
+};
+
+// The share screen of network games (SHARE.GUI, 0x4936F0: the tab bar's SHARE or 'h'; refused
+// to a watcher; opened with flags 0x800, the layout under it dimmed once). PLYRLIST lists the
+// players one may give to (in use, controller 2 or 3 — not this machine's human —, record index
+// not 10, live units or never any, not watching); with none the screen closes at once. METAL and
+// ENERGY are sliders over the local player's stored metal and energy (whole: ftol), knob as
+// high as the slider, its travel width − height; the amount = ftol(knob / (travel − 1) x
+// stored), shown in METAL# / ENERGY# ("%d"). SHARUNIT and MAPINFO are two-stage switches. OK
+// ("Options"): with a player picked, the amounts go to it (transfers, sent), with SHARUNIT on the
+// selected units that are not commanders, not carried and not in the air change hands
+// (0x4933E0), with MAPINFO on the explored map is shared and sent (0x4571C0); the screen closes.
+// CANCEL ("Previous") closes it.
+class ShareScreen : public LayoutScreen {
+public:
+    ShareScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("SHARE")), art_(art), s_(s) {
+        sim::Battle& b = s.battle();
+        local_ = b.settings.local_player;
+        const sim::PlayerSlot& me = b.players[static_cast<std::size_t>(local_)];
+        std::vector<std::string> names;
+        for (int k = 0; k < 10; ++k) {
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            if (!p.active || p.controller < 2 || p.controller > 3 || p.state == 10 || (p.alive_count == 0 && p.units_created != 0) ||
+                b.settings.player_sight[static_cast<std::size_t>(k)].watching)
+                continue;
+            names.push_back(s.player_name(k));
+            slots_.push_back(k);
+        }
+        if (Widget* l = widget("PLYRLIST")) {
+            l->items = names;
+            l->selected = -1;
+        }
+        max_[0] = static_cast<int>(sim::x87::ftol32(me.metal_stored));
+        max_[1] = static_cast<int>(sim::x87::ftol32(me.energy_stored));
+        for (const char* n : {"METAL", "ENERGY"})
+            if (Widget* w = widget(n)) {
+                travel_ = w->w - w->h;
+                w->range = std::max(0, travel_ - 1);
+                w->position = 0;
+                w->knob = w->h;
+            }
+        refresh_amounts();
+        s.client().dim_panel(true);  // (opened with flags 0x800: the side panel under it dimmed)
+    }
+    ~ShareScreen() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+    bool empty() const { return slots_.empty(); }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        // (no panel picture: the stock panel)
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    int amount(int k) const {
+        const Widget* w = const_cast<ShareScreen*>(this)->widget(k ? "ENERGY" : "METAL");
+        if (!w || travel_ < 2) return 0;
+        return static_cast<int>(sim::x87::ftol32(static_cast<double>(w->position) / static_cast<double>(travel_ - 1) * max_[k]));
+    }
+    void refresh_amounts() {
+        if (Widget* w = widget("METAL#")) w->text = std::to_string(amount(0));
+        if (Widget* w = widget("ENERGY#")) w->text = std::to_string(amount(1));
+    }
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        LayoutScreen::frame(fe, now_ms);
+        refresh_amounts();
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "MAPINFO") || is(w, "SHARUNIT")) {
+            sfx(fe, art_, "Options");
+            return;
+        }
+        if (is(w, "CANCEL")) {
+            sfx(fe, art_, "Previous");
+            fe.pop();
+            return;
+        }
+        if (!is(w, "OK")) return;
+        sfx(fe, art_, "Options");
+        const Widget* list = widget("PLYRLIST");
+        if (list && list->selected >= 0 && static_cast<std::size_t>(list->selected) < slots_.size()) {
+            const int to = slots_[static_cast<std::size_t>(list->selected)];
+            sim::Battle& b = s_.battle();
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(to)];
+            if (p.active && p.controller >= 1 && p.controller <= 3 && p.state != 10 && !b.settings.player_sight[static_cast<std::size_t>(to)].watching &&
+                (p.alive_count != 0 || p.units_created == 0)) {
+                sim::Economy& e = b.economy();
+                sim::transfer_metal(e, static_cast<std::uint8_t>(local_), static_cast<std::uint8_t>(to), static_cast<float>(amount(0)), true);
+                sim::transfer_energy(e, static_cast<std::uint8_t>(local_), static_cast<std::uint8_t>(to), static_cast<float>(amount(1)), true);
+                const Widget* su = widget("SHARUNIT");
+                if (su && su->stage) give_units(b, to);
+                const Widget* mi = widget("MAPINFO");
+                if (mi && mi->stage) {
+                    b.share_explored_map(local_, to);
+                    s_.send_explored_map(local_, to);
+                }
+            }
+        }
+        fe.pop();
+    }
+
+private:
+    void give_units(sim::Battle& b, int to) {
+        // 0x4933E0: the local player's selected units (in table order) that are not in the air
+        // (flags & 3 != 2), carry nothing (+0x8A) and are not carried (+0x86), and are no commander.
+        const sim::PlayerSlot& me = b.players[static_cast<std::size_t>(local_)];
+        const client::Content& c = s_.content();
+        for (int i = std::max(1, me.first_unit); i <= me.last_unit && static_cast<std::size_t>(i) < b.units.size(); ++i) {
+            sim::Unit& u = b.units[static_cast<std::size_t>(i)];
+            if (!(u.flags & 0x10u) || (u.flags & 3u) == 2 || u.carrier || u.cargo_head) continue;
+            const std::uint16_t t = b.ticks[static_cast<std::size_t>(i)].type_index;
+            bool commander = false;
+            if (t < c.types.size())
+                for (const std::string& cat : c.types[t].categories)
+                    if (cat == "COMMANDER") commander = true;
+            if (commander) continue;
+            sim::transfer_ownership(b.missions(), u, to);
+        }
+    }
+    MenuArt& art_;
+    client::BattleSession& s_;
+    int local_ = 0, travel_ = 0;
+    std::array<int, 2> max_{};
+    std::vector<int> slots_;
+};
+
+// The allies screen of network games (ALLIES.GUI, 0x4478B0 from the tab bar; flags 0x800). The
+// ALLYx / TEAMICONSx gadgets become ALLY0.. / TEAMICONS0.. in order. Per player row k (0x447380:
+// in use, not watching, controller 1-3, record index not 10, live units or never any, a logo):
+// PLAYERk its name, LOGOk its colour logo (32xlogos stretched over the box, texels 1 .. size - 1),
+// TEAMICONSk its ally team's symbol (10 none, 2t + 1 a team of one, 2t a team of several; grayed
+// in a battle), ALLYk for another machine's human while the local player plays: its stage = (the
+// other's answer << 1) | the local alliance byte (0x446FB0). An ALLY press ("Options") toggles the
+// local alliance (packet 0x23, 0x452960) and says "<local name> allied with <name>" / "broke
+// alliance with" as an own chat line. VICTORY (allied victory) shows the side record's bit and is
+// grayed in a team of two or more or for a watcher; OK ("Options") takes it and announces a change.
+class AlliesScreen : public LayoutScreen {
+public:
+    AlliesScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("ALLIES")), art_(art), s_(s) {
+        int ally = 0, team = 0;
+        for (Widget& w : widgets_) {
+            if (is(w, "ALLYx")) w.name = "ALLY" + std::to_string(ally++);
+            else if (is(w, "TEAMICONSx")) w.name = "TEAMICONS" + std::to_string(team++);
+        }
+        logos_ = s.content().team_logos;
+        refresh();
+        const sim::Battle& b = s.battle();
+        const int local = b.settings.local_player;
+        if (Widget* v = widget("VICTORY")) {
+            v->stage = b.victory.sides[static_cast<std::size_t>(local)].allied_victory ? 1 : 0;
+            const int t = s.ally_team(local);
+            int in_team = 0;
+            if (t != 5)
+                for (int k = 0; k < 10; ++k)
+                    if (s.ally_team(k) == t && plays(k)) ++in_team;
+            v->grayed = in_team >= 2 || b.settings.player_sight[static_cast<std::size_t>(local)].watching;
+        }
+        s.client().dim_panel(true);
+    }
+    ~AlliesScreen() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+
+protected:
+    bool plays(int k) const {
+        const sim::Battle& b = s_.battle();
+        const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+        return p.active && p.controller >= 1 && p.controller <= 3 && p.state != 10 && (p.alive_count != 0 || p.units_created == 0);
+    }
+    void refresh() {
+        const sim::Battle& b = s_.battle();
+        const int local = b.settings.local_player;
+        for (int k = 0; k < 10; ++k) {
+            const std::string n = std::to_string(k);
+            Widget* player = widget("PLAYER" + n);
+            Widget* logo = widget("LOGO" + n);
+            Widget* ally = widget("ALLY" + n);
+            Widget* team = widget("TEAMICONS" + n);
+            for (Widget* w : {player, logo, ally, team})
+                if (w) w->active = false;
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            if (!plays(k) || b.settings.player_sight[static_cast<std::size_t>(k)].watching) continue;
+            if (player) {
+                player->active = true;
+                player->text = s_.player_name(k);
+            }
+            if (logo) {
+                logo->active = true;
+                logo->stage = s_.content().player_colour[static_cast<std::size_t>(k)];
+            }
+            if (ally && p.controller == 3 && plays(local) && !s_.computer(k)) {
+                ally->active = true;
+                const std::uint8_t mine = b.alliances[static_cast<std::size_t>(local)][p.state] ? 1 : 0;
+                ally->stage = (s_.allied_by(local, k) ? 2 : 0) | mine;
+            }
+            if (team) {
+                team->active = true;
+                team->grayed = true;  // (a battle: the teams are fixed)
+                const int t = s_.ally_team(k);
+                int members = 0;
+                if (t != 5)
+                    for (int q = 0; q < 10; ++q)
+                        if (s_.ally_team(q) == t && plays(q)) ++members;
+                team->stage = t == 5 || members == 0 ? 10 : members == 1 ? 2 * t + 1 : 2 * t;
+            }
+        }
+    }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!logos_ || w.stage < 0 || w.stage >= static_cast<int>(logos_->size()) || w.name.rfind("LOGO", 0) != 0) return;
+        const render::Sprite8& s = (*logos_)[static_cast<std::size_t>(w.stage)];
+        const Widget& h = widgets_.front();
+        const int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+        const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+        const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+        render::RasterTarget t;
+        t.pixels = out.pixels.data();
+        t.pitch = out.width;
+        t.clip = {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+        render::textured_quad_uv(t, v, uv, s);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        sim::Battle& b = s_.battle();
+        const int local = b.settings.local_player;
+        if (w.name.rfind("ALLY", 0) == 0 && w.name.size() == 5) {
+            const int k = w.name[4] - '0';
+            if (k < 0 || k > 9 || !plays(k)) return;
+            sfx(fe, art_, "Options");
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            const bool now = !b.alliances[static_cast<std::size_t>(local)][p.state];
+            s_.set_alliance(local, k, now);
+            s_.send_chat(std::string(now ? "allied with" : "broke alliance with") + " " + s_.player_name(k));
+            refresh();
+            return;
+        }
+        if (is(w, "VICTORY")) {
+            sfx(fe, art_, "Options");
+            return;
+        }
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            if (const Widget* v = widget("VICTORY")) s_.set_allied_victory(local, v->stage != 0);
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+};
+
+// The time-out dialog of network games (TIMEOUT.GUI, 0x453A50, flags 0x800): opened while a
+// remote player has been silent past the time-out (0x453C20), closed ("Previous") when nobody is.
+// NAME the player's name; OUTPUT the console's last lines (as many as its rows), oldest first;
+// TALK a chat line (Enter sends it as an own chat line and empties it); TIMETEXT "will be rejected
+// in %d seconds" (time-out + 120 less the seconds since the player was last heard), and at 0 or
+// below the player is sent away (status 6 "lost"); REJECT sends it away at once (0x4538F0).
+class TimeoutDialog : public LayoutScreen {
+public:
+    TimeoutDialog(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("TIMEOUT")), art_(art), s_(s) {
+        slot_ = s.timed_out_player();
+        if (Widget* w = widget("NAME")) w->text = s.player_name(slot_);
+        s.client().dim_panel(true);
+        update();
+    }
+    ~TimeoutDialog() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        LayoutScreen::frame(fe, now_ms);
+        if (s_.timed_out_player() != slot_) {
+            sfx(fe, art_, "Previous");
+            fe.pop();
+            return;
+        }
+        update();
+        if (s_.timeout_seconds_left(slot_) <= 0) {
+            s_.reject_player(slot_, 6);
+            sfx(fe, art_, "Previous");
+            fe.pop();
+        }
+    }
+
+protected:
+    void update() {
+        if (Widget* t = widget("TIMETEXT")) {
+            char b[64];
+            std::snprintf(b, sizeof b, "will be rejected in %d seconds", s_.timeout_seconds_left(slot_));
+            t->text = b;
+        }
+        if (Widget* out = widget("OUTPUT")) {
+            // (0x453640: from the newest line back as many lines as the list has rows less one)
+            const client::GameClient::ConsoleRing& ring = s_.client().console();
+            const int rows = std::max(1, out->h / std::max(1, (out->row_h > 0 ? out->row_h : 16)));
+            int first = ring.next;
+            for (int k = 1; k < rows - 1 && first != ring.oldest; ++k)
+                if (--first < 0) first = 29;
+            std::vector<std::string> lines;
+            for (int i = first; i != ring.next; i = i == 29 ? 0 : i + 1)
+                lines.push_back(std::string(ring.lines[static_cast<std::size_t>(i)].text.data()));
+            out->items = lines;
+        }
+    }
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_text(FrontEnd&, Widget& w) override {
+        if (!is(w, "TALK") || w.text.empty()) return;
+        s_.send_chat(w.text);
+        w.text.clear();
+        w.cursor = 0;
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "REJECT")) s_.reject_player(slot_, 6);
+        (void)fe;
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    int slot_ = -1;
+};
+
+// The host's kick question (0x446080: YESORNO.GUI with flags 0x100, centred; TITLE "Reject %s?",
+// CHOICE1 "Yes" sends the player away with status 1 "rejected", CHOICE2 "No").
+class RejectQuestion : public LayoutScreen {
+public:
+    RejectQuestion(MenuArt& art, client::BattleSession& s, int slot) : LayoutScreen(art.layout("YESORNO")), art_(art), s_(s), slot_(slot) {
+        open_centred_ = -1;
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
+        if (Widget* w = widget("TITLE")) w->text = "Reject " + s.player_name(slot) + "?";
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "CHOICE1")) s_.reject_player(slot_, 1);
+        if (is(w, "CHOICE1") || is(w, "CHOICE2")) fe.pop();
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
+    int slot_ = 0;
+};
+
+// The host's control screen of network games (CONTROL.GUI, 0x4466B0 from the tab bar; flags
+// 0x800; not for a watcher). The other players' rows (0x447380 without the local player): PLAYERk
+// with the name, LOGOk the colour logo; a row's button brings the kick question (0x446080).
+// WATCHING shows and toggles the local side record's watching switch (bit 0x80, "Options",
+// announced at once); OK ("Options"): with watching switched off, every remote watcher is sent
+// away (status 9).
+class ControlScreen : public LayoutScreen {
+public:
+    ControlScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("CONTROL")), art_(art), s_(s) {
+        logos_ = s.content().team_logos;
+        const sim::Battle& b = s.battle();
+        const int local = b.settings.local_player;
+        for (int k = 0; k < 10; ++k) {
+            const std::string n = std::to_string(k);
+            Widget* player = widget("PLAYER" + n);
+            Widget* logo = widget("LOGO" + n);
+            for (Widget* w : {player, logo})
+                if (w) w->active = false;
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            if (k == local || !p.active || p.controller < 1 || p.controller > 3 || p.state == 10 ||
+                b.settings.player_sight[static_cast<std::size_t>(k)].watching || (p.alive_count == 0 && p.units_created != 0))
+                continue;
+            if (player) {
+                player->active = true;
+                set_caption(*player, s.player_name(k));
+            }
+            if (logo) {
+                logo->active = true;
+                logo->stage = s.content().player_colour[static_cast<std::size_t>(k)];
+            }
+        }
+        show_switches();
+        s.client().dim_panel(true);
+    }
+    ~ControlScreen() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!logos_ || w.stage < 0 || w.stage >= static_cast<int>(logos_->size()) || w.name.rfind("LOGO", 0) != 0) return;
+        const render::Sprite8& s = (*logos_)[static_cast<std::size_t>(w.stage)];
+        const Widget& h = widgets_.front();
+        const int x0 = ox_ + w.x, y0 = oy_ + w.y, x1 = x0 + w.w - 1, y1 = y0 + w.h - 1;
+        const render::RasterVertex v[4] = {{x0, y0, 0}, {x1, y0, 0}, {x1, y1, 0}, {x0, y1, 0}};
+        const int uv[4][2] = {{1, 1}, {s.width - 1, 1}, {s.width - 1, s.height - 1}, {1, s.height - 1}};
+        render::RasterTarget t;
+        t.pixels = out.pixels.data();
+        t.pitch = out.width;
+        t.clip = {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+        render::textured_quad_uv(t, v, uv, s);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (w.name.rfind("PLAYER", 0) == 0 && w.name.size() == 7) {
+            const int k = w.name[6] - '0';
+            if (k >= 0 && k <= 9 && art_.layout("YESORNO")) fe.push(std::make_unique<RejectQuestion>(art_, s_, k));
+            return;
+        }
+        if (is(w, "WATCHING")) {
+            sfx(fe, art_, "Options");
+            s_.set_local_options(static_cast<std::uint16_t>(s_.local_options() ^ 0x80));
+            show_switches();
+            return;
+        }
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            if (!(s_.local_options() & 0x80)) {
+                const sim::Battle& b = s_.battle();
+                for (int k = 0; k < 10; ++k)
+                    if (b.players[static_cast<std::size_t>(k)].active && b.players[static_cast<std::size_t>(k)].controller == 3 &&
+                        b.victory.sides[static_cast<std::size_t>(k)].watching)
+                        s_.reject_player(k, 9);
+            }
+            fe.pop();
+        }
+    }
+
+private:
+    // WATCHING shows bit 0x80 of the local options, GAMEOPEN (display only) bit 0x8000 inverted.
+    void show_switches() {
+        const std::uint16_t o = s_.local_options();
+        if (Widget* w = widget("WATCHING")) w->stage = (o & 0x80) ? 1 : 0;
+        if (Widget* w = widget("GAMEOPEN")) w->stage = (o & 0x8000) ? 0 : 1;
+    }
+
+    MenuArt& art_;
+    client::BattleSession& s_;
+    const std::vector<render::Sprite8>* logos_ = nullptr;
+};
+
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
@@ -1568,13 +2329,19 @@ public:
     // it): Tab closes the bar (0x495010), F2 opens the game menu over it, Esc and the other keys
     // are the battle's; the bar's quick keys and its escdefault never see a key.
     bool battle_keys() const override { return true; }
+    bool tab_bar() const override { return true; }
     void enter(FrontEnd& fe) override {
         // Tab opening (and closing) the bar sounds "SmallButton".
         if (!opened_) sfx(fe, art_, "SmallButton");
         opened_ = true;
-        if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu;
-        if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu;
-        if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu;
+        // (0x495010: Allies and Share in a network game for a player not watching; Control also
+        // needs the host's rights)
+        client::BattleSession* bs = fe.session();
+        const bool can = bs && bs->network() &&
+                         !bs->battle().settings.player_sight[static_cast<std::size_t>(bs->battle().settings.local_player)].watching;
+        if (Widget* w = widget("ALLIES")) w->grayed = !fe.hooks().allies_menu || !can;
+        if (Widget* w = widget("SHARE")) w->grayed = !fe.hooks().share_menu || !can;
+        if (Widget* w = widget("CONTROL")) w->grayed = !fe.hooks().control_menu || !can || !bs->host();
     }
     void handle(FrontEnd& fe, const client::InputEvent& e) override {
         if (e.type == client::InputEvent::Type::KeyDown && e.key == client::keys::kTab) {
@@ -2106,6 +2873,33 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.tab_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("TABMENU")) return nullptr;
         return std::make_unique<TabMenu>(art);
+    };
+    setup.hooks.share_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        // (refused to a watcher; with nobody to give to it closes at once)
+        const sim::Battle& b = s.battle();
+        if (!s.network() || !art.layout("SHARE") || b.settings.player_sight[static_cast<std::size_t>(b.settings.local_player)].watching) return nullptr;
+        auto sc = std::make_unique<ShareScreen>(art, s);
+        if (sc->empty()) return nullptr;
+        return sc;
+    };
+    setup.hooks.allies_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        if (!s.network() || !art.layout("ALLIES")) return nullptr;
+        return std::make_unique<AlliesScreen>(art, s);
+    };
+    setup.hooks.timeout_dialog = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        if (!s.network() || !art.layout("TIMEOUT") || s.timed_out_player() < 0) return nullptr;
+        return std::make_unique<TimeoutDialog>(art, s);
+    };
+    setup.hooks.control_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        const sim::Battle& b = s.battle();
+        if (!s.network() || !s.host() || !art.layout("CONTROL") ||
+            b.settings.player_sight[static_cast<std::size_t>(b.settings.local_player)].watching)
+            return nullptr;
+        return std::make_unique<ControlScreen>(art, s);
+    };
+    setup.hooks.unit_info = [&art](FrontEnd&, client::BattleSession& s, std::uint16_t type) -> std::unique_ptr<client::Screen> {
+        if (!art.layout("UNITINFOX")) return nullptr;
+        return std::make_unique<UnitInfo>(art, s, type);
     };
     setup.apply_to_battle = [](FrontEnd& fe, client::BattleSession& s) {
         // Options changed in a battle reach its client.

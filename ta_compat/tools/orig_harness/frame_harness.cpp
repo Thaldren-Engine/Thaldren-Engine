@@ -425,6 +425,10 @@ struct Options {
     // routines run at the client's own hooks inside each step, its blit onto a screen kept from
     // frame to frame, compared with the client's frame after frame.
     int minimap_steps = 0;
+    // --pcx N: the screenshot writer against the engine's (N random pictures), nothing else.
+    int pcx = 0;
+    // --camera N: the camera stage of a step against the client's (N random states), nothing else.
+    int camera = 0;
 };
 
 struct Stats {
@@ -457,12 +461,92 @@ int main(int argc, char** argv) {
         else if (a == "--hud") opt.hud = true;
         else if (a == "--minimap") opt.minimap = true;
         else if (a == "--minimap-steps" && k + 1 < argc) opt.minimap = true, opt.minimap_steps = std::atoi(argv[++k]);
+        else if (a == "--pcx" && k + 1 < argc) opt.pcx = std::atoi(argv[++k]);
+        else if (a == "--camera" && k + 1 < argc) opt.camera = std::atoi(argv[++k]);
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
         else if (positional == 2) opt.out_dir = argv[k], ++positional;
     }
     std::mt19937 g(opt.seed);
     auto rnd = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(g); };
+
+    if (opt.pcx > 0) {
+        // --pcx N: the screenshot writer (0x4CAC40: header, run-length rows, palette) on N random
+        // pictures (sizes 1..700 x 1..300, runs of every length, values 0xC0 and up) against
+        // render::encode_pcx. Its file routines are replaced by a stand-in that collects the bytes
+        // (open 0x4BB2C0, write 0x4BBBE0, close 0x4BB5D0).
+        Original o;
+        if (!o.start(argv[1], 64, 64)) {
+            std::printf("cannot start the original\n");
+            return 1;
+        }
+        harness::Remote& r = o.r;
+        const u32 out = o.alloc(4u << 20), cursor = o.alloc(16);
+        std::vector<u8> s;
+        const u32 at = o.stubs + 0x800;
+        // open: mov eax,1; ret 4
+        const u32 open_at = at;
+        s.insert(s.end(), {0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00});
+        while (s.size() % 16) s.push_back(0xCC);
+        // write(handle, data, n): copy n bytes to the cursor, return n (stdcall)
+        const u32 write_at = at + static_cast<u32>(s.size());
+        s.insert(s.end(), {0x8B, 0x4C, 0x24, 0x0C, 0x56, 0x57, 0x8B, 0x74, 0x24, 0x10, 0x8B, 0x3D});
+        put32(s, cursor);
+        s.insert(s.end(), {0x8B, 0xC1, 0xF3, 0xA4, 0x89, 0x3D});
+        put32(s, cursor);
+        s.insert(s.end(), {0x5F, 0x5E, 0xC2, 0x0C, 0x00});
+        while (s.size() % 16) s.push_back(0xCC);
+        // close: ret 4
+        const u32 close_at = at + static_cast<u32>(s.size());
+        s.insert(s.end(), {0xC2, 0x04, 0x00});
+        r.write(at, s.data(), s.size());
+        if (!r.patch_jump(0x004BB2C0, open_at) || !r.patch_jump(0x004BBBE0, write_at) || !r.patch_jump(0x004BB5D0, close_at)) {
+            std::printf("cannot patch the file routines\n");
+            return 1;
+        }
+        const u32 pixels = o.alloc(1u << 20), pal = o.alloc(0x400), name = o.alloc(64);
+        r.write(name, "x.pcx", 6);
+        int same = 0;
+        long long bytes = 0;
+        for (int k = 0; k < opt.pcx; ++k) {
+            const int w = k % 7 == 0 ? 1 : rnd(1, 700), h = k % 11 == 0 ? 1 : rnd(1, 300);
+            render::Image8 img(w, h, 0);
+            // Rows of runs: lengths 1..200, values from a small set (many 0xC0 and up).
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w;) {
+                    const int n = rnd(0, 3) == 0 ? rnd(1, 200) : rnd(1, 4);
+                    const u8 v = static_cast<u8>(rnd(0, 2) == 0 ? rnd(0xBE, 0xFF) : rnd(0, 255));
+                    for (int i = 0; i < n && x < w; ++i, ++x) img.row(y)[x] = v;
+                }
+            render::Palette p{};
+            std::vector<u8> pb(768);
+            for (int i = 0; i < 256; ++i) {
+                p[static_cast<std::size_t>(i)] = {static_cast<u8>(rnd(0, 255)), static_cast<u8>(rnd(0, 255)), static_cast<u8>(rnd(0, 255))};
+                pb[static_cast<std::size_t>(i) * 3] = p[static_cast<std::size_t>(i)].r;
+                pb[static_cast<std::size_t>(i) * 3 + 1] = p[static_cast<std::size_t>(i)].g;
+                pb[static_cast<std::size_t>(i) * 3 + 2] = p[static_cast<std::size_t>(i)].b;
+            }
+            r.write(pixels, img.pixels.data(), img.pixels.size());
+            r.write(pal, pb.data(), pb.size());
+            r.w32(cursor, out);
+            u32 ok = 0;
+            if (!o.call(0x004CAC40, 0, {name, pixels, static_cast<u32>(w), static_cast<u32>(h), pal}, &ok)) return 1;
+            const u32 n = r.r32(cursor) - out;
+            std::vector<u8> orig(n);
+            if (n) r.read(out, orig.data(), n);
+            const std::vector<u8> mine = render::encode_pcx(img, p);
+            bytes += static_cast<long long>(n);
+            if (ok == 1 && orig == mine) ++same;
+            else {
+                std::size_t at_diff = 0;
+                while (at_diff < orig.size() && at_diff < mine.size() && orig[at_diff] == mine[at_diff]) ++at_diff;
+                std::printf("picture %d (%dx%d): result %u, original %u bytes, engine %zu bytes, first difference at %zu\n", k, w, h, ok, n,
+                            mine.size(), at_diff);
+            }
+        }
+        std::printf("pcx: %d of %d pictures identical (%lld bytes)\n", same, opt.pcx, bytes);
+        return same == opt.pcx ? 0 : 1;
+    }
 
     // ---- Engine: a skirmish between computer players, seen by player 0 ----
     static const char* kMaps[] = {"Moon Quartet", "Lava Highlands", "Coast To Coast", "Great Divide", "Painted Desert", "Ice Scream"};
@@ -492,6 +576,7 @@ int main(int argc, char** argv) {
     std::printf("map %s, %d players, %dx%d, seed %u\n", setup.map.c_str(), opt.players, opt.width, opt.height, opt.seed);
 
     // ---- Original ----
+    u32 info_panel_art = 0;  // (--hud: the game information panel's art in the original)
     Original o;
     o.keep_bottom_bar = opt.hud;
     o.keep_console = opt.hud;
@@ -769,6 +854,7 @@ int main(int argc, char** argv) {
         r.w32(gs + 0x14813, file_seq("anims\\igtitles.gaf", "igvictory"));
         r.w32(gs + 0x14817, file_seq("anims\\igtitles.gaf", "igdefeat"));
         r.w32(gs + 0x1481B, file_seq("anims\\igtitles.gaf", "igpaused"));
+        r.w32(gs + 0x148CF, file_seq("anims\\cursors.gaf", "cursorhourglass"));  // (the network waiting sign)
     }
     // Effect particle lists (10 x {?, begin, end, capacity}): empty.
     const u32 fx_lists = o.alloc(10 * 16);
@@ -958,7 +1044,45 @@ int main(int argc, char** argv) {
                     r.write(fr + 6, &yo, 2);
                 }
                 r.w32(gs + 0x519 + 0x14, handle);
+                r.w32(gs + 0x519 + 0x08, handle);  // (font 0: the one put back after a font change)
                 r.w32(0x0051FBA4, gs + 0x519);  // the GUI system the text routines ask for their font
+            }
+            // Font 1 (hattfont11, GUI+0xC) the same way: the game information panel's text.
+            std::vector<u8> pf11;
+            if (vfs.read("anims\\hattfont11.GAF", pf11) && pf11.size() > 16) {
+                const u32 seq = o.gaf("anims\\hattfont11.GAF", pf11) + Original::gaf_entry(pf11, 0);
+                const u32 handle = o.alloc(0x20);
+                r.w32(handle + 0xC, seq);
+                std::uint16_t frames = 0;
+                r.read(seq, &frames, 2);
+                std::int16_t ih = 0;
+                if (frames > 0x49) r.read(r.r32(seq + 0x28 + 8 * 0x49) + 2, &ih, 2);
+                for (u32 k = 0; k < frames; ++k) {
+                    const u32 fr = r.r32(seq + 0x28 + 8 * k);
+                    if (!fr) continue;
+                    std::int16_t yo = 0;
+                    r.read(fr + 6, &yo, 2);
+                    yo = static_cast<std::int16_t>(yo - ih);
+                    r.write(fr + 6, &yo, 2);
+                }
+                r.w32(gs + 0x519 + 0x0C, handle);
+            }
+            // The game information panel's art (0x4679A0): commongui's LIGHTBAR, frame 1, its
+            // offsets cleared.
+            std::vector<u8> cg;
+            if (vfs.read("anims\\commongui.GAF", cg)) {
+                ta::GafDirectory dir;
+                ta::gaf_read_directory(cg, dir);
+                const int i = ta::gaf_find_sequence(dir, "LIGHTBAR");
+                if (i >= 0) {
+                    const u32 seq = o.gaf("anims\\commongui.GAF", cg) + Original::gaf_entry(cg, i);
+                    const u32 fr = r.r32(seq + 0x28 + 8);
+                    const std::int16_t z = 0;
+                    r.write(fr + 4, &z, 2);
+                    r.write(fr + 6, &z, 2);
+                    r.w32(gs + 0x37E94, fr);
+                    info_panel_art = fr;
+                }
             }
             if (vfs.read("fonts\\COMIX.FNT", fnt)) {
                 const u32 at = o.alloc(static_cast<u32>(fnt.size()) + 16);
@@ -1159,6 +1283,67 @@ int main(int argc, char** argv) {
     long long mm_seq_frames = 0, mm_seq_same = 0, mm_seq_pixels = 0;
     Stats st;
     int written = 0;
+    if (opt.camera > 0) {
+        // --camera N: the camera stage of a step (0x41CA10: a followed unit's position as the
+        // target, each axis eased half way to the target, at most 320, then the clamp) against
+        // the client's (GameClient::camera_test), N random states: views and targets in and out
+        // of the scroll range, followed units alive or not at random points, none. (Shaking is
+        // the simulation's, checked by flow_harness; it is off here.)
+        r.w32(gs + 0x1422B, static_cast<u32>(mw * 16 - 32));
+        r.w32(gs + 0x1422F, static_cast<u32>(mh * 16 - 128));
+        r.w32(gs + 0x1423B, static_cast<u32>((W - 128) / 16));
+        r.w32(gs + 0x1423F, static_cast<u32>((H - 64) / 16));
+        const u32 unit = o.alloc(kUnitSize);
+        b.shake = sim::CameraShake{};
+        int same = 0;
+        for (int k = 0; k < opt.camera; ++k) {
+            const int ex = mw * 16 - 32 - (W - 128), ey = mh * 16 - 128 - (H - 64);
+            client::GameClient::CameraState in;
+            auto coord = [&](int extent) { return rnd(0, 4) == 0 ? rnd(-400, extent + 400) : rnd(0, std::max(0, extent)); };
+            in.scroll_x = coord(ex);
+            in.scroll_y = coord(ey);
+            const bool close_to = rnd(0, 2) == 0;
+            in.target_x = close_to ? in.scroll_x + rnd(-2, 2) : coord(ex);
+            in.target_y = close_to ? in.scroll_y + rnd(-2, 2) : coord(ey);
+            // A followed unit: one of the battle's (its position and alive flag at random).
+            std::uint16_t id = 0;
+            if (rnd(0, 2) && b.units.size() > 2) {
+                id = static_cast<std::uint16_t>(rnd(1, static_cast<int>(b.units.size()) - 1));
+                sim::Unit& u = b.units[id];
+                u.pos = {static_cast<std::int32_t>(rnd(-200, mw * 16 + 200)) * 65536 + rnd(0, 0xFFFF), static_cast<std::int32_t>(rnd(0, 300)) * 65536 + rnd(0, 0xFFFF),
+                         static_cast<std::int32_t>(rnd(-200, mh * 16 + 200)) * 65536 + rnd(0, 0xFFFF)};
+                u.flags = rnd(0, 5) ? (u.flags | 0x10000000u) : (u.flags & ~0x10000000u);
+                r.write(unit + 0x6A, u.pos.data(), 12);
+                r.w32(unit + 0x110, u.flags);
+            }
+            in.tracked = id;
+            r.w32(gs + 0x1431F, static_cast<u32>(in.scroll_x));
+            r.w32(gs + 0x14323, static_cast<u32>(in.scroll_y));
+            r.w32(gs + 0x14327, static_cast<u32>(in.target_x));
+            r.w32(gs + 0x1432B, static_cast<u32>(in.target_y));
+            r.w32(gs + 0x142F3, id ? unit : 0u);
+            r.w32(gs + 0x142F7, 0);
+            const u16 zero16 = 0;
+            r.write(gs + 0x1434B, &zero16, 2);
+            u8 shake = 0;
+            r.read(gs + 0x1434E, &shake, 1);
+            shake = static_cast<u8>(shake & ~1);
+            r.write(gs + 0x1434E, &shake, 1);
+            if (!o.call(0x0041CA10, 0, {})) return 1;
+            const client::GameClient::CameraState out = gc.camera_test(in);
+            const int ox = static_cast<int>(r.r32(gs + 0x1431F)), oy = static_cast<int>(r.r32(gs + 0x14323));
+            const int otx = static_cast<int>(r.r32(gs + 0x14327)), oty = static_cast<int>(r.r32(gs + 0x1432B));
+            const bool ofollow = r.r32(gs + 0x142F3) != 0;
+            if (ox == out.scroll_x && oy == out.scroll_y && otx == out.target_x && oty == out.target_y && ofollow == (out.tracked != 0)) ++same;
+            else if (k - same < 6)
+                std::printf("camera %d: from %d,%d target %d,%d unit %u: original %d,%d target %d,%d%s, client %d,%d target %d,%d%s\n", k,
+                            in.scroll_x, in.scroll_y, in.target_x, in.target_y, id, ox, oy, otx, oty, ofollow ? " following" : "", out.scroll_x,
+                            out.scroll_y, out.target_x, out.target_y, out.tracked ? " following" : "");
+        }
+        std::printf("camera: %d of %d stages identical\n", same, opt.camera);
+        return same == opt.camera ? 0 : 1;
+    }
+
     for (int sc = 0; sc < opt.scenes; ++sc) {
         // Run the battle on.
         const int steps = rnd(opt.steps / 2, opt.steps * 3 / 2);
@@ -2028,6 +2213,232 @@ int main(int argc, char** argv) {
                 for (const auto& [i, f] : kept_flags) {
                     b.units[i].flags = f;
                     r.w32(units_at + static_cast<u32>(i) * kUnitSize + 0x110, f);
+                }
+            }
+            // The Space-held panels (0x4689C0, 0x4948E0): random slides, flashes, ranks (with gaps),
+            // kills and losses, unit counts, speeds, commander modes, watchers and players out, in a
+            // skirmish or network game; the pixels the panels change in either frame compared, and
+            // the ranks after the drawing (it closes rank gaps).
+            if (!diff) {
+                const u32 schema = r.r32(gs + gSchema);
+                const int type = rnd(2, 3);
+                const sim::BattleSettings saved_settings = b.settings;
+                const std::vector<sim::PlayerSlot> saved_players = b.players;
+                std::vector<u8> o0, o1;
+                // Closed (both sides) first.
+                const client::GameClient::PanelsState closed{};
+                gc.set_panels_state(closed);
+                const render::Image8 c0 = client_frame();
+                r.w32(0x0051F2D8, 0);  // (the kills panel's slide)
+                r.w32(gs + 0x37F06, r.r32(gs + 0x37F06) & ~0x80u);
+                bool ok2 = original_frame(o0);
+                // Then the random state.
+                b.settings.provider = type;
+                r.w32(schema, static_cast<u32>(type));
+                b.settings.game_mode = rnd(0, 2);
+                r.w32(gs + 0x37EF6, static_cast<u32>(b.settings.game_mode));
+                b.settings.player_count = static_cast<std::uint16_t>(rnd(1, 10));
+                const u16 pc = b.settings.player_count;
+                r.write(gs + 0x2A3C, &pc, 2);
+                b.settings.unit_limit = rnd(20, 500);
+                const u16 ul = static_cast<u16>(b.settings.unit_limit);
+                r.write(gs + 0x37EE6, &ul, 2);
+                const int set_speed = rnd(1, 20), eff_speed = rnd(0, 1) ? set_speed : rnd(1, 20);
+                gc.set_speeds(set_speed, eff_speed);
+                const u16 s16 = static_cast<u16>(set_speed), e16 = static_cast<u16>(eff_speed);
+                r.write(gs + 0x38A4B, &s16, 2);
+                r.write(gs + 0x38A4D, &e16, 2);
+                client::GameClient::PanelsState ps;
+                ps.info_slide = rnd(0, 3) ? -rnd(1, 31) : 0;
+                const bool f4 = rnd(0, 1) != 0;
+                const int v = rnd(0, 4) == 0 ? 0x7D : rnd(1, 0x7D);
+                // (the original's panel moves before it draws: kept out with F4 it stays at 125
+                // once there; else it goes back by a quarter, at least 1)
+                int v_after = v;
+                if (f4) v_after = v < 0x7D ? std::min(0x7D, v + std::max(1, (0x7D - v) / 4)) : 0x7D;
+                else v_after = v - std::max(1, v / 4) < 1 ? 0 : v - std::max(1, v / 4);
+                ps.score_slide = v_after;
+                std::vector<int> order = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+                std::shuffle(order.begin(), order.end(), g);
+                for (int k = 0; k < 10; ++k) {
+                    ps.kill_flash[static_cast<std::size_t>(k)] = static_cast<u8>(rnd(0, 2) ? 0 : 2 * rnd(0, 15));
+                    ps.loss_flash[static_cast<std::size_t>(k)] = static_cast<u8>(rnd(0, 2) ? 0 : 2 * rnd(0, 15));
+                    ps.rank[static_cast<std::size_t>(k)] = static_cast<u8>(rnd(0, 4) ? order[static_cast<std::size_t>(k)] : rnd(0, 12));
+                }
+                gc.set_panels_state(ps);
+                r.w32(gs + 0x37E90, static_cast<u32>(ps.info_slide));
+                r.w32(0x0051E544, 0x7FFFFFFFu);  // (no move of the information panel: its 15 ms not passed)
+                r.w32(0x0051F2F4, 0x7FFFFFFFu);  // (no fading of the flashes)
+                r.w32(0x0051F2D8, static_cast<u32>(v));
+                r.write(0x0051F2C8, ps.kill_flash.data(), 10);
+                r.write(0x0051E810, ps.loss_flash.data(), 10);
+                r.w32(gs + 0x37F06, (r.r32(gs + 0x37F06) & ~0x80u) | (f4 ? 0x80u : 0u));
+                const u8 up = 0;
+                r.write(o.key_state + 0x20, &up, 1);
+                static const char* const kNames[] = {"Player", "Arm", "Core", "Bob", "a very long name for the panel", "X", "Abcdefghijklmn", "", "IJ", "Zz"};
+                for (int k = 0; k < 10; ++k) {
+                    sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+                    const bool used = k == 0 || rnd(0, 3) != 0;
+                    p.active = used;
+                    p.controller = static_cast<std::uint8_t>(used ? (k == 0 ? 1 : rnd(0, 4) == 0 ? rnd(0, 4) : rnd(1, 3)) : 0);
+                    p.state = static_cast<std::uint8_t>(rnd(0, 9) ? k : 10);
+                    p.alive_count = static_cast<std::uint16_t>(rnd(0, 3) ? rnd(1, 400) : 0);
+                    p.units_created = static_cast<std::uint32_t>(rnd(0, 3) ? rnd(1, 900) : 0);
+                    p.units_killed = static_cast<std::uint16_t>(rnd(0, 3) ? rnd(0, 300) : rnd(0, 65535));
+                    p.units_lost = static_cast<std::uint16_t>(rnd(0, 3) ? rnd(0, 300) : rnd(0, 65535));
+                    p.commanders_killed = static_cast<std::uint16_t>(rnd(0, 3));
+                    p.commanders_lost = static_cast<std::uint16_t>(rnd(0, 3));
+                    b.settings.player_sight[static_cast<std::size_t>(k)].watching = k != 0 && rnd(0, 7) == 0;
+                    const_cast<std::string&>(world.content().player_names[static_cast<std::size_t>(k)]) = kNames[k];
+                    const u32 rec = gs + gPlayers + static_cast<u32>(k) * kPlayerSize;
+                    r.w32(rec + 0, used ? 1u : 0u);
+                    r.write(rec + 0x73, &p.controller, 1);
+                    r.write(rec + 0x146, &p.state, 1);
+                    r.write(rec + 0x144, &p.alive_count, 2);
+                    r.w32(rec + 0x140, p.units_created);
+                    r.write(rec + 0xFC, &p.units_killed, 2);
+                    r.write(rec + 0xFE, &p.units_lost, 2);
+                    r.write(rec + 0x104, &p.commanders_killed, 2);
+                    r.write(rec + 0x106, &p.commanders_lost, 2);
+                    r.write(rec + 0x148, &ps.rank[static_cast<std::size_t>(k)], 1);
+                    char nm[30] = {};
+                    std::snprintf(nm, sizeof nm, "%s", kNames[k]);
+                    r.write(rec + 0x2B, nm, sizeof nm);
+                    u16 opt_word = 0;
+                    r.read(infos + static_cast<u32>(k) * 0x100 + 0x9B, &opt_word, 2);
+                    opt_word = static_cast<u16>((opt_word & ~0x40) | (b.settings.player_sight[static_cast<std::size_t>(k)].watching ? 0x40 : 0));
+                    r.write(infos + static_cast<u32>(k) * 0x100 + 0x9B, &opt_word, 2);
+                }
+                const render::Image8 c1 = client_frame();
+                // (as original_frame, but the panels' state kept)
+                r.w32(gs + 0x141F3, static_cast<u32>(b.projectiles.count));
+                r.w32(o.rand_state, b.crt_rand.state());
+                r.write(o.frame, bg.data(), bg.size());
+                write_top();
+                {
+                    const u16 hv = gc.hover_unit();
+                    r.write(gs + 0x2CBA, &hv, 2);
+                }
+                r.write(gs + 0x37E60, std::vector<u8>(0x3C, 0xFF).data(), 0x3C);
+                // (that copy's range holds the information panel's slide and art too)
+                r.w32(gs + 0x37E90, static_cast<u32>(ps.info_slide));
+                r.w32(gs + 0x37E94, info_panel_art);
+                ok2 = ok2 && o.call(kVisibleList, 0, {}) && o.call(kDrawFrame, 0, {1, 0});
+                if (ok2) {
+                    o1.resize(static_cast<std::size_t>(W * H));
+                    r.read(o.frame, o1.data(), o1.size());
+                }
+                if (!ok2) {
+                    std::printf("  hud: panels: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 pimg(W, H, 0);
+                    long long changed = 0;
+                    const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                    int rank_diff = 0;
+                    const auto after = gc.panels_state();
+                    for (int k = 0; k < 10; ++k) {
+                        u8 rk = 0;
+                        r.read(gs + gPlayers + static_cast<u32>(k) * kPlayerSize + 0x148, &rk, 1);
+                        rank_diff += rk != after.rank[static_cast<std::size_t>(k)];
+                    }
+                    std::printf("  hud: panels (game type %d, information %d, kills %d->%d%s, %d players, mode %d, speed %d/%d): %lld of %lld changed pixels differ, %d ranks differ\n",
+                                type, ps.info_slide, v, v_after, f4 ? " F4" : "", pc, b.settings.game_mode, set_speed, eff_speed, pd, changed, rank_diff);
+                    if (pd || rank_diff) dump("panels", o1, c1, pimg);
+                    if (changed && std::getenv("FH_SHOTS")) dump("panelsok", o1, c1, pimg);
+                    st.pixels += pd + rank_diff;
+                    differs(pd + rank_diff);
+                }
+                // Back to the battle's own state.
+                b.settings = saved_settings;
+                b.players = saved_players;
+                r.w32(schema, 0);
+                r.w32(gs + 0x37E90, 0);
+                r.w32(0x0051F2D8, 0);
+                r.w32(gs + 0x37F06, r.r32(gs + 0x37F06) & ~0x80u);
+                gc.set_panels_state(closed);
+                gc.set_speeds(10, 10);
+                for (int k = 0; k < 10; ++k) {
+                    const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+                    const u32 rec = gs + gPlayers + static_cast<u32>(k) * kPlayerSize;
+                    const u8 idx = static_cast<u8>(k);
+                    r.write(rec + 0x146, &idx, 1);
+                    r.w32(rec + 0, p.active ? 1u : 0u);
+                }
+            }
+            // The +bps display (0x468380): random send and receive rates (none, small, past the
+            // bars' 5600, huge), drawn with the rates kept (no remaking within the second); the
+            // pixels it changes in either frame compared.
+            if (!diff) {
+                std::vector<u8> o0, o1;
+                gc.options_mut().bps = false;
+                const render::Image8 c0 = client_frame();
+                r.w32(gs + 0x391C3, 0);
+                bool ok2 = original_frame(o0);
+                auto pick = [&]() -> u32 {
+                    switch (rnd(0, 4)) {
+                    case 0: return 0;
+                    case 1: return static_cast<u32>(rnd(1, 999));
+                    case 2: return static_cast<u32>(rnd(1000, 5599));
+                    case 3: return static_cast<u32>(rnd(5600, 200000));
+                    default: return static_cast<u32>(rnd(0, 0x7FFFFFFF)) * 2u + static_cast<u32>(rnd(0, 1));
+                    }
+                };
+                client::GameClient::BpsState bs = gc.bps_state();
+                bs.send_rate = pick();
+                bs.receive_rate = pick();
+                bs.tick = bs.now;
+                gc.set_bps_state(bs);
+                gc.options_mut().bps = true;
+                const render::Image8 c1 = client_frame();
+                r.w32(gs + 0x391C3, 1);
+                r.w32(0x00511A48, bs.send_rate);
+                r.w32(0x00511A50, bs.receive_rate);
+                // (the original's clock: GetTickCount x the display's tick rate / 1000, 32 bits)
+                const u32 rate = r.r32(o.display + 0xE8);
+                r.w32(0x00511DDC, static_cast<u32>(GetTickCount() * rate / 1000u));
+                ok2 = ok2 && original_frame(o1);
+                if (!ok2) {
+                    std::printf("  hud: bps: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 pimg(W, H, 0);
+                    long long changed = 0;
+                    const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                    std::printf("  hud: bps (send %u, receive %u): %lld of %lld changed pixels differ\n", bs.send_rate, bs.receive_rate, pd, changed);
+                    if (pd) dump("bps", o1, c1, pimg);
+                    if (changed && std::getenv("FH_SHOTS")) dump("bpsok", o1, c1, pimg);
+                    st.pixels += pd;
+                    differs(pd);
+                }
+                gc.options_mut().bps = false;
+                r.w32(gs + 0x391C3, 0);
+            }
+            // The waiting sign (GS+0x38A51 bit 1: a remote player far behind).
+            if (!diff) {
+                std::vector<u8> o0, o1;
+                const render::Image8 c0 = client_frame();
+                bool ok2 = original_frame(o0);
+                u16 flags = 0;
+                r.read(gs + 0x38A51, &flags, 2);
+                const u16 waiting = static_cast<u16>(flags | 2);
+                r.write(gs + 0x38A51, &waiting, 2);
+                gc.set_lag_throttled(true);
+                const render::Image8 c1 = client_frame();
+                ok2 = ok2 && original_frame(o1);
+                r.write(gs + 0x38A51, &flags, 2);
+                gc.set_lag_throttled(false);
+                if (!ok2) {
+                    std::printf("  hud: waiting sign: original frame failed\n");
+                    ++st.failures;
+                } else {
+                    render::Image8 pimg(W, H, 0);
+                    long long changed = 0;
+                    const long long pd = delta(o0, o1, c0, c1, changed, pimg);
+                    std::printf("  hud: waiting sign: %lld of %lld changed pixels differ\n", pd, changed);
+                    if (pd) dump("waiting", o1, c1, pimg);
+                    st.pixels += pd;
+                    differs(pd);
                 }
             }
             // The console: random lines added by the original's routine (0x463CA0) and the

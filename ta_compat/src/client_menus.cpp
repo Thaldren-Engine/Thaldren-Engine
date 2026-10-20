@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -66,6 +67,7 @@ const char* background_of(const std::string& gui) {
         {"MUSIC", "optmusic4x"},       {"VISUALS", "optvisual4x"},     {"SPEEDS", "optinterface4x"},
         {"ENDMSN", "outcome0"},        {"HELP", "dhelp"},              {"RESTART", "DRESTART"},
         {"LOADGAME", "DLoadgame2"},    {"SAVEGAME", "DSavegame2"},     {"BRIEFING", "igmbrief"},
+        {"GAMEOPTIONS", "GameSettings"},
     };
     const std::string u = upper(gui);
     for (const auto& [g, b] : table)
@@ -662,6 +664,16 @@ std::shared_ptr<const client::Sample> MenuArt::music_track(int n) {
 
 // ---------------------------------------------------------------------------------- session
 
+std::string image_output_dir(const std::string& game_dir, const client::Settings& settings) {
+    // 0x42F9A0: the registry's "Image Output Directory", else "%s\%s" of the program's folder
+    // and the user's name (GetUserNameA), "user images" when there is none.
+    const std::string set = settings.get_text("Image Output Directory", "");
+    if (!set.empty()) return set;
+    const char* user = std::getenv("USERNAME");
+    if (!user || !*user) user = std::getenv("USER");
+    return game_dir + "\\" + (user && *user ? std::string(user) : std::string("user images"));
+}
+
 client::ClientOptions client_options(const client::Settings& s, int width, int height) {
     client::ClientOptions o;
     // A battle runs at the chosen display mode (the menus stay 640 x 480).
@@ -688,6 +700,10 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
     o.unit_shadows = (s.get_int("VehicleShadows", 1) & 1) != 0;
     o.shading = (s.get_int("Shading", 1) & 1) != 0;
     o.dithered_fog = (s.get_int("DitheredFog", 0) & 1) != 0;
+    // The film's settings (0x42F9A0): the image output folder as set (the default needs the
+    // game folder: the session fills it in) and "Movie Output Rate" (10 when missing).
+    o.image_dir = s.get_text("Image Output Directory", "");
+    o.film_speed = s.get_int("Movie Output Rate", 10);
     return o;
 }
 
@@ -707,6 +723,7 @@ std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_
     if (!s->world_->load(game_dir, request, human, error, progress)) return nullptr;
     client::ClientOptions o = options;
     o.player = human;
+    if (o.image_dir.empty()) o.image_dir = image_output_dir(game_dir, client::Settings{});
     const std::string side = request.sides[static_cast<std::size_t>(human)];
     o.side = 0;
     {

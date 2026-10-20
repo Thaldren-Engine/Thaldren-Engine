@@ -143,6 +143,7 @@ public:
             s_.music->set_enabled(settings_.get_int("musicmode", 1) != 0);
         }
         if (session_ && s_.apply_to_battle) s_.apply_to_battle(*this, *session_);
+        gamma_from_settings();  // (the options screens' handlers apply the Gamma setting)
         if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
     }
     std::uint32_t now_ms() const override { return now_; }
@@ -198,17 +199,33 @@ public:
             return;
         }
         if (pending_) return;
+        if (is_screenshot_key(e)) {
+            // Taken off the queue at the start of the next pass, before anything is drawn: the
+            // picture is the frame shown last (0x499890).
+            shot_pending_ = true;
+            return;
+        }
         // A bar open alone over the battle (the network games' tab bar) leaves the keys to the
         // battle: its key handling runs whenever the game menu is not open.
         const bool key_event = e.type == InputEvent::Type::KeyDown || e.type == InputEvent::Type::KeyUp || e.type == InputEvent::Type::Text;
-        const bool bar_open = in_battle() && stack_.size() == battle_base_ + 1 && stack_.back()->battle_keys();
-        if (in_battle() && (stack_.size() == battle_base_ || (bar_open && key_event))) {
+        // (the screens over the battle that leave it the keys: the tab bar, unit information)
+        bool keys_to_battle = in_battle() && stack_.size() >= battle_base_;
+        for (std::size_t i = battle_base_; keys_to_battle && i < stack_.size(); ++i) keys_to_battle = stack_[i]->battle_keys();
+        bool bar_open = false;
+        for (std::size_t i = battle_base_; in_battle() && i < stack_.size(); ++i) bar_open = bar_open || stack_[i]->tab_bar();
+        if (in_battle() && (stack_.size() == battle_base_ || (keys_to_battle && key_event))) {
             GameClient& c = session_->client();
             // Tab or F2 opens the game menu (the client keeps keys while its chat line is open).
             // F2 opens the game menu; Tab too, except in network games where it opens the tab bar
             // and closes it again (F2 opens the game menu over the bar).
             if (e.type == InputEvent::Type::KeyDown && !c.chatting() && (e.key == keys::kTab || e.key == keys::kF1 + 1)) {
-                if (e.key == keys::kTab && session_->network() && bar_open) stack_.back()->handle(*this, e);
+                if (e.key == keys::kTab && session_->network() && bar_open) {
+                    for (std::size_t i = stack_.size(); i-- > battle_base_;)
+                        if (stack_[i]->tab_bar()) {
+                            stack_[i]->handle(*this, e);
+                            break;
+                        }
+                }
                 else if (e.key == keys::kTab && session_->network() && s_.tab_menu) push(s_.tab_menu(*this, *session_));
                 else if (s_.game_menu) push(s_.game_menu(*this, *session_));
                 return;
@@ -225,9 +242,30 @@ public:
         if (in_battle()) session_->client().poll_modifiers(shift, ctrl, alt);
     }
 
+    // The frame just shown (its list and palette), for the screenshot key.
+    void shown(render::DrawList&& list, const render::Palette* palette) {
+        last_shown_ = std::move(list);
+        last_palette_ = palette;
+        // A film frame due: the frame just drawn goes into the film's folder.
+        if (in_battle() && session_->client().film_due() && palette && last_shown_.width > 0) {
+            GameClient& c = session_->client();
+            save_numbered_picture(c.film_folder(), "FRAM", render::execute(last_shown_, blend()), *palette);
+            c.film_written(now_);
+        }
+    }
+    void take_screenshot() {
+        if (!shot_pending_) return;
+        shot_pending_ = false;
+        if (!last_palette_ || last_shown_.width <= 0) return;
+        const std::string path =
+            save_numbered_picture(s_.shot_dir, s_.shot_prefix, render::execute(last_shown_, blend()), *last_palette_);
+        std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
+    }
+
     void frame(std::uint32_t now) {
         now_ = now;
         ++frame_no_;
+        take_screenshot();
         graveyard_.clear();  // screens closed during the last pass go now
         retired_.reset();    // then a battle left during it
         const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
@@ -244,6 +282,16 @@ public:
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
             session_->frame(now);
+            // A silent remote player: the time-out dialog (it closes itself when nobody is).
+            if (session_->timed_out_player() >= 0 && s_.hooks.timeout_dialog) {
+                bool open = false;
+                for (const auto& sc : stack_) open = open || (sc && sc.get() == timeout_screen_);
+                if (!open)
+                    if (auto d = s_.hooks.timeout_dialog(*this, *session_)) {
+                        timeout_screen_ = d.get();
+                        push(std::move(d));
+                    }
+            }
             sim::Battle& b = session_->battle();
             if (s_.music) {
                 const int me = b.settings.local_player;
@@ -462,6 +510,53 @@ private:
         if (s_.music) s_.music->set_mood(MusicMood::Building);
         BattleSession* sess = session_.get();
         session_->client().on_chat = [sess](const std::string& text) { sess->send_chat(text); };
+        // Settings the battle saves at once (the original writes the registry, 0x430F00).
+        session_->client().save_setting = [this](const char* name, int value) {
+            settings_.set_int(name, value);
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+        };
+        // The battle's load applies the Gamma setting (0x491200); "+gamma n" shows n x 0.1 and
+        // keeps n as the setting (saved at once).
+        gamma_from_settings();
+        session_->client().music_command = [this](const char* what, int n) {
+            MusicPlayer* m = s_.music;
+            if (!m) return;
+            const std::string w = what;
+            if (w == "play") {
+                // (0x4CEB60: 0 lets the mood pick; the track already playing goes on)
+                if (n == 0) m->next();
+                else if (!(m->is_playing() && m->current_track() == n)) m->play(n);
+            } else if (w == "stop") {
+                m->stop();
+            } else if (w == "mode") {
+                m->set_mode(n);
+            }
+        };
+        session_->client().warp_pointer = [this](int x, int y) {
+            if (warp_) warp_(x, y);
+        };
+        session_->client().on_gamma_command = [this](int n) {
+            display_gamma_ = gamma_from_command(n);
+            gamma_setting_ = n;
+            settings_.set_int("Gamma", n);
+            gamma_seen_ = n;
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+        };
+        session_->client().save_text_setting = [this](const char* name, const std::string& value) {
+            settings_.set_text(name, value);
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+            // (the image output folder holds the screenshots' folder too)
+            if (std::string(name) == "Image Output Directory") s_.shot_dir = value + "\\screenshots";
+        };
+        // 'h' in a network game: the share screen over the battle, as the tab bar's SHARE opens it.
+        session_->client().on_share_key = [this, sess]() {
+            if (stack_.size() == battle_base_ && s_.hooks.share_menu) push(s_.hooks.share_menu(*this, *sess));
+        };
+        // F1: the unit information screen over the battle (several may be open at once).
+        session_->client().on_unit_info = [this, sess](std::uint16_t type) {
+            if (s_.hooks.unit_info)
+                if (auto sc = s_.hooks.unit_info(*this, *sess, type)) push(std::move(sc));
+        };
         session_->combat_activity = [this](int amount) { judge_.activity(amount); };
         if (s_.apply_to_battle) s_.apply_to_battle(*this, *session_);
     }
@@ -484,6 +579,29 @@ private:
     }
 
     FrontEndSetup& s_;
+    // Display gamma: the factor the screen's palette is shown with (1 until a battle loads or an
+    // options screen applies the setting), and the Gamma setting as the program holds it (read
+    // at start-up with 10 taken as 12, 0x42F9A0; a changed setting is taken as it is).
+    float display_gamma_ = 1.0f;
+    int gamma_setting_ = 12, gamma_seen_ = -1;
+    void gamma_from_settings() {
+        const int raw = settings_.get_int("Gamma", 12);
+        if (gamma_seen_ < 0) gamma_setting_ = raw == 10 ? 12 : raw;
+        else if (raw != gamma_seen_) gamma_setting_ = raw;
+        gamma_seen_ = raw;
+        display_gamma_ = gamma_from_setting(gamma_setting_);
+    }
+
+public:
+    // The palette the screen shows for a frame's palette.
+    render::Palette display_palette(const render::Palette& p) const { return display_gamma_ == 1.0f ? p : gamma_palette(p, display_gamma_); }
+    std::function<void(int, int)> warp_;  // the window's pointer warp (frame pixels)
+
+private:
+    bool shot_pending_ = false;
+    const Screen* timeout_screen_ = nullptr;  // the time-out dialog while it is open
+    render::DrawList last_shown_;
+    const render::Palette* last_palette_ = nullptr;
     Settings settings_;
     std::vector<std::unique_ptr<Screen>> stack_;
     std::vector<std::unique_ptr<Screen>> graveyard_;
@@ -541,6 +659,7 @@ int sdl_key(SDL_Keycode k) {
     case SDLK_TAB: return keys::kTab;
     case SDLK_BACKSPACE: return keys::kBackspace;
     case SDLK_DELETE: return keys::kDelete;
+    case SDLK_INSERT: return keys::kInsert;
     case SDLK_HOME: return keys::kHome;
     case SDLK_END: return keys::kEnd;
     case SDLK_KP_PLUS: return '+';
@@ -769,6 +888,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
                 }
 #endif
             }
+            run.shown(std::move(list), pal);
         }
         std::printf("front end (headless): %d frames, %zu interface sounds\n", f, run.sound_count_);
         // (tests: whether a battle is still running at the end, and the screens open over it)
@@ -790,6 +910,8 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     SDL_HideCursor();
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
+    use_system_clipboard();   // the paste keys
+    run.warp_ = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
         gpu = render::GpuRenderer::create(run.blend());
@@ -841,22 +963,24 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             }
         }
         if (wants_shot(frame_no)) save_shot(render::execute(list, run.blend()), *pal, o.screenshot_prefix, frame_no);
+        const render::Palette shown_palette = run.display_palette(*pal);  // (display gamma)
         if (gpu) {
             render::lines_to_sprites(list);
-            if (!gpu->present_to_window(win, list, *pal, scale)) {
+            if (!gpu->present_to_window(win, list, shown_palette, scale)) {
                 std::printf("present failed: %s\n", render::GpuRenderer::last_error().c_str());
                 return false;
             }
         } else if (tex) {
             const render::Image8 img = render::execute(list, run.blend());
             for (std::size_t i = 0; i < img.pixels.size(); ++i) {
-                const render::Rgb& c = (*pal)[img.pixels[i]];
+                const render::Rgb& c = shown_palette[img.pixels[i]];
                 rgba[i * 4] = c.r, rgba[i * 4 + 1] = c.g, rgba[i * 4 + 2] = c.b, rgba[i * 4 + 3] = 255;
             }
             SDL_UpdateTexture(tex, nullptr, rgba.data(), cur_w * 4);
             SDL_RenderTexture(sr, tex, nullptr, nullptr);
             SDL_RenderPresent(sr);
         }
+        run.shown(std::move(list), pal);
         return true;
     };
     run.present_now = [&] {
@@ -926,6 +1050,10 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     std::printf("built without SDL3: only --headless is available\n");
     return 1;
 #endif
+}
+
+void BattleSession::set_allied_victory(int slot, bool on) {
+    if (slot >= 0 && slot < 10) battle().victory.sides[static_cast<std::size_t>(slot)].allied_victory = on;
 }
 
 }  // namespace client

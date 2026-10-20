@@ -177,6 +177,14 @@ sim::Lcg15& menus_rand();
 
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);
+// The original's picture folder (registry "Image Output Directory"; by default the game's
+// folder and the user's name, "user images" without one) and its screenshot names: the
+// screenshot key writes <folder>\screenshots\SHOTnnnn.pcx (0x499890).
+std::string image_output_dir(const std::string& game_dir, const client::Settings& settings);
+inline std::string screenshot_dir(const std::string& game_dir, const client::Settings& settings) {
+    return image_output_dir(game_dir, settings) + "\\screenshots";
+}
+constexpr const char* kScreenshotPrefix = "SHOT";
 
 // The statistics screen on its own for a given table (tests: ta_play --end-screen), with the
 // battle's interface colours made from the game palette.

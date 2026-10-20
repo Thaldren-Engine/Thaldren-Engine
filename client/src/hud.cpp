@@ -231,6 +231,20 @@ render::DrawList GameClient::draw() {
         b_.units_drawn(ids);
     }
     const render::ClipRect screen{0, 0, w - 1, h - 1};
+    // The view's marks (the drag box, the placement outline), then the Space-held panels over
+    // the view (the frame draws them after the fog and the marks, before the console).
+    {
+        render::Image8 marks(w, h, overlay_key_);
+        draw_unit_marks(marks);
+        render::Sprite8 sp;
+        sp.width = w;
+        sp.height = h;
+        sp.key = overlay_key_;
+        sp.has_key = true;
+        sp.pixels = std::move(marks.pixels);
+        list.blit(list.keep(std::move(sp)), 0, 0, screen, false);
+    }
+    draw_panels(list);
 
     // Interface art: the side panel, the top and bottom bars (repeated across wider screens).
     if (side_) {
@@ -254,7 +268,7 @@ render::DrawList GameClient::draw() {
             img, p->x, p->y, *p, side_ ? side_->panel_side : nullptr,
             [&](const Button& btn) { return button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn)); },
             [&](const Button& btn) { return button_dims(btn, !button_enabled(btn)); }, c_.minimap_grey, c_.shade_levels);
-        if (chat_ && c_.shade_levels.size() >= 32 * 256)
+        if ((chat_ || panel_dimmed_ > 0) && c_.shade_levels.size() >= 32 * 256)
             for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
         render::Sprite8 sp;
         sp.width = pw;
@@ -303,7 +317,7 @@ render::DrawList GameClient::draw() {
         look = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Normal)];
         frame = 0;
     }
-    if (look && !look->empty() && !pointer_hidden_ && !pointer_off_ && !cursor_clock_.ended) {
+    if (look && !look->empty() && !pointer_hidden_ && !mdrag_ && !pointer_off_ && !cursor_clock_.ended) {
         const render::Sprite8& s = (*look)[static_cast<std::size_t>(frame) % look->size()];
         list.blit(&s, mouse_x_, mouse_y_, screen, true);
     }
@@ -343,8 +357,8 @@ void GameClient::add_selection_outlines(render::BattleScene& scene) const {
 }
 
 void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
-    draw_unit_marks(o);
-    draw_console(o);
+    // (the view's marks: their own layer, before the Space-held panels)
+    if (!no_console_) draw_console(o);
     draw_top_bar(o);
     draw_bottom_bar(o);
     draw_minimap(o);
@@ -359,7 +373,7 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
                 draw_caption(o, btn, "+" + std::to_string(n), button_pressed_look(btn) ? 1 : 0);
             }
     // (the captions belong to the panel: dimmed with it while the chat line is open)
-    if (const Panel* p = current_panel(); p && chat_ && c_.shade_levels.size() >= 32 * 256) {
+    if (const Panel* p = current_panel(); p && (chat_ || panel_dimmed_ > 0) && c_.shade_levels.size() >= 32 * 256) {
         const int pw = p->w > 0 ? p->w : 128, ph = p->h > 0 ? p->h : opt_.height - p->y;
         for (int y = std::max(p->y, 0); y < std::min(p->y + ph, o.height); ++y)
             for (int x = std::max(p->x, 0); x < std::min(p->x + pw, o.width); ++x) {
@@ -373,6 +387,12 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
     if ((b_.end_game.flags & sim::end_game_flags::kWonMovie) && c_.victory_sign) render::blit(o, o.bounds(), *c_.victory_sign, cx, cy);
     if ((b_.end_game.flags & sim::end_game_flags::kLost) && c_.defeat_sign) render::blit(o, o.bounds(), *c_.defeat_sign, cx, cy);
     draw_clock_and_units(o);
+    // The waiting sign (GS+0x38A51 bit 1, the step budget's lag throttle): the hourglass
+    // pointer's first frame at (width - 16, height - 80).
+    if (budget_.lag_throttled) {
+        const auto* busy = c_.cursors.looks[static_cast<std::size_t>(CursorKind::Busy)];
+        if (busy && !busy->empty()) render::blit(o, o.bounds(), busy->front(), opt_.width - 16, opt_.height - 80);
+    }
     draw_chat(o);
 }
 

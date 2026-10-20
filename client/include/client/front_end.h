@@ -83,6 +83,8 @@ public:
     // Open alone over a battle, it leaves the keys to the battle's own key handling (a bar that
     // takes the pointer only); Tab still reaches it.
     virtual bool battle_keys() const { return false; }
+    // The network games' tab bar (Tab closes it).
+    virtual bool tab_bar() const { return false; }
     // As the top screen it shows no pointer (movies).
     virtual bool hides_pointer() const { return false; }
 };
@@ -175,6 +177,33 @@ public:
     // screen (campaign debriefing / next mission). Return false to go back to
     // the screen the battle was started from (the default).
     virtual bool after_battle(FrontEnd&, BattleOutcome) { return false; }
+    // Network games' in-battle screens (allies, share): the local player's alliance with another
+    // player (packet 0x23), the other's answer (the local record's "allied by" byte), the explored
+    // map sent to a player (0x16 kind 3) and the players' names.
+    virtual void set_alliance(int /*from*/, int /*to*/, bool /*allied*/) {}
+    virtual std::uint8_t allied_by(int /*local*/, int /*other*/) const { return 0; }
+    virtual void send_explored_map(int /*from*/, int /*to*/) {}
+    virtual std::string player_name(int /*slot*/) const { return {}; }
+    // A player's ally team from the battle room (0..4, 5 none) and whether it is a computer player
+    // (its side record's kind 2).
+    virtual int ally_team(int /*slot*/) const { return 5; }
+    virtual bool computer(int /*slot*/) const { return false; }
+    // The local player's acceptance of an allied victory (side record flags bit 1).
+    virtual void set_allied_victory(int slot, bool on);
+    // Network games' time-out (0x453C20): the remote player nobody has heard from for the time-out
+    // (-1: none), the seconds left before it is sent away (0x453640: time-out + 120 less the seconds
+    // since it was last heard) and sending it away (status 6 "lost").
+    virtual int timed_out_player() const { return -1; }
+    virtual int timeout_seconds_left(int /*slot*/) const { return 0; }
+    virtual void reject_player(int /*slot*/, int /*reason*/) {}
+    // The host's control screen: whether this machine created the game (0x457A50: the first
+    // record with the creator flag is one of this machine's players) and the local side record's
+    // option word (+0x9B; bit 0x80 the watching switch), changed and announced.
+    virtual bool host() const { return false; }
+    virtual std::uint16_t local_options() const { return 0; }
+    // The host's side record option word (the first record with the host bit, 0x456850).
+    virtual std::uint16_t host_options() const { return 0; }
+    virtual void set_local_options(std::uint16_t) {}
     // Set by the front end: the session reports combat involving the local player here (+1 a
     // hit, +5 a kill it scores; the music's battle/peace switch).
     std::function<void(int)> combat_activity;
@@ -237,6 +266,11 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> allies_menu;
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> share_menu;
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> control_menu;
+    // F1 in a battle: the unit information screen for a unit type (0x4942E0).
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session, std::uint16_t type)> unit_info;
+    // A network battle's time-out dialog (TIMEOUT.GUI, 0x453A50): opened while a remote player is
+    // silent past the time-out; it closes itself when nobody is.
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> timeout_dialog;
 };
 
 // ---------------------------------------------------------------- front end
@@ -323,6 +357,9 @@ struct FrontEndSetup {
     MusicPlayer* music = nullptr;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;
+    // The screenshot key (Ctrl+F9, in menus and battles): the frame shown last goes to
+    // <shot_dir>/<shot_prefix>NNNN.pcx (front.h, save_numbered_picture).
+    std::string shot_dir, shot_prefix;
 };
 
 struct FrontOptions;  // client/front.h

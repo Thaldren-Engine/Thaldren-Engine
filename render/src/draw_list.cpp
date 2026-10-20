@@ -25,6 +25,9 @@ Image8 execute(const DrawList& list, const BlendTable& blend) {
         case DrawOp::BlitRemap:
             if (c.sprite && list.remap) blit_blend(frame, c.clip, *c.sprite, c.x, c.y, *list.remap);
             break;
+        case DrawOp::BlitTable:
+            if (c.sprite && c.table && c.table->size() >= 65536) blit_blend(frame, c.clip, *c.sprite, c.x, c.y, *c.table);
+            break;
         }
     }
     return frame;

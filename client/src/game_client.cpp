@@ -8,7 +8,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
+#include "client/menu.h"
 #include "sim/features.h"
 #include "sim/mission_goals.h"
 #include "sim/missions.h"
@@ -116,14 +118,95 @@ void GameClient::clamp_scroll() {
     else if (scroll_y_ > ly) scroll_y_ = ly;
 }
 
+void GameClient::move_pointer(int x, int y) {
+    mouse_x_ = x;
+    mouse_y_ = y;
+    if (warp_pointer) warp_pointer(x, y);
+}
+
+void GameClient::view_drag_step() {
+    // 0x41CD50, once a pass: the view becomes (the cell kept + the pointer's distance from the
+    // screen's centre / 4, C division) x 16, clamped and made the camera's target; the cell is
+    // taken again from it and the pointer put back in the centre (what is left of the distance
+    // is dropped). With the right button up the drag ends: the pointer goes back to where it
+    // was and shows again.
+    const int cx = opt_.width / 2, cy = opt_.height / 2;
+    set_scroll((mdrag_x_ + (mouse_x_ - cx) / 4) * 16, (mdrag_y_ + (mouse_y_ - cy) / 4) * 16);
+    mdrag_x_ = scroll_x_ / 16;
+    mdrag_y_ = scroll_y_ / 16;
+    move_pointer(cx, cy);
+    if (!mdrag_held_) {
+        mdrag_ = false;
+        move_pointer(mdrag_saved_x_, mdrag_saved_y_);
+    }
+}
+
 void GameClient::set_scroll(int x, int y) {
+    // A scroll that moves the view at once (keys, edges, drags, the minimap, a stored view)
+    // also makes it the camera's target (GS+0x14327), so the per-step camera keeps it there.
     scroll_x_ = x;
     scroll_y_ = y;
     clamp_scroll();
+    target_x_ = scroll_x_;
+    target_y_ = scroll_y_;
 }
 
 void GameClient::center_on(const sim::Vec3i& pos) {
-    set_scroll((pos[0] >> 16) - (opt_.width - 128) / 2, (pos[2] >> 16) - (pos[1] >> 17) - (opt_.height - 64) / 2);
+    // 0x41C8E0 with "at once": the point (z less half the height, 16.16 sums) in the view's
+    // centre.
+    set_scroll(static_cast<std::int16_t>(static_cast<std::uint32_t>(pos[0]) >> 16) - (opt_.width - 128) / 2,
+               static_cast<std::int16_t>(static_cast<std::uint32_t>(pos[2] - (pos[1] >> 1)) >> 16) - (opt_.height - 64) / 2);
+}
+
+void GameClient::clamp_target() {
+    // (as 0x41C7C0 / 0x41C8E0 / 0x41CA10 clamp the target: negative -> 0, else at most the
+    // scroll extent less the view)
+    const int lx = scroll_width() - (opt_.width - 128), ly = scroll_height() - (opt_.height - 64);
+    if (target_x_ < 0) target_x_ = 0;
+    else if (target_x_ > lx) target_x_ = lx;
+    if (target_y_ < 0) target_y_ = 0;
+    else if (target_y_ > ly) target_y_ = ly;
+}
+
+void GameClient::ease_to_point(int x, int z) {
+    // 0x41C7C0 eased: the view's target becomes the map point (x, z) in its centre; the camera
+    // stage moves the view there over the next steps.
+    target_x_ = x - (opt_.width - 128) / 2;
+    target_y_ = z - (opt_.height - 64) / 2;
+    clamp_target();
+}
+
+void GameClient::ease_to_unit(const sim::Vec3i& pos) {
+    // 0x41C8E0 eased: the same for a unit's position (z less half its height).
+    target_x_ = static_cast<std::int16_t>(static_cast<std::uint32_t>(pos[0]) >> 16) - (opt_.width - 128) / 2;
+    target_y_ = static_cast<std::int16_t>(static_cast<std::uint32_t>(pos[2] - (pos[1] >> 1)) >> 16) - (opt_.height - 64) / 2;
+    clamp_target();
+}
+
+void GameClient::camera_step() {
+    // The camera stage of a battle step (0x41CA10): a followed unit that lost its alive flag
+    // ends the following, else its position becomes the target; then each axis of the view
+    // moves half of the way to the target (C division), at most 320 pixels; then the shake
+    // the step made (the simulation's camera shake offsets, 0x41C6F0) is added, and the view is
+    // clamped (the target is not).
+    if (tracked_) {
+        if (tracked_ >= b_.units.size() || !(b_.units[tracked_].flags & 0x10000000u)) {
+            tracked_ = 0;
+        } else {
+            ease_to_unit(b_.units[tracked_].pos);
+        }
+    }
+    auto ease = [](int& v, int target) {
+        const int d = v - target;
+        if (d == 0) return;
+        if (d >= 1) v = d < 0x141 ? v - d / 2 : v - 0x140;
+        else v = d > -0x141 ? v - d / 2 : v + 0x140;
+    };
+    ease(scroll_x_, target_x_);
+    ease(scroll_y_, target_y_);
+    scroll_x_ += b_.shake.offset_x;
+    scroll_y_ += b_.shake.offset_y;
+    clamp_scroll();
 }
 
 sim::Vec3i GameClient::world_at(int sx, int sy) const {
@@ -205,19 +288,18 @@ int GameClient::frame(std::uint32_t now_ms) {
     }
     const std::uint32_t dt = scaled - last_scaled_;
     last_scaled_ = scaled;
+    if (mdrag_) view_drag_step();  // (the input pass, before the steps)
     int steps = budget_.update(now_ms, network.remote_lag ? network.remote_lag() : 0);
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
-    for (int k = 0; k < steps; ++k) step_battle(b_);
+    for (int k = 0; k < steps; ++k) {
+        step_battle(b_);
+        camera_step();  // the step's camera stage: following, easing, shake
+    }
     end_frame(b_);  // once per frame, after the frame's steps (even none)
     // Console lines expire one per pass that ran steps (0x463EF0 at the end of the step routine):
     // the oldest goes when it came more than (text_seconds + 1) seconds of game steps ago.
     if (steps > 0) expire_console();
     scroll_step(dt);
-    // The tracked unit keeps the view centred on it.
-    if (tracked_) {
-        if (tracked_ < b_.units.size() && b_.ticks[tracked_].type_index && b_.units[tracked_].hit_points > 0) center_on(b_.units[tracked_].pos);
-        else tracked_ = 0;
-    }
     hover_ = in_view(mouse_x_, mouse_y_) ? unit_at(mouse_x_, mouse_y_) : 0;
     if (!in_view(mouse_x_, mouse_y_) && on_minimap(mouse_x_, mouse_y_)) {
         // On the minimap: the nearest radar dot within 2 pixels (squared distance under 4).
@@ -243,7 +325,16 @@ int GameClient::frame(std::uint32_t now_ms) {
     if (mode_kept_ && !shift_ && !keys_down_[keys::kShift]) end_order_mode();
     advance_pointer(dt);
     notices_frame();
+    panels_frame(now_ms);
     if (panel_dirty_) refresh_panel();
+    // The film (0x496790 after the frame is drawn): once the game tick reaches the next film
+    // tick the frame drawn is written, and the next one is due 30 / speed ticks later (whole
+    // division; a speed of 0, which only an edited setting can give, would divide by zero in
+    // the original: no move here).
+    if (film_number_ > 0 && film_next_tick_ <= b_.game_tick()) {
+        film_due_ = true;
+        if (opt_.film_speed != 0) film_next_tick_ += static_cast<std::uint32_t>(30 / opt_.film_speed);
+    }
     ++frame_counter_;
     return steps;
 }
@@ -256,10 +347,12 @@ void GameClient::scroll_step(std::uint32_t dt_ticks) {
     int x = scroll_x_, y = scroll_y_;
     // (A pointer off the picture is at no edge.)
     const bool on = !pointer_off_;
-    if (keys_down_[keys::kLeft] || (on && mouse_x_ == 0 && mouse_y_ < opt_.height)) x -= step;
-    else if (keys_down_[keys::kRight] || (on && mouse_x_ == opt_.width - 1)) x += step;
-    if (keys_down_[keys::kUp] || (on && mouse_y_ == 0 && mouse_x_ < opt_.width)) y -= step;
-    else if (keys_down_[keys::kDown] || (on && mouse_y_ == opt_.height - 1)) y += step;
+    // (the arrow keys do not scroll while the chat line is open: its text field takes them)
+    const bool arrows = !chat_;
+    if ((arrows && keys_down_[keys::kLeft]) || (on && mouse_x_ == 0 && mouse_y_ < opt_.height)) x -= step;
+    else if ((arrows && keys_down_[keys::kRight]) || (on && mouse_x_ == opt_.width - 1)) x += step;
+    if ((arrows && keys_down_[keys::kUp]) || (on && mouse_y_ == 0 && mouse_x_ < opt_.width)) y -= step;
+    else if ((arrows && keys_down_[keys::kDown]) || (on && mouse_y_ == opt_.height - 1)) y += step;
     if (x != scroll_x_ || y != scroll_y_) {
         // A scroll that moves the view ends unit tracking (the original's 0x41CE90).
         set_scroll(x, y);
@@ -504,25 +597,64 @@ void GameClient::box_select(const InputEvent& e) {
     else if (n > 1) play_ui(c_.ui_sounds.select_multiple);
 }
 
+bool GameClient::in_category(std::uint16_t type, const char* category) const {
+    if (type >= c_.types.size()) return false;
+    for (const std::string& c : c_.types[type].categories)
+        if (c == category) return true;
+    return false;
+}
+
 void GameClient::select_group(int group, bool add) {
-    int n = 0;
-    std::uint16_t last = 0;
-    for (std::size_t i = 1; i < b_.units.size(); ++i) {
-        sim::Unit& u = b_.units[i];
+    // 0x48D9A0 over the player's selectable units: the group's units are selected, the others
+    // leave the selection unless Shift adds. When the group holds a CTRL_F unit and an armed
+    // unit (unit flag bit 31), its CTRL_F units are left out (deselected).
+    const sim::PlayerSlot& p = b_.players[static_cast<std::size_t>(opt_.player)];
+    const int first = std::max(1, p.first_unit), last = std::min<int>(p.last_unit, static_cast<int>(b_.units.size()) - 1);
+    bool has_f = false, armed = false;
+    for (int i = first; i <= last; ++i) {
+        const sim::Unit& u = b_.units[static_cast<std::size_t>(i)];
+        if (!selectable(u) || static_cast<int>(u.group) != group) continue;
+        if (in_category(b_.ticks[static_cast<std::size_t>(i)].type_index, "CTRL_F")) has_f = true;
+    }
+    if (has_f)
+        for (int i = first; i <= last; ++i) {
+            const sim::Unit& u = b_.units[static_cast<std::size_t>(i)];
+            if (selectable(u) && static_cast<int>(u.group) == group && (u.flags & 0x80000000u)) armed = true;
+        }
+    for (int i = first; i <= last; ++i) {
+        sim::Unit& u = b_.units[static_cast<std::size_t>(i)];
         if (!selectable(u)) continue;
         if (static_cast<int>(u.group) == group) {
-            u.flags |= kSelected;
-            ++n;
-            last = static_cast<std::uint16_t>(i);
+            if (armed && in_category(b_.ticks[static_cast<std::size_t>(i)].type_index, "CTRL_F")) u.flags &= ~kSelected;
+            else u.flags |= kSelected;
         } else if (!add) {
             u.flags &= ~kSelected;
         }
     }
+    end_order_mode();  // (0x495860: the order mode returns to the default)
     focus_ = 0;
     panel_dirty_ = true;
     play_ui(c_.ui_sounds.select_squad);  // (the group key sounds whether or not the group has units)
-    (void)n;
-    (void)last;
+}
+
+bool GameClient::jump_to_noted_unit() {
+    // From the oldest console line on: the first naming a unit (its parameter) that is alive
+    // and not yet visited gets the marks 0x30 (shown in colour 10, visited) and the view eases
+    // to the unit's whole x and z (height not counted, 0x41C7C0).
+    std::uint16_t i = console_.oldest;
+    if (console_.next == i) return false;
+    do {
+        ConsoleLine& l = console_.lines[i];
+        if (l.param != 0 && !(l.kind & 0x10) && l.param < b_.units.size() && (b_.units[l.param].flags & 0x10000000u)) {
+            l.kind |= 0x30;
+            const sim::Unit& u = b_.units[l.param];
+            ease_to_point(static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[0]) >> 16),
+                          static_cast<std::int16_t>(static_cast<std::uint32_t>(u.pos[2]) >> 16));
+            return true;
+        }
+        if (++i == 30) i = 0;
+    } while (console_.next != i);
+    return false;
 }
 
 void GameClient::assign_group(int group) {
@@ -894,15 +1026,7 @@ void GameClient::handle(const InputEvent& e) {
     case InputEvent::Type::MouseMove:
         mouse_x_ = e.x;
         mouse_y_ = e.y;
-        if (mdrag_) {
-            const int cx = (e.x - mdrag_x_) / 4, cy = (e.y - mdrag_y_) / 4;
-            if (cx || cy) {
-                set_scroll((scroll_x_ / 16 + cx) * 16, (scroll_y_ / 16 + cy) * 16);
-                mdrag_x_ += cx * 4;
-                mdrag_y_ += cy * 4;
-            }
-            break;
-        }
+        if (mdrag_) break;  // (the view drag reads the pointer once a pass)
         if (left_down_ && !dragging_ && in_view(press_x_, press_y_) && mode_ != Action::BuildUnit &&
             (std::abs(e.x - press_x_) > 3 || std::abs(e.y - press_y_) > 3))
             dragging_ = true;
@@ -912,6 +1036,10 @@ void GameClient::handle(const InputEvent& e) {
     case InputEvent::Type::MouseUp: mouse_up(e); break;
     case InputEvent::Type::KeyDown:
         if (e.key >= 0 && e.key < 0x200) keys_down_[e.key] = true;
+        // A character key without Ctrl or Alt reaches the battle as its typed character (the
+        // original's key queue gets plain characters only from WM_CHAR: Shift+1 is a '!', a
+        // 't' with Shift a 'T'); the Text event that follows carries it.
+        if (!chat_ && e.text_follows) break;
         key_down(e);
         break;
     case InputEvent::Type::KeyUp:
@@ -919,7 +1047,14 @@ void GameClient::handle(const InputEvent& e) {
         break;
     case InputEvent::Type::Text:
         text_events_ = true;
-        if (chat_) {
+        if (!chat_) {
+            InputEvent k = e;
+            k.type = InputEvent::Type::KeyDown;
+            k.text_follows = false;
+            key_down(k, true);
+            break;
+        }
+        {
             if (chat_provisional_ >= 0 && chat_provisional_ < static_cast<int>(chat_text_.size())) {
                 chat_text_.erase(static_cast<std::size_t>(chat_provisional_), 1);
                 if (chat_cursor_ > chat_provisional_) --chat_cursor_;
@@ -934,6 +1069,11 @@ void GameClient::handle(const InputEvent& e) {
 void GameClient::mouse_down(const InputEvent& e) {
     mouse_x_ = e.x;
     mouse_y_ = e.y;
+    // While the view is dragged the battle's pointer handling waits (0x499200).
+    if (mdrag_) {
+        if (e.button == 3) mdrag_held_ = true;
+        return;
+    }
     if (e.button == 1) {
         left_down_ = true;
         press_x_ = e.x;
@@ -968,12 +1108,19 @@ void GameClient::mouse_down(const InputEvent& e) {
                     held_button_ = &btn;
                     held_with_ = 3;
                 }
-    } else if (e.button == 2 || (e.button == 3 && e.ctrl && !opt_.right_click_orders)) {
-        // Dragging the view: every 4 pixels of pointer travel scroll one cell (16 pixels).
+    } else if (e.button == 3 && e.ctrl && !opt_.right_click_orders && in_view(e.x, e.y)) {
+        // The view drag starts (0x499100 → 0x41CC60; interface type 0, Ctrl held, the pointer
+        // over the view; the original has no middle-button drag): following ends, the pointer
+        // is hidden, its place kept, the view's cell taken, and the pointer put in the screen's
+        // centre.
         mdrag_ = true;
-        mdrag_x_ = e.x;
-        mdrag_y_ = e.y;
+        mdrag_held_ = true;
         tracked_ = 0;
+        mdrag_saved_x_ = e.x;
+        mdrag_saved_y_ = e.y;
+        mdrag_x_ = scroll_x_ / 16;
+        mdrag_y_ = scroll_y_ / 16;
+        move_pointer(opt_.width / 2, opt_.height / 2);
     } else if (e.button == 3) {
         right_down_ = true;
     }
@@ -982,8 +1129,8 @@ void GameClient::mouse_down(const InputEvent& e) {
 void GameClient::mouse_up(const InputEvent& e) {
     mouse_x_ = e.x;
     mouse_y_ = e.y;
-    if (mdrag_ && (e.button == 2 || e.button == 3)) {
-        mdrag_ = false;
+    if (mdrag_) {
+        if (e.button == 3) mdrag_held_ = false;  // (the drag ends at its next pass)
         return;
     }
     if (e.button == 1) {
@@ -1130,8 +1277,16 @@ void GameClient::chat_insert(int ch) {
     ++chat_cursor_;
 }
 
-void GameClient::key_down(const InputEvent& e) {
-    const int k = e.key;
+void GameClient::key_down(const InputEvent& e, bool typed) {
+    int k = e.key;
+    // A character key that came without its typed character (scripted runs): Shift makes the
+    // character a US keyboard would type, as the original's queue would get it.
+    if (!typed && !chat_ && e.shift && !e.ctrl && !e.alt && k >= 0x20 && k < 0x7F) {
+        static const char kFrom[] = "1234567890-=[];',./`\\";
+        static const char kTo[] = "!@#$%^&*()_+{}:\"<>?~|";
+        if (k >= 'a' && k <= 'z') k = std::toupper(k);
+        else if (const char* p = std::strchr(kFrom, k)) k = kTo[p - kFrom];
+    }
     // The chat line takes every key while it is open (its text field's editing, 0x4AB720):
     // Enter sends the line and closes it, Escape closes it with the line dropped; Backspace
     // removes the character before the insertion point, Delete the one at it; Left / Right
@@ -1139,6 +1294,13 @@ void GameClient::key_down(const InputEvent& e) {
     if (chat_) {
         const int n = static_cast<int>(chat_text_.size());
         chat_cursor_ = std::clamp(chat_cursor_, 0, n);
+        if ((k == 'v' && e.ctrl && !e.alt) || k == keys::kInsert) {
+            // Ctrl+V / Insert: the line becomes the clipboard's text (paste_line).
+            const Content::ChatLine& t = c_.chat;
+            paste_line(chat_text_, t.loaded && t.max_chars > 0 ? t.max_chars : 63, t.field_w > 0 ? t.field_w : 1 << 30, t.font);
+            chat_provisional_ = -1;
+            return;
+        }
         if (k == keys::kEnter) {
             chat_ = false;
             const std::string line = chat_text_;
@@ -1191,22 +1353,23 @@ void GameClient::key_down(const InputEvent& e) {
         else deselect_all();
         return;
     }
-    if (k == '+' || k == '=') {
-        if (budget_.game_speed < 20) {
-            set_game_speed(budget_.game_speed + 1);
-            if (network.send_speed) network.send_speed(budget_.game_speed);
-        }
-        return;
-    }
-    if (k == '-' || k == '_') {
-        if (budget_.game_speed > 1) {
-            set_game_speed(budget_.game_speed - 1);
+    if (k == '+' || k == '=' || k == '-' || k == '_') {
+        // (0x495E90: not in a network game for a watcher; the debug view mode blocks it too)
+        const bool watcher = network.remote_lag && opt_.player >= 0 && opt_.player < 10 &&
+                             b_.players[static_cast<std::size_t>(opt_.player)].active &&
+                             b_.settings.player_sight[static_cast<std::size_t>(opt_.player)].watching;
+        if (watcher) return;
+        const bool up = k == '+' || k == '=';
+        if (up ? budget_.game_speed < 20 : budget_.game_speed > 1) {
+            set_game_speed(budget_.game_speed + (up ? 1 : -1));
             if (network.send_speed) network.send_speed(budget_.game_speed);
         }
         return;
     }
     if (k == '`' || k == '~' || k == '!' || k == '#' || k == '*') {
+        // Damage bars on / off, and the settings are saved (0x430F00).
         opt_.damage_bars = !opt_.damage_bars;
+        if (save_setting) save_setting("damagebars", opt_.damage_bars ? 1 : 0);
         return;
     }
     if (k == ',' || k == '.') {
@@ -1214,23 +1377,79 @@ void GameClient::key_down(const InputEvent& e) {
         return;
     }
     if (k >= '1' && k <= '9') {
-        if (e.ctrl) assign_group(k - '0');
-        else if (opt_.alt_groups != e.alt) {
-            // With the group keys switched, the plain digit picks a build menu page instead.
+        // Ctrl+digit makes a group. A digit picks the focus unit's build menu page (the digit
+        // less one; 0 the orders) when Alt is not held, a group with Alt — the other way round
+        // with the SwitchAlt setting (0x495E90, 0x41C060).
+        if (e.ctrl) {
+            assign_group(k - '0');
+            return;
+        }
+        const bool page_key = opt_.alt_groups ? e.alt : !e.alt;
+        if (page_key) {
             if (focus_) {
                 const std::uint16_t t = b_.ticks[focus_].type_index;
                 const int pages = t < c_.types.size() ? build_page_count(t) : 0;
                 const int page = k - '1';
-                if (page < pages) {
+                // (pages 1..N and the orders: the definition's page count is N + 1)
+                if (pages > 0 && page <= pages) {
                     sim::Unit& u = b_.units[focus_];
                     u.flags = (u.flags & ~(kBuildPageMask | kBuildMenuShown)) | (page > 0 ? kBuildMenuShown : 0u) |
                               (page > 0 ? (static_cast<std::uint32_t>(page & 7) << kBuildPageShift) : 0u);
+                    panel_dirty_ = true;
                     play_ui(c_.ui_sounds.next_build_menu);
                 }
             }
         } else {
             select_group(k - '0', e.shift);
         }
+        return;
+    }
+    if (k == keys::kF1 && !e.ctrl && !e.shift) {
+        // F1 (0x4942E0): over a panel gadget, the unit type it names (none: nothing); else the
+        // unit under the pointer when the viewed player sees it.
+        std::uint16_t type = 0;
+        bool over_gadget = false;
+        if (const Panel* p = current_panel())
+            for (const Button& btn : p->buttons)
+                if (mouse_x_ >= btn.x && mouse_x_ < btn.x + btn.w && mouse_y_ >= btn.y && mouse_y_ < btn.y + btn.h) {
+                    over_gadget = true;
+                    type = btn.unit_type;
+                    break;
+                }
+        if (!over_gadget && hover_ && hover_ < b_.units.size()) {
+            const sim::Unit& u = b_.units[hover_];
+            if (own(u) || !b_.settings.fog_of_war || b_.unit_seen_by(viewed_player(), u)) type = b_.ticks[hover_].type_index;
+        }
+        if (type && on_unit_info) on_unit_info(type);
+        return;
+    }
+    if (k == keys::kF1 + 2 && !e.ctrl && !e.shift) {
+        // F3: the view goes to the next unit a console line names (0x464000).
+        for (ConsoleLine& l : console_.lines) l.kind &= static_cast<std::uint8_t>(~0x20);
+        if (!jump_to_noted_unit()) {
+            for (ConsoleLine& l : console_.lines) l.kind &= static_cast<std::uint8_t>(~0x10);
+            jump_to_noted_unit();
+        }
+        return;
+    }
+    if (k == keys::kF1 + 3 && !e.ctrl) {
+        // F4: the kills and losses panel stays out (visual option bit 0x80).
+        opt_.scoreboard = !opt_.scoreboard;
+        return;
+    }
+    if (k == keys::kF1 + 11 && !e.ctrl) {
+        // F12: the console is emptied (0x463C80).
+        console_.next = console_.oldest = 0;
+        return;
+    }
+    if (k == keys::kF1 + 9 && e.ctrl) {
+        // Ctrl+F10 (debug switch): the film starts or stops.
+        toggle_film();
+        return;
+    }
+    if (k == 'h' && !e.ctrl && network.remote_lag) {
+        // 'h' (network games): the share screen (0x4936F0; refused for a watcher).
+        if (on_share_key) on_share_key();
         return;
     }
     if (k >= keys::kF1 + 4 && k <= keys::kF1 + 7) {
@@ -1244,22 +1463,33 @@ void GameClient::key_down(const InputEvent& e) {
         }
         return;
     }
-    if (e.ctrl && k >= 'a' && k <= 'z') {
-        switch (k) {
+    if (e.ctrl && ((k >= 'a' && k <= 'z') || (k >= 'A' && k <= 'Z'))) {
+        switch (std::tolower(k)) {
         case 'a':
+            // 0x48BD50: every selectable own unit joins the selection; the order mode ends.
             for (std::size_t i = 1; i < b_.units.size(); ++i)
                 if (selectable(b_.units[i])) b_.units[i].flags |= kSelected;
+            focus_ = 0;
+            end_order_mode();
             panel_dirty_ = true;  // (silent: the Ctrl selections play no sound)
             return;
         case 'c':
-            // The commander: selected (its category), and the view follows it.
+            // The commander: its category CTRL_C selected, and the view follows the last own unit
+            // of the "Commander" category (0x41C310).
             select_category("CTRL_C", e.shift);
-            for (std::size_t i = 1; i < b_.units.size(); ++i) {
-                const std::uint16_t t = b_.ticks[i].type_index;
-                if (t && t < c_.types.size() && c_.types[t].commander && own(b_.units[i])) tracked_ = static_cast<std::uint16_t>(i);
+            {
+                const sim::PlayerSlot& p = b_.players[static_cast<std::size_t>(opt_.player)];
+                for (int i = std::max(1, p.first_unit); i <= p.last_unit && static_cast<std::size_t>(i) < b_.units.size(); ++i) {
+                    const std::uint16_t t = b_.ticks[static_cast<std::size_t>(i)].type_index;
+                    if (t && t < c_.types.size() && in_category(t, "COMMANDER")) tracked_ = static_cast<std::uint16_t>(i);
+                }
             }
             return;
-        case 'd': command_selected_kind(b_, opt_.player, sim::mission::kSelfDestruct, 0, false); return;
+        case 'd':
+            // Self-destruct: pending self-destruct orders of the selected units are taken back;
+            // only when none was, the selected units get one (0x495E90 case 0xAD).
+            toggle_self_destruct(b_, opt_.player);
+            return;
         case 's': select_on_screen(); return;
         case 'z': select_same_types(); return;
         default: {
@@ -1270,8 +1500,9 @@ void GameClient::key_down(const InputEvent& e) {
         }
         }
     }
-    if (k == 't') {
-        track_next(e.shift);
+    if (k == 't' || k == 'T') {
+        // 't' the next selected unit is followed, 'T' the previous one (0x41C2E0).
+        track_next(k == 'T');
         return;
     }
     if (k == 'n') {
@@ -1284,11 +1515,11 @@ void GameClient::key_down(const InputEvent& e) {
         if (opt_.debug_commands && on_command) on_command(last_command_, 0xFFFFFFFFu);
         return;
     }
-    // Quick keys of the shown panel's buttons.
+    // Quick keys of the shown panel's buttons (either case).
     if (!e.ctrl && k > 0 && k < 0x100)
         if (const Panel* p = current_panel())
             for (const Button& btn : p->buttons)
-                if (btn.quickkey == k) {
+                if (btn.quickkey > 0 && std::tolower(btn.quickkey) == std::tolower(k)) {
                     press_button(btn, e);
                     return;
                 }
@@ -1308,6 +1539,7 @@ void GameClient::select_category(const std::string& category, bool keep) {
         if (in) u.flags |= kSelected;
         else if (!keep) u.flags &= ~kSelected;
     }
+    end_order_mode();  // (0x495860)
     focus_ = 0;
     panel_dirty_ = true;
 }
@@ -1325,6 +1557,7 @@ void GameClient::select_on_screen() {
         }
     }
     if (any) {
+        end_order_mode();  // (0x495860)
         focus_ = 0;
         panel_dirty_ = true;
     }
@@ -1338,6 +1571,7 @@ void GameClient::select_same_types() {
             types[b_.ticks[i].type_index] = true;
     for (std::size_t i = 1; i < b_.units.size(); ++i)
         if (selectable(b_.units[i]) && b_.ticks[i].type_index < types.size() && types[b_.ticks[i].type_index]) b_.units[i].flags |= kSelected;
+    end_order_mode();  // (0x495860)
     focus_ = 0;
     panel_dirty_ = true;
 }
@@ -1379,8 +1613,8 @@ void GameClient::next_unit() {
         id = find();
     }
     if (!id) return;
-    tracked_ = 0;
-    center_on(b_.units[id].pos);
+    // (0x48D4D0: the view eases there over the next steps; a followed unit stays followed)
+    ease_to_unit(b_.units[id].pos);
     for (const UnitScreen& s : on_screen_)
         if (b_.ticks[s.id].owner == opt_.player) b_.units[s.id].flags = (b_.units[s.id].flags & ~kOnScreenOld) | kOnScreen;
     b_.units[id].flags = (b_.units[id].flags & ~kOnScreenOld) | kOnScreen;

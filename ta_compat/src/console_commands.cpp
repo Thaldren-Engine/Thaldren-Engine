@@ -195,8 +195,14 @@ void ConsoleCommands::Impl::build() {
         if (sim::console::c_stricmp(a.text(3), "energy") == 0)
             sim::transfer_energy(e, static_cast<std::uint8_t>(local()), to, static_cast<float>(a.number(2, 0)), true);
     });
-    add("CDPlay", [this](const Words&) { not_built("CDPlay"); });
-    add("CDStop", [this](const Words&) { not_built("CDStop"); });
+    // The music (0x4167F0: the CD player's play of track n, 0 = a track the mood picks; 0x416810:
+    // stop; 0x4175E0: the music mode).
+    add("CDPlay", [this](const Words& a) {
+        if (c.music_command) c.music_command("play", a.number(1, 0));
+    });
+    add("CDStop", [this](const Words&) {
+        if (c.music_command) c.music_command("stop", 0);
+    });
     add("Sound3D", [this](const Words&) {
         auto& o = c.options_mut();
         o.sound_mode = o.sound_mode == 2 ? 1 : 2;
@@ -227,7 +233,9 @@ void ConsoleCommands::Impl::build() {
         for (std::size_t i = 1; i < b().units.size(); ++i)
             if (b().units[i].flags & sim::unit_flags::kAlive) b().units[i].flags |= sim::unit_tick_flags::kSelectable;
     });
-    add("MusicMode", [this](const Words&) { not_built("MusicMode"); });
+    add("MusicMode", [this](const Words& a) {
+        if (c.music_command) c.music_command("mode", a.number(1, 0));
+    });
     add("Logo", [this](const Words& a) {
         // Logo <colour> <player>: the player's team colour (its logo frame).
         const std::int32_t logo = a.number(1, 0);
@@ -245,8 +253,9 @@ void ConsoleCommands::Impl::build() {
         c.options_mut().screen_chat = st.screen_chat;
     });
     add("Gamma", [this](const Words& a) {
+        // (0x417290: the display gamma n x 0.1, n kept as the Gamma setting and saved)
         st.gamma = a.number(1, 0);
-        not_built("Gamma");
+        if (c.on_gamma_command) c.on_gamma_command(st.gamma);
     });
     add("Clock", [this](const Words&) { c.options_mut().clock = !c.options().clock; });
     add("NetStats", [](const Words&) {});  // resets the network statistics display
@@ -300,7 +309,10 @@ void ConsoleCommands::Impl::build() {
         st.compression = !st.compression;
         say(std::string("Ok.  Outgoing packet compression turned ") + (st.compression ? "ON" : "OFF"));
     });
-    add("BPS", [this](const Words&) { st.bps = !st.bps; });
+    add("BPS", [this](const Words&) {
+        st.bps = !st.bps;
+        c.options_mut().bps = st.bps;
+    });
     add("SFX", [this](const Words&) { b().fx_lists.spawning_off = !b().fx_lists.spawning_off; });
 
     // ---- cheats (bit 2): skirmish, and network games whose host allows them ----
@@ -389,11 +401,21 @@ void ConsoleCommands::Impl::build() {
     add("ILose", [end_game](const Words&) { end_game(false); });
     add("Film", [this](const Words& a) {
         if (a.count() < 2) return;
+        // (0x417330: word 1 becomes the image output folder, one trailing '\' or '/' dropped,
+        // saved at once as "Image Output Directory")
         st.film_dir = a.text(1);
         if (!st.film_dir.empty() && (st.film_dir.back() == '\\' || st.film_dir.back() == '/')) st.film_dir.pop_back();
+        c.options_mut().image_dir = st.film_dir;
+        if (c.save_text_setting) c.save_text_setting("Image Output Directory", st.film_dir);
     });
     add("FilmSpeed", [this](const Words& a) {
-        if (a.count() > 1 && a.number(1, 0) > 0) st.film_speed = a.number(1, 0);
+        // (0x4173E0: a number above 0 becomes the film's frames a second, saved at once as
+        // "Movie Output Rate")
+        if (a.count() > 1 && a.number(1, 0) > 0) {
+            st.film_speed = a.number(1, 0);
+            c.options_mut().film_speed = st.film_speed;
+            if (c.save_setting) c.save_setting("Movie Output Rate", st.film_speed);
+        }
     });
     add("Assert", [](const Words&) {});
     add("Assign", [this](const Words& a) {

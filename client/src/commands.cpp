@@ -4,6 +4,7 @@
 
 #include "client/commands.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "sim/construction.h"
@@ -116,6 +117,28 @@ int command_selected_kind(sim::Battle& b, int player, std::uint8_t kind, std::in
 }
 
 #endif  // !CLIENT_GAME_FLOW
+
+void toggle_self_destruct(sim::Battle& b, int player) {
+    // The selected units of the player's unit range (selected flag only, as 0x48CA20 lists
+    // them), in table order: the first self-destruct order of the list its kind lives in
+    // (0x439E30) is removed (0x439F80).
+    const std::uint8_t kind = sim::mission::kSelfDestruct;
+    const bool secondary = (sim::mission::default_flags()[kind] & sim::order_flags::kSecondary) != 0;
+    bool any = false;
+    if (player >= 0 && static_cast<std::size_t>(player) < b.players.size()) {
+        const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(player)];
+        for (int i = std::max(1, p.first_unit); i <= p.last_unit && static_cast<std::size_t>(i) < b.units.size(); ++i) {
+            sim::Unit& u = b.units[static_cast<std::size_t>(i)];
+            if (!(u.flags & sim::unit_tick_flags::kSelected)) continue;
+            sim::MissionOrder* o = secondary ? u.secondary_orders : u.orders;
+            while (o && o->kind != kind) o = o->next;
+            if (!o) continue;
+            any = true;
+            sim::remove_order(b.order_context(), u, o);
+        }
+    }
+    if (!any) command_selected_kind(b, player, kind, 0, false);
+}
 
 void change_build_count(sim::Battle& b, sim::Unit& factory, std::uint16_t type, std::int32_t delta) {
     b.order_build_count(factory, type, delta);

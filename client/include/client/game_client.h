@@ -26,7 +26,7 @@ namespace client {
 namespace keys {
 constexpr int kLeft = 0x100, kRight = 0x101, kUp = 0x102, kDown = 0x103, kPause = 0x104, kEscape = 0x105,
               kEnter = 0x106, kTab = 0x107, kShift = 0x108, kCtrl = 0x109, kAlt = 0x10A, kBackspace = 0x10B,
-              kDelete = 0x10C, kHome = 0x10D, kEnd = 0x10E, kF1 = 0x110;  // kF1 + n - 1 = Fn
+              kDelete = 0x10C, kHome = 0x10D, kEnd = 0x10E, kInsert = 0x10F, kF1 = 0x110;  // kF1 + n - 1 = Fn
 }
 
 struct InputEvent {
@@ -72,6 +72,10 @@ struct ClientOptions {
     bool dithered_fog = false;       // fog drawn as a checkerboard instead of greyed (setting DitheredFog)
     bool radar_everything = false;   // the minimap shows every unit (cheat)
     bool show_ranges = false;        // weapon range circles (not drawn yet)
+    bool scoreboard = false;         // F4: the kills and losses panel stays out (visual option bit 0x80)
+    bool bps = false;                // +bps: the network send / receive rates over the view (GS+0x391C3)
+    std::string image_dir;           // the image output folder (GS+0x38A53: films; screenshots under it)
+    int film_speed = 10;             // film frames a second of game time ("Movie Output Rate", GS+0x38C57)
     bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
 };
 
@@ -117,6 +121,29 @@ public:
     // command line with the allowed permission bits (1 options, 2 cheats, 4 debug); returns the
     // bits of the command that ran (0: none). The line is then sent as chat like any other.
     std::function<std::uint32_t(const std::string& line, std::uint32_t allowed)> on_command;
+    // A setting the battle changes and the original saves at once (0x430F00), by its registry name.
+    std::function<void(const char* name, int value)> save_setting;
+    std::function<void(const char* name, const std::string& value)> save_text_setting;
+    std::function<void(int n)> on_gamma_command;  // "+gamma n" (the display's gamma, 0x417290)
+    // The music commands (0x4167F0 "+cdplay n", 0x416810 "+cdstop", 0x4175E0 "+musicmode n"):
+    // what = "play", "stop" or "mode".
+    std::function<void(const char* what, int n)> music_command;
+    // Moves the system pointer to frame pixel (x, y) (SetCursorPos; the view drag); unset: the
+    // client's own pointer position only.
+    std::function<void(int x, int y)> warp_pointer;
+    // The film (debug switch; Ctrl+F10, 0x495E90 case 0xD7, and the battle loop 0x496790): a
+    // frame is due once the game tick reaches the next film tick; the front writes the frame it
+    // draws next into the film's folder (FRAMnnnn.pcx) and calls film_written.
+    bool film_due() const { return film_due_; }
+    const std::string& film_folder() const { return film_folder_; }
+    int film_number() const { return film_number_; }
+    void film_written(std::uint32_t now_ms);
+    void toggle_film();
+    // The 'h' key in a network game: the share screen (0x4936F0).
+    std::function<void()> on_share_key;
+    // F1 (0x4942E0): the unit information screen for a unit type (the build button under the
+    // pointer, else the seen unit under it).
+    std::function<void(std::uint16_t type)> on_unit_info;
     // Types a chat line as if entered (scripted runs and tests).
     void enter_chat_line(const std::string& text);
     // The pointer's map point (the original keeps it at GS+0x2CAA, 0x498DA0): the pointer
@@ -131,6 +158,9 @@ public:
     bool paused() const { return budget_.paused; }
     void set_paused(bool p) { budget_.paused = p; }
     std::uint16_t tracked() const { return tracked_; }
+    // A screen opened over the battle with flags 0x800 (share, allies, control) dims the side
+    // panel's layout under it until it closes (counted: several may be open).
+    void dim_panel(bool on) { panel_dimmed_ += on ? 1 : -1; }
     // A menu over the battle draws its own pointer.
     void set_pointer_hidden(bool h) { pointer_hidden_ = h; }
 
@@ -140,6 +170,10 @@ public:
     // goal met).
     void interface_sound(int sample) { play_ui(sample); }
     void on_speech(sim::Unit& unit, std::uint32_t id);
+    // A kill or loss the battle counted (attacker's player slot, the victim): the kills ranking
+    // and its lead message, the kills and losses panel's flashes (the original's kill handler,
+    // 0x4866D0's end, and 0x4948B0).
+    void on_kill_counted(int attacker_slot, const sim::Unit& victim);
     void on_under_attack(sim::Unit& unit);
     void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
     // A console line (0x463CA0): kind 2 the game's own notes, 1 unit notices (param: the unit),
@@ -229,6 +263,55 @@ public:
         bar_timer_set_ = s.timer_set;
         bar_copy_valid_ = false;  // (the next frame redraws the bar)
     }
+    // The Space-held panels' state (tests: put into both the client and the original): the
+    // game information panel's slide (0 .. -31), the kills and losses panel's (0 .. 125), its
+    // numbers' flashes and the players' kills ranks; and the set and effective game speeds.
+    struct PanelsState {
+        int info_slide = 0, score_slide = 0;
+        std::array<std::uint8_t, 10> kill_flash{}, loss_flash{}, rank{};
+    };
+    PanelsState panels_state() const { return {info_slide_, score_slide_, kill_flash_, loss_flash_, rank_}; }
+    void set_panels_state(const PanelsState& s) {
+        info_slide_ = s.info_slide;
+        score_slide_ = s.score_slide;
+        kill_flash_ = s.kill_flash;
+        loss_flash_ = s.loss_flash;
+        rank_ = s.rank;
+    }
+    // The +bps display (0x468380 with the rates of 0x416150): the totals of bytes sent and
+    // received (fed by a network session every pass), the totals and clock (1/30 s) of the last
+    // rate update, the rates (bytes a second) and the clock now.
+    struct BpsState {
+        std::uint32_t sent = 0, received = 0, prev_sent = 0, prev_received = 0, tick = 0, send_rate = 0, receive_rate = 0, now = 0;
+    };
+    BpsState bps_state() const { return bps_; }
+    void set_bps_state(const BpsState& s) { bps_ = s; }
+    void set_net_totals(std::uint32_t sent, std::uint32_t received) {
+        bps_.sent = sent;
+        bps_.received = received;
+    }
+    // Tests: one camera stage (0x41CA10) from the given view, target and followed unit (0: none),
+    // with the battle's shake offsets as they are; returns the state after it.
+    struct CameraState {
+        int scroll_x = 0, scroll_y = 0, target_x = 0, target_y = 0;
+        std::uint16_t tracked = 0;
+    };
+    CameraState camera_test(const CameraState& in) {
+        scroll_x_ = in.scroll_x;
+        scroll_y_ = in.scroll_y;
+        target_x_ = in.target_x;
+        target_y_ = in.target_y;
+        tracked_ = in.tracked;
+        camera_step();
+        return {scroll_x_, scroll_y_, target_x_, target_y_, tracked_};
+    }
+    void set_speeds(int set, int effective) {
+        budget_.game_speed = static_cast<std::uint16_t>(set);
+        budget_.effective_speed = static_cast<std::uint16_t>(effective);
+    }
+    // Tests: the step budget's lag throttle (a remote player 900 steps or more behind), which
+    // shows the waiting sign.
+    void set_lag_throttled(bool on) { budget_.lag_throttled = on; }
     // The pointer's animation: the look shown and its frame (tests); a new look (not the one
     // shown) starts at its first frame.
     CursorKind pointer_kind() const { return cursor_shown_; }
@@ -258,7 +341,8 @@ private:
     // Input.
     void mouse_down(const InputEvent& e);
     void mouse_up(const InputEvent& e);
-    void key_down(const InputEvent& e);
+    void key_down(const InputEvent& e, bool typed = false);  // typed: from a Text event
+    bool in_category(std::uint16_t type, const char* category) const;
     void left_click_map(const InputEvent& e);
     void right_click_map(const InputEvent& e);
     void click_select(const InputEvent& e);
@@ -386,15 +470,58 @@ private:
     NoticeQueue::Levels notice_levels() const;
     void notices_frame();
     std::uint16_t tracked_ = 0;                 // unit the view follows (t / T, Ctrl+C)
+    // The camera (0x41CA10, once per battle step): the view eases toward its target, which a
+    // followed unit, 'n' and F3 set; every scroll that moves the view at once sets both.
+    int target_x_ = 0, target_y_ = 0;
+    void clamp_target();
+    void ease_to_point(int x, int z);
+    void ease_to_unit(const sim::Vec3i& pos);
+    void camera_step();
+    // F3 (0x464000): the next console line naming a live unit that F3 has not visited yet.
+    bool jump_to_noted_unit();
+    // The Space-held panels (0x4689C0 the game information panel rising from the bottom bar,
+    // 0x4948E0 the kills and losses panel coming in from the right; F4 keeps the second out):
+    // their slides, the flashes of the second panel's numbers and the players' ranks in it.
+    int info_slide_ = 0;                    // 0 (in) .. -31 (out)
+    std::uint32_t info_next_ms_ = 0;        // it moves once 15 ms of wall clock have passed
+    int score_slide_ = 0;                   // 0 (in) .. 125 (out)
+    std::uint32_t score_next_tick_ = 0;     // the flashes fade every second tick of 1/30 s
+    std::array<std::uint8_t, 10> kill_flash_{}, loss_flash_{};
+    std::array<std::uint8_t, 10> rank_{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};  // the records' kills ranks
+    bool panel_player(int k) const;          // a player the kills and losses panel lists
+    void panels_frame(std::uint32_t now_ms);
+    void draw_panels(render::DrawList& list);
+    BpsState bps_;
+    void draw_bps(render::DrawList& list);
+    int film_number_ = 0;              // GS+0x38C53: the film's MOVIEnnn number, 0 while not filming
+    std::string film_folder_;
+    std::uint32_t film_next_tick_ = 0;  // GS+0x38C5B
+    bool film_due_ = false;
+    bool no_console_ = false;           // the frame drawn without the console (the film's first frame)
+    // The shade and light tables as mixing tables (made once; the draw list keeps them by address).
+    render::BlendTable shade8_, light31_, light20_;
+    // 0x4A50E0 with a picture font: characters from 0x20 that have a glyph, each drawn at its
+    // offsets with its own colours (light row 0) or through the light table's row; a width limit
+    // (-1: none) stops before a glyph wider than what is left. Returns the x after the text.
+    int draw_picture_text(render::Image8& o, const render::ClipRect& clip, const Font& f, const std::string& s, int x, int y,
+                          int width, int light_row) const;
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;
+    int panel_dimmed_ = 0;
     std::string chat_text_;
     int chat_cursor_ = 0;          // the text field's insertion point
     bool text_events_ = false;     // the platform sends typed characters (Text events)
     int chat_provisional_ = -1;    // a key's character standing in for its typed character
     std::string last_command_;  // the last command line (debug: '\' runs it again)
-    bool mdrag_ = false;                        // dragging the view with the middle button
+    // The view drag (Ctrl+right press over the view in interface type 0, 0x41CC60 / 0x41CD50):
+    // the view's cell when the pass began, the pointer's place before the drag, the right
+    // button still held.
+    bool mdrag_ = false;
     int mdrag_x_ = 0, mdrag_y_ = 0;
+    int mdrag_saved_x_ = 0, mdrag_saved_y_ = 0;
+    bool mdrag_held_ = false;
+    void view_drag_step();
+    void move_pointer(int x, int y);
     int hover_feature_ = -1;
     bool pointer_hidden_ = false;
     bool pointer_off_ = false;  // the system pointer is outside the picture (PointerLeave)

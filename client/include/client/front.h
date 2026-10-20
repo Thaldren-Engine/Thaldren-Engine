@@ -34,6 +34,8 @@ struct FrontOptions {
     bool sound = true;
     bool draw_pointer = true;            // false: frames without the pointer (comparisons with the original's screen surface)
     bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
+    // The screenshot key (Ctrl+F9): the frame shown last goes to <shot_dir>/<shot_prefix>NNNN.pcx.
+    std::string shot_dir, shot_prefix;
 };
 
 // The pointer and the keyboard focus (docs/RE_MEMORY.md, "Client", "Pointer and focus"). The
@@ -72,13 +74,30 @@ bool pointer_event(SDL_Window* window, const SDL_Event& ev, int scale, int frame
 // Runs the client until it quits (or for the given frames). Returns a process exit code.
 int run_client(GameClient& client, Content& content, const FrontOptions& options);
 
-// Keys whose held-down repeats reach the client (the text fields' editing keys); other
-// non-character keys come once per press.
-inline bool key_repeats(int k) { return k == keys::kBackspace || k == keys::kDelete || k == keys::kLeft || k == keys::kRight; }
+// Keys whose held-down repeats reach the client: every key (the original's key queue gets
+// each WM_KEYDOWN / WM_CHAR the system repeats, so a held key acts again and again).
+inline bool key_repeats(int) { return true; }
+
+// The screenshot key's picture: `frame` as an 8-bit PCX named <prefix>NNNN.pcx in `dir` (made
+// when missing), NNNN one more than the largest number among the folder's <prefix>*.pcx files.
+// Returns the path written (empty on failure).
+std::string save_numbered_picture(const std::string& dir, const std::string& prefix, const render::Image8& frame,
+                                  const render::Palette& palette);
+// The paste keys read the system clipboard (window front ends).
+void use_system_clipboard();
+// Display gamma (0x4BA590 / 0x4BA200): the palette the screen shows is the frame's palette with
+// every channel times the factor, at most 255, truncated (the frame, its screenshots and films
+// keep the palette as it is). The factor from the Gamma setting n (battle load, the options
+// screens): 0.5 + n / 24 as a float; from the "+gamma n" command: n x 0.1 as a float.
+render::Palette gamma_palette(const render::Palette& palette, float factor);
+float gamma_from_setting(int n);
+float gamma_from_command(int n);
+// The screenshot key (Ctrl+F9; the original checks it in every state of the program, 0x499890).
+inline bool is_screenshot_key(const InputEvent& e) { return e.type == InputEvent::Type::KeyDown && e.ctrl && e.key == keys::kF1 + 8; }
 
 // Parses a script file: one event per line, "<frame> <event> <args...>" with events
 // move X Y | down X Y BUTTON | up X Y BUTTON | click X Y BUTTON (down and up) |
-// key K | keyup K | type TEXT (the rest of the line typed key by key) |
+// key K | hold K (down until a keyup) | keyup K | type TEXT (the rest of the line typed key by key) |
 // wmove X Y W H [SCALE] (the system pointer at window pixel X, Y of a W x H window, possibly
 // outside it: pointer_motion) | leave (the system pointer left the window) |
 // shift/ctrl/alt modifiers as a trailing "+shift" etc.

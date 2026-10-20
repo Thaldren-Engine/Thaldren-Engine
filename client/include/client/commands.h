@@ -23,6 +23,11 @@ int command_selected(sim::Battle& b, int player, std::uint8_t intent, sim::Unit*
 // The same with a fixed mission kind (standing orders, switches, stop) and parameter.
 int command_selected_kind(sim::Battle& b, int player, std::uint8_t kind, std::int32_t param, bool queued);
 
+// Ctrl+D (0x495E90 case 0xAD): every selected unit of the player (its unit range) loses its
+// self-destruct order (the list the kind's default flags name, the first of that kind); when
+// none had one, the selected units are ordered to self-destruct.
+void toggle_self_destruct(sim::Battle& b, int player);
+
 // Factory build queue: `delta` more (or fewer) units of battle type `type`.
 void change_build_count(sim::Battle& b, sim::Unit& factory, std::uint16_t type, std::int32_t delta);
 // Queued count of `type` in the unit's build orders.
