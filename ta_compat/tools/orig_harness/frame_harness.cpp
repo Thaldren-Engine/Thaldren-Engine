@@ -427,6 +427,8 @@ struct Options {
     int minimap_steps = 0;
     // --pcx N: the screenshot writer against the engine's (N random pictures), nothing else.
     int pcx = 0;
+    // --camera N: the camera stage of a step against the client's (N random states), nothing else.
+    int camera = 0;
 };
 
 struct Stats {
@@ -460,6 +462,7 @@ int main(int argc, char** argv) {
         else if (a == "--minimap") opt.minimap = true;
         else if (a == "--minimap-steps" && k + 1 < argc) opt.minimap = true, opt.minimap_steps = std::atoi(argv[++k]);
         else if (a == "--pcx" && k + 1 < argc) opt.pcx = std::atoi(argv[++k]);
+        else if (a == "--camera" && k + 1 < argc) opt.camera = std::atoi(argv[++k]);
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
         else if (positional == 2) opt.out_dir = argv[k], ++positional;
@@ -1279,6 +1282,67 @@ int main(int argc, char** argv) {
     long long mm_seq_frames = 0, mm_seq_same = 0, mm_seq_pixels = 0;
     Stats st;
     int written = 0;
+    if (opt.camera > 0) {
+        // --camera N: the camera stage of a step (0x41CA10: a followed unit's position as the
+        // target, each axis eased half way to the target, at most 320, then the clamp) against
+        // the client's (GameClient::camera_test), N random states: views and targets in and out
+        // of the scroll range, followed units alive or not at random points, none. (Shaking is
+        // the simulation's, checked by flow_harness; it is off here.)
+        r.w32(gs + 0x1422B, static_cast<u32>(mw * 16 - 32));
+        r.w32(gs + 0x1422F, static_cast<u32>(mh * 16 - 128));
+        r.w32(gs + 0x1423B, static_cast<u32>((W - 128) / 16));
+        r.w32(gs + 0x1423F, static_cast<u32>((H - 64) / 16));
+        const u32 unit = o.alloc(kUnitSize);
+        b.shake = sim::CameraShake{};
+        int same = 0;
+        for (int k = 0; k < opt.camera; ++k) {
+            const int ex = mw * 16 - 32 - (W - 128), ey = mh * 16 - 128 - (H - 64);
+            client::GameClient::CameraState in;
+            auto coord = [&](int extent) { return rnd(0, 4) == 0 ? rnd(-400, extent + 400) : rnd(0, std::max(0, extent)); };
+            in.scroll_x = coord(ex);
+            in.scroll_y = coord(ey);
+            const bool close_to = rnd(0, 2) == 0;
+            in.target_x = close_to ? in.scroll_x + rnd(-2, 2) : coord(ex);
+            in.target_y = close_to ? in.scroll_y + rnd(-2, 2) : coord(ey);
+            // A followed unit: one of the battle's (its position and alive flag at random).
+            std::uint16_t id = 0;
+            if (rnd(0, 2) && b.units.size() > 2) {
+                id = static_cast<std::uint16_t>(rnd(1, static_cast<int>(b.units.size()) - 1));
+                sim::Unit& u = b.units[id];
+                u.pos = {static_cast<std::int32_t>(rnd(-200, mw * 16 + 200)) * 65536 + rnd(0, 0xFFFF), static_cast<std::int32_t>(rnd(0, 300)) * 65536 + rnd(0, 0xFFFF),
+                         static_cast<std::int32_t>(rnd(-200, mh * 16 + 200)) * 65536 + rnd(0, 0xFFFF)};
+                u.flags = rnd(0, 5) ? (u.flags | 0x10000000u) : (u.flags & ~0x10000000u);
+                r.write(unit + 0x6A, u.pos.data(), 12);
+                r.w32(unit + 0x110, u.flags);
+            }
+            in.tracked = id;
+            r.w32(gs + 0x1431F, static_cast<u32>(in.scroll_x));
+            r.w32(gs + 0x14323, static_cast<u32>(in.scroll_y));
+            r.w32(gs + 0x14327, static_cast<u32>(in.target_x));
+            r.w32(gs + 0x1432B, static_cast<u32>(in.target_y));
+            r.w32(gs + 0x142F3, id ? unit : 0u);
+            r.w32(gs + 0x142F7, 0);
+            const u16 zero16 = 0;
+            r.write(gs + 0x1434B, &zero16, 2);
+            u8 shake = 0;
+            r.read(gs + 0x1434E, &shake, 1);
+            shake = static_cast<u8>(shake & ~1);
+            r.write(gs + 0x1434E, &shake, 1);
+            if (!o.call(0x0041CA10, 0, {})) return 1;
+            const client::GameClient::CameraState out = gc.camera_test(in);
+            const int ox = static_cast<int>(r.r32(gs + 0x1431F)), oy = static_cast<int>(r.r32(gs + 0x14323));
+            const int otx = static_cast<int>(r.r32(gs + 0x14327)), oty = static_cast<int>(r.r32(gs + 0x1432B));
+            const bool ofollow = r.r32(gs + 0x142F3) != 0;
+            if (ox == out.scroll_x && oy == out.scroll_y && otx == out.target_x && oty == out.target_y && ofollow == (out.tracked != 0)) ++same;
+            else if (k - same < 6)
+                std::printf("camera %d: from %d,%d target %d,%d unit %u: original %d,%d target %d,%d%s, client %d,%d target %d,%d%s\n", k,
+                            in.scroll_x, in.scroll_y, in.target_x, in.target_y, id, ox, oy, otx, oty, ofollow ? " following" : "", out.scroll_x,
+                            out.scroll_y, out.target_x, out.target_y, out.tracked ? " following" : "");
+        }
+        std::printf("camera: %d of %d stages identical\n", same, opt.camera);
+        return same == opt.camera ? 0 : 1;
+    }
+
     for (int sc = 0; sc < opt.scenes; ++sc) {
         // Run the battle on.
         const int steps = rnd(opt.steps / 2, opt.steps * 3 / 2);

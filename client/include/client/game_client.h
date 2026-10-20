@@ -253,6 +253,21 @@ public:
         loss_flash_ = s.loss_flash;
         rank_ = s.rank;
     }
+    // Tests: one camera stage (0x41CA10) from the given view, target and followed unit (0: none),
+    // with the battle's shake offsets as they are; returns the state after it.
+    struct CameraState {
+        int scroll_x = 0, scroll_y = 0, target_x = 0, target_y = 0;
+        std::uint16_t tracked = 0;
+    };
+    CameraState camera_test(const CameraState& in) {
+        scroll_x_ = in.scroll_x;
+        scroll_y_ = in.scroll_y;
+        target_x_ = in.target_x;
+        target_y_ = in.target_y;
+        tracked_ = in.tracked;
+        camera_step();
+        return {scroll_x_, scroll_y_, target_x_, target_y_, tracked_};
+    }
     void set_speeds(int set, int effective) {
         budget_.game_speed = static_cast<std::uint16_t>(set);
         budget_.effective_speed = static_cast<std::uint16_t>(effective);
