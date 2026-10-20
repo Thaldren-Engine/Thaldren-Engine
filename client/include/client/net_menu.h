@@ -102,6 +102,11 @@ public:
     int difficulty() const override { return inner_->difficulty(); }
     bool after_battle(FrontEnd& fe, BattleOutcome o) override { return inner_->after_battle(fe, o); }
     net::NetBattle& net() { return *net_; }
+    // The in-battle screens' network part.
+    void set_alliance(int from, int to, bool allied) override { net_->send_alliance(from, to, allied); }
+    std::uint8_t allied_by(int local, int other) const override { return net_->allied_by(local, other); }
+    void send_explored_map(int from, int to) override { net_->explored_map_shared(from, to); }
+    std::string player_name(int slot) const override { return slot >= 0 && slot < 10 ? names_[static_cast<std::size_t>(slot)] : std::string(); }
     // The players' names (the session's) and this machine's player: chat lines carry the
     // sender's name, lines to one player that player's name.
     void set_names(const std::array<std::string, 10>& names, int local) {

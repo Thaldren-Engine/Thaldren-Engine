@@ -268,7 +268,7 @@ render::DrawList GameClient::draw() {
             img, p->x, p->y, *p, side_ ? side_->panel_side : nullptr,
             [&](const Button& btn) { return button_frame(btn, button_pressed_look(btn), !button_enabled(btn), button_stage(btn)); },
             [&](const Button& btn) { return button_dims(btn, !button_enabled(btn)); }, c_.minimap_grey, c_.shade_levels);
-        if (chat_ && c_.shade_levels.size() >= 32 * 256)
+        if ((chat_ || panel_dimmed_ > 0) && c_.shade_levels.size() >= 32 * 256)
             for (std::uint8_t& px : img.pixels) px = dimmed(c_.shade_levels, px);
         render::Sprite8 sp;
         sp.width = pw;
@@ -373,7 +373,7 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
                 draw_caption(o, btn, "+" + std::to_string(n), button_pressed_look(btn) ? 1 : 0);
             }
     // (the captions belong to the panel: dimmed with it while the chat line is open)
-    if (const Panel* p = current_panel(); p && chat_ && c_.shade_levels.size() >= 32 * 256) {
+    if (const Panel* p = current_panel(); p && (chat_ || panel_dimmed_ > 0) && c_.shade_levels.size() >= 32 * 256) {
         const int pw = p->w > 0 ? p->w : 128, ph = p->h > 0 ? p->h : opt_.height - p->y;
         for (int y = std::max(p->y, 0); y < std::min(p->y + ph, o.height); ++y)
             for (int x = std::max(p->x, 0); x < std::min(p->x + pw, o.width); ++x) {

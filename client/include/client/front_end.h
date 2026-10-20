@@ -175,6 +175,13 @@ public:
     // screen (campaign debriefing / next mission). Return false to go back to
     // the screen the battle was started from (the default).
     virtual bool after_battle(FrontEnd&, BattleOutcome) { return false; }
+    // Network games' in-battle screens (allies, share): the local player's alliance with another
+    // player (packet 0x23), the other's answer (the local record's "allied by" byte), the explored
+    // map sent to a player (0x16 kind 3) and the players' names.
+    virtual void set_alliance(int /*from*/, int /*to*/, bool /*allied*/) {}
+    virtual std::uint8_t allied_by(int /*local*/, int /*other*/) const { return 0; }
+    virtual void send_explored_map(int /*from*/, int /*to*/) {}
+    virtual std::string player_name(int /*slot*/) const { return {}; }
     // Set by the front end: the session reports combat involving the local player here (+1 a
     // hit, +5 a kill it scores; the music's battle/peace switch).
     std::function<void(int)> combat_activity;

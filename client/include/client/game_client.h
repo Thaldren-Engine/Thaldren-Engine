@@ -139,6 +139,9 @@ public:
     bool paused() const { return budget_.paused; }
     void set_paused(bool p) { budget_.paused = p; }
     std::uint16_t tracked() const { return tracked_; }
+    // A screen opened over the battle with flags 0x800 (share, allies, control) dims the side
+    // panel's layout under it until it closes (counted: several may be open).
+    void dim_panel(bool on) { panel_dimmed_ += on ? 1 : -1; }
     // A menu over the battle draws its own pointer.
     void set_pointer_hidden(bool h) { pointer_hidden_ = h; }
 
@@ -463,6 +466,7 @@ private:
                           int width, int light_row) const;
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;
+    int panel_dimmed_ = 0;
     std::string chat_text_;
     int chat_cursor_ = 0;          // the text field's insertion point
     bool text_events_ = false;     // the platform sends typed characters (Text events)

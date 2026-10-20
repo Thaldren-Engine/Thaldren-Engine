@@ -11,6 +11,7 @@
 #include "client/canvas.h"
 #include "render/raster.h"
 #include "sim/battle.h"
+#include "sim/construction.h"
 #include "sim/economy.h"
 #include "sim/rng.h"
 #include "sim/victory.h"
@@ -1582,6 +1583,130 @@ private:
     bool has_picture_ = false;
 };
 
+// The share screen of network games (SHARE.GUI, 0x4936F0: the tab bar's SHARE or 'h'; refused
+// to a watcher; opened with flags 0x800, the layout under it dimmed once). PLYRLIST lists the
+// players one may give to (in use, controller 2 or 3 — not this machine's human —, record index
+// not 10, live units or never any, not watching); with none the screen closes at once. METAL and
+// ENERGY are sliders over the local player's stored metal and energy (whole: ftol), knob as
+// high as the slider, its travel width − height; the amount = ftol(knob / (travel − 1) x
+// stored), shown in METAL# / ENERGY# ("%d"). SHARUNIT and MAPINFO are two-stage switches. OK
+// ("Options"): with a player picked, the amounts go to it (transfers, sent), with SHARUNIT on the
+// selected units that are not commanders, not carried and not in the air change hands
+// (0x4933E0), with MAPINFO on the explored map is shared and sent (0x4571C0); the screen closes.
+// CANCEL ("Previous") closes it.
+class ShareScreen : public LayoutScreen {
+public:
+    ShareScreen(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("SHARE")), art_(art), s_(s) {
+        sim::Battle& b = s.battle();
+        local_ = b.settings.local_player;
+        const sim::PlayerSlot& me = b.players[static_cast<std::size_t>(local_)];
+        std::vector<std::string> names;
+        for (int k = 0; k < 10; ++k) {
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(k)];
+            if (!p.active || p.controller < 2 || p.controller > 3 || p.state == 10 || (p.alive_count == 0 && p.units_created != 0) ||
+                b.settings.player_sight[static_cast<std::size_t>(k)].watching)
+                continue;
+            names.push_back(s.player_name(k));
+            slots_.push_back(k);
+        }
+        if (Widget* l = widget("PLYRLIST")) {
+            l->items = names;
+            l->selected = -1;
+        }
+        max_[0] = static_cast<int>(sim::x87::ftol32(me.metal_stored));
+        max_[1] = static_cast<int>(sim::x87::ftol32(me.energy_stored));
+        for (const char* n : {"METAL", "ENERGY"})
+            if (Widget* w = widget(n)) {
+                travel_ = w->w - w->h;
+                w->range = std::max(0, travel_ - 1);
+                w->position = 0;
+                w->knob = w->h;
+            }
+        refresh_amounts();
+        s.client().dim_panel(true);  // (opened with flags 0x800: the side panel under it dimmed)
+    }
+    ~ShareScreen() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+    bool empty() const { return slots_.empty(); }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        // (no panel picture: the stock panel)
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    int amount(int k) const {
+        const Widget* w = const_cast<ShareScreen*>(this)->widget(k ? "ENERGY" : "METAL");
+        if (!w || travel_ < 2) return 0;
+        return static_cast<int>(sim::x87::ftol32(static_cast<double>(w->position) / static_cast<double>(travel_ - 1) * max_[k]));
+    }
+    void refresh_amounts() {
+        if (Widget* w = widget("METAL#")) w->text = std::to_string(amount(0));
+        if (Widget* w = widget("ENERGY#")) w->text = std::to_string(amount(1));
+    }
+    void frame(FrontEnd& fe, std::uint32_t now_ms) override {
+        LayoutScreen::frame(fe, now_ms);
+        refresh_amounts();
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "MAPINFO") || is(w, "SHARUNIT")) {
+            sfx(fe, art_, "Options");
+            return;
+        }
+        if (is(w, "CANCEL")) {
+            sfx(fe, art_, "Previous");
+            fe.pop();
+            return;
+        }
+        if (!is(w, "OK")) return;
+        sfx(fe, art_, "Options");
+        const Widget* list = widget("PLYRLIST");
+        if (list && list->selected >= 0 && static_cast<std::size_t>(list->selected) < slots_.size()) {
+            const int to = slots_[static_cast<std::size_t>(list->selected)];
+            sim::Battle& b = s_.battle();
+            const sim::PlayerSlot& p = b.players[static_cast<std::size_t>(to)];
+            if (p.active && p.controller >= 1 && p.controller <= 3 && p.state != 10 && !b.settings.player_sight[static_cast<std::size_t>(to)].watching &&
+                (p.alive_count != 0 || p.units_created == 0)) {
+                sim::Economy& e = b.economy();
+                sim::transfer_metal(e, static_cast<std::uint8_t>(local_), static_cast<std::uint8_t>(to), static_cast<float>(amount(0)), true);
+                sim::transfer_energy(e, static_cast<std::uint8_t>(local_), static_cast<std::uint8_t>(to), static_cast<float>(amount(1)), true);
+                const Widget* su = widget("SHARUNIT");
+                if (su && su->stage) give_units(b, to);
+                const Widget* mi = widget("MAPINFO");
+                if (mi && mi->stage) {
+                    b.share_explored_map(local_, to);
+                    s_.send_explored_map(local_, to);
+                }
+            }
+        }
+        fe.pop();
+    }
+
+private:
+    void give_units(sim::Battle& b, int to) {
+        // 0x4933E0: the local player's selected units (in table order) that are not in the air
+        // (flags & 3 != 2), carry nothing (+0x8A) and are not carried (+0x86), and are no commander.
+        const sim::PlayerSlot& me = b.players[static_cast<std::size_t>(local_)];
+        const client::Content& c = s_.content();
+        for (int i = std::max(1, me.first_unit); i <= me.last_unit && static_cast<std::size_t>(i) < b.units.size(); ++i) {
+            sim::Unit& u = b.units[static_cast<std::size_t>(i)];
+            if (!(u.flags & 0x10u) || (u.flags & 3u) == 2 || u.carrier || u.cargo_head) continue;
+            const std::uint16_t t = b.ticks[static_cast<std::size_t>(i)].type_index;
+            bool commander = false;
+            if (t < c.types.size())
+                for (const std::string& cat : c.types[t].categories)
+                    if (cat == "COMMANDER") commander = true;
+            if (commander) continue;
+            sim::transfer_ownership(b.missions(), u, to);
+        }
+    }
+    MenuArt& art_;
+    client::BattleSession& s_;
+    int local_ = 0, travel_ = 0;
+    std::array<int, 2> max_{};
+    std::vector<int> slots_;
+};
+
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
@@ -1962,6 +2087,14 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.tab_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("TABMENU")) return nullptr;
         return std::make_unique<TabMenu>(art);
+    };
+    setup.hooks.share_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
+        // (refused to a watcher; with nobody to give to it closes at once)
+        const sim::Battle& b = s.battle();
+        if (!s.network() || !art.layout("SHARE") || b.settings.player_sight[static_cast<std::size_t>(b.settings.local_player)].watching) return nullptr;
+        auto sc = std::make_unique<ShareScreen>(art, s);
+        if (sc->empty()) return nullptr;
+        return sc;
     };
     setup.hooks.unit_info = [&art](FrontEnd&, client::BattleSession& s, std::uint16_t type) -> std::unique_ptr<client::Screen> {
         if (!art.layout("UNITINFOX")) return nullptr;
