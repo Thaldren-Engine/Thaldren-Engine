@@ -31,6 +31,12 @@ std::string ai_profile_path(const std::vector<std::uint8_t>& ota, int schema);
 struct AiProfileReport {
     std::size_t lines = 0, plans = 0, weights = 0, limits = 0, other = 0, includes = 0;
     std::vector<std::string> notes;  // lines the model does not carry out (they would create units)
+    // The original runs profile text through the whole command registry with every permission
+    // bit: with `defer_other` the lines that are not plan / weight / limit are kept here, in
+    // order, for the battle's command table (unit names create units at the pointer's map point,
+    // console commands run, unknown words run debugdat\<word>.txt).
+    bool defer_other = false;
+    std::vector<std::string> deferred;
 };
 
 // Runs command text on the computer players (the original's multi-line dispatcher).

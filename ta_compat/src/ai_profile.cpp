@@ -146,6 +146,12 @@ void dispatch(const TokenLine& t, Vfs& vfs, const UnitDefTable& defs, sim::Ai& a
     // Anything else goes to the default handler: unit names matching the word are created at
     // the cursor (not carried out here), else debugdat\<word>.txt is run when it exists.
     ++r.other;
+    if (r.defer_other) {
+        std::string line;
+        for (std::size_t k = 0; k < t.args.size(); ++k) line += (k ? " " : "") + t.args[k];
+        r.deferred.push_back(line);
+        return;
+    }
     for (std::size_t i = 1; i < defs.units.size(); ++i)
         if (wildcard_match(defs.units[i].unit_name, cmd)) {
             r.notes.push_back("\"" + cmd + "\" would create " + defs.units[i].unit_name + " units at the cursor");

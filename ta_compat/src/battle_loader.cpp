@@ -305,7 +305,9 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     const int profile_schema = schema < 0 ? 0 : schema;
     start.after_player_setup = [&vfs, &lb, profile_schema](sim::Battle& battle) {
         AiProfileReport report;
+        report.defer_other = true;
         load_ai_profile(vfs, ai_profile_path(lb->ota, profile_schema), lb->unit_defs, battle.ai(), report);
+        lb->ai_profile_lines = std::move(report.deferred);
     };
     if (req.prepare_start) req.prepare_start(*lb, start);
     if (before_start) before_start(b);

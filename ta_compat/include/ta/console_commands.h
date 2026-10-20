@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 // The original's typed commands (a chat line starting with '+'): its command table with the
 // names, permission bits and effects of every entry, and the default command that creates
 // units by name (docs/RE_MEMORY.md, "Console commands"). The table is registered into the
@@ -60,6 +61,8 @@ public:
     // Runs one command line (the text after the '+') with the allowed permission bits;
     // returns the bits of the command that ran (0: none).
     std::uint32_t run(const std::string& line, std::uint32_t allowed);
+    // The same with the pointer's map point given (the AI profile's lines at the battle's load).
+    std::uint32_t run_at(const std::string& line, std::uint32_t allowed, const std::array<std::int32_t, 3>& point);
     ConsoleState& state();
     const sim::console::Registry& registry() const;
 

@@ -70,6 +70,9 @@ struct LoadedBattle {
     // Assets replaced while the battle runs (the debug command Reload); units made before
     // keep pointing into them.
     std::vector<std::unique_ptr<UnitTypeAssets>> retired_assets;
+    // The AI profile's lines for the whole command registry (AiProfileReport::deferred), run by
+    // the battle's command table before the first step.
+    std::vector<std::string> ai_profile_lines;
     std::vector<const UnitDefRecord*> type_defs;                // by battle type index ([0] null)
     std::vector<std::string> feature_models;                    // 3D feature model names
     std::vector<std::uint8_t> tnt, ota;

@@ -609,7 +609,13 @@ void ConsoleCommands::Impl::build() {
         }
         LoadedBattle& lb = w.loaded();
         AiProfileReport report;
+        report.defer_other = true;
         load_ai_profile(w.vfs_, ai_profile_path(lb.ota, lb.schema < 0 ? 0 : lb.schema), lb.unit_defs, ai, report);
+        // (the profile's other lines through the whole registry, at the pointer's map point)
+        for (const std::string& l : report.deferred) {
+            const Words words = sim::console::split(l);
+            if (!words.endless) reg.dispatch(words, 0xFFFFFFFFu);
+        }
     });
     add("Save", [this](const Words& a) {
         // (0x417430: with a name, savegame\<name>.sav, the folder made first)
@@ -669,12 +675,24 @@ std::uint32_t ConsoleCommands::run(const std::string& line, std::uint32_t allowe
     return impl_->reg.dispatch(words, allowed);
 }
 
+std::uint32_t ConsoleCommands::run_at(const std::string& line, std::uint32_t allowed, const std::array<std::int32_t, 3>& point) {
+    impl_->cursor = point;
+    const Words words = sim::console::split(line);
+    if (words.endless) return 0;
+    return impl_->reg.dispatch(words, allowed);
+}
+
 ConsoleState& ConsoleCommands::state() { return impl_->st; }
 const sim::console::Registry& ConsoleCommands::registry() const { return impl_->reg; }
 
 std::shared_ptr<ConsoleCommands> install_console_commands(client::GameClient& client, ClientWorld& world) {
     auto cmds = std::make_shared<ConsoleCommands>(client, world);
     client.on_command = [cmds](const std::string& line, std::uint32_t allowed) { return cmds->run(line, allowed); };
+    // The AI profile's other lines, as the battle's load would have run them (every permission
+    // bit; the pointer's map point untouched: 0).
+    std::vector<std::string> lines = std::move(world.loaded().ai_profile_lines);
+    world.loaded().ai_profile_lines.clear();
+    for (const std::string& l : lines) cmds->run_at(l, 0xFFFFFFFFu, {0, 0, 0});
     return cmds;
 }
 

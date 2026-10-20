@@ -229,7 +229,7 @@ that branch.
 ### 7.5 Remaining PARTIAL / inputs (by design)
 | Item | Status | Reason |
 |---|---|---|
-| AI profile text with lines other than plan/weight/limit | PARTIAL | the original runs profile text through the whole command registry with every bit allowed, so a unit name creates units at the pointer and any console command runs; the importer carries out plan/weight/limit and include files and only notes the rest (the stock profiles have none). Needs the client's command table at battle load |
+| AI profile text with lines other than plan/weight/limit | BUILT-UNVERIFIED | *2026-10-20*: the profile reader keeps those lines (in order, the units' own lines too) and the battle's command table runs them with every permission bit before the first step, the pointer's map point at 0 (the untouched global at a load); +reloadaiprofiles runs them at the current point. Unit names create units, console commands run, unknown words run debugdat\<word>.txt. The stock profiles have none (golden start and replays unchanged); not compared with a custom profile against the original |
 | Stale stack words (AI site height, reclaim site y, air repair patrol site, kill word of "+kill", Reload's YardMap buffer) | N/A (input) | run-varying; the whole-game replay feeds the first two |
 | Wreck level of units without a Killed function | VERIFIED | "Stale stack word" |
 
