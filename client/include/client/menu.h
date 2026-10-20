@@ -145,6 +145,14 @@ std::vector<int> menu_key_codes(const InputEvent& e);
 // End / Left / Right move the point. Returns true for Enter (13) and Escape (27), which end the
 // editing (the caller empties the line for Escape).
 bool edit_line(std::string& text, int& cursor, int max_chars, int width_limit, int attribs, const Font* font, int code);
+// Paste (Ctrl+V = code 0xBF, Insert = 0xEE; 0x4AB720): the line becomes the clipboard's text
+// (as it is, up to max_chars - 1 characters), then its last character goes while it is wider
+// than the field (field_width, no margin); the insertion point stays. Nothing without text on
+// the clipboard.
+void paste_line(std::string& text, int max_chars, int field_width, const Font* font);
+// The system clipboard's text in the game's character set (set by the platform layer; unset:
+// no clipboard).
+extern std::function<bool(std::string&)> clipboard_text;
 
 // A screen run from a ScreenLayout: draws the background and widgets, handles
 // pointer/keyboard input (press and release on the same widget, quick keys,

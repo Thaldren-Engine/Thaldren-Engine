@@ -8,6 +8,7 @@
 #include <sstream>
 
 #include "client/audio.h"
+#include "client/menu.h"
 #include "client/sound_desk.h"
 #include "render/draw_list.h"
 #include "render/presenter.h"
@@ -19,6 +20,30 @@
 #endif
 
 namespace client {
+
+void use_system_clipboard() {
+#ifdef CLIENT_HAVE_SDL
+    // The clipboard's text (UTF-8) in the game's 8-bit set: characters below 256 as they are,
+    // others '?' (as the system's conversion to the ANSI set replaces what it cannot show).
+    clipboard_text = [](std::string& out) {
+        if (!SDL_HasClipboardText()) return false;
+        char* t = SDL_GetClipboardText();
+        if (!t) return false;
+        out.clear();
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(t);
+        while (*p) {
+            unsigned cp = *p++;
+            int more = cp >= 0xF0 ? 3 : cp >= 0xE0 ? 2 : cp >= 0xC0 ? 1 : 0;
+            if (more) cp &= 0x3Fu >> more;
+            for (; more > 0 && (*p & 0xC0) == 0x80; --more) cp = (cp << 6) | (*p++ & 0x3Fu);
+            out.push_back(cp < 0x100 ? static_cast<char>(cp) : '?');
+        }
+        SDL_free(t);
+        return true;
+    };
+#endif
+}
+
 namespace {
 
 int key_by_name(const std::string& s) {
@@ -32,6 +57,7 @@ int key_by_name(const std::string& s) {
     if (s == "enter") return keys::kEnter;
     if (s == "backspace") return keys::kBackspace;
     if (s == "delete") return keys::kDelete;
+    if (s == "insert") return keys::kInsert;
     if (s == "home") return keys::kHome;
     if (s == "end") return keys::kEnd;
     if (s == "space") return ' ';
@@ -128,6 +154,16 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
                 k.type = InputEvent::Type::KeyUp;
                 out.push_back({frame, k});
             }
+        } else if (ev == "clip") {
+            // clip TEXT: the clipboard's text for the run (the rest of the line, words joined
+            // by single spaces) for the paste keys of headless runs.
+            static std::string scripted;
+            scripted.clear();
+            for (std::size_t i = 2; i < w.size(); ++i) scripted += (i > 2 ? " " : "") + w[i];
+            if (!clipboard_text) clipboard_text = [](std::string& o) {
+                o = scripted;
+                return true;
+            };
         } else if (ev == "quit") {
             e.type = InputEvent::Type::Quit;
             out.push_back({frame, e});
@@ -255,6 +291,7 @@ int translate_key(SDL_Keycode k) {
     case SDLK_TAB: return keys::kTab;
     case SDLK_BACKSPACE: return keys::kBackspace;
     case SDLK_DELETE: return keys::kDelete;
+    case SDLK_INSERT: return keys::kInsert;
     case SDLK_HOME: return keys::kHome;
     case SDLK_END: return keys::kEnd;
     case SDLK_KP_PLUS: return '+';
@@ -358,6 +395,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     SDL_HideCursor();
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
+    use_system_clipboard();   // the paste keys
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {

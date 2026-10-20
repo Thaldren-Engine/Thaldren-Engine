@@ -26,7 +26,7 @@ namespace client {
 namespace keys {
 constexpr int kLeft = 0x100, kRight = 0x101, kUp = 0x102, kDown = 0x103, kPause = 0x104, kEscape = 0x105,
               kEnter = 0x106, kTab = 0x107, kShift = 0x108, kCtrl = 0x109, kAlt = 0x10A, kBackspace = 0x10B,
-              kDelete = 0x10C, kHome = 0x10D, kEnd = 0x10E, kF1 = 0x110;  // kF1 + n - 1 = Fn
+              kDelete = 0x10C, kHome = 0x10D, kEnd = 0x10E, kInsert = 0x10F, kF1 = 0x110;  // kF1 + n - 1 = Fn
 }
 
 struct InputEvent {

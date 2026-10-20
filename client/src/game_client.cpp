@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "client/menu.h"
 #include "sim/features.h"
 #include "sim/mission_goals.h"
 #include "sim/missions.h"
@@ -1265,6 +1266,13 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
     if (chat_) {
         const int n = static_cast<int>(chat_text_.size());
         chat_cursor_ = std::clamp(chat_cursor_, 0, n);
+        if ((k == 'v' && e.ctrl && !e.alt) || k == keys::kInsert) {
+            // Ctrl+V / Insert: the line becomes the clipboard's text (paste_line).
+            const Content::ChatLine& t = c_.chat;
+            paste_line(chat_text_, t.loaded && t.max_chars > 0 ? t.max_chars : 63, t.field_w > 0 ? t.field_w : 1 << 30, t.font);
+            chat_provisional_ = -1;
+            return;
+        }
         if (k == keys::kEnter) {
             chat_ = false;
             const std::string line = chat_text_;

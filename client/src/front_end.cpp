@@ -641,6 +641,7 @@ int sdl_key(SDL_Keycode k) {
     case SDLK_TAB: return keys::kTab;
     case SDLK_BACKSPACE: return keys::kBackspace;
     case SDLK_DELETE: return keys::kDelete;
+    case SDLK_INSERT: return keys::kInsert;
     case SDLK_HOME: return keys::kHome;
     case SDLK_END: return keys::kEnd;
     case SDLK_KP_PLUS: return '+';
@@ -891,6 +892,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     SDL_HideCursor();
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
+    use_system_clipboard();   // the paste keys
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {
         gpu = render::GpuRenderer::create(run.blend());

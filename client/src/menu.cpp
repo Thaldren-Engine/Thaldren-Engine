@@ -402,6 +402,7 @@ std::vector<int> menu_key_codes(const InputEvent& e) {
     case keys::kHome: return {0xF0};
     case keys::kEnd: return {0xF1};
     case keys::kDelete: return {0xEF};
+    case keys::kInsert: return {0xEE};
     case keys::kPause: return {0xF8};
     default: break;
     }
@@ -441,7 +442,27 @@ std::vector<int> menu_key_codes(const InputEvent& e) {
     return {k};
 }
 
+std::function<bool(std::string&)> clipboard_text;
+
+void paste_line(std::string& text, int max_chars, int field_width, const Font* font) {
+    std::string clip;
+    if (!clipboard_text || !clipboard_text(clip)) return;
+    // (the field is cleared, then min(the clipboard block's size, maximum - 1) bytes copied:
+    // the text up to its terminator)
+    const std::size_t end = clip.find('\0');
+    if (end != std::string::npos) clip.resize(end);
+    const int keep = std::max(0, max_chars - 1);
+    if (static_cast<int>(clip.size()) > keep) clip.resize(static_cast<std::size_t>(keep));
+    text = clip;
+    if (font)
+        while (!text.empty() && font->text_width(text) > field_width) text.pop_back();
+}
+
 bool edit_line(std::string& text, int& cursor, int max_chars, int width_limit, int attribs, const Font* font, int code) {
+    if (code == 0xBF || code == 0xEE) {
+        paste_line(text, max_chars, width_limit + 4, font);
+        return false;
+    }
     const int len = static_cast<int>(text.size());
     cursor = std::clamp(cursor, 0, len);
     switch (code) {

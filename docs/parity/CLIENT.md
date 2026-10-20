@@ -66,7 +66,7 @@ summary at the end gives the counts after this round.
 | 2.7 | Console (ring, expiry, drawing, logos) | `0x463CA0`, `0x464060`, `0x463EF0` | BUILT+VERIFIED | frame_harness `--hud` |
 | 2.8 | Chat line (TALK.GUI) | `0x494050`, `0x493BF0` | BUILT+VERIFIED | gui_harness `talk` |
 | 2.9 | Chat recipient panel (TALK2.GUI, SENDTO) | `0x493AE0` | MISSING | network games only |
-| 2.10 | Paste into the chat line (Ctrl+V / Insert) | `0x4AB720` | MISSING | |
+| 2.10 | Paste into the chat line (Ctrl+V / Insert) | `0x4AB720` | BUILT-UNVERIFIED | Ctrl+V (0xBF) and Insert (0xEE) in the chat line and every menu text field: the line replaced by the clipboard text (max - 1 characters, then shortened to the field width), the insertion point kept; smoke: ta_play headless with a scripted clipboard (`clip TEXT`), pasted line shown, a key typed after it goes in at the kept point |
 | 2.11 | Pointer looks, animation, every mode | `0x48D220`, `0x43E490`, `0x4AB5D0` | PARTIAL | animation verified (frame_harness); the per-unit pointer rules `0x43E490` only partly |
 | 2.12 | Space-held game info panel (Game Time, Total Units / Max, Game Speed) sliding up from the bottom bar | `0x4689C0` | BUILT+VERIFIED | frame_harness `--hud` panels check: 11 scenes, 0 differing pixels |
 | 2.13 | Space-held (or F4) kills / losses scoreboard sliding in from the left (skirmish, network) | `0x4948E0` | BUILT+VERIFIED | same check (both game types, F4, flashes, ranks with gaps: ranks equal after drawing); the kill ranking and lead message from the battle's kill hook |
