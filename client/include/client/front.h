@@ -34,6 +34,9 @@ struct FrontOptions {
     bool sound = true;
     bool draw_pointer = true;            // false: frames without the pointer (comparisons with the original's screen surface)
     bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
+    // A windowed display instead of the full screen the window stands for (the original's -d
+    // switch): the screen sizes offered are the fixed windowed list, not the display's modes.
+    bool windowed_display = false;
     // The screenshot key (Ctrl+F9): the frame shown last goes to <shot_dir>/<shot_prefix>NNNN.pcx.
     std::string shot_dir, shot_prefix;
 };

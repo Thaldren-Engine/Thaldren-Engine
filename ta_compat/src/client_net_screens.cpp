@@ -1,6 +1,7 @@
 // The original game's multiplayer screens on the client's front end (spec: docs/RE_MEMORY.md,
 // "Client", "Multiplayer screens"; the network room: "Network and sync").
 
+#include "ta/translate.h"
 #include "ta/client_net_screens.h"
 
 #ifdef TA_CLIENT_HAVE_NET
@@ -2314,10 +2315,10 @@ protected:
         // machine does not have it.
         if (Widget* m = widget("MAPNAME")) {
             if (st_.map.empty()) {
-                m->text = "NOT SELECTED";
+                m->text = translate("NOT SELECTED");  // (set through 0x4A0BF0: translated)
                 map_red_ = true;
             } else {
-                m->text = st_.map;
+                m->text = translate(st_.map);
                 map_red_ = !st_.have_map && ((clock_ / 30) & 1) != 0;
             }
         }
@@ -2399,18 +2400,18 @@ protected:
                 if (res->kind == WidgetKind::Button) {
                     set_caption(*res, t);  // (0x4A0BF0 on every refresh: the quick key found anew)
                 } else {
-                    res->text = t;
+                    res->text = translate(t);
                 }
                 if (p.controller != 1) res->active = true;
                 else res->grayed = me_ready;
             }
             if (ping) {
-                if (!(p.controller == 3 && p.kind == 1)) ping->text = "n/a";
+                if (!(p.controller == 3 && p.kind == 1)) ping->text = translate("n/a");
                 else ping->text = std::to_string(p.ping) + (host_ && p.ping_mark ? ":s" : "");
                 ping->active = true;
             }
             if (mem) {
-                mem->text = human_here ? std::to_string(p.memory) : std::string("n/a");  // (the same stale word)
+                mem->text = human_here ? std::to_string(p.memory) : translate("n/a");  // (the same stale word)
                 mem->active = true;
                 // Too little memory for the map: the label's background in interface colour 12.
                 mem->bg = p.memory < memory_needed() ? 12 : 0;

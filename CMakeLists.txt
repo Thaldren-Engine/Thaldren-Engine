@@ -113,6 +113,7 @@ add_library(ta_compat STATIC
     ta_compat/src/sight_tables.cpp
     ta_compat/src/tdf.cpp
     ta_compat/src/tnt.cpp
+    ta_compat/src/translate.cpp
     ta_compat/src/unitdefs.cpp
     ta_compat/src/weapondefs.cpp
 )

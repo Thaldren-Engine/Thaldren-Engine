@@ -193,6 +193,7 @@ struct GuiGadget {
     int status = 0;
     std::string text, panel, filename;
     int stages = 0;          // buttons: switch stages
+    bool off_on = false;     // buttons: the loaded (translated) text was "Off|On" before its parts were translated
     bool grayed = false;     // buttons: grayedout
     std::string link;        // labels: the button they name
     std::string crdefault, escdefault, defaultfocus;  // header: Enter / Escape defaults, focus

@@ -10,6 +10,7 @@
 // CD audio, the pointer and the frame presentation are replaced by routines that do nothing.
 //
 // Usage: gui_harness <TotalA.exe> <out_prefix> [screen ...] [--res WxH] [--palettes PALETTE.PAL GUIPAL.PAL] [--type N] [--grey]
+//                    [--language WORD]  the program's language (default english; compare ta_play WORD)
 //   screens: main single options skirmish ingame (the in-game menu, F2) prefs (its options)
 //            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu; tabmenu
 //   Writes <out_prefix><screen>.bmp.
@@ -123,7 +124,7 @@ class Gui {
 public:
     explicit Gui(harness::DbgRemote& r) : r_(r) {}
 
-    bool init(int w, int h, bool grey = false) {
+    bool init(int w, int h, bool grey = false, const std::string& language = "english") {
         w_ = w;
         h_ = h;
         // Routines that would reach sound, CD audio, the pointer, the screen or a notice do nothing.
@@ -187,7 +188,13 @@ public:
         r_.w8(gs_ + 1, 3);
         r_.w8(gs_ + 2, 1);
         r_.w8(gs_ + 3, 1);
-        r_.call(kLoadTranslations, 0, {r_.str("gamedata\\translate.tdf"), r_.str("english")});
+        // The language as the start-up leaves it (0x49E830: the bare word, else the registry's,
+        // else english) in 0x51FB50 for the localized paths, and its translations.
+        {
+            std::string lang = language.substr(0, 63);
+            for (std::size_t k = 0; k <= lang.size(); ++k) r_.w8(0x0051FB50 + static_cast<u32>(k), k < lang.size() ? static_cast<std::uint8_t>(lang[k]) : 0);
+        }
+        r_.call(kLoadTranslations, 0, {r_.str("gamedata\\translate.tdf"), r_.str(language)});
         // An audio engine that never opened a device, except that the CD (music) counts as open so
         // the music options are offered as in a game with its music.
         const u32 audio = r_.alloc(0x400);
@@ -792,10 +799,13 @@ int main(int argc, char** argv) {
     std::string battle_pal, battle_guipal, battle_shade;
     int game_type = -1;
     bool grey = false;
+    std::string language = "english";
     for (int i = 3; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--grey") {
             grey = true;
+        } else if (a == "--language" && i + 1 < argc) {
+            language = argv[++i];  // the program's language (the original's bare command-line word)
         } else if (a == "--type" && i + 1 < argc) {
             game_type = std::atoi(argv[++i]);
         } else if (a == "--palettes" && i + 2 < argc) {
@@ -821,7 +831,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     Gui g(r);
-    if (!g.init(640, 480, grey)) {
+    if (!g.init(640, 480, grey, language)) {
         std::fprintf(stderr, "front-end set-up failed\n");
         return 1;
     }

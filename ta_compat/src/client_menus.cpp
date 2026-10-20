@@ -249,7 +249,9 @@ const render::Sprite8* MenuArt::picture(const std::string& name, const render::P
         render::Sprite8 s;
         render::Palette p{};
         std::pair<const render::Sprite8*, const render::Palette*> v{nullptr, nullptr};
-        if (vfs_.read("bitmaps\\" + name + ".pcx", f) && decode_pcx(f, s, &p)) {
+        // (0x4288D0 / 0x429290: "bitmaps-<language>\<name>.PCX" when it exists, as the German,
+        // French, Italian and Spanish battleroom pictures.)
+        if (vfs_.read(vfs_.virtual_path("bitmaps", name, "PCX"), f) && decode_pcx(f, s, &p)) {
             sprites_.push_back(std::move(s));
             palettes_.push_back(p);
             v = {&sprites_.back(), &palettes_.back()};
@@ -400,7 +402,7 @@ const client::ScreenLayout* MenuArt::layout(const std::string& gui_in) {
                     stock_name = "CHECKBOX";
                 } else if (g.stages > 0) {
                     // (0x4A81E0: also a switch with attribute 0x4000; at most "stagebuttn4".)
-                    if (g.text == "Off|On" || g.stages == 1 || (g.attribs & 0x4000)) {
+                    if (g.off_on || g.stages == 1 || (g.attribs & 0x4000)) {
                         w.stages = 2;
                         stock_name = "stagebuttn1";
                     } else {

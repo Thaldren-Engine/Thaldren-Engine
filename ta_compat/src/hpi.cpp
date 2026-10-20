@@ -918,6 +918,16 @@ std::vector<std::string> Vfs::enumerate_tree(std::string_view dir, std::string_v
     return out;
 }
 
+namespace {
+std::string& language_store() {
+    static std::string language = "english";
+    return language;
+}
+}  // namespace
+
+const std::string& Vfs::game_language() { return language_store(); }
+void Vfs::set_game_language(const std::string& language) { language_store() = language; }
+
 std::string Vfs::virtual_path(std::string_view dir, std::string_view name, std::string_view ext) {
     auto build = [&](std::string base) {
         std::string p = std::move(base);

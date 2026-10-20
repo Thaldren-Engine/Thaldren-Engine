@@ -12,6 +12,7 @@
 #include "ta/client_world.h"
 #include "ta/gaf.h"
 #include "ta/model3do.h"
+#include "ta/translate.h"
 
 namespace ta {
 namespace {
@@ -156,6 +157,28 @@ bool parse_gui(const std::vector<std::uint8_t>& file, std::vector<GuiGadget>& ou
         g.escdefault = sec->get_string("escdefault", 32, "");
         g.defaultfocus = sec->get_string("defaultfocus", 32, "");
         g.max_chars = sec->get_int("maxchars", 0);
+        // The loader translates the text of buttons, text fields, sliders and labels
+        // (0x4AEAC0 / 0x4ADC70: the whole text; a label keeps 127 characters, a button 128);
+        // the screen's set-up (0x4A81E0) then cuts a staged button's text at '|' and
+        // translates each part.
+        if (g.id == 1 || g.id == 3 || g.id == 4 || g.id == 5) {
+            g.text = translate(g.text);
+            if (g.id == 5 && g.text.size() > 0x7F) g.text.resize(0x7F);
+            if (g.id == 1 && g.text.size() > 0x80) g.text.resize(0x80);
+        }
+        g.off_on = g.id == 1 && g.text == "Off|On";
+        if (g.id == 1 && g.stages != 0 && g.text.find('|') != std::string::npos) {
+            std::string joined;
+            std::size_t at = 0;
+            for (;;) {
+                const std::size_t bar = g.text.find('|', at);
+                joined += translate(g.text.substr(at, bar == std::string::npos ? std::string::npos : bar - at));
+                if (bar == std::string::npos) break;
+                joined += '|';
+                at = bar + 1;
+            }
+            g.text = joined;
+        }
         out.push_back(std::move(g));
     }
     return true;

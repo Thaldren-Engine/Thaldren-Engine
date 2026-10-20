@@ -1007,9 +1007,10 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         run.desktop_h_ = dm->h;
     }
     {
-        // The display's modes (the original lists the display's modes in full-screen play).
+        // The display's modes (the original lists the display's modes in full-screen play; a
+        // windowed display keeps its fixed list).
         int n = 0;
-        if (SDL_DisplayMode** list = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n)) {
+        if (SDL_DisplayMode** list = o.windowed_display ? nullptr : SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n)) {
             for (int i = 0; i < n; ++i) run.modes_.push_back({list[i]->w, list[i]->h});
             SDL_free(list);
         }
