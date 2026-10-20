@@ -195,8 +195,14 @@ void ConsoleCommands::Impl::build() {
         if (sim::console::c_stricmp(a.text(3), "energy") == 0)
             sim::transfer_energy(e, static_cast<std::uint8_t>(local()), to, static_cast<float>(a.number(2, 0)), true);
     });
-    add("CDPlay", [this](const Words&) { not_built("CDPlay"); });
-    add("CDStop", [this](const Words&) { not_built("CDStop"); });
+    // The music (0x4167F0: the CD player's play of track n, 0 = a track the mood picks; 0x416810:
+    // stop; 0x4175E0: the music mode).
+    add("CDPlay", [this](const Words& a) {
+        if (c.music_command) c.music_command("play", a.number(1, 0));
+    });
+    add("CDStop", [this](const Words&) {
+        if (c.music_command) c.music_command("stop", 0);
+    });
     add("Sound3D", [this](const Words&) {
         auto& o = c.options_mut();
         o.sound_mode = o.sound_mode == 2 ? 1 : 2;
@@ -227,7 +233,9 @@ void ConsoleCommands::Impl::build() {
         for (std::size_t i = 1; i < b().units.size(); ++i)
             if (b().units[i].flags & sim::unit_flags::kAlive) b().units[i].flags |= sim::unit_tick_flags::kSelectable;
     });
-    add("MusicMode", [this](const Words&) { not_built("MusicMode"); });
+    add("MusicMode", [this](const Words& a) {
+        if (c.music_command) c.music_command("mode", a.number(1, 0));
+    });
     add("Logo", [this](const Words& a) {
         // Logo <colour> <player>: the player's team colour (its logo frame).
         const std::int32_t logo = a.number(1, 0);

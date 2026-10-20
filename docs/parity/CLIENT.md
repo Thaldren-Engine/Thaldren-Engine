@@ -120,7 +120,7 @@ summary at the end gives the counts after this round.
 | 3.5 | Space panels' Panel / Options sounds | `0x4689C0`, `0x4948E0` | BUILT-UNVERIFIED | Panel / Options as read (headless sound log) |
 | 3.6 | Tab bar / Share / Allies sounds (BigButton, Options, Previous, Ally) | `0x494740`, `0x4934B0`, `0x453D40` | BUILT-UNVERIFIED | BigButton / Options / Previous / Ally / SmallButton as read in the handlers (headless sound log) |
 | 3.7 | Music in battle (moods, battle / peace judge) | `0x4CDB40`, `0x494E70` | BUILT-UNVERIFIED | |
-| 3.8 | Music console commands (CDPlay, CDStop, MusicMode), Sound3D | option table | PARTIAL | Sound3D kept; music commands not built |
+| 3.8 | Music console commands (CDPlay, CDStop, MusicMode), Sound3D | option table | BUILT-UNVERIFIED | +cdplay n (0: the mood picks; the track already playing goes on), +cdstop, +musicmode n on the front end's music player; smoke: ta_play headless, +cdplay 5 starts track 5. The mode change's cross-fade timer (0x4CE690 with the fade thread) is the player's own mode switch here; Sound3D kept |
 
 ## 4. Console commands — client parts
 
@@ -131,7 +131,7 @@ summary at the end gives the counts after this round.
 | 4.3 | +light | MISSING | see 1.24 |
 | 4.4 | +makeposter | MISSING | see 2.42 |
 | 4.5 | +film / +filmspeed | BUILT-UNVERIFIED | see 2.40 (+film sets the image output folder, +filmspeed the rate, both saved) |
-| 4.6 | +cdplay / +cdstop / +musicmode | MISSING | see 3.8 |
+| 4.6 | +cdplay / +cdstop / +musicmode | BUILT-UNVERIFIED | see 3.8 |
 | 4.7 | +showranges | MISSING | see 1.25 |
 | 4.8 | +bps | BUILT+VERIFIED | see 1.27 (the command sets the client option) |
 | 4.9 | +screenchat, +clock, +noshake, +dither, +shading, +antialias, +shadow, +tshadow, +fshadow | BUILT-UNVERIFIED | switches the client reads (noshake waits for 1.21) |

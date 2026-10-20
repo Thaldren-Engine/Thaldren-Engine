@@ -518,6 +518,20 @@ private:
         // The battle's load applies the Gamma setting (0x491200); "+gamma n" shows n x 0.1 and
         // keeps n as the setting (saved at once).
         gamma_from_settings();
+        session_->client().music_command = [this](const char* what, int n) {
+            MusicPlayer* m = s_.music;
+            if (!m) return;
+            const std::string w = what;
+            if (w == "play") {
+                // (0x4CEB60: 0 lets the mood pick; the track already playing goes on)
+                if (n == 0) m->next();
+                else if (!(m->is_playing() && m->current_track() == n)) m->play(n);
+            } else if (w == "stop") {
+                m->stop();
+            } else if (w == "mode") {
+                m->set_mode(n);
+            }
+        };
         session_->client().warp_pointer = [this](int x, int y) {
             if (warp_) warp_(x, y);
         };

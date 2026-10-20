@@ -37,6 +37,7 @@ public:
     std::vector<std::uint8_t>& types() { return types_; }  // [track] = mood it plays for ([0] unused)
     int track_count() const { return count_; }
     int current_track() const { return current_; }
+    bool is_playing() const { return playing_; }
     MusicMood mood() const { return mood_; }
 
     // A mood change (fades the current track out when needed).

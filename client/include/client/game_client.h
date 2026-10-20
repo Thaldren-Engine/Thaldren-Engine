@@ -125,6 +125,9 @@ public:
     std::function<void(const char* name, int value)> save_setting;
     std::function<void(const char* name, const std::string& value)> save_text_setting;
     std::function<void(int n)> on_gamma_command;  // "+gamma n" (the display's gamma, 0x417290)
+    // The music commands (0x4167F0 "+cdplay n", 0x416810 "+cdstop", 0x4175E0 "+musicmode n"):
+    // what = "play", "stop" or "mode".
+    std::function<void(const char* what, int n)> music_command;
     // Moves the system pointer to frame pixel (x, y) (SetCursorPos; the view drag); unset: the
     // client's own pointer position only.
     std::function<void(int x, int y)> warp_pointer;
