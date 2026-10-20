@@ -14,6 +14,7 @@
 #include "sim/economy.h"
 #include "sim/rng.h"
 #include "sim/victory.h"
+#include "sim/x87.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/tdf.h"
@@ -1440,6 +1441,147 @@ private:
     client::MusicPlayer* music_ = nullptr;
 };
 
+// The unit information screen (F1, 0x4942E0; UNITINFOX.GUI opened centred right of the side
+// panel, its stock panel): the type's picture (unitpics\<unitname>.PCX, its own indices on the
+// game palette) in HOTR, its name in NAME, and labels (TEXT, attributes 0x411) of the costs and
+// statistics: "Cost", "Energy", "Metal", "Build Time" at x 130 / 140, y 32, 47, 62, 77,
+// "Statistics", "Max Velocity", "Acceleration", "Turn Rate" at y 92 .. 137, and the values at x
+// 240 from y 32, 15 apart (0x489280): a line break, the energy and metal costs (truncated), the
+// build time, a line break, then "N/A" three times for a type that does not move, else the speed
+// "%.1f m/s " (30 x speed x 0.4), the acceleration "%.2f m/s/s" (the same), the turn rate
+// "%.0f deg/s" (30 x rate x 360 / 65536). OK closes it ("smlbutton"). It leaves the battle its
+// keys and running; the pointer outside its box reaches the battle.
+class UnitInfo : public LayoutScreen {
+public:
+    UnitInfo(MenuArt& art, client::BattleSession& s, std::uint16_t type) : LayoutScreen(art.layout("UNITINFOX")), art_(art) {
+        open_centred_ = -2;
+        const client::Content& c = s.content();
+        if (type >= c.types.size()) return;
+        const client::UnitTypeLook& t = c.types[type];
+        std::vector<std::uint8_t> f;
+        render::Palette pp{};
+        if (art.vfs().read("unitpics\\" + t.unit_name + ".PCX", f) && decode_pcx(f, picture_, &pp)) has_picture_ = true;
+        picture_.has_key = false;
+        picture_.x_offset = picture_.y_offset = 0;
+        if (Widget* w = widget("NAME")) w->text = t.display_name;
+        // (tests: the values a comparison with the original's screen puts into its definition)
+        std::printf("unit info %s:%d:%d:%d:%d:%d\n", t.unit_name.c_str(), static_cast<int>(t.build_time), static_cast<int>(t.max_velocity),
+                    static_cast<int>(t.acceleration), static_cast<int>(t.turn_rate), t.mobile ? 1 : 0);
+        const int header_w = widgets_.empty() ? 0 : widgets_.front().w;
+        auto label = [&](const std::string& text, int x, int y) {
+            Widget w;
+            w.kind = WidgetKind::Label;
+            w.name = "TEXT";
+            w.x = x;
+            w.y = y;
+            w.w = header_w - x - 5;
+            w.h = 0xF;
+            w.fg = 0xF;
+            w.attribs = 0x411;
+            w.text = text;
+            w.active = false;  // (drawn by draw_over: its glyphs through light level 15)
+            widgets_.push_back(w);
+        };
+        label("Cost", 0x82, 0x20);
+        label("Energy", 0x8C, 0x2F);
+        label("Metal", 0x8C, 0x3E);
+        label("Build Time", 0x8C, 0x4D);
+        label("Statistics", 0x82, 0x5C);
+        label("Max Velocity", 0x8C, 0x6B);
+        label("Acceleration", 0x8C, 0x7A);
+        label("Turn Rate", 0x8C, 0x89);
+        auto ftol = [](double v) { return static_cast<int>(sim::x87::ftol32(v)); };
+        std::vector<std::string> values = {"\n", std::to_string(ftol(t.cost_energy)), std::to_string(ftol(t.cost_metal)), std::to_string(t.build_time), "\n"};
+        if (!t.mobile) {
+            values.insert(values.end(), {"N/A", "N/A", "N/A"});
+        } else {
+            char b[64];
+            // (x87: 30 x (speed x 2^-16 as a float) x 0.4, printed from the double)
+            const float v = static_cast<float>(static_cast<double>(t.max_velocity) * (1.0 / 65536.0));
+            std::snprintf(b, sizeof b, "%.1f %s ", static_cast<double>(30.0 * static_cast<double>(v) * 0.4), "m/s");
+            values.push_back(b);
+            const float a = static_cast<float>(static_cast<double>(t.acceleration) * (1.0 / 65536.0));
+            std::snprintf(b, sizeof b, "%.2f %s", static_cast<double>(30.0 * static_cast<double>(a) * 0.4), "m/s/s");
+            values.push_back(b);
+            std::snprintf(b, sizeof b, "%.0f %s", static_cast<double>(30.0 * t.turn_rate * 0.0054931640625), "deg/s");
+            values.push_back(b);
+        }
+        int y = 0x20;
+        for (const std::string& v : values) {
+            label(v, 0xF0, y);
+            y += 0xF;
+        }
+    }
+    bool see_through() const override { return true; }
+    bool battle_keys() const override { return true; }
+    void handle(FrontEnd& fe, const client::InputEvent& e) override {
+        const bool pointer = e.type == client::InputEvent::Type::MouseMove || e.type == client::InputEvent::Type::MouseDown ||
+                             e.type == client::InputEvent::Type::MouseUp;
+        if (pointer && placed_ && !widgets_.empty()) {
+            const Widget& h = widgets_.front();
+            if ((e.x < ox_ || e.y < oy_ || e.x >= ox_ + h.w || e.y >= oy_ + h.h) && held_ < 0) {
+                if (client::BattleSession* s = fe.session()) s->client().handle(e);
+                if (e.type != client::InputEvent::Type::MouseMove) return;
+            }
+        }
+        LayoutScreen::handle(fe, e);
+    }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+        (void)fe;
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override {
+        // The labels made here (0x4AB1B0) keep their colour word (15): the label drawing puts
+        // their glyphs through that light level (0x4B8310), from the label's top edge.
+        const client::MenuContent& mc = fe.menu_content();
+        const client::Font* lf = mc.small_font ? mc.small_font : mc.font;
+        if (!lf) return;
+        const Widget& h = widgets_.front();
+        const render::ClipRect c{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
+        for (const Widget& w : widgets_) {
+            if (w.active || w.kind != WidgetKind::Label || !is(w, "TEXT")) continue;
+            int x = ox_ + w.x, width = w.w;
+            const int y = oy_ + w.y + lf->raise;
+            for (const unsigned char ch : w.text) {
+                const client::Glyph& g = lf->glyphs[ch];
+                if (ch < 0x20 || !g.present) continue;
+                if (width < g.width) break;
+                const int rows = g.rows > 0 ? g.rows : lf->height;
+                if (ch != ' ')
+                    for (int r = 0; r < rows; ++r)
+                        for (int k = 0; k < g.width; ++k) {
+                            const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                            if (at >= g.ink.size() || !g.ink[at]) continue;
+                            std::uint8_t v = g.colours.empty() ? 15 : g.colours[at];
+                            if (mc.light.size() >= 0x2000) v = mc.light[static_cast<std::size_t>(15 * 256 + v)];
+                            client::put_pixel(out, c, x + g.left + k, y + g.top + r, v);
+                        }
+                if ((width -= g.width) < 0) break;
+                x += g.width;
+            }
+        }
+    }
+    void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
+        if (!has_picture_ || !is(w, "HOTR")) return;
+        const Widget& h = widgets_.front();
+        render::blit(out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, picture_, ox_ + w.x, oy_ + w.y);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "DONE")) {
+            sfx(fe, art_, "smlbutton");
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    render::Sprite8 picture_;
+    bool has_picture_ = false;
+};
+
 // The tab bar of network games (TABMENU.GUI, over the top bar): the options menu, and the
 // allies, share and control screens (the multiplayer part's). Tab again closes it.
 class TabMenu : public LayoutScreen {
@@ -1450,6 +1592,7 @@ public:
     // it): Tab closes the bar (0x495010), F2 opens the game menu over it, Esc and the other keys
     // are the battle's; the bar's quick keys and its escdefault never see a key.
     bool battle_keys() const override { return true; }
+    bool tab_bar() const override { return true; }
     void enter(FrontEnd& fe) override {
         // Tab opening (and closing) the bar sounds "SmallButton".
         if (!opened_) sfx(fe, art_, "SmallButton");
@@ -1819,6 +1962,10 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.tab_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
         if (!art.layout("TABMENU")) return nullptr;
         return std::make_unique<TabMenu>(art);
+    };
+    setup.hooks.unit_info = [&art](FrontEnd&, client::BattleSession& s, std::uint16_t type) -> std::unique_ptr<client::Screen> {
+        if (!art.layout("UNITINFOX")) return nullptr;
+        return std::make_unique<UnitInfo>(art, s, type);
     };
     setup.apply_to_battle = [](FrontEnd& fe, client::BattleSession& s) {
         // Options changed in a battle reach its client.

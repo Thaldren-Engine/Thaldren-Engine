@@ -192,6 +192,12 @@ struct UnitTypeLook {
     // The bottom bar's build-button line: the type's build costs (no line for types the
     // importer marks).
     float cost_metal = 0.0f, cost_energy = 0.0f;
+    // The unit information screen (F1): the type's name, its picture's file name, build time,
+    // speed, acceleration (16.16 world units per step), turn rate and whether it moves (BMcode).
+    std::string display_name, unit_name;
+    std::int32_t build_time = 0, max_velocity = 0, acceleration = 0;
+    std::uint16_t turn_rate = 0;
+    bool mobile = false;
     bool no_build_line = false;
     // Interface data: built where it stands (a structure: its build button starts placement;
     // otherwise factories queue it), has build options, and the ranges the queued-order view

@@ -199,14 +199,24 @@ public:
         // A bar open alone over the battle (the network games' tab bar) leaves the keys to the
         // battle: its key handling runs whenever the game menu is not open.
         const bool key_event = e.type == InputEvent::Type::KeyDown || e.type == InputEvent::Type::KeyUp || e.type == InputEvent::Type::Text;
-        const bool bar_open = in_battle() && stack_.size() == battle_base_ + 1 && stack_.back()->battle_keys();
-        if (in_battle() && (stack_.size() == battle_base_ || (bar_open && key_event))) {
+        // (the screens over the battle that leave it the keys: the tab bar, unit information)
+        bool keys_to_battle = in_battle() && stack_.size() >= battle_base_;
+        for (std::size_t i = battle_base_; keys_to_battle && i < stack_.size(); ++i) keys_to_battle = stack_[i]->battle_keys();
+        bool bar_open = false;
+        for (std::size_t i = battle_base_; in_battle() && i < stack_.size(); ++i) bar_open = bar_open || stack_[i]->tab_bar();
+        if (in_battle() && (stack_.size() == battle_base_ || (keys_to_battle && key_event))) {
             GameClient& c = session_->client();
             // Tab or F2 opens the game menu (the client keeps keys while its chat line is open).
             // F2 opens the game menu; Tab too, except in network games where it opens the tab bar
             // and closes it again (F2 opens the game menu over the bar).
             if (e.type == InputEvent::Type::KeyDown && !c.chatting() && (e.key == keys::kTab || e.key == keys::kF1 + 1)) {
-                if (e.key == keys::kTab && session_->network() && bar_open) stack_.back()->handle(*this, e);
+                if (e.key == keys::kTab && session_->network() && bar_open) {
+                    for (std::size_t i = stack_.size(); i-- > battle_base_;)
+                        if (stack_[i]->tab_bar()) {
+                            stack_[i]->handle(*this, e);
+                            break;
+                        }
+                }
                 else if (e.key == keys::kTab && session_->network() && s_.tab_menu) push(s_.tab_menu(*this, *session_));
                 else if (s_.game_menu) push(s_.game_menu(*this, *session_));
                 return;
@@ -473,6 +483,11 @@ private:
         // 'h' in a network game: the share screen over the battle, as the tab bar's SHARE opens it.
         session_->client().on_share_key = [this, sess]() {
             if (stack_.size() == battle_base_ && s_.hooks.share_menu) push(s_.hooks.share_menu(*this, *sess));
+        };
+        // F1: the unit information screen over the battle (several may be open at once).
+        session_->client().on_unit_info = [this, sess](std::uint16_t type) {
+            if (s_.hooks.unit_info)
+                if (auto sc = s_.hooks.unit_info(*this, *sess, type)) push(std::move(sc));
         };
         session_->combat_activity = [this](int amount) { judge_.activity(amount); };
         if (s_.apply_to_battle) s_.apply_to_battle(*this, *session_);

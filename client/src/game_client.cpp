@@ -1360,6 +1360,25 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
         }
         return;
     }
+    if (k == keys::kF1 && !e.ctrl && !e.shift) {
+        // F1 (0x4942E0): over a panel gadget, the unit type it names (none: nothing); else the
+        // unit under the pointer when the viewed player sees it.
+        std::uint16_t type = 0;
+        bool over_gadget = false;
+        if (const Panel* p = current_panel())
+            for (const Button& btn : p->buttons)
+                if (mouse_x_ >= btn.x && mouse_x_ < btn.x + btn.w && mouse_y_ >= btn.y && mouse_y_ < btn.y + btn.h) {
+                    over_gadget = true;
+                    type = btn.unit_type;
+                    break;
+                }
+        if (!over_gadget && hover_ && hover_ < b_.units.size()) {
+            const sim::Unit& u = b_.units[hover_];
+            if (own(u) || !b_.settings.fog_of_war || b_.unit_seen_by(viewed_player(), u)) type = b_.ticks[hover_].type_index;
+        }
+        if (type && on_unit_info) on_unit_info(type);
+        return;
+    }
     if (k == keys::kF1 + 2 && !e.ctrl && !e.shift) {
         // F3: the view goes to the next unit a console line names (0x464000).
         for (ConsoleLine& l : console_.lines) l.kind &= static_cast<std::uint8_t>(~0x20);

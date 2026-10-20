@@ -122,6 +122,9 @@ public:
     std::function<void(const char* name, int value)> save_setting;
     // The 'h' key in a network game: the share screen (0x4936F0).
     std::function<void()> on_share_key;
+    // F1 (0x4942E0): the unit information screen for a unit type (the build button under the
+    // pointer, else the seen unit under it).
+    std::function<void(std::uint16_t type)> on_unit_info;
     // Types a chat line as if entered (scripted runs and tests).
     void enter_chat_line(const std::string& text);
     // The pointer's map point (the original keeps it at GS+0x2CAA, 0x498DA0): the pointer

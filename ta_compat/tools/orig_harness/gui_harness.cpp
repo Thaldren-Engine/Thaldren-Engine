@@ -1336,6 +1336,81 @@ int main(int argc, char** argv) {
             if (lst) std::fclose(lst);
             std::printf("buildpages: %d pages\n", pages_done);
             continue;
+        } else if (s.rfind("unitinfo:", 0) == 0) {
+            // unitinfo:NAME[,NAME..] (after "battle"): the unit information screen (F1, 0x4942E0)
+            // for each unit type named, as the battle opens it for the seen unit under the pointer
+            // (no gadget under it, GS+0x581 = -1; the unit visible: 0x465AC0 answers 1), each
+            // composited and written as <out>unitinfo_<NAME>.bmp, then closed. The definitions
+            // come from the original's own enumeration (0x42A8D0), as buildpages: has them.
+            if (!r.r32(gs + 0x1439B) || r.r32(gs + 0x1438F) <= 1) {
+                r.w32(gs + 0x1439B, 0);
+                r.w32(gs + 0x1438F, 0);
+                if (!r.call(0x0042A8D0, 0, {}, nullptr, 120000)) {
+                    std::printf("unitinfo: unit enumeration failed\n");
+                    continue;
+                }
+            }
+            const u32 ndefs = r.r32(gs + 0x1438F), defs = r.r32(gs + 0x1439B);
+            r.stub(0x00465AC0, 1, 8);
+            const u32 units = r.alloc(3 * 0x118);
+            r.w32(gs + 0x14357, units);
+            r.w32(gs + 0x581, 0xFFFFFFFFu);
+            r.w16(gs + 0x2CBA, 1);
+            std::string list = s.substr(9);
+            for (std::size_t at = 0; at <= list.size();) {
+                const std::size_t comma = list.find(',', at);
+                std::string name = list.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+                // (NAME:BUILDTIME:SPEED:ACCELERATION:TURNRATE:BMCODE: the battle loading's values of
+                // those fields, which the enumeration alone leaves out)
+                long long extra[5] = {0, 0, 0, 0, 0};
+                const bool has_extra = name.find(':') != std::string::npos;
+                if (has_extra) {
+                    std::sscanf(name.c_str() + name.find(':') + 1, "%lld:%lld:%lld:%lld:%lld", &extra[0], &extra[1], &extra[2], &extra[3], &extra[4]);
+                    name.resize(name.find(':'));
+                }
+                at = comma == std::string::npos ? list.size() + 1 : comma + 1;
+                if (name.empty()) continue;
+                u32 k = 1;
+                for (; k < ndefs; ++k) {
+                    char nm[33] = {};
+                    r.read(defs + k * 0x249 + 0x20, nm, 32);
+                    if (_stricmp(nm, name.c_str()) == 0) break;
+                }
+                if (k >= ndefs) {
+                    std::printf("unitinfo: %s: no such unit\n", name.c_str());
+                    continue;
+                }
+                if (has_extra) {
+                    const u32 d = defs + k * 0x249;
+                    r.w32(d + 0x1EA, static_cast<u32>(extra[0]));
+                    r.w32(d + 0x192, static_cast<u32>(extra[1]));
+                    r.w32(d + 0x19E, static_cast<u32>(extra[2]));
+                    r.w16(d + 0x1BA, static_cast<std::uint16_t>(extra[3]));
+                    r.w8(d + 0x22F, static_cast<std::uint8_t>(extra[4]));
+                }
+                for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+                r.w16(units + 0x118 + 0xA6, static_cast<std::uint16_t>(k));
+                // (then one redraw of the top layout with its new labels, as the next interface
+                // pass does: 0x4A81E0 with flag 0x40)
+                const bool ok2 = r.call(0x004942E0, 0, {}) && r.call(0x004A81E0, 0, {g.gui(), 0x40}) && r.call(0x004A9FD0, 0, {g.gui()});
+                {
+                    const u32 top = r.r32(g.gui() + 0x18);
+                    const u32 gadgets = top ? r.r32(top + 4) : 0;
+                    u32 idx = 0;
+                    if (gadgets) r.call(0x0049FE60, 0, {gadgets, r.str("HOTR")}, &idx);
+                    std::printf("unitinfo: %s: HOTR gadget %d picture %08X callback %08X\n", name.c_str(), static_cast<int>(idx),
+                                gadgets ? r.r32(gadgets + idx * 0x15B + 0xBA) : 0, gadgets ? r.r32(gadgets + idx * 0x15B + 0xB6) : 0);
+                }
+                Frame f;
+                if (!ok2 || !g.grab(f)) {
+                    std::printf("unitinfo: %s: %s\n", name.c_str(), ok2 ? "not drawn" : "failed");
+                    continue;
+                }
+                write_bmp(out + "unitinfo_" + name + ".bmp", f);
+                std::printf("unitinfo: %s -> %sunitinfo_%s.bmp\n", name.c_str(), out.c_str(), name.c_str());
+            }
+            for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+            continue;
         } else if (s.rfind("missionname:", 0) == 0) {
             // The map's mission name (map info +0xA14; the restart dialog shows it).
             u32 schema = r.r32(gs + 0x391E9);

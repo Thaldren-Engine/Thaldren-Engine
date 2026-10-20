@@ -696,6 +696,13 @@ bool ClientWorld::build_content(std::string& error) {
         // The original's bottom bar skips its build-button line for a type named CORBUILD.
         look.no_build_line = stricmp_c(d.unit_name, "CORBUILD") == 0;
         look.cost_metal = d.build_cost_metal;
+        look.display_name = d.name;
+        look.unit_name = d.unit_name;
+        look.build_time = d.build_time;
+        look.max_velocity = d.max_velocity;
+        look.acceleration = d.acceleration;
+        look.turn_rate = d.turn_rate;
+        look.mobile = d.bm_code != 0;
         look.cost_energy = d.build_cost_energy;
         look.structure = d.bm_code == 0;
         look.builds = d.has_build_options;

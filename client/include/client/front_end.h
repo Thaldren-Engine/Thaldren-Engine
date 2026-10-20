@@ -83,6 +83,8 @@ public:
     // Open alone over a battle, it leaves the keys to the battle's own key handling (a bar that
     // takes the pointer only); Tab still reaches it.
     virtual bool battle_keys() const { return false; }
+    // The network games' tab bar (Tab closes it).
+    virtual bool tab_bar() const { return false; }
 };
 
 // ---------------------------------------------------------------- battles
@@ -232,6 +234,8 @@ struct FrontEndHooks {
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> allies_menu;
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> share_menu;
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session)> control_menu;
+    // F1 in a battle: the unit information screen for a unit type (0x4942E0).
+    std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession& session, std::uint16_t type)> unit_info;
 };
 
 // ---------------------------------------------------------------- front end
