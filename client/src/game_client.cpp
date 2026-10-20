@@ -302,6 +302,14 @@ int GameClient::frame(std::uint32_t now_ms) {
     notices_frame();
     panels_frame(now_ms);
     if (panel_dirty_) refresh_panel();
+    // The film (0x496790 after the frame is drawn): once the game tick reaches the next film
+    // tick the frame drawn is written, and the next one is due 30 / speed ticks later (whole
+    // division; a speed of 0, which only an edited setting can give, would divide by zero in
+    // the original: no move here).
+    if (film_number_ > 0 && film_next_tick_ <= b_.game_tick()) {
+        film_due_ = true;
+        if (opt_.film_speed != 0) film_next_tick_ += static_cast<std::uint32_t>(30 / opt_.film_speed);
+    }
     ++frame_counter_;
     return steps;
 }
@@ -1396,6 +1404,11 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
     if (k == keys::kF1 + 11 && !e.ctrl) {
         // F12: the console is emptied (0x463C80).
         console_.next = console_.oldest = 0;
+        return;
+    }
+    if (k == keys::kF1 + 9 && e.ctrl) {
+        // Ctrl+F10 (debug switch): the film starts or stops.
+        toggle_film();
         return;
     }
     if (k == 'h' && !e.ctrl && network.remote_lag) {

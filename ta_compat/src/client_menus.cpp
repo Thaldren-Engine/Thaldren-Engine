@@ -699,6 +699,10 @@ client::ClientOptions client_options(const client::Settings& s, int width, int h
     o.unit_shadows = (s.get_int("VehicleShadows", 1) & 1) != 0;
     o.shading = (s.get_int("Shading", 1) & 1) != 0;
     o.dithered_fog = (s.get_int("DitheredFog", 0) & 1) != 0;
+    // The film's settings (0x42F9A0): the image output folder as set (the default needs the
+    // game folder: the session fills it in) and "Movie Output Rate" (10 when missing).
+    o.image_dir = s.get_text("Image Output Directory", "");
+    o.film_speed = s.get_int("Movie Output Rate", 10);
     return o;
 }
 
@@ -718,6 +722,7 @@ std::unique_ptr<SkirmishSession> SkirmishSession::start(const std::string& game_
     if (!s->world_->load(game_dir, request, human, error, progress)) return nullptr;
     client::ClientOptions o = options;
     o.player = human;
+    if (o.image_dir.empty()) o.image_dir = image_output_dir(game_dir, client::Settings{});
     const std::string side = request.sides[static_cast<std::size_t>(human)];
     o.side = 0;
     {

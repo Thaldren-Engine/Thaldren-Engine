@@ -96,7 +96,7 @@ summary at the end gives the counts after this round.
 | 2.37 | ',' '.' step menus | `0x41BF10`, `0x41BDE0` | BUILT-UNVERIFIED | |
 | 2.38 | '\' repeats the last command (debug switch) | `0x495E90` | BUILT-UNVERIFIED | |
 | 2.39 | Shift+F1 / Shift+F2 debug unit picks (GS+0x391B3 / 0x391B9) | `0x495E90` | NOT-APPLICABLE | debug values nothing in a normal game reads |
-| 2.40 | Ctrl+F10 film (debug switch) and `+film` / `+filmspeed` | `0x495E90`, `0x496790`, `0x4CB170` | MISSING | PCX frames `FRAMnnnn.pcx` in `<dir>\MOVIEnnn` |
+| 2.40 | Ctrl+F10 film (debug switch) and `+film` / `+filmspeed` | `0x495E90`, `0x496790`, `0x4CB170` | BUILT-UNVERIFIED | as read (start / stop, MOVIEnnn numbering, first frame without the console, a frame each 30 / speed ticks, the budget clock restarted); settings saved; smoke: ta_play headless, +filmspeed 15, 60 ticks filmed: 32 frames (FRAM0001..0032); pictures by the verified PCX writer |
 | 2.41 | Ctrl+F9 screenshot: `<game dir>\screenshots\SHOTnnnn.pcx` (next number after the highest present), 8-bit RLE PCX with the display palette, in every state of the program | `0x499890`, `0x4CB170`, `0x4CAC40` | BUILT+VERIFIED | writer: frame_harness `--pcx 30`, 30 of 30 identical; folder and numbering as read; smoke: SHOT0001/0002 |
 | 2.42 | `+makeposter` | cheat table | MISSING | |
 | 2.43 | Mouse: left/right in interface types 0 and 1, minimap orders, Shift-kept modes | `0x498F70`, `0x499100`, `0x498D00` | BUILT+VERIFIED | gui_harness pointer events, frame_harness |
@@ -130,7 +130,7 @@ summary at the end gives the counts after this round.
 | 4.2 | +gamma | MISSING | see 1.22 |
 | 4.3 | +light | MISSING | see 1.24 |
 | 4.4 | +makeposter | MISSING | see 2.42 |
-| 4.5 | +film / +filmspeed | MISSING | see 2.40 |
+| 4.5 | +film / +filmspeed | BUILT-UNVERIFIED | see 2.40 (+film sets the image output folder, +filmspeed the rate, both saved) |
 | 4.6 | +cdplay / +cdstop / +musicmode | MISSING | see 3.8 |
 | 4.7 | +showranges | MISSING | see 1.25 |
 | 4.8 | +bps | BUILT+VERIFIED | see 1.27 (the command sets the client option) |

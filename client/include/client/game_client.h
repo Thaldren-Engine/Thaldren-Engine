@@ -74,6 +74,8 @@ struct ClientOptions {
     bool show_ranges = false;        // weapon range circles (not drawn yet)
     bool scoreboard = false;         // F4: the kills and losses panel stays out (visual option bit 0x80)
     bool bps = false;                // +bps: the network send / receive rates over the view (GS+0x391C3)
+    std::string image_dir;           // the image output folder (GS+0x38A53: films; screenshots under it)
+    int film_speed = 10;             // film frames a second of game time ("Movie Output Rate", GS+0x38C57)
     bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
 };
 
@@ -121,6 +123,15 @@ public:
     std::function<std::uint32_t(const std::string& line, std::uint32_t allowed)> on_command;
     // A setting the battle changes and the original saves at once (0x430F00), by its registry name.
     std::function<void(const char* name, int value)> save_setting;
+    std::function<void(const char* name, const std::string& value)> save_text_setting;
+    // The film (debug switch; Ctrl+F10, 0x495E90 case 0xD7, and the battle loop 0x496790): a
+    // frame is due once the game tick reaches the next film tick; the front writes the frame it
+    // draws next into the film's folder (FRAMnnnn.pcx) and calls film_written.
+    bool film_due() const { return film_due_; }
+    const std::string& film_folder() const { return film_folder_; }
+    int film_number() const { return film_number_; }
+    void film_written(std::uint32_t now_ms);
+    void toggle_film();
     // The 'h' key in a network game: the share screen (0x4936F0).
     std::function<void()> on_share_key;
     // F1 (0x4942E0): the unit information screen for a unit type (the build button under the
@@ -475,6 +486,11 @@ private:
     void draw_panels(render::DrawList& list);
     BpsState bps_;
     void draw_bps(render::DrawList& list);
+    int film_number_ = 0;              // GS+0x38C53: the film's MOVIEnnn number, 0 while not filming
+    std::string film_folder_;
+    std::uint32_t film_next_tick_ = 0;  // GS+0x38C5B
+    bool film_due_ = false;
+    bool no_console_ = false;           // the frame drawn without the console (the film's first frame)
     // The shade and light tables as mixing tables (made once; the draw list keeps them by address).
     render::BlendTable shade8_, light31_, light20_;
     // 0x4A50E0 with a picture font: characters from 0x20 that have a glyph, each drawn at its

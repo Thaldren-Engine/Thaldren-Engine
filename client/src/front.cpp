@@ -233,6 +233,10 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
 #endif
         }
         last_shown = std::move(list);
+        if (client.film_due()) {
+            save_numbered_picture(client.film_folder(), "FRAM", render::execute(last_shown, content.blend), content.palette);
+            client.film_written(now);
+        }
     }
     std::printf("headless: %d frames, %d simulation steps\n", o.frames, total_steps);
     return 0;
@@ -466,6 +470,10 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
             SDL_Delay(10);
         }
         last_shown = std::move(list);
+        if (client.film_due()) {
+            save_numbered_picture(client.film_folder(), "FRAM", render::execute(last_shown, content.blend), content.palette);
+            client.film_written(now);
+        }
     }
     gpu.reset();
     if (tex) SDL_DestroyTexture(tex);

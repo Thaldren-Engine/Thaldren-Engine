@@ -392,11 +392,21 @@ void ConsoleCommands::Impl::build() {
     add("ILose", [end_game](const Words&) { end_game(false); });
     add("Film", [this](const Words& a) {
         if (a.count() < 2) return;
+        // (0x417330: word 1 becomes the image output folder, one trailing '\' or '/' dropped,
+        // saved at once as "Image Output Directory")
         st.film_dir = a.text(1);
         if (!st.film_dir.empty() && (st.film_dir.back() == '\\' || st.film_dir.back() == '/')) st.film_dir.pop_back();
+        c.options_mut().image_dir = st.film_dir;
+        if (c.save_text_setting) c.save_text_setting("Image Output Directory", st.film_dir);
     });
     add("FilmSpeed", [this](const Words& a) {
-        if (a.count() > 1 && a.number(1, 0) > 0) st.film_speed = a.number(1, 0);
+        // (0x4173E0: a number above 0 becomes the film's frames a second, saved at once as
+        // "Movie Output Rate")
+        if (a.count() > 1 && a.number(1, 0) > 0) {
+            st.film_speed = a.number(1, 0);
+            c.options_mut().film_speed = st.film_speed;
+            if (c.save_setting) c.save_setting("Movie Output Rate", st.film_speed);
+        }
     });
     add("Assert", [](const Words&) {});
     add("Assign", [this](const Words& a) {

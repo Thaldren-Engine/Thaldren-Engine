@@ -245,6 +245,12 @@ public:
     void shown(render::DrawList&& list, const render::Palette* palette) {
         last_shown_ = std::move(list);
         last_palette_ = palette;
+        // A film frame due: the frame just drawn goes into the film's folder.
+        if (in_battle() && session_->client().film_due() && palette && last_shown_.width > 0) {
+            GameClient& c = session_->client();
+            save_numbered_picture(c.film_folder(), "FRAM", render::execute(last_shown_, blend()), *palette);
+            c.film_written(now_);
+        }
     }
     void take_screenshot() {
         if (!shot_pending_) return;
@@ -507,6 +513,12 @@ private:
         session_->client().save_setting = [this](const char* name, int value) {
             settings_.set_int(name, value);
             if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+        };
+        session_->client().save_text_setting = [this](const char* name, const std::string& value) {
+            settings_.set_text(name, value);
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+            // (the image output folder holds the screenshots' folder too)
+            if (std::string(name) == "Image Output Directory") s_.shot_dir = value + "\\screenshots";
         };
         // 'h' in a network game: the share screen over the battle, as the tab bar's SHARE opens it.
         session_->client().on_share_key = [this, sess]() {

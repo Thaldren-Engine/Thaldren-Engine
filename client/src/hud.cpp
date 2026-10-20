@@ -358,7 +358,7 @@ void GameClient::add_selection_outlines(render::BattleScene& scene) const {
 
 void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
     // (the view's marks: their own layer, before the Space-held panels)
-    draw_console(o);
+    if (!no_console_) draw_console(o);
     draw_top_bar(o);
     draw_bottom_bar(o);
     draw_minimap(o);
