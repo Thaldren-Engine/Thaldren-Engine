@@ -444,6 +444,15 @@ private:
         if (s_.music) s_.music->set_mood(MusicMood::Building);
         BattleSession* sess = session_.get();
         session_->client().on_chat = [sess](const std::string& text) { sess->send_chat(text); };
+        // Settings the battle saves at once (the original writes the registry, 0x430F00).
+        session_->client().save_setting = [this](const char* name, int value) {
+            settings_.set_int(name, value);
+            if (!s_.settings_path.empty()) settings_.save(s_.settings_path);
+        };
+        // 'h' in a network game: the share screen over the battle, as the tab bar's SHARE opens it.
+        session_->client().on_share_key = [this, sess]() {
+            if (stack_.size() == battle_base_ && s_.hooks.share_menu) push(s_.hooks.share_menu(*this, *sess));
+        };
         session_->combat_activity = [this](int amount) { judge_.activity(amount); };
         if (s_.apply_to_battle) s_.apply_to_battle(*this, *session_);
     }

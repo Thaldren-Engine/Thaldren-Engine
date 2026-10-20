@@ -72,6 +72,7 @@ struct ClientOptions {
     bool dithered_fog = false;       // fog drawn as a checkerboard instead of greyed (setting DitheredFog)
     bool radar_everything = false;   // the minimap shows every unit (cheat)
     bool show_ranges = false;        // weapon range circles (not drawn yet)
+    bool scoreboard = false;         // F4: the kills and losses panel stays out (visual option bit 0x80)
     bool shading = true, antialias = true, shadows = true, unit_shadows = true, feature_shadows = true;
 };
 
@@ -117,6 +118,10 @@ public:
     // command line with the allowed permission bits (1 options, 2 cheats, 4 debug); returns the
     // bits of the command that ran (0: none). The line is then sent as chat like any other.
     std::function<std::uint32_t(const std::string& line, std::uint32_t allowed)> on_command;
+    // A setting the battle changes and the original saves at once (0x430F00), by its registry name.
+    std::function<void(const char* name, int value)> save_setting;
+    // The 'h' key in a network game: the share screen (0x4936F0).
+    std::function<void()> on_share_key;
     // Types a chat line as if entered (scripted runs and tests).
     void enter_chat_line(const std::string& text);
     // The pointer's map point (the original keeps it at GS+0x2CAA, 0x498DA0): the pointer
@@ -258,7 +263,8 @@ private:
     // Input.
     void mouse_down(const InputEvent& e);
     void mouse_up(const InputEvent& e);
-    void key_down(const InputEvent& e);
+    void key_down(const InputEvent& e, bool typed = false);  // typed: from a Text event
+    bool in_category(std::uint16_t type, const char* category) const;
     void left_click_map(const InputEvent& e);
     void right_click_map(const InputEvent& e);
     void click_select(const InputEvent& e);
@@ -386,6 +392,15 @@ private:
     NoticeQueue::Levels notice_levels() const;
     void notices_frame();
     std::uint16_t tracked_ = 0;                 // unit the view follows (t / T, Ctrl+C)
+    // The camera (0x41CA10, once per battle step): the view eases toward its target, which a
+    // followed unit, 'n' and F3 set; every scroll that moves the view at once sets both.
+    int target_x_ = 0, target_y_ = 0;
+    void clamp_target();
+    void ease_to_point(int x, int z);
+    void ease_to_unit(const sim::Vec3i& pos);
+    void camera_step();
+    // F3 (0x464000): the next console line naming a live unit that F3 has not visited yet.
+    bool jump_to_noted_unit();
     std::array<std::array<int, 2>, 4> views_{}; // stored views (Ctrl+F5..F8 store, F5..F8 recall)
     bool chat_ = false;
     std::string chat_text_;
