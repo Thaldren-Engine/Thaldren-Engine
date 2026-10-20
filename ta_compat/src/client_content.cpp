@@ -521,6 +521,15 @@ bool ClientWorld::build_content(std::string& error) {
             if (n.empty()) n = sp.kind == sim::PlayerKind::Computer ? (upper(request_.sides[p]) == "ARM" ? "Arm" : "Core") : "Player";
             c.player_names[p] = n;
         }
+        // The settings page's set-up values (network games: the host's room record holds the
+        // resources in hundreds: the start's values are those).
+        {
+            const sim::BattleStart& st = request_.start;
+            c.game_info.fixed_locations = st.fixed_locations;
+            const sim::StartPlayer& me = st.players[std::min<std::size_t>(st.local_player, 9)];
+            c.game_info.start_metal = me.metal >= 0 ? me.metal : static_cast<long long>(st.start_metal);
+            c.game_info.start_energy = me.energy >= 0 ? me.energy : static_cast<long long>(st.start_energy);
+        }
         if (const auto* q = sequence("anims\\FX.GAF", "radlogohigh")) c.radar_dot_hover = &q->front();
         if (const auto* q = sequence("anims\\IGTITLES.GAF", "igpaused")) c.paused_sign = &q->front();
     }

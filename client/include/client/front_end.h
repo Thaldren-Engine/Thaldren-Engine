@@ -201,6 +201,8 @@ public:
     // option word (+0x9B; bit 0x80 the watching switch), changed and announced.
     virtual bool host() const { return false; }
     virtual std::uint16_t local_options() const { return 0; }
+    // The host's side record option word (the first record with the host bit, 0x456850).
+    virtual std::uint16_t host_options() const { return 0; }
     virtual void set_local_options(std::uint16_t) {}
     // Set by the front end: the session reports combat involving the local player here (+1 a
     // hit, +5 a kill it scores; the music's battle/peace switch).

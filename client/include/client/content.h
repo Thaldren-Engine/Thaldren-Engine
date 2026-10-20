@@ -299,6 +299,13 @@ struct Content {
     // The players' names as the battle's records hold them (the kills and losses panel, the
     // lead messages).
     std::array<std::string, 10> player_names;
+    // What the game menu's settings page shows of the set-up (0x45F1D0): the
+    // skirmish's fixed start locations, the local player's starting resources.
+    struct GameInfo {
+        bool fixed_locations = false;
+        long long start_metal = 0, start_energy = 0;
+    };
+    GameInfo game_info;
     // Builds the battle view of the viewing player (projection, culling and draw order are
     // the renderer's; which units, features and shots are seen is the content's).
     std::function<void(render::BattleScene& scene, int view_player, std::uint32_t frame_counter)> fill_scene;

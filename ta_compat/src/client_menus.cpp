@@ -67,6 +67,7 @@ const char* background_of(const std::string& gui) {
         {"MUSIC", "optmusic4x"},       {"VISUALS", "optvisual4x"},     {"SPEEDS", "optinterface4x"},
         {"ENDMSN", "outcome0"},        {"HELP", "dhelp"},              {"RESTART", "DRESTART"},
         {"LOADGAME", "DLoadgame2"},    {"SAVEGAME", "DSavegame2"},     {"BRIEFING", "igmbrief"},
+        {"GAMEOPTIONS", "GameSettings"},
     };
     const std::string u = upper(gui);
     for (const auto& [g, b] : table)

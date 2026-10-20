@@ -49,6 +49,8 @@ sim::Lcg15& menu_rand() {
 // ------------------------------------------------------------------ message box (MSGBOX.GUI)
 void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h);
 void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
+void draw_run_time_labels(FrontEnd& fe, render::Image8& out, const std::vector<Widget>& widgets, std::size_t first, int ox, int oy);
+void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, int x, int y, int width, int attribs);
 
 // The original's message box (0x4ABD90): MSGBOX.GUI opened with flag 0x800 (the screen under it
 // dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to 320
@@ -1500,6 +1502,147 @@ private:
     render::ClipRect under_;
 };
 
+// The game menu's help pages (HELP, 0x4609B0: HELP.GUI with flags 0x1881 — centred right of the
+// side panel, the game menu dimmed under it —, the "dhelp" picture, handler 0x45FAC0). A page
+// (0x45F8C0, 17 lines a page; the run-time labels of the page before go first) reads
+// gamedata\help.tdf [Help] "Line<n>" for n = page x 17 .. page x 17 + 16: a line read as
+// "key|text" (one starting with '|' is " " with an empty text; strncpy of 128 pads the rest)
+// becomes two labels at (40, y) width 78 and (125, y) width 300, attribute 1, y from 50 by 18
+// per line read. "Page" (a staged button) shows the page of its stage; OK closes ("Options").
+class HelpScreen : public LayoutScreen {
+public:
+    HelpScreen(MenuArt& art, render::ClipRect under) : LayoutScreen(art.layout("HELP")), art_(art), under_(under) {
+        open_centred_ = -2;
+        background_in_box_ = true;
+        base_ = widgets_.size();
+        std::vector<std::uint8_t> f;
+        if (art.vfs().read("gamedata\\help.tdf", f)) {
+            text_ = std::string(reinterpret_cast<const char*>(f.data()), f.size());
+            loaded_ = true;
+        }
+        fill(0);
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override { draw_run_time_labels(fe, out, widgets_, base_, ox_, oy_); }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            fe.pop();
+        } else if (is(w, "Page")) {
+            sfx(fe, art_, "Options");
+            fill(w.stage);
+        }
+    }
+
+private:
+    void fill(int page) {
+        widgets_.resize(base_);
+        if (!loaded_) return;
+        const auto doc = tdf_parse(std::string_view(text_));
+        const TdfSection* help = doc.root ? doc.root->child("Help") : nullptr;
+        if (!help) return;
+        int y = 0x32;
+        for (int n = page * 17; n < page * 17 + 17; ++n) {
+            bool found = false;
+            std::string line = help->get_string("Line" + std::to_string(n), 0x80, "", &found);
+            if (!found) continue;
+            std::string key, rest;
+            if (!line.empty() && line[0] == '|') {
+                key = " ";
+            } else {
+                const std::size_t bar = line.find('|');
+                key = line.substr(0, bar);
+                rest = bar == std::string::npos ? std::string() : line.substr(bar + 1);
+            }
+            add_run_time_label(widgets_, key, 0x28, y, 0x4E, 1);
+            add_run_time_label(widgets_, rest, 0x7D, y, 300, 1);
+            y += 0x12;
+        }
+    }
+
+    MenuArt& art_;
+    render::ClipRect under_;
+    std::size_t base_ = 0;
+    std::string text_;
+    bool loaded_ = false;
+};
+
+// The game menu's settings page outside campaigns (MISSION, 0x45F1D0: GAMEOPTIONS.GUI with flags
+// 0x1881, the "GameSettings" picture, handler 0x45F190: OK). Rows of two run-time labels, the
+// name at (18, y) width 110 and the value at (140, y) width 120 (attribute 1): Commander Death
+// (y 90), Starting Locations (108), Mapping Mode (126), Line of Sight (144), then network games
+// Cheat Codes (162) and Watching (180), other games Difficulty (162); then Map, Starting Metal,
+// Starting Energy and Max Units 18 apart. The values: the commander mode (Game Continues / Game
+// Ends / Deathmatch); skirmish start locations from its set-up, others from the host's side
+// record (bit 0x4000: Random / Fixed); Mapped / Unmapped (GS+0x14281 bit 0); Permanent (bit 1
+// clear), else True (bit 2) or Circular; the host record's cheats (0x2000) and watching (0x80)
+// switches (Disallowed / Allowed); Easy / Medium / Hard; the map's name; the starting resources
+// (network games: the host record's words x 100; else the local player's set-up) and the unit
+// limit, in decimal.
+class GameSettingsScreen : public LayoutScreen {
+public:
+    GameSettingsScreen(MenuArt& art, client::BattleSession& s, render::ClipRect under)
+        : LayoutScreen(art.layout("GAMEOPTIONS")), art_(art), under_(under) {
+        base_ = widgets_.size();
+        open_centred_ = -2;
+        background_in_box_ = true;
+        const sim::Battle& b = s.battle();
+        const client::Content& c = s.content();
+        const bool net = b.settings.provider == 3;
+        const std::uint16_t host = s.host_options();
+        static const char* const kMode[] = {"Game Continues", "Game Ends", "Deathmatch"};
+        static const char* const kLevel[] = {"Easy", "Medium", "Hard"};
+        auto row = [&](const char* name, const std::string& value, int y) {
+            add_run_time_label(widgets_, name, 0x12, y, 0x6E, 1);
+            add_run_time_label(widgets_, value, 0x8C, y, 0x78, 1);
+        };
+        const int mode = b.settings.game_mode;
+        row("Commander Death:", mode >= 0 && mode < 3 ? kMode[mode] : "", 0x5A);
+        const bool fixed = b.settings.provider == 2 ? c.game_info.fixed_locations : (host & 0x4000) != 0;
+        row("Starting Locations:", fixed ? "Fixed" : "Random", 0x6C);
+        row("Mapping Mode:", b.settings.explore ? "Unmapped" : "Mapped", 0x7E);
+        row("Line of Sight:", !b.settings.fog_of_war ? "Permanent" : b.settings.true_sight ? "True" : "Circular", 0x90);
+        int y = 0xB4;
+        if (net) {
+            row("Cheat Codes:", (host & 0x2000) ? "Allowed" : "Disallowed", 0xA2);
+            row("Watching:", (host & 0x80) ? "Allowed" : "Disallowed", 0xB4);
+            y = 0xC6;
+        } else {
+            const int d = b.settings.ai_difficulty;
+            row("Difficulty:", d >= 0 && d < 3 ? kLevel[d] : "", 0xA2);
+        }
+        row("Map:", s.battle_name(), y);  // (the map info's name, +0xA14)
+        row("Starting Metal:", std::to_string(c.game_info.start_metal), y + 0x12);
+        row("Starting Energy:", std::to_string(c.game_info.start_energy), y + 0x24);
+        row("Max Units:", std::to_string(static_cast<unsigned>(b.settings.unit_limit)), y + 0x36);
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+
+protected:
+    void draw_under(FrontEnd& fe, render::Image8& out) override {
+        dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override { draw_run_time_labels(fe, out, widgets_, base_, ox_, oy_); }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "OK")) {
+            sfx(fe, art_, "Options");
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    render::ClipRect under_;
+    std::size_t base_ = 0;
+};
+
 class GameMenu : public LayoutScreen {
 public:
     explicit GameMenu(MenuArt& art) : LayoutScreen(art.layout("ARMOPT")), art_(art) {}
@@ -1545,6 +1688,14 @@ protected:
             if (next) fe.push(std::move(next));
         }
         else if (is(w, "PREFS")) fe.push(std::make_unique<OptionsMenu>(art_, true));
+        else if (is(w, "HELP") && art_.layout("HELP")) {
+            const Widget& h = widgets_.front();
+            fe.push(std::make_unique<HelpScreen>(art_, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        } else if (is(w, "MISSION") && s && s->battle().settings.provider != 1 && art_.layout("GAMEOPTIONS")) {
+            // (campaigns show the mission's briefing pages instead, BRIEFING.GUI: not built)
+            const Widget& h = widgets_.front();
+            fe.push(std::make_unique<GameSettingsScreen>(art_, *s, render::ClipRect{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}));
+        }
         else if (is(w, "EXIT") && art_.layout("EXITMENU")) {
             // (the exit menu opens over this one, which keeps its focus, dimmed: gui_harness)
             focus_gadget_ = focus_before_press_;
@@ -1570,9 +1721,60 @@ private:
 // "%.1f m/s " (30 x speed x 0.4), the acceleration "%.2f m/s/s" (the same), the turn rate
 // "%.0f deg/s" (30 x rate x 360 / 65536). OK closes it ("smlbutton"). It leaves the battle its
 // keys and running; the pointer outside its box reaches the battle.
+// Labels made at run time (0x4AB1B0: kind 5 "TEXT", colour word 15; kept inactive here, after the
+// layout's own gadgets from `first` on, and drawn by this): the label drawing puts their glyphs through light level 15 (0x4B8310), from the
+// label's top edge, in the small font, clipped to the screen's box and the label's width.
+void draw_run_time_labels(FrontEnd& fe, render::Image8& out, const std::vector<Widget>& widgets, std::size_t first, int ox, int oy) {
+    const client::MenuContent& mc = fe.menu_content();
+    const client::Font* lf = mc.small_font ? mc.small_font : mc.font;
+    if (!lf || widgets.empty()) return;
+    const Widget& h = widgets.front();
+    const render::ClipRect c{ox, oy, ox + h.w - 1, oy + h.h - 1};
+    for (std::size_t i = first; i < widgets.size(); ++i) {
+        const Widget& w = widgets[i];
+        if (w.active || w.kind != WidgetKind::Label || w.name != "TEXT") continue;
+        int x = ox + w.x, width = w.w;
+        const int y = oy + w.y + lf->raise;
+        for (const unsigned char ch : w.text) {
+            const client::Glyph& g = lf->glyphs[ch];
+            if (ch < 0x20 || !g.present) continue;
+            if (width < g.width) break;
+            const int rows = g.rows > 0 ? g.rows : lf->height;
+            if (ch != ' ')
+                for (int r = 0; r < rows; ++r)
+                    for (int k = 0; k < g.width; ++k) {
+                        const std::size_t at = static_cast<std::size_t>(r * g.width + k);
+                        if (at >= g.ink.size() || !g.ink[at]) continue;
+                        std::uint8_t v = g.colours.empty() ? 15 : g.colours[at];
+                        if (mc.light.size() >= 0x2000) v = mc.light[static_cast<std::size_t>(15 * 256 + v)];
+                        client::put_pixel(out, c, x + g.left + k, y + g.top + r, v);
+                    }
+            if ((width -= g.width) < 0) break;
+            x += g.width;
+        }
+    }
+}
+
+// A run-time label (0x4AB1B0) at (x, y) of the given width (-1: to 5 pixels from the box's right).
+void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, int x, int y, int width, int attribs) {
+    Widget w;
+    w.kind = WidgetKind::Label;
+    w.name = "TEXT";
+    w.x = x;
+    w.y = y;
+    w.w = width >= 0 ? width : (widgets.empty() ? 0 : widgets.front().w) - x - 5;
+    w.h = 0xF;
+    w.fg = 0xF;
+    w.attribs = attribs;
+    w.text = text;
+    w.active = false;  // (drawn by draw_run_time_labels)
+    widgets.push_back(w);
+}
+
 class UnitInfo : public LayoutScreen {
 public:
     UnitInfo(MenuArt& art, client::BattleSession& s, std::uint16_t type) : LayoutScreen(art.layout("UNITINFOX")), art_(art) {
+        base_ = widgets_.size();
         open_centred_ = -2;
         const client::Content& c = s.content();
         if (type >= c.types.size()) return;
@@ -1652,37 +1854,7 @@ protected:
         draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
         (void)fe;
     }
-    void draw_over(FrontEnd& fe, render::Image8& out) override {
-        // The labels made here (0x4AB1B0) keep their colour word (15): the label drawing puts
-        // their glyphs through that light level (0x4B8310), from the label's top edge.
-        const client::MenuContent& mc = fe.menu_content();
-        const client::Font* lf = mc.small_font ? mc.small_font : mc.font;
-        if (!lf) return;
-        const Widget& h = widgets_.front();
-        const render::ClipRect c{ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1};
-        for (const Widget& w : widgets_) {
-            if (w.active || w.kind != WidgetKind::Label || !is(w, "TEXT")) continue;
-            int x = ox_ + w.x, width = w.w;
-            const int y = oy_ + w.y + lf->raise;
-            for (const unsigned char ch : w.text) {
-                const client::Glyph& g = lf->glyphs[ch];
-                if (ch < 0x20 || !g.present) continue;
-                if (width < g.width) break;
-                const int rows = g.rows > 0 ? g.rows : lf->height;
-                if (ch != ' ')
-                    for (int r = 0; r < rows; ++r)
-                        for (int k = 0; k < g.width; ++k) {
-                            const std::size_t at = static_cast<std::size_t>(r * g.width + k);
-                            if (at >= g.ink.size() || !g.ink[at]) continue;
-                            std::uint8_t v = g.colours.empty() ? 15 : g.colours[at];
-                            if (mc.light.size() >= 0x2000) v = mc.light[static_cast<std::size_t>(15 * 256 + v)];
-                            client::put_pixel(out, c, x + g.left + k, y + g.top + r, v);
-                        }
-                if ((width -= g.width) < 0) break;
-                x += g.width;
-            }
-        }
-    }
+    void draw_over(FrontEnd& fe, render::Image8& out) override { draw_run_time_labels(fe, out, widgets_, base_, ox_, oy_); }
     void draw_surface(FrontEnd&, render::Image8& out, const Widget& w) override {
         if (!has_picture_ || !is(w, "HOTR")) return;
         const Widget& h = widgets_.front();
@@ -1699,6 +1871,7 @@ private:
     MenuArt& art_;
     render::Sprite8 picture_;
     bool has_picture_ = false;
+    std::size_t base_ = 0;
 };
 
 // The share screen of network games (SHARE.GUI, 0x4936F0: the tab bar's SHARE or 'h'; refused

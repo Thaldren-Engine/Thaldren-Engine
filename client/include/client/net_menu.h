@@ -125,6 +125,13 @@ public:
         return false;
     }
     std::uint16_t local_options() const override { return net_->room()[static_cast<std::size_t>(local_ < 0 || local_ > 9 ? 0 : local_)].options; }
+    std::uint16_t host_options() const override {
+        for (int k = 0; k < 10; ++k) {
+            const net::RoomPlayer& r = net_->room()[static_cast<std::size_t>(k)];
+            if (r.net_id && (r.flags & net::room::kHost)) return r.options;
+        }
+        return 0;
+    }
     void set_local_options(std::uint16_t o) override {
         if (local_ < 0 || local_ > 9) return;
         net::RoomPlayer r = net_->room()[static_cast<std::size_t>(local_)];

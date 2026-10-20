@@ -1441,6 +1441,85 @@ int main(int argc, char** argv) {
             }
             for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
             continue;
+        } else if (s.rfind("help:", 0) == 0) {
+            // help:PAGE (after "battle"): the game menu's help pages as its HELP press opens them
+            // (0x4609B0: HELP.GUI with flags 0x1881 and handler 0x45FAC0, the "dhelp" picture, the
+            // gadget count kept at 0x512EF0, page 0 by 0x45F8C0), then PAGE by 0x45F8C0 as the
+            // Page button does; one redraw pass; written as <out>help_<PAGE>.bmp, then closed.
+            const int page = std::atoi(s.c_str() + 5);
+            for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+            u32 layout = 0;
+            bool ok2 = r.call(0x004AA8F0, 0, {g.gui(), r.str("HELP.GUI"), 0x1881}, &layout) && layout;
+            if (ok2) {
+                r.w32(layout + 8, 0x0045FAC0);
+                ok2 = r.call(0x004288D0, 0, {r.str("dhelp"), 0, 0, 0});
+                r.w32(0x00512EF0, static_cast<u32>(static_cast<std::int16_t>(r.r32(r.r32(layout + 4) + 0xB6) & 0xFFFF)));
+                ok2 = ok2 && r.call(0x0045F8C0, 0, {g.gui(), 0, 0x11}) && r.call(0x0049FB10, 0, {g.gui(), 1}) &&
+                      r.call(0x004A81E0, 0, {g.gui(), 0x40});
+                if (ok2 && page != 0) ok2 = r.call(0x0045F8C0, 0, {g.gui(), static_cast<u32>(page), 0x11}) && r.call(0x004A81E0, 0, {g.gui(), 0x40});
+                ok2 = ok2 && r.call(0x004A9FD0, 0, {g.gui()});
+            }
+            Frame f;
+            if (!ok2 || !g.grab(f)) {
+                std::printf("help: page %d: %s\n", page, ok2 ? "not drawn" : "failed");
+            } else {
+                write_bmp(out + "help_" + std::to_string(page) + ".bmp", f);
+                std::printf("help: page %d -> %shelp_%d.bmp\n", page, out.c_str(), page);
+            }
+            for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+            continue;
+        } else if (s.rfind("gamesettings:", 0) == 0) {
+            // gamesettings:TYPE:MODE:FIXED:FLAGS:DIFF:METAL:ENERGY:UNITS:HOSTOPT (after "battle" and
+            // missionname:): the game menu's settings page (0x45F1D0) over a set-up made of those
+            // values — game type (the schema's first word), commander mode GS+0x37EF6, the
+            // skirmish set-up's fixed locations (+0x118) and local player's resources (+0xC,
+            // +0x10), map flags GS+0x14281, difficulty GS+0x37EEE, the unit limit GS+0x37EE6;
+            // player 0 is local and the host (its side record +0x97 bit 0) with option word
+            // HOSTOPT and resources / 100 (+0xA3 metal, +0xA1 energy); written as
+            // <out>gamesettings.bmp.
+            long long v[9] = {2, 0, 0, 0, 1, 1000, 1000, 250, 0};
+            std::sscanf(s.c_str() + 13, "%lld:%lld:%lld:%lld:%lld:%lld:%lld:%lld:%lld", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8]);
+            u32 schema = r.r32(gs + 0x391E9);
+            if (!schema) {
+                schema = r.alloc(0x2000);
+                r.w32(gs + 0x391E9, schema);
+            }
+            r.w32(schema, static_cast<u32>(v[0]));
+            r.w32(gs + 0x37EF6, static_cast<u32>(v[1]));
+            const u32 setup = r.alloc(0x200);
+            r.w32(gs + 0x29A0, setup);
+            r.w32(setup + 0x118, static_cast<u32>(v[2]));
+            r.w32(setup + 0xC, static_cast<u32>(v[5]));
+            r.w32(setup + 0x10, static_cast<u32>(v[6]));
+            r.w16(gs + 0x14281, static_cast<std::uint16_t>(v[3]));
+            r.w32(gs + 0x37EEE, static_cast<u32>(v[4]));
+            r.w16(gs + 0x37EE6, static_cast<std::uint16_t>(v[7]));
+            r.w8(gs + 0x2A42, 0);
+            for (u32 k = 0; k < 10; ++k) {
+                const u32 rec = gs + 0x1B63 + k * 0x14B;
+                r.w8(rec + 0x73, k == 0 ? 1 : 0);
+                if (k != 0) continue;
+                u32 side = r.r32(rec + 0x27);
+                if (!side) {
+                    side = r.alloc(0x100);
+                    r.w32(rec + 0x27, side);
+                }
+                r.w8(side + 0x97, 1);
+                r.w16(side + 0x9B, static_cast<std::uint16_t>(v[8]));
+                r.w16(side + 0xA3, static_cast<std::uint16_t>(v[5] / 100));
+                r.w16(side + 0xA1, static_cast<std::uint16_t>(v[6] / 100));
+            }
+            for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+            const bool ok2 = r.call(0x0045F1D0, 0, {}) && r.call(0x004A9FD0, 0, {g.gui()});
+            Frame f;
+            if (!ok2 || !g.grab(f)) {
+                std::printf("gamesettings: %s\n", ok2 ? "not drawn" : "failed");
+            } else {
+                write_bmp(out + "gamesettings.bmp", f);
+                std::printf("gamesettings -> %sgamesettings.bmp\n", out.c_str());
+            }
+            for (int q = 0; q < 16 && r.r32(g.gui() + 0x18); ++q) r.call(0x004A9660, 0, {g.gui()});
+            continue;
         } else if (s.rfind("missionname:", 0) == 0) {
             // The map's mission name (map info +0xA14; the restart dialog shows it).
             u32 schema = r.r32(gs + 0x391E9);
