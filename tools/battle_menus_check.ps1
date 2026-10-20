@@ -42,9 +42,15 @@ $p = Start-Client "skirmish" "battle_menus_skirmish.txt" 950 @() $false
 $p.WaitForExit()
 if (-not (Test-Client "skirmish")) { $ok = $false }
 
-$h = Start-Client "net_host" "battle_menus_net_host.txt" 2050 @("NetLoopback = 1", "Nickname = Alice", "Game Name = Alice", "TCPADDR = ") $true
+# The session port (47624) is fixed by the protocol, so a run on 127.0.0.1 collides with any other
+# network game on this machine's loopback (another run of this check, other tests): the second
+# host cannot open the port and its joiner finds the other run's game, or none. Each run takes a
+# loopback address of its own (127.x.y.z, the whole 127/8 net is this machine).
+$rng = New-Object System.Random
+$addr = "127.{0}.{1}.{2}" -f $rng.Next(1, 255), $rng.Next(0, 256), $rng.Next(1, 255)
+$h = Start-Client "net_host" "battle_menus_net_host.txt" 2050 @("NetLoopback = $addr", "Nickname = Alice", "Game Name = Alice", "TCPADDR = ") $true
 Start-Sleep -Milliseconds 500
-$j = Start-Client "net_join" "battle_menus_net_join.txt" 2050 @("NetLoopback = 1", "Nickname = Bob", "TCPADDR = 127.0.0.1") $true
+$j = Start-Client "net_join" "battle_menus_net_join.txt" 2050 @("NetLoopback = $addr", "Nickname = Bob", "TCPADDR = $addr") $true
 $h.WaitForExit()
 $j.WaitForExit()
 if (-not (Test-Client "net_host")) { $ok = $false }
