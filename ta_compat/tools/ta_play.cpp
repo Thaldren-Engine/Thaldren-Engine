@@ -17,7 +17,7 @@
 //   --speed N           game speed 1..20 (10 normal)
 //   --damage-bars       health bars over own units
 //   --cpu               draw on the CPU (no GPU backend)
-//   --no-sound
+//   --no-sound          (also the original's -s / /s)
 //   --seed N            the battle's random seed
 //   --headless          no window: run --frames N frames at 30 per second with --script FILE
 //                       (see client/front.h) and write --shots a,b,c as <--out PREFIX>NNNN.bmp
@@ -188,7 +188,7 @@ int pointer_selftest() {
 int main(int argc, char** argv) {
     // The game folder: the first argument when it isn't an option, else the executable's own
     // folder (the program placed in the game folder, as the original runs).
-    const bool dir_given = argc >= 2 && std::string(argv[1]).rfind("--", 0) != 0;
+    const bool dir_given = argc >= 2 && argv[1][0] != '-' && argv[1][0] != '/';
     const std::string game_dir = dir_given ? std::string(argv[1]) : own_folder(argc > 0 ? argv[0] : nullptr);
     {
         std::ifstream probe(game_dir + "\\TotalA.exe", std::ios::binary);
@@ -262,6 +262,9 @@ int main(int argc, char** argv) {
         else if (a == "--damage-bars") opt.damage_bars = true;
         else if (a == "--cpu") front.gpu = false;
         else if (a == "--no-sound") front.sound = false;
+        // The original's own switch: -s or /s (any case, the rest of the word ignored; 0x49EE30)
+        // starts without sound.
+        else if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && (a[1] == 's' || a[1] == 'S')) front.sound = false;
         else if (a == "--seed") setup.seed = static_cast<std::uint32_t>(std::strtoul(next().c_str(), nullptr, 0));
         else if (a == "--headless") {
             front.headless = true;

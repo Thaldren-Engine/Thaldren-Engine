@@ -116,7 +116,7 @@ The audit was taken at base master `14456bf`; the "after" column is kept up to d
 | # | Switch | Before | After / evidence |
 |---|---|---|---|
 | 9.1 | `-c <file>` lobby / connection file, `-n <1-4>[:addr]` provider, `-h <name>` host game name, `-p <n>` packet rate, `-t <30-300>` time-out, `-e <0-100>` | MISSING (network start-ups; the NETWORK agent owns their behaviour) | |
-| 9.2 | `-s` no sound (NoDirectSound), `-w` Windows sound | MISSING | |
+| 9.2 | `-s` no sound (NoDirectSound), `-w` Windows sound | MISSING | PARTIAL: -s / /s (any case) starts without sound (ta_play: front.sound off; BUILT-UNVERIFIED, the headless log lists sounds either way); -w (Windows wave-out instead of DirectSound) N/A — the client has one audio output |
 | 9.3 | `-d` / `-df` display (debug window / flag) | MISSING | |
 | 9.4 | `-f` CD drive H: only, `-l` (no effect), `-r` DirectPlay registration and exit, `-b` (battle switches) | N/A for -f/-r/-l (CD drives, DirectPlay registry); -b to be read | |
 | 9.5 | A bare word = the language | MISSING | |
