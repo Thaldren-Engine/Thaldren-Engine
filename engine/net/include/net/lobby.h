@@ -143,6 +143,9 @@ public:
     // The local player's alliance bytes (+0x108) and the others' (+0x113, "allied by").
     const std::array<std::uint8_t, 10>& allied() const { return allied_; }
     const std::array<std::uint8_t, 10>& allied_by() const { return allied_by_; }
+    // Every record's alliance bytes (+0x108) by slot, as this machine holds them (the battle's
+    // alliance table at the start).
+    std::array<std::array<std::uint8_t, 10>, 10> alliance_rows() const;
     // The ally team of any of this machine's players (the host for its computer players).
     void set_ally_team_of(int slot, std::uint8_t team);
     // A chat line as it came (the original's room shows the text a player sent as it is).
@@ -298,6 +301,13 @@ private:
     std::array<bool, 10> blocked_{};
     std::uint16_t pending_screen_w_ = 0, pending_screen_h_ = 0;
     std::array<std::uint8_t, 10> allied_{}, allied_by_{};
+    // Every record's alliance bytes (+0x108, by slot) as this machine holds them: the local
+    // player's row is allied_; the others' come from the team rule, this machine's computer
+    // players and forced 0x23 packets. The battle starts with them.
+    std::array<std::array<std::uint8_t, 10>, 10> rows_{};
+    void team_alliances();             // 0x446C70
+    void leave_team(int slot);         // 0x446E90
+    void set_alliance(int from, int to, std::uint8_t v, bool forced);  // 0x452960
     int out_reason_ = -1;
     bool defer_handshake_ = false;
     bool handshake_done() const;

@@ -153,6 +153,9 @@ public:
     virtual void surrender() {}
     // A network game (Tab opens the tab bar instead of the game menu).
     virtual bool network() const { return false; }
+    // Once the battle has ended: true when the end screens may show (network games first
+    // exchange every player's final totals, 0x4572A0).
+    virtual bool end_exchange_done(std::uint32_t /*now_ms*/) { return true; }
     // Totals for the statistics screen.
     virtual std::vector<PlayerStats> stats() { return {}; }
     // The statistics screen's table (false: the session has none).

@@ -179,6 +179,7 @@ void BattleRoom::set_ready(bool ready) {
 
 void BattleRoom::set_ally_team(std::uint8_t team) {
     if (local_slot_ < 0) return;
+    leave_team(local_slot_);
     me().ally_team = team > room::kNoTeam ? room::kNoTeam : team;
     dirty_ = true;
 }
@@ -367,25 +368,83 @@ void BattleRoom::leave() {
 
 void BattleRoom::set_allied(int slot, bool allied) {
     if (local_slot_ < 0 || slot < 0 || slot > 9) return;
-    const RoomPlayer& t = players_[static_cast<std::size_t>(slot)];
     allied_[static_cast<std::size_t>(slot)] = allied ? 1 : 0;
-    if (!t.net_id) return;
+    if (!players_[static_cast<std::size_t>(slot)].net_id) return;
+    set_alliance(local_slot_, slot, allied ? 1 : 0, false);
+}
+
+void BattleRoom::set_alliance(int from, int to, std::uint8_t v, bool forced) {
+    // 0x452960(from id, to id, value, forced): `from` is one of this machine's players; its byte
+    // +0x108 for `to` takes the value (and its +0x113 for `to` too when `to` is a computer
+    // player or forced). A player of this machine on the other end takes it at once (+0x113, and
+    // +0x108 when a computer player or forced); a remote one hears packet 0x23.
+    if (from < 0 || from > 9 || to < 0 || to > 9) return;
+    const RoomPlayer& f = players_[static_cast<std::size_t>(from)];
+    const RoomPlayer& t = players_[static_cast<std::size_t>(to)];
+    if (!f.net_id || !t.net_id || !mine(f)) return;
+    rows_[static_cast<std::size_t>(from)][static_cast<std::size_t>(to)] = v;
+    if (from == local_slot_) {
+        allied_[static_cast<std::size_t>(to)] = v;
+        if (t.kind == 2 || forced) allied_by_[static_cast<std::size_t>(to)] = v;
+    }
     if (mine(t)) {
-        // A computer player of this machine answers at once.
-        allied_by_[static_cast<std::size_t>(slot)] = allied ? 1 : 0;
+        if (to == local_slot_) allied_by_[static_cast<std::size_t>(from)] = v;
+        if (t.kind == 2 || forced) {
+            rows_[static_cast<std::size_t>(to)][static_cast<std::size_t>(from)] = v;
+            if (to == local_slot_) allied_[static_cast<std::size_t>(from)] = v;
+        }
         return;
     }
     u8 pk[14] = {packet::kAlliance};
-    put32(pk + 1, static_cast<std::uint32_t>(net_id_));
+    put32(pk + 1, static_cast<std::uint32_t>(f.net_id));
     put32(pk + 5, static_cast<std::uint32_t>(t.net_id));
-    pk[9] = allied ? 1 : 0;
-    send_one(net_id_, t.net_id, pk, 14);
+    pk[9] = v;
+    put32(pk + 10, forced ? 1u : 0u);
+    send_one(f.net_id, t.net_id, pk, 14);
+}
+
+void BattleRoom::leave_team(int slot) {
+    // 0x446E90, before a team changes: the player breaks its alliance with every other player
+    // of its old team, forced (both ends forget it).
+    if (slot < 0 || slot > 9) return;
+    const u8 team = players_[static_cast<std::size_t>(slot)].ally_team;
+    if (team == room::kNoTeam) return;
+    for (int o = 0; o < 10; ++o) {
+        const RoomPlayer& q = players_[static_cast<std::size_t>(o)];
+        if (o == slot || !q.net_id || q.ally_team != team) continue;
+        set_alliance(slot, o, 0, true);
+    }
+}
+
+void BattleRoom::team_alliances() {
+    // 0x446C70 (every room frame): every player is allied with itself and with every player of
+    // its team, in both directions (+0x108 and +0x113), on every machine, without packets.
+    for (int r = 0; r < 10; ++r) {
+        const RoomPlayer& p = players_[static_cast<std::size_t>(r)];
+        if (!p.net_id) continue;
+        for (int o = 0; o < 10; ++o) {
+            const RoomPlayer& q = players_[static_cast<std::size_t>(o)];
+            if (!(o == r || (q.net_id && q.ally_team == p.ally_team && p.ally_team != room::kNoTeam))) continue;
+            rows_[static_cast<std::size_t>(r)][static_cast<std::size_t>(o)] = 1;
+            if (r == local_slot_) allied_[static_cast<std::size_t>(o)] = allied_by_[static_cast<std::size_t>(o)] = 1;
+        }
+    }
+}
+
+std::array<std::array<std::uint8_t, 10>, 10> BattleRoom::alliance_rows() const {
+    std::array<std::array<std::uint8_t, 10>, 10> r = rows_;
+    if (local_slot_ >= 0) r[static_cast<std::size_t>(local_slot_)] = allied_;
+    for (int s = 0; s < 10; ++s)
+        if (!players_[static_cast<std::size_t>(s)].net_id)
+            for (int o = 0; o < 10; ++o) r[static_cast<std::size_t>(s)][static_cast<std::size_t>(o)] = r[static_cast<std::size_t>(o)][static_cast<std::size_t>(s)] = 0;
+    return r;
 }
 
 void BattleRoom::set_ally_team_of(int slot, std::uint8_t team) {
     if (slot < 0 || slot > 9) return;
     RoomPlayer& p = players_[static_cast<std::size_t>(slot)];
     if (!p.net_id || !mine(p)) return;
+    leave_team(slot);
     p.ally_team = team > room::kNoTeam ? room::kNoTeam : team;
     dirty_ = true;
 }
@@ -474,9 +533,12 @@ void BattleRoom::frame(std::uint32_t clock, sim::Lcg15* crt_rand) {
             std::swap(players_[static_cast<std::size_t>(s)], players_[static_cast<std::size_t>(t)]);
             std::swap(allied_[static_cast<std::size_t>(s)], allied_[static_cast<std::size_t>(t)]);
             std::swap(allied_by_[static_cast<std::size_t>(s)], allied_by_[static_cast<std::size_t>(t)]);
+            std::swap(rows_[static_cast<std::size_t>(s)], rows_[static_cast<std::size_t>(t)]);
+            for (auto& row : rows_) std::swap(row[static_cast<std::size_t>(s)], row[static_cast<std::size_t>(t)]);
             if (local_slot_ == t) local_slot_ = s;
             dirty_ = true;
         }
+    if (!started_) team_alliances();
     if (!started_ && (clock_ >= next_periodic_ || dirty_)) {
         if (clock_ >= next_periodic_) {
             next_periodic_ = clock_ + 60;  // every two seconds (0x456310)
@@ -739,8 +801,17 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
         break;
     case packet::kAlliance: {
         // 0x452960 heard: the sender's alliance with this machine's player.
+        // The addressee (one of this machine's players) takes it in +0x113, and in +0x108 too
+        // when it is a computer player or the sender forced it (bytes 10-13).
         const int a = slot_of(static_cast<std::int32_t>(get32(p + 1)));
-        if (a >= 0 && static_cast<std::int32_t>(get32(p + 5)) == net_id_) allied_by_[static_cast<std::size_t>(a)] = p[9];
+        const int t = slot_of(static_cast<std::int32_t>(get32(p + 5)));
+        if (a >= 0 && t >= 0 && mine(players_[static_cast<std::size_t>(t)])) {
+            if (t == local_slot_) allied_by_[static_cast<std::size_t>(a)] = p[9];
+            if (players_[static_cast<std::size_t>(t)].kind == 2 || get32(p + 10) != 0) {
+                rows_[static_cast<std::size_t>(t)][static_cast<std::size_t>(a)] = p[9];
+                if (t == local_slot_) allied_[static_cast<std::size_t>(a)] = p[9];
+            }
+        }
         break;
     }
     case packet::kProbe: {
@@ -1029,7 +1100,11 @@ sim::BattleStart BattleRoom::battle_start() const {
         sp.ally_group = p.ally_team == room::kNoTeam ? 0xFF : p.ally_team;
         sp.name = p.name;
         sp.watcher = p.watching();
+        sp.host = (p.flags & room::kHost) != 0;
     }
+    // The records' alliance bytes are the battle's alliance table (the same records go on).
+    b.alliances = alliance_rows();
+    b.alliances_given = true;
     b.provider = 3;
     b.net_game = true;
     b.local_player = static_cast<std::uint8_t>(local_slot_ < 0 ? 0 : local_slot_);

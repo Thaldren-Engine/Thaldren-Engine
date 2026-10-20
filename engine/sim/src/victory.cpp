@@ -24,6 +24,37 @@ bool count_down(EndGameState& e) {
 
 }  // namespace
 
+bool Battle::victory_met() const {
+    // Victory (0x490230).
+    if (settings.provider == 2) {
+        const std::size_t l = settings.local_player;
+        for (int o = 0; o < 10; ++o) {
+            if (o == settings.local_player || alliances[l][static_cast<std::size_t>(o)] != 0) continue;
+            if (players[static_cast<std::size_t>(o)].alive_count != 0) return false;
+        }
+        return true;
+    }
+    if (settings.provider == 3) {
+        // Allied victory (0x490080).
+        if (settings.game_mode == 2) return false;
+        const std::size_t l = settings.local_player;
+        for (int o = 0; o < 10; ++o) {
+            const PlayerSlot& p = players[static_cast<std::size_t>(o)];
+            if (o == settings.local_player || !playing(p) || victory.sides[static_cast<std::size_t>(o)].watching) continue;
+            if (p.units_created == 0) return false;
+            if (p.alive_count == 0) continue;
+            if (!victory.sides[static_cast<std::size_t>(o)].allied_victory || !victory.sides[l].allied_victory) return false;
+            if (!alliances[l][static_cast<std::size_t>(o)] || !alliances[static_cast<std::size_t>(o)][l]) return false;
+            for (int k = 0; k < 10; ++k) {
+                const PlayerSlot& q = players[static_cast<std::size_t>(k)];
+                if (playing(q) && has_units_or_none_made(q) && !alliances[static_cast<std::size_t>(o)][static_cast<std::size_t>(k)]) return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 void Battle::victory_turn(int slot) {
     // 0x464F80, the local player's turn: campaign conditions, else defeat then victory.
     PlayerSlot& me = players[static_cast<std::size_t>(slot)];
@@ -53,36 +84,7 @@ void Battle::victory_turn(int slot) {
         if (settings.provider == 2 || settings.provider == 3) return me.alive_count == 0;
         return false;  // campaign conditions are not built
     };
-    // Victory (0x490230).
-    auto won = [&]() -> bool {
-        if (settings.provider == 2) {
-            const std::size_t l = settings.local_player;
-            for (int o = 0; o < 10; ++o) {
-                if (o == settings.local_player || alliances[l][static_cast<std::size_t>(o)] != 0) continue;
-                if (players[static_cast<std::size_t>(o)].alive_count != 0) return false;
-            }
-            return true;
-        }
-        if (settings.provider == 3) {
-            // Allied victory (0x490080).
-            if (settings.game_mode == 2) return false;
-            const std::size_t l = settings.local_player;
-            for (int o = 0; o < 10; ++o) {
-                const PlayerSlot& p = players[static_cast<std::size_t>(o)];
-                if (o == settings.local_player || !playing(p) || victory.sides[static_cast<std::size_t>(o)].watching) continue;
-                if (p.units_created == 0) return false;
-                if (p.alive_count == 0) continue;
-                if (!victory.sides[static_cast<std::size_t>(o)].allied_victory || !victory.sides[l].allied_victory) return false;
-                if (!alliances[l][static_cast<std::size_t>(o)] || !alliances[static_cast<std::size_t>(o)][l]) return false;
-                for (int k = 0; k < 10; ++k) {
-                    const PlayerSlot& q = players[static_cast<std::size_t>(k)];
-                    if (playing(q) && has_units_or_none_made(q) && !alliances[static_cast<std::size_t>(o)][static_cast<std::size_t>(k)]) return false;
-                }
-            }
-            return true;
-        }
-        return false;
-    };
+    auto won = [&]() -> bool { return victory_met(); };
     if (settings.provider == 1) {
         // Missions (sim/mission_goals.h): every win goal (0x490230), else any loss goal; the
         // goals of a mission without placed units never decide (and skip the copy check).

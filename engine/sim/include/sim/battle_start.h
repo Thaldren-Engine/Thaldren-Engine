@@ -44,6 +44,7 @@ struct StartPlayer {
     std::int32_t energy = -1, metal = -1; // skirmish start resources (-1: BattleStart's defaults)
     bool watcher = false;                 // network: joined to watch (no commander)
     bool allied_victory = false;          // network: accepts an allied victory
+    bool host = false;                    // network: the side record's host flag (the hosting machine's records)
     std::string name;
 };
 
@@ -65,6 +66,10 @@ struct MissionStart {
 
 struct BattleStart {
     std::array<StartPlayer, 10> players{};
+    // Network games: the records' alliance bytes (+0x108) by slot as the room left them (the
+    // team rule, alliances made in the room, forced ones heard). Else from the ally groups.
+    std::array<std::array<std::uint8_t, 10>, 10> alliances{};
+    bool alliances_given = false;
     std::vector<StartRule> start_rules;  // the selected schema's start positions
     // Legacy form of the start positions (used when start_rules is empty): position k has id k.
     std::array<std::array<std::int32_t, 2>, 10> start_positions{};

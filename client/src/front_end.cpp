@@ -271,7 +271,7 @@ public:
                 }
             }
             // The battle is over once the end flags say so (after the end countdown).
-            if (b.end_game.flags & sim::end_game_flags::kEnding) {
+            if ((b.end_game.flags & sim::end_game_flags::kEnding) && session_->end_exchange_done(now)) {
                 const BattleOutcome o = (b.end_game.flags & sim::end_game_flags::kWon) ? BattleOutcome::Victory : BattleOutcome::Defeat;
                 end_battle(o);
             }

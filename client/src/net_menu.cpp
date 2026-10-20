@@ -412,6 +412,19 @@ int NetBattleSession::frame(std::uint32_t now_ms) {
     return inner_->frame(now_ms);
 }
 
+bool NetBattleSession::end_exchange_done(std::uint32_t now_ms) {
+    // 0x499200 once the game ends: each pass asks for the missing final totals (0x4572A0) and
+    // then sleeps 250 ms; the statistics follow when nothing was asked.
+    if (exchanged_) return true;
+    if (exchange_started_ && now_ms - exchange_ms_ < 250) return false;
+    exchange_started_ = true;
+    exchange_ms_ = now_ms;
+    net_->set_clock(now_clock(now_ms));
+    net_->poll();
+    exchanged_ = net_->end_exchange();
+    return exchanged_;
+}
+
 void NetBattleSession::send_chat(const std::string& line) {
     // The talk line (0x493BF0): a line whose second character is ',', ':' or ';' names its
     // receivers by its first: a digit one player (an unused record, id -1: nobody gets it and its

@@ -321,6 +321,9 @@ public:
     AiState ai_state;
     Ai& ai();
     void collect_ai_metal_sites();
+    // A unit type's data changed during the battle (the debug command Reload): the computer
+    // player's copy of the types is taken again at its next use.
+    void unit_types_changed() { ai_types_.clear(); }
     // The players' stage (stage 6 of a step): for every playing player its weapon-target pass,
     // its unit table refresh (every 30 steps) and its units' sight; the rest is outside.
     void players_stage();
@@ -411,6 +414,12 @@ public:
     // frame loop calls end_frame().
     void step();
     void end_frame();
+    // Drawing's effect on the simulation: the original draws a unit through 0x45AC20, which
+    // first brings the unit's pose (base angles more than 7 apart, then the transforms when
+    // dirty) and the pose of each unit on board that is not hidden up to date. Debris and
+    // shards later start from those transforms. An input: the units the frame drew, by id
+    // (the client hands over what its renderer drew; tools without drawing never call it).
+    void units_drawn(const std::vector<std::uint16_t>& ids);
     // Stage 8's meteors (sim/sky.h): a scheduled shower, a meteor shot when one drops.
     void step_meteor_shower();
     // Victory (sim/victory.h, engine/sim/src/victory.cpp): the local player's checks in its turn
@@ -418,6 +427,9 @@ public:
     // death destroying its player's units (0x486F10).
     void victory_turn(int slot);
     void victory_stage_end();
+    // The victory condition of skirmish and network games as it stands now (0x490230; network
+    // games 0x490080). Also asked by the end-of-game statistics exchange (0x457540).
+    bool victory_met() const;
     // `stale_word`: the kill routine's wreck word for the units that go through it (owners that
     // do not play): what the caller's stack holds there (a network player leaving, 0x452CC0:
     // an input); each such kill leaves its final wreck level in it, the detonation leaves it.
