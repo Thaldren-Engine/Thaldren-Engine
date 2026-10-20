@@ -500,7 +500,8 @@ void ConsoleCommands::Impl::build() {
             if (slot < bt.players.size()) bt.kill_team(static_cast<int>(slot), st.kill_word);
         }
         // Both forms then switch the map's goals off (0x4904B0 on GS+0x391ED): a mission
-        // never ends by them afterwards.
+        // never ends by them afterwards, and no game is won or lost by the victory checks
+        // (0x490230 / 0x490360 test the switch first).
         bt.mission_goals.active = false;
     });
     auto end_game = [this](bool win) {

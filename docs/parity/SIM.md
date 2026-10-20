@@ -156,7 +156,7 @@ Importer `ta_compat/src/featuredefs.cpp`; `feature_check`: 434 features, 8,307 f
 | Economy settlement, stalls, transfers, sharing, wind/tide, metal extraction | VERIFIED | economy_harness |
 | Line of sight, radar, sonar, jammers, stealth, lingering sight, sight rebuilds | VERIFIED | los_harness |
 | Computer player (roles, groups, scores, sites, profiles) | VERIFIED | ai_harness; whole-game replay with 3 hard computer players, 3,000 steps identical |
-| Victory/defeat (skirmish, network) `0x464F80`, `0x490360` | BUILT | read and implemented; the defeat check's rand() draw included (RE_MEMORY "Victory") |
+| Victory/defeat (skirmish, network) `0x464F80`, `0x490360` | BUILT | read and implemented; the defeat check's rand() draw included (RE_MEMORY "Victory"). *2026-10-20*: re-read against `0x490230` / `0x490360`: both test the goals switch (+0x88 of GS+0x391ED) first in every kind of game; the engine tested it for missions only, so after "+kill" a skirmish or network game could still be won or lost (and the copy check draw rand()). Fixed (`victory.cpp`), sim_tests `test_victory_goals_switch`; game_flow golden and replays unchanged. Still not differential-tested (no capture reaches a game's end) |
 | Campaign goals | VERIFIED | goal_harness 4,800 operations |
 | Campaign placed units and their first orders | VERIFIED (orders) / BUILT (placement) | order_harness |
 | Features: damage, fire, spread, reproduce, wrecks, reclaim | VERIFIED | feature_harness |
@@ -192,7 +192,7 @@ state: pointer record, feature table, selection).
 | Search `<n> [f]` | `0x416780`: route search +0x48 (work divisor) = n when n ≠ 0; with exactly three words +0x54 (base scale) = ftol(atof(word 2)) | MISSING | BUILT (smoke) |
 | Reload `<unit>` | `0x417490`: with a known type: every table entry of it gets the kill packet (`0x486E80`, kind 8), then `0x42D1F0` (type word bit 23 set): the FBI read again over the record (`0x42BF40` in place), the script reloaded | MISSING | BUILT (`ta::reload_unit_properties`; a corpse the battle did not load is the original's crash → feature fault; the old script is kept for dying units where the original frees it under them) |
 | ReloadAIProfiles | `0x4174D0` → `0x40A100`: for every active computer player (controller 2), `Ai_ResetProfile` `0x409470` on the table of its slot, then the battle's whole profile load `0x4648E0` | MISSING | BUILT (smoke) |
-| Kill (both forms) ends with `0x4904B0` on GS+0x391ED: the map's goals switched off | found in this audit | PARTIAL | BUILT (`MissionGoals::active = false`) |
+| Kill (both forms) ends with `0x4904B0` on GS+0x391ED: the map's goals switched off | found in this audit | PARTIAL | BUILT (`MissionGoals::active = false`; *2026-10-20*: the skirmish / network victory and defeat checks now honour it too, see section 5) |
 | SeaLevel, TreeDeath, AI, Control, IWin, ILose, Move, default command (unit rows) | | VERIFIED / BUILT | unchanged |
 | Edge, Film, PrintWeights, Save, MemDump, Mem, DPrint, Assert, DebugBreak | | N/A (view, files, saves: other areas) | |
 
