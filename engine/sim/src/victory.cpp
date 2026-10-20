@@ -25,7 +25,9 @@ bool count_down(EndGameState& e) {
 }  // namespace
 
 bool Battle::victory_met() const {
-    // Victory (0x490230).
+    // Victory (0x490230). Nothing is decided while the map's goals are switched off (+0x88,
+    // cleared by 0x4904B0 after "+kill"; for every kind of game, not only missions).
+    if (!mission_goals.active) return false;
     if (settings.provider == 2) {
         const std::size_t l = settings.local_player;
         for (int o = 0; o < 10; ++o) {
@@ -74,6 +76,7 @@ void Battle::victory_turn(int slot) {
     // Defeat (0x490360): the copy-protection mismatch draws rand() once for a forced defeat
     // 9000..17999 steps in; skirmish and network games: no live units left.
     auto defeated = [&]() -> bool {
+        if (!mission_goals.active) return false;  // (0x490360 checks +0x88 first, the copy check included)
         if (settings.cd_mismatch) {
             if (victory.cd_force_tick == 0) victory.cd_force_tick = static_cast<std::uint32_t>(static_cast<std::int64_t>(crt_rand.next()) * 9000 / 0x8000) + 9000;
             if (victory.cd_force_tick <= unit_env_.game_tick) {
@@ -82,7 +85,7 @@ void Battle::victory_turn(int slot) {
             }
         }
         if (settings.provider == 2 || settings.provider == 3) return me.alive_count == 0;
-        return false;  // campaign conditions are not built
+        return false;  // (campaigns are judged by their goals below)
     };
     auto won = [&]() -> bool { return victory_met(); };
     if (settings.provider == 1) {

@@ -309,52 +309,61 @@ void draw_debris(const BattleScene& s, const DebrisInstance& d, DrawList& out) {
     emit_direct(c, clip, out, [&](RasterTarget& t, bool mask) { draw_model_piece(t, mask ? solid : piece, pts, mp, true); });
 }
 
-// The shard of a shattered quad: a thin box of 8 points turned by its spin angles, faces in
-// the quad's colour or texture (approximation of the original's 0x46BAE0, not yet specified).
-void draw_shard(const BattleScene& s, const EffectInstance& e, DrawList& out) {
-    static const std::uint16_t kFaces[6][4] = {{0, 1, 2, 3}, {2, 1, 6, 5}, {0, 3, 4, 7}, {1, 0, 7, 6}, {3, 2, 5, 4}, {4, 5, 6, 7}};
-    if (!e.look) return;
-    ModelPiece piece;
-    for (const auto& f : kFaces) {
-        ModelPrimitive prim = *e.look;
-        prim.indices.assign(f, f + 4);
-        piece.primitives.push_back(std::move(prim));
-    }
-    Model m;
-    m.pieces.push_back(std::move(piece));
-    sim::PoseModel pm;
-    pm.nodes.emplace_back();
-    pm.root = 0;
-    const std::int16_t angles[3] = {e.angle[2], e.angle[1], e.angle[0]};
-    for (const auto& p : e.points) {
-        std::int32_t r[3];
-        sim::x87::rotate_point_3d(p.data(), r, angles);
-        pm.nodes[0].vertices.push_back({r[0], r[1], r[2]});
-    }
-    draw_model_at(s, m, pm, e.pos, 0, 0, 0, out);
-}
-
 // One model node drawn straight onto the frame (the original's 0x46BAE0): each vertex turned
-// by `angles`, offset by the point (view-relative x and z, world y) and projected
-// (x + 128, z - y / 2 + 32 on the integer parts); its primitives as the direct paths draw them.
-void draw_node_projected(const BattleScene& s, const ProjectileInstance::Node& n, const std::array<std::int32_t, 3>& rel,
-                         const std::array<std::int16_t, 3>& angles, std::uint8_t team_colour, DrawList& out) {
-    if (!n.piece || !n.vertices) return;
+// by `angles` (Math_RotatePointByAngles, the angles as stored), offset by the point
+// (view-relative x and z, world y) and projected (x + 128, z - y / 2 + 32 on the integer
+// parts); its primitives in order as the direct paths draw them (no depth, no culling).
+template <class Vertices>
+void draw_points_projected(const BattleScene& s, const ModelPiece& piece, const Vertices& vertices, const std::array<std::int32_t, 3>& rel,
+                           const std::int16_t* angles, const ModelDrawParams& mp, DrawList& out) {
     const Camera& c = s.camera;
     std::vector<RasterVertex> pts;
-    pts.reserve(n.vertices->size());
-    for (const auto& v : *n.vertices) {
+    pts.reserve(vertices.size());
+    for (const auto& v : vertices) {
         std::int32_t r[3];
-        sim::x87::rotate_point_3d(v.data(), r, angles.data());
+        sim::x87::rotate_point_3d(v.data(), r, angles);
         const int x = hi16(static_cast<std::int32_t>(static_cast<std::uint32_t>(r[0]) + static_cast<std::uint32_t>(rel[0]))) + c.origin_x;
         const int z = hi16(static_cast<std::int32_t>(static_cast<std::uint32_t>(rel[2]) - static_cast<std::uint32_t>(r[2])));
         const int y = hi16(static_cast<std::int32_t>(static_cast<std::uint32_t>(r[1]) + static_cast<std::uint32_t>(rel[1])));
         pts.push_back({x, z - (y >> 1) + c.origin_y, 0});
     }
-    const ModelPiece solid = solid_piece(*n.piece);
+    const ModelPiece solid = solid_piece(piece);
+    emit_direct(c, c.view_clip(), out, [&](RasterTarget& t, bool mask) { draw_model_piece(t, mask ? solid : piece, pts, mp, true); });
+}
+
+void draw_node_projected(const BattleScene& s, const ProjectileInstance::Node& n, const std::array<std::int32_t, 3>& rel,
+                         const std::array<std::int16_t, 3>& angles, std::uint8_t team_colour, DrawList& out) {
+    if (!n.piece || !n.vertices) return;
     ModelDrawParams mp;
     mp.team_colour = team_colour;
-    emit_direct(c, c.view_clip(), out, [&](RasterTarget& t, bool mask) { draw_model_piece(t, mask ? solid : *n.piece, pts, mp, true); });
+    draw_points_projected(s, *n.piece, *n.vertices, rel, angles.data(), mp, out);
+}
+
+// The shard of a shattered quad (the original's 0x420B00 → 0x46BAE0 with the shard object made
+// by 0x420620 / 0x421700): 8 points, 6 four-sided faces from the index table at 0x502BF8, no
+// selection primitive, drawn like a model shot around the effect's point with the effect's
+// angles (+0x4C) as stored. Each face copies the quad's colour, texture and animation cursor
+// at the shattering (the copy is not advanced: its frame stays), a team texture takes the
+// owner's frame.
+void draw_shard(const BattleScene& s, const EffectInstance& e, DrawList& out) {
+    static const std::uint16_t kFaces[6][4] = {{0, 1, 2, 3}, {2, 1, 6, 5}, {0, 3, 4, 7}, {1, 0, 7, 6}, {3, 2, 5, 4}, {4, 5, 6, 7}};
+    if (!e.look) return;
+    const std::vector<std::uint16_t> frozen{static_cast<std::uint16_t>(e.look_frame < 0 ? 0 : e.look_frame)};
+    ModelPiece piece;
+    for (const auto& f : kFaces) {
+        ModelPrimitive prim = *e.look;
+        prim.indices.assign(f, f + 4);
+        prim.cursor = 0;
+        piece.primitives.push_back(std::move(prim));
+    }
+    const Camera& c = s.camera;
+    const std::array<std::int32_t, 3> rel = {
+        static_cast<std::int32_t>(static_cast<std::uint32_t>(e.pos[0]) - (static_cast<std::uint32_t>(c.scroll_x) << 16)), e.pos[1],
+        static_cast<std::int32_t>(static_cast<std::uint32_t>(e.pos[2]) - (static_cast<std::uint32_t>(c.scroll_y) << 16))};
+    ModelDrawParams mp;
+    mp.team_colour = e.team_colour;
+    mp.cursor_frames = &frozen;
+    draw_points_projected(s, piece, e.points, rel, e.angle.data(), mp, out);
 }
 
 // A shot by its weapon's render type (the original's 0x49BE60). Returns false when the

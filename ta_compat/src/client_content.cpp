@@ -921,7 +921,10 @@ bool ClientWorld::build_content(std::string& error) {
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };
-    c.after_step = [this]() { textures_.advance_cursors(); };
+    c.after_step = [this]() {
+        note_new_shards();
+        textures_.advance_cursors();
+    };
     return true;
 }
 

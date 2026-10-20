@@ -390,11 +390,15 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
                 if (px != overlay_key_) px = dimmed(c_.shade_levels, px);
             }
     }
-    // Paused sign; the victory and defeat signs once the battle is decided (end flags).
+    // Paused sign; the victory and defeat signs once the battle is decided (end flags), not
+    // for a local player who watches (0x468CF0: its side record's option 0x40).
     const int cx = (opt_.width + 128) / 2, cy = opt_.height / 2;
     if (budget_.paused && c_.paused_sign) render::blit(o, o.bounds(), *c_.paused_sign, cx, cy);
-    if ((b_.end_game.flags & sim::end_game_flags::kWonMovie) && c_.victory_sign) render::blit(o, o.bounds(), *c_.victory_sign, cx, cy);
-    if ((b_.end_game.flags & sim::end_game_flags::kLost) && c_.defeat_sign) render::blit(o, o.bounds(), *c_.defeat_sign, cx, cy);
+    const std::size_t local = static_cast<std::size_t>(b_.settings.local_player) % b_.victory.sides.size();
+    if (!b_.victory.sides[local].watching) {
+        if ((b_.end_game.flags & sim::end_game_flags::kWonMovie) && c_.victory_sign) render::blit(o, o.bounds(), *c_.victory_sign, cx, cy);
+        if ((b_.end_game.flags & sim::end_game_flags::kLost) && c_.defeat_sign) render::blit(o, o.bounds(), *c_.defeat_sign, cx, cy);
+    }
     draw_clock_and_units(o);
     // The waiting sign (GS+0x38A51 bit 1, the step budget's lag throttle): the hourglass
     // pointer's first frame at (width - 16, height - 80).

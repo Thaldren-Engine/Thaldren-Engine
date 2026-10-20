@@ -98,7 +98,7 @@ public:
     // Side effects outside the simulation's state (speech, HUD, network) and
     // the cloak notification to path orders.
     virtual void on_activate_flags_changed(Unit& unit, std::uint8_t gained, std::uint8_t lost) = 0;
-    // Script requests handled by systems not modelled here.
+    // Script requests handled by other systems (the battle wires them).
     virtual std::uint32_t random_mod(std::uint32_t n) = 0;  // the battle RNG
     virtual void emit_sfx(Unit& unit, std::int32_t piece, std::int32_t type) = 0;
     virtual void explode_piece(Unit& unit, std::int32_t piece, std::int32_t type) = 0;

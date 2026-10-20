@@ -154,6 +154,12 @@ public:
     std::array<std::vector<render::Sprite8>, 4> fog_black_, fog_gray_;
     render::BlendTable gray_table_;
     std::map<const sim::PoseModel*, const render::Model*> model_of_pose_;
+    // Shards' copies of their quad's animation cursor (0x421700 copies the primitive's cursor
+    // and nothing advances the copy): the frame when each shard slot was filled, noted after
+    // the step that filled it, before the texture cursors move on.
+    std::array<std::int32_t, sim::kMaxShards> shard_frame_{};
+    std::array<bool, sim::kMaxShards> shard_live_{};
+    void note_new_shards();
     struct WeaponModel {
         std::vector<std::uint8_t> file;
         std::unique_ptr<Model3doPiece> root;

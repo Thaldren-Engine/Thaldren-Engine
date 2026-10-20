@@ -36,14 +36,14 @@ Audit of everything the original TotalA.exe (3.1) does in the simulation area ag
 ## Summary
 | Status | Before (2026-10-20 audit) | After this round |
 |---|---|---|
-| VERIFIED | 64 | 65 |
+| VERIFIED | 64 | 66 |
 | BUILT | 4 | 14 |
-| PARTIAL | 4 | 1 |
+| PARTIAL | 4 | 0 |
 | MISSING | 7 | 0 |
 | N/A | 14 | 13 |
 
 (Counts are rows of the tables below; one row often stands for a whole group of keys or routines.
-The one PARTIAL left is the AI profile text's non-profile lines, 7.5. See the change log at the end.)
+*2026-10-20*: no PARTIAL left — the AI profile text's non-profile lines (7.5) are built, not compared; the network feature row is on master and verified. See the change log at the end.)
 
 ---
 
@@ -156,11 +156,11 @@ Importer `ta_compat/src/featuredefs.cpp`; `feature_check`: 434 features, 8,307 f
 | Economy settlement, stalls, transfers, sharing, wind/tide, metal extraction | VERIFIED | economy_harness |
 | Line of sight, radar, sonar, jammers, stealth, lingering sight, sight rebuilds | VERIFIED | los_harness |
 | Computer player (roles, groups, scores, sites, profiles) | VERIFIED | ai_harness; whole-game replay with 3 hard computer players, 3,000 steps identical |
-| Victory/defeat (skirmish, network) `0x464F80`, `0x490360` | BUILT | read and implemented; the defeat check's rand() draw included (RE_MEMORY "Victory") |
+| Victory/defeat (skirmish, network) `0x464F80`, `0x490360` | BUILT | read and implemented; the defeat check's rand() draw included (RE_MEMORY "Victory"). *2026-10-20*: re-read against `0x490230` / `0x490360`: both test the goals switch (+0x88 of GS+0x391ED) first in every kind of game; the engine tested it for missions only, so after "+kill" a skirmish or network game could still be won or lost (and the copy check draw rand()). Fixed (`victory.cpp`), sim_tests `test_victory_goals_switch`; game_flow golden and replays unchanged. Still not differential-tested (no capture reaches a game's end) |
 | Campaign goals | VERIFIED | goal_harness 4,800 operations |
 | Campaign placed units and their first orders | VERIFIED (orders) / BUILT (placement) | order_harness |
 | Features: damage, fire, spread, reproduce, wrecks, reclaim | VERIFIED | feature_harness |
-| Features in network games (host decides damage) | BUILT on branch `worktree-agent-ac56a4e808c5568aa` (see 7.3) | feature_harness both roles smoke; net_play features |
+| Features in network games (host decides damage) | VERIFIED | *2026-10-20*: the row was stale — the branch is on master (squashed as 2c7ce8a); NETWORK.md section 1: feature_harness both roles, net_play features, BUILT+VERIFIED there (see 7.3) |
 | Debris, shards, world effects, nano streams | VERIFIED | feature_harness, effect-list harness |
 | Meteors, wind, camera shake rand() | VERIFIED | flow_harness, economy_harness |
 | Battle start (seeds, start positions, commanders, explosion tables) | VERIFIED | whole-game replay (battle generator identical at step 1) |
@@ -192,7 +192,7 @@ state: pointer record, feature table, selection).
 | Search `<n> [f]` | `0x416780`: route search +0x48 (work divisor) = n when n ≠ 0; with exactly three words +0x54 (base scale) = ftol(atof(word 2)) | MISSING | BUILT (smoke) |
 | Reload `<unit>` | `0x417490`: with a known type: every table entry of it gets the kill packet (`0x486E80`, kind 8), then `0x42D1F0` (type word bit 23 set): the FBI read again over the record (`0x42BF40` in place), the script reloaded | MISSING | BUILT (`ta::reload_unit_properties`; a corpse the battle did not load is the original's crash → feature fault; the old script is kept for dying units where the original frees it under them) |
 | ReloadAIProfiles | `0x4174D0` → `0x40A100`: for every active computer player (controller 2), `Ai_ResetProfile` `0x409470` on the table of its slot, then the battle's whole profile load `0x4648E0` | MISSING | BUILT (smoke) |
-| Kill (both forms) ends with `0x4904B0` on GS+0x391ED: the map's goals switched off | found in this audit | PARTIAL | BUILT (`MissionGoals::active = false`) |
+| Kill (both forms) ends with `0x4904B0` on GS+0x391ED: the map's goals switched off | found in this audit | PARTIAL | BUILT (`MissionGoals::active = false`; *2026-10-20*: the skirmish / network victory and defeat checks now honour it too, see section 5) |
 | SeaLevel, TreeDeath, AI, Control, IWin, ILose, Move, default command (unit rows) | | VERIFIED / BUILT | unchanged |
 | Edge, Film, PrintWeights, Save, MemDump, Mem, DPrint, Assert, DebugBreak | | N/A (view, files, saves: other areas) | |
 
@@ -216,7 +216,7 @@ every battle entry point, so a change of viewed player is seen as in the origina
 other-machine rules (feature_harness ran both roles: 12 scenarios identical). No simulation change
 needed. The network half (addressing requests to the host, `net_play features`, `dplay_play`,
 `ta_capture dump_features`) and the merge of the branch are the NETWORK agent's. Status: BUILT on
-that branch.
+that branch. *2026-10-20*: merged into master (2c7ce8a); NETWORK.md rates it BUILT+VERIFIED.
 
 ### 7.4 Drawing's effects on the simulation
 | Item | Before | After | Notes |
@@ -239,3 +239,4 @@ that branch.
 - 2026-10-20: unit table sort as the original, sort_harness (f567fb6).
 - 2026-10-20: drawn units' pose sync (6fd8cd7); lightning rand() draws fed back (2682023).
 - After each: sim_tests, render_tests, compat_tests, unitdef_check; whole-game replays g8 (3,000 steps), s2 (4,500), g9 (2,759) identical; game_flow golden identical.
+- 2026-10-20 (later round): stale source comments corrected (mission behaviours, campaign victory goals and the step adapter are built: `sim/battle.h`, `sim/victory.h`, `victory.cpp`, `client/commands.h`); the network feature row updated (merged). Source sweep for "not built / approximation / placeholder / TODO" in engine/, client/, render/, ta_compat/src: no simulation deviation left (the remaining hits are original concepts such as the queued-move placeholders, or drawing: see CLIENT 1.11, 1.13). sim_tests 5846/0, net_tests, game_flow golden and replays g8 / s2 / g9 identical.

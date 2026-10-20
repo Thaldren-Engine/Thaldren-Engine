@@ -21,6 +21,28 @@ const std::vector<render::Sprite8>* ClientWorld::frames_of(std::uint32_t seq) {
     return &v;
 }
 
+void ClientWorld::note_new_shards() {
+    const sim::Battle& b = battle();
+    for (std::size_t k = 0; k < shard_live_.size(); ++k) {
+        const sim::Shard& sh = b.effects.shards[k];
+        const bool live = sh.free != 0xFF;
+        if (live && !shard_live_[k]) {
+            std::int32_t f = -1;
+            const auto m = model_of_pose_.find(sh.model);
+            if (m != model_of_pose_.end() && sh.node >= 0 && static_cast<std::size_t>(sh.node) < m->second->pieces.size()) {
+                const auto& prims = m->second->pieces[static_cast<std::size_t>(sh.node)].primitives;
+                if (sh.primitive >= 0 && static_cast<std::size_t>(sh.primitive) < prims.size()) {
+                    const std::int32_t cur = prims[static_cast<std::size_t>(sh.primitive)].cursor;
+                    const auto& frames = textures_.cursor_frames();
+                    if (cur >= 0 && static_cast<std::size_t>(cur) < frames.size()) f = frames[static_cast<std::size_t>(cur)];
+                }
+            }
+            shard_frame_[k] = f;
+        }
+        shard_live_[k] = live;
+    }
+}
+
 void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t frame_counter) {
     sim::Battle& b = battle();
     feature_proxy_views_.clear();
@@ -146,7 +168,7 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
         di.node = d.node;
         di.pos = d.pos;
         di.turn = d.turn;
-        di.team_colour = static_cast<std::uint8_t>(d.owner);
+        di.team_colour = request_.start.players[static_cast<std::size_t>(d.owner) % 10].colour;  // (0x4211D0: the unit's player colour)
         scene.debris.push_back(di);
     }
     for (std::int32_t k = 0; k < b.effects.count; ++k) {
@@ -167,7 +189,8 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
                     ei.points = sh.points;
                     ei.angle = e.angle;
                     ei.look = &prims[static_cast<std::size_t>(sh.primitive)];
-                    ei.team_colour = static_cast<std::uint8_t>(sh.owner);
+                    ei.look_frame = shard_frame_[static_cast<std::size_t>(e.shard)];
+                    ei.team_colour = request_.start.players[static_cast<std::size_t>(sh.owner) % 10].colour;  // (0x421700: the player colour)
                 }
             }
         }

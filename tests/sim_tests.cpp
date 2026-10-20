@@ -1341,6 +1341,21 @@ void test_feature_damage_network_roles() {
     CHECK_EQ(outside.sent.size(), 2u);
 }
 
+// The victory check (0x490230) decides nothing while the map's goals are switched off (+0x88,
+// cleared after "+kill"), in skirmishes too.
+void test_victory_goals_switch() {
+    sim::HeightMap hm(8, 8);
+    NullOutside outside;
+    sim::BattleRng rng;
+    sim::Battle b(outside, hm, rng);
+    b.settings.provider = 2;
+    b.settings.local_player = 0;
+    b.players[0].alive_count = 3;  // every other player has no units left
+    CHECK_EQ(b.victory_met(), true);
+    b.mission_goals.active = false;
+    CHECK_EQ(b.victory_met(), false);
+}
+
 // Map features through the battle: a tree catches fire, burns out into its burnt
 // type, a wreck lands on dry ground and another sinks; a script blows a piece off
 // (battle RNG draws, the debris cache) and shatters another into a shard.
@@ -1954,6 +1969,7 @@ int main() {
     test_features_and_effects();
     test_feature_damage_network_roles();
     test_units_drawn();
+    test_victory_goals_switch();
     test_economy();
     test_sight();
     test_ai();
