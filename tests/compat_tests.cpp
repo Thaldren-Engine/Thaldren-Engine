@@ -10,6 +10,7 @@
 #include "ta/crt_strtod.h"
 #include "ta/hpi.h"
 #include "ta/inflate.h"
+#include "ta/restrict_list.h"
 #include "ta/tdf.h"
 
 namespace {
@@ -136,6 +137,45 @@ void test_crt_atof_quirks() {
     CHECK(ta::crt_atof("  12.5e1") == 125.0);
 }
 
+// The restrictions' list files (0x44B230 / 0x44B140): the table's size less one, then the listed
+// definitions' key and count in index order; reading picks the first definition with the key.
+void test_restrict_list() {
+    // Definitions 0 (blank) .. 4; 3 is "norestrict" (not listed); 4 shares 2's key.
+    const std::vector<std::uint32_t> keys = {0, 0x11111111, 0x22222222, 0x33333333, 0x22222222};
+    std::vector<ta::RestrictListRow> rows = {{2, -1}, {4, 7}, {1, 0}};  // (the list's sorted order)
+    std::vector<std::uint8_t> bytes;
+    ta::write_restrict_list(keys, rows, bytes);
+    const std::vector<std::uint8_t> expect = {4, 0, 0, 0,
+                                              0x11, 0x11, 0x11, 0x11, 0, 0, 0, 0,
+                                              0x22, 0x22, 0x22, 0x22, 0xFF, 0xFF, 0xFF, 0xFF,
+                                              0x22, 0x22, 0x22, 0x22, 7, 0, 0, 0};
+    CHECK(bytes == expect);
+    // Read back into fresh counts: definition 4's pair goes to definition 2 (its key's first),
+    // and the header's fourth pair (past the end) repeats the last one.
+    std::vector<ta::RestrictListRow> back = {{2, 100}, {4, 100}, {1, 100}};
+    CHECK(ta::read_restrict_list(bytes, keys, back) == 3);
+    CHECK(back[0].count == 7 && back[1].count == 100 && back[2].count == 0);
+    // Round trip with distinct keys.
+    const std::vector<std::uint32_t> k2 = {0, 5, 6, 7};
+    std::vector<ta::RestrictListRow> r2 = {{3, 55}, {1, -1}, {2, 0}};
+    ta::write_restrict_list(k2, r2, bytes);
+    std::vector<ta::RestrictListRow> b2 = {{3, 100}, {1, 100}, {2, 100}};
+    ta::read_restrict_list(bytes, k2, b2);
+    CHECK(b2[0].count == 55 && b2[1].count == -1 && b2[2].count == 0);
+    // A short last word: the bytes there replace the low bytes of the last count.
+    std::vector<std::uint8_t> cut = {1, 0, 0, 0, 5, 0, 0, 0, 9};
+    std::vector<ta::RestrictListRow> b3 = {{1, 0x01020304}};
+    CHECK(ta::read_restrict_list(cut, k2, b3) == 0);
+    CHECK(b3[0].count == 9);  // (count word started at 0, see read_restrict_list)
+    // Unknown keys change nothing; an empty file nothing.
+    std::vector<std::uint8_t> other = {1, 0, 0, 0, 0x99, 0, 0, 0, 3, 0, 0, 0};
+    std::vector<ta::RestrictListRow> b4 = {{1, 100}};
+    ta::read_restrict_list(other, k2, b4);
+    CHECK(b4[0].count == 100);
+    CHECK(ta::read_restrict_list({}, k2, b4) == 0 && b4[0].count == 100);
+    CHECK(ta::name_without_extension("Arm only.LST") == "Arm only");
+}
+
 } // namespace
 
 int main() {
@@ -149,6 +189,7 @@ int main() {
     test_checksum();
     test_lz77();
     test_inflate();
+    test_restrict_list();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

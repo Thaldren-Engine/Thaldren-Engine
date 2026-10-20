@@ -30,6 +30,7 @@ std::string ta::progress_from_thumbs(const std::string& thumbs) {
 #include "ta/campaign.h"
 #include "ta/client_menus.h"
 #include "ta/client_world.h"
+#include "ta/restrict_list.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -920,35 +921,15 @@ struct SaveFile {
     std::string description;
 };
 std::vector<SaveFile> list_save_files(const std::string& dir) {
-    struct Found {
-        std::filesystem::path path;
-        std::string upper;
-        std::int64_t time = 0;
-    };
-    std::vector<Found> found;
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
-        const std::string name = e.path().filename().string();
-        if (name.empty() || name[0] == '.' || e.is_directory(ec)) continue;
-        if (stricmp_c(e.path().extension().string(), ".sav") != 0) continue;
-        Found f;
-        f.path = e.path();
-        for (char c : name) f.upper.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
-        const auto t = std::filesystem::last_write_time(e.path(), ec);
-        f.time = std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch()).count();
-        found.push_back(f);
-    }
-    std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) { return a.upper < b.upper; });
-    std::stable_sort(found.begin(), found.end(), [](const Found& a, const Found& b) { return static_cast<std::int32_t>(b.time - a.time) < 0; });
     std::vector<SaveFile> out;
-    for (const Found& f : found) {
+    for (const std::filesystem::path& p : list_files_newest_first(dir, "sav")) {
         Bank bank;
         std::string err;
-        if (!read_bank(read_file(f.path), bank, err, "Summary") || stricmp_c(bank.name, "Total Annihilation 3.0") != 0) continue;
+        if (!read_bank(read_file(p), bank, err, "Summary") || stricmp_c(bank.name, "Total Annihilation 3.0") != 0) continue;
         const BankSection* s = bank.find("Summary");
         const std::string* d = s ? s->find_string("Description") : nullptr;
         if (!d) continue;
-        out.push_back({f.path, *d});
+        out.push_back({p, *d});
     }
     return out;
 }

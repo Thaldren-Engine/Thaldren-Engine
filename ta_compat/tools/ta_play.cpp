@@ -27,7 +27,8 @@
 //   --movies / --no-movies  play the movies (the intro at the start, INTRO, credits, the
 //                       campaigns' endings) or not; default: the window plays them, headless
 //                       runs do not (the original plays them only on a full screen)
-//   --saves DIR         the saved games' directory (default <game_dir>\SAVEGAME, the original's)
+//   --saves DIR         the saved games' directory (default <game_dir>\SAVEGAME, the original's);
+//                       also the build restrictions' list files (*.LST)
 //   --end-screen FILE   tests: the menus start at the statistics screen for the table in FILE
 //                       (the format of gui_harness's endmsn:)
 //   --net-screen SPEC   tests: the menus start at a multiplayer screen (repeat to stack them):
@@ -406,6 +407,7 @@ int main(int argc, char** argv) {
         // menu's button.
         {
             client::NetMenuConfig cfg = ta::network_config(art, nullptr);
+            cfg.save_dir = saves_dir;
             cfg.timeout_seconds = sw_timeout;
             cfg.send_error = sw_send_error;
             cfg.packet_rate_set = sw_rate_set;
@@ -416,7 +418,8 @@ int main(int argc, char** argv) {
             fes.hooks.network_start = [startup]() { return startup->provider != 0; };
         }
         if (!net_screens.empty()) {
-            const client::NetMenuConfig cfg = ta::network_config(art, nullptr);
+            client::NetMenuConfig cfg = ta::network_config(art, nullptr);
+            cfg.save_dir = saves_dir;
             fes.main_menu = [&art, cfg, net_screens](client::FrontEnd&) { return ta::make_net_test_screens(art, cfg, net_screens); };
         }
 #endif

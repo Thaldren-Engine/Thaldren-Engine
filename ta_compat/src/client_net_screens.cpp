@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <random>
@@ -27,6 +28,7 @@
 #include "render/raster.h"
 #include "ta/client_world.h"
 #include "ta/net_setup.h"
+#include "ta/restrict_list.h"
 #include "ta/tdf.h"
 #include "ta/unitdefs.h"
 
@@ -1538,9 +1540,15 @@ namespace {
 // numbers), its picture unitpics\<unitname>.PCX; sorted by the row's text (byte order).
 struct RestrictEntry {
     std::uint32_t key = 0;  // the definition's key (the FBI file's simple checksum)
+    std::int32_t def_index = 0;  // its index in the definition table (the row's +0x52)
     std::string text, picture;
     bool wacky = false;     // "wacky" definitions start at a count of 0 (0x46D040)
 };
+// Every definition's key by index (the blank one, 0, included), for the list files.
+std::vector<std::uint32_t>& restrict_def_keys_store() {
+    static std::vector<std::uint32_t> keys;
+    return keys;
+}
 const std::vector<RestrictEntry>& restrict_entries(MenuArt& art) {
     static std::vector<RestrictEntry> entries;
     static bool done = false;
@@ -1549,11 +1557,14 @@ const std::vector<RestrictEntry>& restrict_entries(MenuArt& art) {
     UnitDefContext ctx;
     load_unit_context(art.vfs(), ctx);
     const UnitDefTable defs = load_unit_defs(art.vfs(), ctx);
+    std::vector<std::uint32_t>& keys = restrict_def_keys_store();
+    for (const UnitDefRecord& d : defs.units) keys.push_back(d.fbi_checksum);
     for (std::size_t k = 1; k < defs.units.size(); ++k) {
         const UnitDefRecord& d = defs.units[k];
         if (d.can_do_flags & (1u << 15)) continue;  // norestrict
         RestrictEntry e;
         e.key = d.fbi_checksum;
+        e.def_index = static_cast<std::int32_t>(k);
         e.text = d.name + "\r" + d.side + " " + std::to_string(static_cast<int>(d.build_cost_metal)) + "M  " +
                  std::to_string(static_cast<int>(d.build_cost_energy)) + "E";
         e.picture = "unitpics\\" + d.unit_name + ".PCX";
@@ -1566,6 +1577,10 @@ const std::vector<RestrictEntry>& restrict_entries(MenuArt& art) {
     });
     return entries;
 }
+const std::vector<std::uint32_t>& restrict_def_keys(MenuArt& art) {
+    restrict_entries(art);
+    return restrict_def_keys_store();
+}
 
 // What the restrictions work on: each definition's count (the most one player may build, -1 no
 // limit) and whether it is enabled, in the room's unit definition exchange; `set_count` /
@@ -1575,6 +1590,134 @@ struct RestrictHooks {
     std::function<bool(std::uint32_t key)> enabled;
     std::function<void(std::uint32_t key, std::int32_t count)> set_count;
     std::function<void(std::uint32_t key, bool on)> set_enabled;
+};
+
+// The restrictions' list files (spec: ta/restrict_list.h): Load List (0x44BC10: LOADLIST.GUI
+// with flags 0x981, centred, the screen under it dimmed; DLoadList in its box; handler 0x44B3C0)
+// and Save List (0x44B990: SAVELIST.GUI with flags 0x880 at its own position, DSaveList;
+// handler at 0x44B690). GAMES lists SAVEGAME\*.LST (0x44B4E0) without their extensions, newest
+// first; picking a row (0x44B600) puts its name in GAMENAME. Load: DELETE and GAMENAME off, no
+// field takes the keys; LOAD (OK) / Enter / a double click: "Options", the selected file read into
+// the restrictions' counts and the rows in view refreshed (0x44BFD0 on the restrictions), closes.
+// Save: SAVEGAME made first (0x4BCF00); DELETE (Delete List) off when there is no file; GAMENAME
+// takes the focus and letters, digits, '_', ' ' and '\'' (20 at most); LOAD (OK) / Enter / a
+// double click: "Options", then a non-empty name writes SAVEGAME\<name>.LST (the extension rule of
+// 0x4290F0: a '.' in the name cuts it there), an existing file replaced; closes. Delete List:
+// "SMLBUTTON", SAVEGAME\<file> removed at once, the list again. Cancel: "Previous", closes.
+class RestrictListFiles : public LayoutScreen {
+public:
+    RestrictListFiles(MenuArt& art, bool save, std::string dir, const std::array<std::uint8_t, 256>* colours,
+                      std::function<void(const std::vector<std::uint8_t>&)> load, std::function<std::vector<std::uint8_t>()> make)
+        : LayoutScreen(art.layout(save ? "SAVELIST" : "LOADLIST")), art_(art), save_(save), dir_(std::move(dir)), load_(std::move(load)), make_(std::move(make)) {
+        background_in_box_ = true;
+        background_ = art_.picture(save_ ? "DSaveList" : "DLoadList");
+        if (!save_) open_centred_ = -1;
+        colours_ = colours;
+        if (save_) {
+            std::error_code ec;
+            std::filesystem::create_directories(dir_, ec);
+        }
+        relist();
+        if (Widget* w = widget("GAMENAME")) {
+            if (save_) w->attribs |= 2;
+            else w->active = false;
+        }
+        if (!save_) focus_ = -1;
+        if (Widget* w = widget("DELETE")) w->active = save_ && !files_.empty();
+        show_name();
+    }
+    bool see_through() const override { return true; }
+    const render::Palette* palette() const override { return nullptr; }
+    void draw(FrontEnd& fe, render::Image8& out) override {
+        if (!placed_) {
+            place(out.width, out.height);
+            if (save_)
+                for (std::size_t i = 0; i < widgets_.size(); ++i)
+                    if (widgets_[i].kind == WidgetKind::TextField && widgets_[i].active) {
+                        // The name field takes the focus and the keys (0x4A7190).
+                        focus_gadget_ = focus_ = static_cast<int>(i);
+                        widgets_[i].cursor = static_cast<int>(widgets_[i].text.size());
+                    }
+        }
+        // (Open flag 0x800: the screen under it dimmed, shade row 8.)
+        const std::vector<std::uint8_t>& shade = fe.menu_content().shade;
+        if (shade.size() >= 0x2000)
+            for (int y = 0; y < out.height; ++y)
+                for (int x = 0; x < out.width; ++x) {
+                    std::uint8_t& p = out.row(y)[x];
+                    p = shade[static_cast<std::size_t>(8 * 256 + static_cast<std::int8_t>(p))];
+                }
+        LayoutScreen::draw(fe, out);
+    }
+
+protected:
+    void relist() {
+        files_ = list_files_newest_first(dir_, "LST");
+        std::vector<std::string> names;
+        for (const auto& f : files_) names.push_back(name_without_extension(f.filename().string()));
+        if (Widget* l = widget("GAMES")) set_list(*l, std::move(names));
+    }
+    const std::filesystem::path* selected() {
+        const Widget* l = widget("GAMES");
+        if (!l || l->selected < 0 || l->selected >= static_cast<int>(files_.size())) return nullptr;
+        return &files_[static_cast<std::size_t>(l->selected)];
+    }
+    // 0x44B600: the selected row's name in GAMENAME (none: empty).
+    void show_name() {
+        Widget* g = widget("GAMENAME");
+        if (!g) return;
+        const std::filesystem::path* f = selected();
+        g->text = f ? name_without_extension(f->filename().string()) : std::string();
+        if (focus_ >= 0 && &widgets_[static_cast<std::size_t>(focus_)] == g) g->cursor = static_cast<int>(g->text.size());
+    }
+    void on_list_select(FrontEnd&, Widget&) override { show_name(); }
+    void on_text(FrontEnd& fe, Widget& w) override { on_press(fe, w); }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        if (is(w, "CANCEL")) {
+            sfx(fe, art_, "Previous");
+            fe.pop();
+            return;
+        }
+        if (save_ && is(w, "DELETE")) {
+            sfx(fe, art_, "SMLBUTTON");
+            if (const std::filesystem::path* f = selected()) {
+                std::error_code ec;
+                std::filesystem::remove(*f, ec);
+            }
+            relist();
+            show_name();
+            return;
+        }
+        if (!(is(w, "GAMES") || is(w, "LOAD") || (save_ && is(w, "GAMENAME")))) return;
+        sfx(fe, art_, "Options");
+        if (save_) {
+            const Widget* g = widget("GAMENAME");
+            const std::string name = g ? g->text : std::string();
+            if (!name.empty() && make_) {
+                // 0x4290F0("SAVEGAME", name, "LST"): SAVEGAME-<language>\ when that file opens.
+                std::string rel = art_.vfs().virtual_path("SAVEGAME", name, "LST");
+                std::filesystem::path p;
+                if (rel.rfind("SAVEGAME\\", 0) == 0) p = std::filesystem::path(dir_) / rel.substr(9);
+                else p = std::filesystem::path(art_.game_dir()) / rel;
+                const std::vector<std::uint8_t> bytes = make_();
+                std::ofstream o(p, std::ios::binary | std::ios::trunc);
+                o.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+            }
+        } else if (const std::filesystem::path* f = selected()) {
+            std::ifstream in(*f, std::ios::binary);
+            const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            if (in.is_open() && load_) load_(bytes);
+        }
+        fe.pop();
+    }
+
+private:
+    MenuArt& art_;
+    bool save_;
+    std::string dir_;
+    std::function<void(const std::vector<std::uint8_t>&)> load_;
+    std::function<std::vector<std::uint8_t>()> make_;
+    std::vector<std::filesystem::path> files_;
 };
 
 // The restrictions (0x44C7E0, handler 0x44C420, its frame 0x44C220), opened by the room's Build
@@ -1815,9 +1958,38 @@ protected:
             }
             refresh_rows();
         } else if (is(w, "Load") || is(w, "Save")) {
-            sfx(fe, art_, "Options");  // (the lists' files: not built)
+            sfx(fe, art_, "Options");
+            const bool save = is(w, "Save");
+            // 0x44BC10: no list file: the dialog closed again and the message instead.
+            if (!save && list_files_newest_first(list_dir_, "LST").empty()) {
+                show_message(fe, art_, "There are no saved lists to choose from");
+                return;
+            }
+            fe.push(std::make_unique<RestrictListFiles>(
+                art_, save, list_dir_, layout() ? &layout()->colours : nullptr, [this](const std::vector<std::uint8_t>& b) { load_list(b); },
+                [this]() { return save_list(); }));
         }
     }
+    // 0x44B140 into the rows' counts, then the rows in view through their sliders (0x44BFD0).
+    void load_list(const std::vector<std::uint8_t>& bytes) {
+        std::vector<RestrictListRow> rows(entries_.size());
+        for (std::size_t k = 0; k < entries_.size(); ++k) rows[k] = {entries_[k].def_index, counts_[k]};
+        read_restrict_list(bytes, restrict_def_keys(art_), rows);
+        for (std::size_t k = 0; k < entries_.size(); ++k) counts_[k] = rows[k].count;
+        refresh_rows();
+    }
+    // 0x44B230: the counts as the rows hold them.
+    std::vector<std::uint8_t> save_list() {
+        std::vector<RestrictListRow> rows(entries_.size());
+        for (std::size_t k = 0; k < entries_.size(); ++k) rows[k] = {entries_[k].def_index, counts_[k]};
+        std::vector<std::uint8_t> out;
+        write_restrict_list(restrict_def_keys(art_), rows, out);
+        return out;
+    }
+
+public:
+    std::string list_dir_;  // the list files' folder (SAVEGAME in the game folder)
+protected:
     // Closing (0x44C420 with no gadget): on the host each listed definition is enabled again,
     // or disabled with a count of 0, and answered.
     void close(FrontEnd& fe) {
@@ -3057,7 +3229,10 @@ void Lounge::open_restrictions(FrontEnd& fe) {
         // Tests: a room without an exchange: no definition compared yet (every row locked).
         h.enabled = [](std::uint32_t) { return false; };
     }
-    fe.push(std::make_unique<Restrictions>(art_, l, palette(), host_, h));
+    auto r = std::make_unique<Restrictions>(art_, l, palette(), host_, h);
+    // The list files: SAVEGAME in the game folder (the original's working folder).
+    r->list_dir_ = part_->cfg.save_dir.empty() ? art_.game_dir() + "\\SAVEGAME" : part_->cfg.save_dir;
+    fe.push(std::move(r));
 }
 
 void write_lounge(const std::string& path, const LoungeState& st) {

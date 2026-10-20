@@ -103,6 +103,7 @@ add_library(ta_compat STATIC
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp
     ta_compat/src/net_setup.cpp
+    ta_compat/src/restrict_list.cpp
     ta_compat/src/gaf.cpp
     ta_compat/src/hpi.cpp
     ta_compat/src/inflate.cpp

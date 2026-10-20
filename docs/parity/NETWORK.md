@@ -120,7 +120,7 @@ requests, no comparison tool and no regression test).
 | alliances of the room carried into the battle (team rule `0x446C70` every room frame, forced breaks `0x446E90`, `0x452960`) | BUILT-UNVERIFIED *2026-10-20* | was MISSING (the battle derived alliances from teams only). net_tests: team rule, a hand-made alliance, a forced break, the battle start's table |
 | ALLY toggle on a teammate leaves the team | BUILT-UNVERIFIED *2026-10-20* | `0x447B10` "ALLY%d" re-read: the leaving record is the local one (`0x2A42`); after the toggle (`0x452960`) a shared team other than 5 runs `0x446E90` (every alliance in it broken, forced), team 5, `0x452BD0` (0x24); the sound and line read the byte afterwards, so "broke alliance with" and Multi. Was: alliances broken unforced, the team kept. Same fix for TEAMICONS (no unforced pass before the room's forced one). Room tests and battle_menus_check unchanged; the lounge press itself not driven |
 | restrictions dialog | BUILT+VERIFIED | gui_harness pixel comparison |
-| restrictions Load List / Save List files | MISSING | file format not read yet |
+| restrictions Load List / Save List files | BUILT-UNVERIFIED *2026-10-20* | `SAVEGAME\<name>.LST` (int32 table size − 1, then key + count per listed definition in index order; `0x44B230` / `0x44B140`), LOADLIST.GUI / SAVELIST.GUI dialogs (`0x44BC10` / `0x44B990`, handlers `0x44B3C0` / `0x44B690`), "There are no saved lists to choose from". compat_tests format round trip; headless ta_play save → load (2116-byte file for 279 definitions, counts back in the rows). Dialog pixels not compared with the original (gui_harness has no LOADLIST / SAVELIST command); see RE_MEMORY "Restriction list files" |
 | join gate (closed / started → status 6) | BUILT-UNVERIFIED | |
 | machine groups and per-group sends | BUILT-UNVERIFIED | |
 | unit definition agreement | BUILT+VERIFIED | |
@@ -151,5 +151,5 @@ requests, no comparison tool and no regression test).
 ## Remaining, in order
 1. (done 2026-10-20: row order, a joiner's computer player.)
 2. Serial with the original into the battle (the original exits while loading under the capture tool); the original hosting over serial.
-3. Restrictions Load/Save List files; status 7.
+3. Status 7. (Restrictions Load/Save List files done 2026-10-20.)
 4. Our host + the original joining with shots fired (feature maps); 3+ machines with the original; passwords against the original.

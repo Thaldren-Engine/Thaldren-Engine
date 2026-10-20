@@ -75,6 +75,8 @@ struct NetMenuConfig {
         std::string game_name;
     };
     std::shared_ptr<Startup> startup;
+    // The folder of the build restrictions' list files (empty: SAVEGAME in the game folder).
+    std::string save_dir;
 };
 
 // The connection and battle room screens (the main menu's multiplayer button).
