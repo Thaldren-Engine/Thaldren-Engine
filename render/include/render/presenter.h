@@ -1,7 +1,9 @@
 #pragma once
 // Output of finished frames, independent of any window system.
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "render/draw_list.h"
 #include "render/image.h"
@@ -22,6 +24,13 @@ public:
     virtual ~FrameRenderer() = default;
     virtual bool render(const DrawList& list, Image8& out) = 0;
 };
+
+// 8-bit run-length PCX (version 5, one 8-bit plane, the 256-colour palette after a 0x0C),
+// laid out as the original's screenshot writer makes it: window 0,0..w-1,h-1, the resolution
+// fields holding w and h, the first 16 colours in the header, each row coded on its own (a run
+// of equal bytes, or one byte of 0xC0 and up, as (0xC0 | n, byte) pieces of at most 63).
+std::vector<std::uint8_t> encode_pcx(const Image8& frame, const Palette& palette);
+bool write_pcx(const std::string& path, const Image8& frame, const Palette& palette);
 
 // 8-bit BMP with the palette (no compression).
 bool write_bmp(const std::string& path, const Image8& frame, const Palette& palette);

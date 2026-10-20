@@ -425,6 +425,8 @@ struct Options {
     // routines run at the client's own hooks inside each step, its blit onto a screen kept from
     // frame to frame, compared with the client's frame after frame.
     int minimap_steps = 0;
+    // --pcx N: the screenshot writer against the engine's (N random pictures), nothing else.
+    int pcx = 0;
 };
 
 struct Stats {
@@ -457,12 +459,91 @@ int main(int argc, char** argv) {
         else if (a == "--hud") opt.hud = true;
         else if (a == "--minimap") opt.minimap = true;
         else if (a == "--minimap-steps" && k + 1 < argc) opt.minimap = true, opt.minimap_steps = std::atoi(argv[++k]);
+        else if (a == "--pcx" && k + 1 < argc) opt.pcx = std::atoi(argv[++k]);
         else if (positional == 0) opt.scenes = std::atoi(argv[k]), ++positional;
         else if (positional == 1) opt.seed = static_cast<unsigned>(std::atoi(argv[k])), ++positional;
         else if (positional == 2) opt.out_dir = argv[k], ++positional;
     }
     std::mt19937 g(opt.seed);
     auto rnd = [&](int lo, int hi) { return std::uniform_int_distribution<int>(lo, hi)(g); };
+
+    if (opt.pcx > 0) {
+        // --pcx N: the screenshot writer (0x4CAC40: header, run-length rows, palette) on N random
+        // pictures (sizes 1..700 x 1..300, runs of every length, values 0xC0 and up) against
+        // render::encode_pcx. Its file routines are replaced by a stand-in that collects the bytes
+        // (open 0x4BB2C0, write 0x4BBBE0, close 0x4BB5D0).
+        Original o;
+        if (!o.start(argv[1], 64, 64)) {
+            std::printf("cannot start the original\n");
+            return 1;
+        }
+        harness::Remote& r = o.r;
+        const u32 out = o.alloc(4u << 20), cursor = o.alloc(16);
+        std::vector<u8> s;
+        const u32 at = o.stubs + 0x800;
+        // open: mov eax,1; ret 4
+        const u32 open_at = at;
+        s.insert(s.end(), {0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x04, 0x00});
+        while (s.size() % 16) s.push_back(0xCC);
+        // write(handle, data, n): copy n bytes to the cursor, return n (stdcall)
+        const u32 write_at = at + static_cast<u32>(s.size());
+        s.insert(s.end(), {0x8B, 0x4C, 0x24, 0x0C, 0x56, 0x57, 0x8B, 0x74, 0x24, 0x10, 0x8B, 0x3D});
+        put32(s, cursor);
+        s.insert(s.end(), {0x8B, 0xC1, 0xF3, 0xA4, 0x89, 0x3D});
+        put32(s, cursor);
+        s.insert(s.end(), {0x5F, 0x5E, 0xC2, 0x0C, 0x00});
+        while (s.size() % 16) s.push_back(0xCC);
+        // close: ret 4
+        const u32 close_at = at + static_cast<u32>(s.size());
+        s.insert(s.end(), {0xC2, 0x04, 0x00});
+        r.write(at, s.data(), s.size());
+        if (!r.patch_jump(0x004BB2C0, open_at) || !r.patch_jump(0x004BBBE0, write_at) || !r.patch_jump(0x004BB5D0, close_at)) {
+            std::printf("cannot patch the file routines\n");
+            return 1;
+        }
+        const u32 pixels = o.alloc(1u << 20), pal = o.alloc(0x400), name = o.alloc(64);
+        r.write(name, "x.pcx", 6);
+        int same = 0;
+        long long bytes = 0;
+        for (int k = 0; k < opt.pcx; ++k) {
+            const int w = k % 7 == 0 ? 1 : rnd(1, 700), h = k % 11 == 0 ? 1 : rnd(1, 300);
+            render::Image8 img(w, h, 0);
+            // Rows of runs: lengths 1..200, values from a small set (many 0xC0 and up).
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w;) {
+                    const int n = rnd(0, 3) == 0 ? rnd(1, 200) : rnd(1, 4);
+                    const u8 v = static_cast<u8>(rnd(0, 2) == 0 ? rnd(0xBE, 0xFF) : rnd(0, 255));
+                    for (int i = 0; i < n && x < w; ++i, ++x) img.row(y)[x] = v;
+                }
+            render::Palette p{};
+            std::vector<u8> pb(768);
+            for (int i = 0; i < 256; ++i) {
+                p[static_cast<std::size_t>(i)] = {static_cast<u8>(rnd(0, 255)), static_cast<u8>(rnd(0, 255)), static_cast<u8>(rnd(0, 255))};
+                pb[static_cast<std::size_t>(i) * 3] = p[static_cast<std::size_t>(i)].r;
+                pb[static_cast<std::size_t>(i) * 3 + 1] = p[static_cast<std::size_t>(i)].g;
+                pb[static_cast<std::size_t>(i) * 3 + 2] = p[static_cast<std::size_t>(i)].b;
+            }
+            r.write(pixels, img.pixels.data(), img.pixels.size());
+            r.write(pal, pb.data(), pb.size());
+            r.w32(cursor, out);
+            u32 ok = 0;
+            if (!o.call(0x004CAC40, 0, {name, pixels, static_cast<u32>(w), static_cast<u32>(h), pal}, &ok)) return 1;
+            const u32 n = r.r32(cursor) - out;
+            std::vector<u8> orig(n);
+            if (n) r.read(out, orig.data(), n);
+            const std::vector<u8> mine = render::encode_pcx(img, p);
+            bytes += static_cast<long long>(n);
+            if (ok == 1 && orig == mine) ++same;
+            else {
+                std::size_t at_diff = 0;
+                while (at_diff < orig.size() && at_diff < mine.size() && orig[at_diff] == mine[at_diff]) ++at_diff;
+                std::printf("picture %d (%dx%d): result %u, original %u bytes, engine %zu bytes, first difference at %zu\n", k, w, h, ok, n,
+                            mine.size(), at_diff);
+            }
+        }
+        std::printf("pcx: %d of %d pictures identical (%lld bytes)\n", same, opt.pcx, bytes);
+        return same == opt.pcx ? 0 : 1;
+    }
 
     // ---- Engine: a skirmish between computer players, seen by player 0 ----
     static const char* kMaps[] = {"Moon Quartet", "Lava Highlands", "Coast To Coast", "Great Divide", "Painted Desert", "Ice Scream"};

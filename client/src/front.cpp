@@ -162,13 +162,24 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
     std::size_t cmds = 0, lines = 0;
     SoundDesk desk;
     desk.set_log(true);
+    bool shot_pending = false;
+    render::DrawList last_shown;  // the frame shown last (the screenshot key)
     for (int f = 0; f < o.frames && !client.quit_requested(); ++f) {
         const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);
         for (; next < o.script.size() && o.script[next].frame <= f; ++next) {
             InputEvent e = o.script[next].event;
             e.time_ms = now;
+            if (is_screenshot_key(e)) {
+                shot_pending = true;
+                continue;
+            }
             client.handle(e);
         }
+        if (shot_pending && last_shown.width > 0) {
+            const std::string path = save_numbered_picture(o.shot_dir, o.shot_prefix, render::execute(last_shown, content.blend), content.palette);
+            std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
+        }
+        shot_pending = false;
         const auto t0 = clock::now();
         total_steps += client.frame(now);
         const auto t1 = clock::now();
@@ -220,6 +231,7 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
             }
 #endif
         }
+        last_shown = std::move(list);
     }
     std::printf("headless: %d frames, %d simulation steps\n", o.frames, total_steps);
     return 0;
@@ -363,6 +375,8 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     const std::uint64_t start = SDL_GetTicks();
     std::size_t next = 0;
+    bool shot_pending = false;
+    render::DrawList last_shown;  // the frame shown last (the screenshot key)
     for (int f = 0; (o.frames == 0 || f < o.frames) && !client.quit_requested(); ++f) {
         const std::uint32_t now = static_cast<std::uint32_t>(SDL_GetTicks() - start);
         for (; next < o.script.size() && o.script[next].frame <= f; ++next) {
@@ -409,12 +423,21 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
                 continue;
             default: continue;
             }
+            if (is_screenshot_key(e)) {
+                shot_pending = true;  // (taken before the next pass draws: the frame shown last)
+                continue;
+            }
             client.handle(e);
         }
         {
             const SDL_Keymod mod = SDL_GetModState();
             client.poll_modifiers((mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_ALT) != 0);
         }
+        if (shot_pending && last_shown.width > 0) {
+            const std::string path = save_numbered_picture(o.shot_dir, o.shot_prefix, render::execute(last_shown, content.blend), content.palette);
+            std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
+        }
+        shot_pending = false;
         client.frame(now);
         desk.tick(now);
         for (const SoundEvent& e : client.take_sounds())
@@ -441,6 +464,7 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
         } else {
             SDL_Delay(10);
         }
+        last_shown = std::move(list);
     }
     gpu.reset();
     if (tex) SDL_DestroyTexture(tex);

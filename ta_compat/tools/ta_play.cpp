@@ -322,6 +322,12 @@ int main(int argc, char** argv) {
         fes.height = 480;
         fes.settings_path = settings_path;
         ta::make_front_end(art, &music, fes);
+        {
+            client::Settings s;
+            s.load(settings_path);
+            fes.shot_dir = ta::screenshot_dir(game_dir, s);
+            fes.shot_prefix = ta::kScreenshotPrefix;
+        }
         // Campaign, briefings and the saved games: <game dir>\SAVEGAME\<name>.sav as the original
         // keeps them (--saves DIR: another directory).
         {
@@ -532,6 +538,12 @@ int main(int argc, char** argv) {
     client::GameClient game(world->battle(), world->content(), opt);
     world->attach(&game);
     const auto commands = ta::install_console_commands(game, *world);
+    {
+        client::Settings s;
+        s.load(settings_path);
+        front.shot_dir = ta::screenshot_dir(game_dir, s);
+        front.shot_prefix = ta::kScreenshotPrefix;
+    }
     const auto at = world->start_position(0);
     game.center_on({at[0] << 16, 0, at[1] << 16});
     game.set_pointer_hidden(!front.draw_pointer);  // --no-pointer: frames as the original's screen surface has them

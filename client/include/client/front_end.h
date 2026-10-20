@@ -310,6 +310,9 @@ struct FrontEndSetup {
     MusicPlayer* music = nullptr;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;
+    // The screenshot key (Ctrl+F9, in menus and battles): the frame shown last goes to
+    // <shot_dir>/<shot_prefix>NNNN.pcx (front.h, save_numbered_picture).
+    std::string shot_dir, shot_prefix;
 };
 
 struct FrontOptions;  // client/front.h

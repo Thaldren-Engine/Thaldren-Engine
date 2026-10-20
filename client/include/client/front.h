@@ -34,6 +34,8 @@ struct FrontOptions {
     bool sound = true;
     bool draw_pointer = true;            // false: frames without the pointer (comparisons with the original's screen surface)
     bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
+    // The screenshot key (Ctrl+F9): the frame shown last goes to <shot_dir>/<shot_prefix>NNNN.pcx.
+    std::string shot_dir, shot_prefix;
 };
 
 // The pointer and the keyboard focus (docs/RE_MEMORY.md, "Client", "Pointer and focus"). The
@@ -72,9 +74,17 @@ bool pointer_event(SDL_Window* window, const SDL_Event& ev, int scale, int frame
 // Runs the client until it quits (or for the given frames). Returns a process exit code.
 int run_client(GameClient& client, Content& content, const FrontOptions& options);
 
-// Keys whose held-down repeats reach the client (the text fields' editing keys); other
-// non-character keys come once per press.
-inline bool key_repeats(int k) { return k == keys::kBackspace || k == keys::kDelete || k == keys::kLeft || k == keys::kRight; }
+// Keys whose held-down repeats reach the client: every key (the original's key queue gets
+// each WM_KEYDOWN / WM_CHAR the system repeats, so a held key acts again and again).
+inline bool key_repeats(int) { return true; }
+
+// The screenshot key's picture: `frame` as an 8-bit PCX named <prefix>NNNN.pcx in `dir` (made
+// when missing), NNNN one more than the largest number among the folder's <prefix>*.pcx files.
+// Returns the path written (empty on failure).
+std::string save_numbered_picture(const std::string& dir, const std::string& prefix, const render::Image8& frame,
+                                  const render::Palette& palette);
+// The screenshot key (Ctrl+F9; the original checks it in every state of the program, 0x499890).
+inline bool is_screenshot_key(const InputEvent& e) { return e.type == InputEvent::Type::KeyDown && e.ctrl && e.key == keys::kF1 + 8; }
 
 // Parses a script file: one event per line, "<frame> <event> <args...>" with events
 // move X Y | down X Y BUTTON | up X Y BUTTON | click X Y BUTTON (down and up) |

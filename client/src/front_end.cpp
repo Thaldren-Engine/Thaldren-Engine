@@ -190,6 +190,12 @@ public:
             return;
         }
         if (pending_) return;
+        if (is_screenshot_key(e)) {
+            // Taken off the queue at the start of the next pass, before anything is drawn: the
+            // picture is the frame shown last (0x499890).
+            shot_pending_ = true;
+            return;
+        }
         // A bar open alone over the battle (the network games' tab bar) leaves the keys to the
         // battle: its key handling runs whenever the game menu is not open.
         const bool key_event = e.type == InputEvent::Type::KeyDown || e.type == InputEvent::Type::KeyUp || e.type == InputEvent::Type::Text;
@@ -217,9 +223,24 @@ public:
         if (in_battle()) session_->client().poll_modifiers(shift, ctrl, alt);
     }
 
+    // The frame just shown (its list and palette), for the screenshot key.
+    void shown(render::DrawList&& list, const render::Palette* palette) {
+        last_shown_ = std::move(list);
+        last_palette_ = palette;
+    }
+    void take_screenshot() {
+        if (!shot_pending_) return;
+        shot_pending_ = false;
+        if (!last_palette_ || last_shown_.width <= 0) return;
+        const std::string path =
+            save_numbered_picture(s_.shot_dir, s_.shot_prefix, render::execute(last_shown_, blend()), *last_palette_);
+        std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
+    }
+
     void frame(std::uint32_t now) {
         now_ = now;
         ++frame_no_;
+        take_screenshot();
         graveyard_.clear();  // screens closed during the last pass go now
         retired_.reset();    // then a battle left during it
         const std::uint32_t ticks = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
@@ -475,6 +496,9 @@ private:
     }
 
     FrontEndSetup& s_;
+    bool shot_pending_ = false;
+    render::DrawList last_shown_;
+    const render::Palette* last_palette_ = nullptr;
     Settings settings_;
     std::vector<std::unique_ptr<Screen>> stack_;
     std::vector<std::unique_ptr<Screen>> graveyard_;
@@ -759,6 +783,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
                 }
 #endif
             }
+            run.shown(std::move(list), pal);
         }
         std::printf("front end (headless): %d frames, %zu interface sounds\n", f, run.sound_count_);
         // (tests: whether a battle is still running at the end, and the screens open over it)
@@ -847,6 +872,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             SDL_RenderTexture(sr, tex, nullptr, nullptr);
             SDL_RenderPresent(sr);
         }
+        run.shown(std::move(list), pal);
         return true;
     };
     run.present_now = [&] {

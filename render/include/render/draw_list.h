@@ -18,6 +18,7 @@ enum class DrawOp : std::uint8_t {
     Line,       // one-colour line from (x, y) to (x1, y1)
     BlitLight,  // lighten the frame under the sprite's non-key pixels through the light table
     BlitRemap,  // replace the frame under the sprite's non-key pixels through the remap table (fog)
+    BlitTable,  // replace the frame under the sprite's non-key pixels through the command's own table
 };
 
 struct DrawCmd {
@@ -27,6 +28,9 @@ struct DrawCmd {
     int x = 0, y = 0, x1 = 0, y1 = 0;
     std::uint8_t colour = 0;          // Line
     ClipRect clip;
+    // BlitTable: a mixing table in the blend table's layout, entry [src * 256 + dst]; it must
+    // outlive the frame (backends may keep it by its address).
+    const BlendTable* table = nullptr;
 };
 
 struct DrawList {
@@ -56,6 +60,12 @@ struct DrawList {
     }
     void remap_under(const Sprite8* s, int x, int y, const ClipRect& clip, bool persistent) {
         cmds.push_back({DrawOp::BlitRemap, s, persistent, x, y, 0, 0, 0, clip});
+    }
+    // The frame under the sprite's non-key pixels through 	able (shaded boxes, dimming).
+    void through(const Sprite8* s, int x, int y, const ClipRect& clip, bool persistent, const BlendTable* table) {
+        DrawCmd c{DrawOp::BlitTable, s, persistent, x, y, 0, 0, 0, clip};
+        c.table = table;
+        cmds.push_back(c);
     }
     void line(int x0, int y0, int x1, int y1, std::uint8_t colour, const ClipRect& clip) {
         cmds.push_back({DrawOp::Line, nullptr, false, x0, y0, x1, y1, colour, clip});
