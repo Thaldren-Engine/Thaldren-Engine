@@ -68,7 +68,7 @@ Requirements:
 
 ```
 git clone --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL.git SDL3
-cmake -S . -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL3_SOURCE_DIR=SDL3
+cmake -S . -B build -G "NMake Makefiles" "-DCMAKE_BUILD_TYPE=Release" "-DSDL3_SOURCE_DIR=SDL3"
 cmake --build build
 ```
 

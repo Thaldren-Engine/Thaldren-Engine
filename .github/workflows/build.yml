@@ -20,7 +20,7 @@ jobs:
           arch: x64
 
       - name: Configure
-        run: cmake -S . -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL3_SOURCE_DIR=../SDL3
+        run: cmake -S . -B build -G "NMake Makefiles" "-DCMAKE_BUILD_TYPE=Release" "-DSDL3_SOURCE_DIR=../SDL3"
 
       - name: Build
         run: cmake --build build
