@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -139,6 +140,21 @@ void test_crt_atof_quirks() {
     CHECK(bits(ta::crt_atof("-x")) == 0);          // no digits: +0
     CHECK(ta::crt_atof("0.1") == 0.1);
     CHECK(ta::crt_atof("  12.5e1") == 125.0);
+    // sscanf "%f" into a float (_atoflt 0x4F3AD0) rounds the 80-bit intermediate straight to
+    // 24 bits; these differ from float(atof(s)). Values from the original (orig_harness).
+    auto fbits = [](float f) {
+        std::uint32_t b;
+        std::memcpy(&b, &f, 4);
+        return b;
+    };
+    CHECK(fbits(ta::crt_scanf_float("700.8E8")) == 0x518288BFu);
+    CHECK(fbits(static_cast<float>(ta::crt_atof("700.8E8"))) == 0x518288C0u);
+    CHECK(fbits(ta::crt_scanf_float("-203784012")) == 0xCD4257F4u);
+    CHECK(fbits(ta::crt_scanf_float("+00061107158")) == 0x4C691AF5u);
+    CHECK(fbits(ta::crt_scanf_float("\t0752353392")) == 0x4E336001u);
+    CHECK(fbits(ta::crt_scanf_float("-")) == 0x80000000u);  // no digits: the sign is kept
+    CHECK(bits(ta::crt_atof("-")) == 0);                       // (atof returns +0 then)
+    CHECK(fbits(ta::crt_scanf_float("0.1")) == 0x3DCCCCCDu);
 }
 
 // The restrictions' list files (0x44B230 / 0x44B140): the table's size less one, then the listed

@@ -398,7 +398,12 @@ int crt_string_to_ld12(std::string_view s, Ld12& out) {
     }
 
     out.fill(0);
-    if (!any_digit) return 4;
+    if (!any_digit) {
+        // The sign is still stored ("-" gives -0); atof ignores the value then, sscanf's
+        // float conversion does not.
+        put16(out.data(), 10, sign);
+        return 4;
+    }
     if (n > 24) {
         --n;
         ++dec_exp;
@@ -429,8 +434,20 @@ int crt_string_to_ld12(std::string_view s, Ld12& out) {
     return flags;
 }
 
-std::uint64_t crt_ld12_to_double_bits(const Ld12& v) {
-    constexpr int kMaxExp = 1024, kMinExp = -1023, kPrec = 53, kExpWidth = 11, kBias = 1023;
+namespace {
+
+// The runtime's conversion format descriptors (0x510CE0 double, 0x510CF8 float):
+// max exponent, min exponent, precision, exponent width, (format width,) bias.
+struct CvtFormat {
+    int max_exp, min_exp, prec, exp_width, bias;
+};
+constexpr CvtFormat kDoubleFormat{1024, -1023, 53, 11, 1023};
+constexpr CvtFormat kFloatFormat{128, -127, 24, 8, 127};
+
+// _ld12cvt (0x4F37C0): the rounded mantissa and the format's high word (sign, exponent and
+// the top mantissa bits). The double's low word is the mantissa's second dword.
+Man ld12_cvt(const Ld12& v, const CvtFormat& f, std::uint32_t& high) {
+    const int kMaxExp = f.max_exp, kMinExp = f.min_exp, kPrec = f.prec, kExpWidth = f.exp_width, kBias = f.bias;
     const std::uint16_t se = get16(v.data(), 10);
     Man x{{get32(v.data(), 6), get32(v.data(), 2), static_cast<std::uint32_t>(get16(v.data(), 0)) << 16}};
     const int biased = se & 0x7FFF;
@@ -460,8 +477,32 @@ std::uint64_t crt_ld12_to_double_bits(const Ld12& v) {
             shr_man(x, kExpWidth);
         }
     }
-    const std::uint32_t hi = (static_cast<std::uint32_t>(e) << (31 - kExpWidth)) | ((se & 0x8000) ? 0x80000000u : 0u) | x.m[0];
+    high = (static_cast<std::uint32_t>(e) << (31 - kExpWidth)) | ((se & 0x8000) ? 0x80000000u : 0u) | x.m[0];
+    return x;
+}
+
+} // namespace
+
+std::uint64_t crt_ld12_to_double_bits(const Ld12& v) {
+    std::uint32_t hi = 0;
+    const Man x = ld12_cvt(v, kDoubleFormat, hi);
     return (static_cast<std::uint64_t>(hi) << 32) | x.m[1];
+}
+
+std::uint32_t crt_ld12_to_float_bits(const Ld12& v) {
+    std::uint32_t hi = 0;
+    ld12_cvt(v, kFloatFormat, hi);
+    return hi;
+}
+
+float crt_scanf_float(std::string_view s) {
+    // _atoflt (0x4F3AD0): no flags are looked at; "no digits" leaves a zero intermediate.
+    Ld12 v{};
+    crt_string_to_ld12(s, v);
+    const std::uint32_t bits = crt_ld12_to_float_bits(v);
+    float f;
+    std::memcpy(&f, &bits, sizeof f);
+    return f;
 }
 
 double crt_atof(std::string_view s) {
