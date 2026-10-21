@@ -12,6 +12,7 @@
 
 #include "sim/ai.h"
 #include "sim/battle_start.h"
+#include "sim/bitstream.h"
 #include "sim/commands.h"
 #include "sim/console.h"
 #include "sim/lockstep.h"
@@ -1377,6 +1378,52 @@ void test_x87_compare_conditions() {
     CHECK_EQ(sim::encode_build_fraction(-0.0f), 0u);
     CHECK_EQ(sim::encode_build_fraction(1.0f), 255u);
     CHECK_EQ(sim::encode_build_fraction(0.5f), 128u);
+    // 0x48B4D0: the received fraction replaces the unit's only when they compare unequal; a
+    // NaN fraction compares "equal" and stays.
+    struct Target : sim::WholeStateTarget {
+        float f = 0.0f;
+        int changed = 0;
+        std::uint16_t type() override { return 1; }
+        void make(std::uint16_t) override {}
+        void add_flags(std::uint32_t) override {}
+        void set_hit_points(std::int16_t) override {}
+        float fraction_left() override { return f; }
+        void set_fraction_left(float v) override {
+            f = v;
+            ++changed;
+        }
+        void activate(std::uint8_t, bool) override {}
+        bool carried() override { return false; }
+        void transport(std::uint16_t, std::uint8_t, std::uint8_t) override {}
+        bool same_cells(std::int32_t, std::int32_t, std::uint32_t) override { return true; }
+        void set_position(const std::array<std::int32_t, 3>&) override {}
+        void move_cells(const std::array<std::int32_t, 3>&, std::uint32_t) override {}
+        void set_angles(std::uint16_t, std::uint16_t, std::uint16_t) override {}
+        bool has_motion() override { return false; }
+        void set_speed(std::int32_t) override {}
+    };
+    auto apply = [](Target& t, std::uint32_t byte) {
+        sim::BitWriter w;
+        w.put(1, 4);       // type
+        w.put(100, 16);    // hit points
+        w.put(byte, 8);    // build fraction
+        w.put(0, 8);       // activation
+        w.put(0, 2);       // layer
+        w.put_bit(true);   // carried: carrier and piece end the record
+        w.put(0, 15);
+        w.put(0, 8);
+        const std::vector<std::uint8_t> bytes = w.bytes();
+        sim::BitReader r(bytes.data(), bytes.size());
+        sim::apply_whole_state(r, 4, t);
+    };
+    Target tg;
+    tg.f = std::nanf("");
+    apply(tg, 128);
+    CHECK_EQ(tg.changed, 0);
+    tg.f = 0.0f;
+    apply(tg, 255);
+    CHECK_EQ(tg.changed, 1);
+    CHECK_EQ(tg.f, 1.0f);
     // 0x465F2E: a mission's stored amounts become the storage bonus through __ftol (low 32
     // bits), not a saturating cast. 5e9 -> 705032704; 3e9 -> -1294967296, so the minimum 200.
     sim::HeightMap hm(8, 8);

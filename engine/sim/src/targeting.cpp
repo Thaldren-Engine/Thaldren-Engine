@@ -2,6 +2,7 @@
 
 #include "sim/construction.h"
 #include "sim/weapons.h"
+#include "sim/x87.h"
 
 namespace sim {
 namespace {
@@ -526,7 +527,7 @@ int pointer_look(Targeting& t, Weapons& w, std::uint8_t intent, Unit& unit, Unit
         const WeaponType* w2 = unit.weapons[2].type;
         if (!w2) return 3;  // (the original reads the missing weapon)
         const PlayerSlot& p = owner_of(t, unit);
-        if (p.energy_stored < w2->energy_per_shot) return 3;
+        if (x87::less(p.energy_stored, w2->energy_per_shot)) return 3;  // 0x43E874: unordered counts as short
         return w2->metal_per_shot <= p.metal_stored ? 1 : 3;
     }
     case intent::kUnload: return (ab & targeting_abilities::kLoad) ? 13 : 19;
