@@ -12,7 +12,7 @@ mode), harnesses `net_harness`, `netstate_harness`, `feature_harness`.
 
 Counts over the 85 rows below (2026-10-20). On master 14456bf: 35 BUILT+VERIFIED, 24
 BUILT-UNVERIFIED, 9 PARTIAL, 13 MISSING, 3 NOT-APPLICABLE. Now (recounted 2026-10-20 after the
-leave-path round): 40 BUILT+VERIFIED, 37 BUILT-UNVERIFIED, 4 PARTIAL, 1 MISSING, 3 NOT-APPLICABLE (rows changed this round are marked
+leave-path round; 5 rows added by the message round: 90 rows, 41 BUILT+VERIFIED, 41 BUILT-UNVERIFIED): 40 BUILT+VERIFIED, 37 BUILT-UNVERIFIED, 4 PARTIAL, 1 MISSING, 3 NOT-APPLICABLE (rows changed this round are marked
 *2026-10-20*; the feature rows of section 1 count as changed: master had no host role, broadcast
 requests, no comparison tool and no regression test).
 
@@ -126,6 +126,8 @@ requests, no comparison tool and no regression test).
 | unit definition agreement | BUILT+VERIFIED | |
 | computer players' session names ("AI:" + host name) | BUILT+VERIFIED | |
 | host's session or player not made (New game screen → `0x426E80` state 0x10 sub-state 0x11) | BUILT-UNVERIFIED *2026-10-20* | `0x451540` sets the host flag (side record +0x97 bit 0) and the player count 0 and opens the session without looking at the result; `0x451220` fails, sets the record back to controller 0 and pushes MSGBOX (500 wide, not modal); `0x450A10` is skipped and the state goes to 0x11: LOUNGE2 opens over the message box (`0x449BB0`) with no record in use (no player rows), this machine holding the host's controls, the list's first map. The text: the first record 0-9 with a controller and the host flag (this machine's no longer counts after the reset), else record 10 (cleared at `0x41D920`, never seated) — re-create only when that record is in use with controller 1/2, so with no records left from an earlier session it is "... re-join the game session." also on the host (was: the re-create text and no room). The client runs that room without a session (`enter_broken_room`, `make_broken_lounge`); a joining machine's failure still ends with the message (`0x4517B0` → the list again) |
+| game list: "Updating..." (TCP/IP) / "Connecting  (ESC to abort)" box while the games are asked for (`0x441460`: 150, no OK, fitted); a failed enumeration (unknown address, Escape) → the list closed and "Invalid TCP/IP Address" (`0x443CB0`, 200), seen two passes before the new connection screen covers it; UPDATE's failure leaves the rows | BUILT+VERIFIED *2026-10-20* | was not shown (the client blocked silently). Boxes: gui_harness `msgbox:150:0:1:Updating...` / `msgbox:200:Invalid TCP/IP Address` vs ta_play: the boxes identical (Updating: the whole frame differs only in rows 100–144; Invalid: 0 of 14,365 box pixels; the frames differ only in the provider rows the harness has none of). ta_play TCP/IP to 999.1.1.1: Updating box 2 frames, Invalid box frames 47–48, provider list at 49 |
+| room MAP with no map (`0x444EA0`: map name empty or none listed) → "There are no multiplayer maps to choose from" (320) | BUILT-UNVERIFIED *2026-10-20* | was missing; the box is the verified NetMessage |
 | menu-loop message width (`0x425730` buffer, shown by `0x426E80`) | BUILT-UNVERIFIED *2026-10-20* | text width + 20 by `0x4A5030`: the GUI's picture font (GUI +0x14 = hattfont12, set at start-up `0x491200`; only `0x4689C0` in battles changes it), the sum of its frame widths over every byte (control characters too); the client measured with the same font but stopped at a line break and skipped control characters |
 | the client library's own connection / room screens (`client/src/net_menu.cpp` ConnectScreen, RoomScreen, `make_multiplayer_menu`, `make_room_screen`, `install_multiplayer`) | REMOVED *2026-10-20* | never installed (the main menu's hook is `ta_compat` `install_net_screens`); they held invented texts and side names |
 
@@ -141,7 +143,10 @@ requests, no comparison tool and no regression test).
 | feature changes | BUILT+VERIFIED | section 1 |
 | resource sharing (Share screen's network side) | BUILT-UNVERIFIED | |
 | alliances in battle (Allies screen's network side) | BUILT-UNVERIFIED | |
-| watch mode | BUILT-UNVERIFIED | |
+| watch mode | BUILT-UNVERIFIED | *2026-10-20*: the question "You're out!  Continue Watching?" (no computer player fighting) and the 500-wide box for a host of live computer players (`0x464F80`, `0x465803`; CLIENT 2.53) |
+| out-of-units line of a network game (`0x450380`: name + rand() & 7 text) | BUILT-UNVERIFIED *2026-10-20* | CLIENT 2.52 |
+| sent away during the battle: the reason's box at the end (`0x41F7F0`) | BUILT-UNVERIFIED *2026-10-20* | CLIENT 2.54 |
+| packet 0x27: "<name> has modified his executable.  Game integrity breached." 12 console lines (`0x45530C`) | BUILT-UNVERIFIED *2026-10-20* | received only (TotalA.exe never sends 0x27; neither does the client) |
 | pause / speed | BUILT-UNVERIFIED | |
 | chat recipients (`0x453360`) | BUILT+VERIFIED | two-machine menus run |
 | players leaving / host leaving: a leaving host's flag passes to the record (controller 1 or 3) with the highest net id (`0x452CC0`) | BUILT-UNVERIFIED *2026-10-20* | was "no one decides features after": the new flag makes that machine decide feature damage itself; others still address the old host where it comes first (`0x450030`), as the original; machines can disagree (each sees its own computer players as controller 2). Side records (0x20) now carry the host flag into the battle. net_tests. Open: the kill routine's stale word for a remote team killed here (`Battle::kill_team` records a fault; the word is the network code's stack, an input) |
