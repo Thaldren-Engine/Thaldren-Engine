@@ -101,6 +101,7 @@ add_library(ta_compat STATIC
     ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
     ta_compat/src/campaign.cpp
+    ta_compat/src/cd_check.cpp
     ta_compat/src/mission_text.cpp
     ta_compat/src/notice_texts.cpp
     ta_compat/src/online_services.cpp

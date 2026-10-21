@@ -20,7 +20,9 @@
 #include "client/sound_desk.h"
 #include "client/sound_rules.h"
 #include "client/track_file_device.h"
+#include "net/lobby.h"
 #include "ta/battle_loader.h"
+#include "ta/cd_check.h"
 #include "ta/crt_strtod.h"
 #include "ta/hpi.h"
 #include "ta/inflate.h"
@@ -1288,6 +1290,80 @@ void test_wave_out_channel() {
     CHECK(!w.playing(3000));  // the loop forgotten
 }
 
+void test_cd_check() {
+    // The shipped program: '.' at once, nothing looked at.
+    int asked = 0;
+    ta::CdCheckEnv env;
+    env.next_drive = [&](char) {
+        ++asked;
+        return static_cast<char>(0);
+    };
+    CHECK(ta::cd_probe(0, true, env) == '.' && ta::cd_probe(1, true, env) == '.' && ta::cd_probe(7, true, env) == '.');
+    CHECK(asked == 0);
+    CHECK(ta::cd_present(0, env) && ta::cd_present(1, env));
+    // (the network room's CD bit, 0x449C73 / 0x44AF65: set from the multiplayer check)
+    CHECK((net::RoomPlayer{}.cd & 4) != 0);
+    // Without the flag: the CD-ROM drives in order, the first TOTALA.ID that says so.
+    FakeDrives d;
+    d.types['D'] = 5;
+    d.types['F'] = 5;
+    std::map<std::string, std::string> files;
+    files["D:\\TOTALA.ID"] = "[Contents]\n{\nCampaign=0;\nMultiplayer=1;\n}\n";
+    files["F:\\TOTALA.ID"] = "[contents]\n{\ncampaign=2;\n}\n";
+    env.next_drive = [&d](char c) { return client::next_cdrom_drive(d, c); };
+    env.read_file = [&files](const std::string& p) -> std::optional<std::string> {
+        auto it = files.find(p);
+        if (it == files.end()) return std::nullopt;
+        return it->second;
+    };
+    CHECK(ta::cd_probe(1, false, env) == 'D');
+    CHECK(ta::cd_probe(0, false, env) == 'F');
+    CHECK(ta::cd_probe(2, false, env) == 0);
+    files.erase("F:\\TOTALA.ID");
+    CHECK(ta::cd_probe(0, false, env) == 0);
+    // -f: only "h:" (lower case), once.
+    env.h_only = true;
+    files["h:\\TOTALA.ID"] = "[Contents]\n{\nCampaign=1;\n}\n";
+    CHECK(ta::cd_probe(0, false, env) == 'h');
+    CHECK(ta::cd_probe(1, false, env) == 0);
+}
+
+void test_scores_reporting() {
+    ta::ScoresReportingEnv env;
+    ta::ScoresReportingState st;
+    // No provider (zero GUID), serial or modem: not tried.
+    int loads = 0;
+    env.load_library = [&loads] {
+        ++loads;
+        return 0;
+    };
+    CHECK(ta::start_scores_reporting(env, st) == ta::ScoresReporting::NotTried && loads == 0 && !st.reporting);
+    env.provider = {0x60, 0x68, 0x1D, 0x0F, 0xD9, 0x88, 0xCF, 0x11, 0x9C, 0x4E, 0x00, 0xA0, 0xC9, 0x05, 0x42, 0x5E};
+    CHECK(ta::start_scores_reporting(env, st) == ta::ScoresReporting::NotTried && loads == 0);
+    // TCP/IP: the tables made, the flag set, reporter.dll missing: no services, nothing shown.
+    env.provider = {0xE0, 0x5E, 0xE9, 0x36, 0x77, 0x85, 0xCF, 0x11, 0x96, 0x0C, 0x00, 0x80, 0xC7, 0x53, 0x4E, 0x82};
+    st.services = 3;
+    const ta::ScoresReporting r = ta::start_scores_reporting(env, st);
+    CHECK(r == ta::ScoresReporting::Started && loads == 1 && st.reporting && !st.library && st.services == 0);
+    CHECK(ta::scores_reporting_shown(r, st) == ta::ScoresReportingShown::Nothing);
+    // The program here can never load it.
+    env.load_library = ta::reporter_library_not_loadable;
+    CHECK(ta::scores_reporting_shown(ta::start_scores_reporting(env, st), st) == ta::ScoresReportingShown::Nothing);
+    // A library without its entry points: the error box.
+    env.load_library = [] { return 2; };
+    const ta::ScoresReporting r2 = ta::start_scores_reporting(env, st);
+    CHECK(r2 == ta::ScoresReporting::LibraryBroken && ta::scores_reporting_shown(r2, st) == ta::ScoresReportingShown::ErrorBox);
+    // A complete one with services: the report screen.
+    env.load_library = [] { return 1; };
+    env.services = [] { return 2; };
+    const ta::ScoresReporting r3 = ta::start_scores_reporting(env, st);
+    CHECK(r3 == ta::ScoresReporting::Started && st.library && st.services == 2 && ta::scores_reporting_shown(r3, st) == ta::ScoresReportingShown::ReportScreen);
+    // The lobby's switch skips the provider test.
+    env.provider = {};
+    env.lobby_override = true;
+    CHECK(ta::start_scores_reporting(env, st) == ta::ScoresReporting::Started);
+}
+
 } // namespace
 
 int main() {
@@ -1315,6 +1391,8 @@ int main() {
     test_track_file_device();
     test_battle_music_judge();
     test_wave_out_channel();
+    test_cd_check();
+    test_scores_reporting();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
