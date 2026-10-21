@@ -157,24 +157,42 @@ private:
 }  // namespace
 
 std::string wrap_for_width(const client::Font& f, const std::string& t, int width, bool cr) {
+    // 0x4AC4C0: characters are copied up to a NUL or 0xFF; after each one, when the next is a
+    // space, a line feed or a hyphen and the line so far (from its start to the copy's end) is at
+    // least `width` wide, the copy goes back in step with the source to the last space or hyphen
+    // in the source (past the line's start when it has none: back into the earlier lines), which
+    // becomes CR LF, and the next line starts after it. A line feed in the source starts a line
+    // (the width counts from after it). (A word with no space or hyphen before it in the whole
+    // text would make the original read before its buffer: the copy stops at the text's start.)
+    auto at = [&](std::size_t k) -> unsigned char { return k < t.size() ? static_cast<unsigned char>(t[k]) : 0; };
     std::string out;
-    std::size_t line_start = 0;
-    for (std::size_t i = 0; i < t.size(); ++i) {
-        out.push_back(t[i]);
-        const char next = i + 1 < t.size() ? t[i + 1] : '\0';
-        if ((next == ' ' || next == '\n' || next == '-') && f.text_width(out.substr(line_start)) >= width) {
-            std::size_t k = out.size() - 1, j = i;
-            while (k > line_start && t[j] != ' ' && t[j] != '-') {
+    std::vector<std::size_t> breaks;  // where a CR was put
+    std::size_t line = 0, i = 0;
+    while (at(i) != 0 && at(i) != 0xFF) {
+        out.push_back(static_cast<char>(at(i)));
+        std::size_t n = i + 1;
+        const unsigned char next = at(n);
+        if ((next == ' ' || next == '\n' || next == '-') && f.text_width(std::string_view(out).substr(line)) >= width) {
+            std::size_t j = i;
+            while (at(j) != ' ' && at(j) != '-') {
                 out.pop_back();
-                --k;
+                if (j == 0) break;
                 --j;
             }
-            out.back() = cr ? '\r' : '\n';
-            if (cr) out.push_back('\n');
-            line_start = out.size();
-            i = j;
+            if (!out.empty()) {
+                out.back() = '\r';
+                breaks.push_back(out.size() - 1);
+            }
+            out.push_back('\n');
+            line = out.size();
+            n = j + 1;
         }
+        if (at(n) == '\n') line = out.size() + 1;
+        i = n;
     }
+    if (!cr)
+        for (auto b = breaks.rbegin(); b != breaks.rend(); ++b)
+            if (*b < out.size() && out[*b] == '\r') out.erase(*b, 1);
     return out;
 }
 
@@ -1557,18 +1575,25 @@ protected:
     void draw_under(FrontEnd& fe, render::Image8&) override {
         if (named_) return;
         named_ = true;
-        // The name word-wrapped to the label's width in the small font (0x4AC4C0: at the end of
-        // a word, when the line so far is at least as wide, it breaks at the last space or
-        // hyphen before, which the break replaces); the first line goes to MISSIONNAME, the
-        // second to MISSIONNAME1.
+        // The name word-wrapped to the label's width in the small font (0x460523 -> 0x4AC4C0
+        // with font -1, the current one: at the end of a word, when the line so far is at least
+        // as wide, it breaks at the last space or hyphen before, which becomes "\r\n"); then
+        // strtok(text, "\n") (0x460534 / 0x460560: no empty tokens) gives MISSIONNAME the first
+        // line and MISSIONNAME1 the second, each broken line keeping its '\r' (drawn and counted
+        // like the message box's lines).
         const client::Font* f = fe.menu_content().small_font ? fe.menu_content().small_font : fe.menu_content().font;
         Widget* w1 = widget("MISSIONNAME");
         if (!w1 || !f) return;
-        const std::string out = wrap_for_width(*f, name_, w1->w);
-        const std::size_t nl = out.find('\n');
-        w1->text = out.substr(0, nl);
-        if (nl != std::string::npos)
-            if (Widget* w2 = widget("MISSIONNAME1")) w2->text = out.substr(nl + 1, out.find('\n', nl + 1) - nl - 1);
+        const std::string out = wrap_for_width(*f, name_, w1->w, true);
+        std::vector<std::string> tokens;
+        for (std::size_t at = 0; at <= out.size() && tokens.size() < 2;) {
+            const std::size_t nl = std::min(out.find('\n', at), out.size());
+            if (nl > at) tokens.push_back(out.substr(at, nl - at));
+            at = nl + 1;
+        }
+        w1->text = tokens.empty() ? std::string() : tokens[0];
+        if (tokens.size() > 1)
+            if (Widget* w2 = widget("MISSIONNAME1")) w2->text = tokens[1];
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         client::BattleSession* s = fe.session();

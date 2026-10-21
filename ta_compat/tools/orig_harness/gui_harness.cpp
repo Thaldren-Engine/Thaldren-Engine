@@ -12,7 +12,7 @@
 // Usage: gui_harness <TotalA.exe> <out_prefix> [screen ...] [--res WxH] [--palettes PALETTE.PAL GUIPAL.PAL] [--type N] [--grey]
 //                    [--language WORD]  the program's language (default english; compare ta_play WORD)
 //   screens: main single options skirmish ingame (the in-game menu, F2) prefs (its options)
-//            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu; tabmenu
+//            and the in-battle option pages soundsrt musicrt speedsrt visualrt; exitmenu; restart; tabmenu
 //   Writes <out_prefix><screen>.bmp.
 //   In-battle panels (after "battle"): open:NAME opens a GUI layout with the build menu's
 //   handler (as the battle opens <unit><page>.GUI); text:GADGET=TEXT sets a gadget's caption
@@ -2178,6 +2178,7 @@ int main(int argc, char** argv) {
         } else if (s == "ingame") ok = r.call(kGameMenu, 0, {});
         else if (s == "prefs") ok = r.call(kOptionsMenu, 0, {});
         else if (s == "exitmenu") ok = r.call(0x004608B0, 0, {});
+        else if (s == "restart") ok = r.call(0x004604A0, 0, {});  // the restart dialog (after missionname:)
         else if (s == "tabmenu") ok = r.call(0x00495010, 0, {});  // the network games' Tab bar
         else if (s == "help") ok = r.call(0x0045FB30, 0, {});
         else {
