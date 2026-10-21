@@ -32,6 +32,9 @@ struct FrontOptions {
     bool gpu = true;                     // window: GPU backend (else CPU frames through an SDL texture)
     bool gpu_check = false;              // headless: also draw screenshots on the GPU and compare
     bool sound = true;
+    // The sound path (0x47ED40): 0 the platform's mixer (DirectSound), 1 no sound effects (-s,
+    // NoDirectSound), 2 the Windows wave-out path (-w, UseWindowsSound). The music plays on each.
+    int sound_path = 0;
     bool draw_pointer = true;            // false: frames without the pointer (comparisons with the original's screen surface)
     bool realtime = false;               // headless: pace the frames to the wall clock (network games between processes)
     // A windowed display instead of the full screen the window stands for (the original's -d

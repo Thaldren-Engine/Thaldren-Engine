@@ -18,7 +18,7 @@
 
 #include "client/front_end.h"
 #include "client/menu.h"
-#include "client/music.h"
+#include "client/cd_audio.h"
 #if __has_include("client/net_menu.h")
 #include "client/net_menu.h"
 #define TA_CLIENT_HAVE_NET 1
@@ -56,9 +56,9 @@ public:
     // A map's preview picture (the TNT's minimap), scaled into w x h; null when missing.
     const render::Sprite8* map_preview(const std::string& map, int w, int h);
 
-    // The game's music tracks: music\<n>.mp3 for n = 1.. (decoded on demand).
-    int music_tracks() const { return music_tracks_; }
-    std::shared_ptr<const client::Sample> music_track(int n);
+    // A music file of the game's folder ("music/5.mp3": the CD audio device's tracks), decoded
+    // (the last few kept); null when it does not decode.
+    std::shared_ptr<const client::Sample> music_file(const std::string& path);
 
     // Skirmish maps (maps\*.ota with a network schema), sorted by name.
     const std::vector<std::string>& skirmish_maps();
@@ -110,8 +110,8 @@ private:
     std::map<std::string, std::unique_ptr<client::ScreenLayout>> layouts_;
     std::deque<client::Font> fonts_;
     std::map<std::string, int> sound_index_;
-    int music_tracks_ = 0;
-    std::map<int, std::shared_ptr<const client::Sample>> music_cache_;
+
+    std::map<std::string, std::shared_ptr<const client::Sample>> music_cache_;
     std::vector<std::string> maps_;
     std::string first_map_;
     bool maps_done_ = false;
@@ -201,7 +201,7 @@ bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOu
 sim::Lcg15& menus_rand();
 
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
-void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup);
+void make_front_end(MenuArt& art, client::CdMusic* music, client::FrontEndSetup& setup);
 // The original's picture folder (registry "Image Output Directory"; by default the game's
 // folder and the user's name, "user images" without one) and its screenshot names: the
 // screenshot key writes <folder>\screenshots\SHOTnnnn.pcx (0x499890).

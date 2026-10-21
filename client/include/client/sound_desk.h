@@ -48,4 +48,32 @@ private:
     std::vector<SoundCommand> extra_;  // the narration channel's commands
 };
 
+// The Windows wave-out path (the original's -w switch or totala.ini's UseWindowsSound; spec:
+// docs/RE_MEMORY.md, "Client", "Sound paths"): every sound goes to the system's PlaySoundA with
+// the file's bytes, so one sound plays at a time at the file's own level (no 5.85 dB, no
+// placing, no buffer limit), a new one cutting off the last; only RIFF WAVE files play. A
+// looping start (the menus' BGM) is remembered and started again (from its beginning) at every
+// main-loop pass in which nothing plays (SND_NOSTOP); stopping all sounds forgets it.
+class WaveOutChannel {
+public:
+    void attach(AudioOut* out) { out_ = out; }
+    void set_log(bool on) { log_ = on; }
+    // 0x49F680 / 0x49F6C0 (one-shot) and 0x49F6A0 (loop): false when nothing starts.
+    bool play(const Sample* s, bool loop, std::uint32_t now_ms);
+    void pass(std::uint32_t now_ms);  // 0x47F680 -> 0x49F620
+    void stop_all();                  // 0x49F640
+    bool playing(std::uint32_t now_ms) const;
+    std::size_t started() const { return started_; }
+
+private:
+    bool start(const Sample* s, bool loop, std::uint32_t now_ms);
+    AudioOut* out_ = nullptr;
+    bool log_ = false;
+    const Sample* current_ = nullptr;
+    bool current_loop_ = false;
+    std::uint32_t started_ms_ = 0;
+    const Sample* loop_ = nullptr;  // 0x51FB9C
+    std::size_t started_ = 0;
+};
+
 }  // namespace client

@@ -27,6 +27,7 @@
 #include "net/dplay_tcpip.h"
 #include "net/protocol.h"
 #include "render/raster.h"
+#include "ta/cd_check.h"
 #include "ta/client_world.h"
 #include "ta/net_setup.h"
 #include "ta/online_services.h"
@@ -622,6 +623,27 @@ struct NetPart {
     bool test = false;        // tests: no network
     NetPart(MenuArt& a, client::NetMenuConfig c) : art(a), cfg(std::move(c)) {}
 };
+
+// 0x4436E0 as a network session starts (the joined game 0x427FE2, the hosted one 0x44100B): the
+// scores reporting is tried with the session provider's GUID (ta/cd_check.h). No reporter.dll
+// ships, and this program could not load the 32-bit one: the load fails, no service is listed,
+// the report screen is not opened and nothing is shown (the hourglass pointer the original sets
+// around it is put back before a frame is drawn).
+void start_scores_reporting(const NetPart& p) {
+    static const std::array<std::uint8_t, 16> kTcp{0xE0, 0x5E, 0xE9, 0x36, 0x77, 0x85, 0xCF, 0x11, 0x96, 0x0C, 0x00, 0x80, 0xC7, 0x53, 0x4E, 0x82};
+    static const std::array<std::uint8_t, 16> kIpx{0x00, 0xC4, 0x5B, 0x68, 0x2C, 0x9D, 0xCF, 0x11, 0xA9, 0xCD, 0x00, 0xAA, 0x00, 0x68, 0x86, 0xE3};
+    static const std::array<std::uint8_t, 16> kModem{0x60, 0xA7, 0xEA, 0x44, 0x68, 0xCB, 0xCF, 0x11, 0x9C, 0x4E, 0x00, 0xA0, 0xC9, 0x05, 0x42, 0x5E};
+    static const std::array<std::uint8_t, 16> kSerial{0x60, 0x68, 0x1D, 0x0F, 0xD9, 0x88, 0xCF, 0x11, 0x9C, 0x4E, 0x00, 0xA0, 0xC9, 0x05, 0x42, 0x5E};
+    ta::ScoresReportingEnv env;
+    if (p.provider == 1) env.provider = kTcp;
+    else if (p.provider == 2) env.provider = kIpx;
+    else if (p.provider == 3) env.provider = kModem;
+    else if (p.provider == 4) env.provider = kSerial;
+    env.load_library = ta::reporter_library_not_loadable;
+    ta::ScoresReportingState st;
+    const ta::ScoresReporting r = ta::start_scores_reporting(env, st);
+    if (ta::scores_reporting_shown(r, st) != ta::ScoresReportingShown::Nothing) std::printf("scores reporting: unexpected outcome\n");
+}
 
 std::string os_user_name() {
     // The original takes the system's user name when no name was given (GetUserNameA).
@@ -1441,6 +1463,7 @@ void SelGame::join(FrontEnd& fe, bool watch) {
             return;
         }
     }
+    if (!part_->test) start_scores_reporting(*part_);
     enter_room(fe, part_, false);
 }
 
@@ -1513,6 +1536,7 @@ void NewMulti::next(FrontEnd& fe) {
             return;
         }
     }
+    if (!part_->test) start_scores_reporting(*part_);
     enter_room(fe, part_, true);
 }
 

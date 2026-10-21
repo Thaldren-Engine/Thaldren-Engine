@@ -45,7 +45,9 @@ class Battle;
 namespace client {
 
 class FrontEnd;
-class MusicPlayer;   // client/music.h
+class CdMusic;       // client/cd_audio.h
+class TickTimers;    // client/cd_audio.h
+class AudioOut;      // client/audio.h
 struct MenuContent;  // client/menu.h
 
 // ---------------------------------------------------------------- settings
@@ -368,8 +370,13 @@ public:
     virtual void stop_narration() {}
     // Every playing sound stops (the sound mode switched off).
     virtual void stop_sounds() {}
-    // The music player (null when there is no music).
-    virtual MusicPlayer* music() = 0;
+    // The CD music player (null when there is no music; client/cd_audio.h).
+    virtual CdMusic* music() = 0;
+    // The original's settings writer (0x430F00, the registry): what was saved last is what the
+    // music library reads (saved_settings). Called where the original writes the registry
+    // (the options menu's OK, a battle's start, the commands that save).
+    virtual void write_registry() {}
+    virtual const Settings& saved_settings() const = 0;
     // Applies the settings (volumes, speeds, interface options) after an options screen.
     virtual void apply_settings() = 0;
     // Milliseconds since the program started (the main loop's clock).
@@ -409,7 +416,17 @@ struct FrontEndSetup {
     // Closing the window while a battle runs: the question shown instead of quitting (null:
     // quit at once).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> close_prompt;
-    MusicPlayer* music = nullptr;
+    // The CD music (client/cd_audio.h; null: none): the player, the program's tick timers
+    // (pumped once per main-loop pass) and the device's own turns (once per pass).
+    CdMusic* music = nullptr;
+    TickTimers* timers = nullptr;
+    std::function<void()> music_pass;
+    std::function<void(AudioOut*)> music_output;  // the audio output once it is open (null: none)
+    std::function<void(std::uint32_t)> music_clock;  // the main loop's clock (ms) at each pass, for the devices and timers
+    void* native_window = nullptr;  // the program window's handle once it is open (HWND on Windows)
+    // The registry as the original last wrote it (FrontEnd::saved_settings): the music library
+    // reads its "musicvol" and "cdmode" from here.
+    Settings saved_settings;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;
     // The screenshot key (Ctrl+F9, in menus and battles): the frame shown last goes to

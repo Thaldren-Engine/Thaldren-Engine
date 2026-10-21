@@ -83,7 +83,9 @@
 #include "client/front.h"
 #include "client/game_client.h"
 #include "client/mouse_trails.h"
-#include "client/music.h"
+#include "client/cd_audio.h"
+#include "client/cd_audio_system.h"
+#include "client/track_file_device.h"
 #include "render/presenter.h"
 #include "ta/campaign.h"
 #include "ta/client_campaign.h"
@@ -279,6 +281,8 @@ int main(int argc, char** argv) {
     // -d / -df (0x49EE30: 0x51FB48 = 3 / 2; the window set-up 0x49E830 keeps the full screen
     // unless it is 3) and the bare word (0x51FB50, the language).
     int display_switch = 0;
+    bool wave_switch = false, no_direct_sound_switch = false;  // -w, -s (0x49EE30)
+    std::string cd_audio = "tracks";  // --cd-audio tracks / system: the CD audio device
     std::string language_word;
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -306,6 +310,11 @@ int main(int argc, char** argv) {
             }
             if (library) continue;
             const char l = static_cast<char>(std::tolower(static_cast<unsigned char>(a[1])));
+            if (l == 'w') {
+                // -w / /w, any case (0x49EE30 -> 0x47EFD0): the Windows wave-out path.
+                wave_switch = true;
+                continue;
+            }
             if (l == 'd') {
                 display_switch = a.size() > 2 && (a[2] == 'f' || a[2] == 'F') ? 2 : 3;
                 continue;
@@ -408,7 +417,8 @@ int main(int argc, char** argv) {
         else if (a == "--no-sound") front.sound = false;
         // The original's own switch: -s or /s (any case, the rest of the word ignored; 0x49EE30)
         // starts without sound.
-        else if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && (a[1] == 's' || a[1] == 'S')) front.sound = false;
+        else if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && (a[1] == 's' || a[1] == 'S')) no_direct_sound_switch = true;
+        else if (a == "--cd-audio") cd_audio = next();
         else if (a == "--seed") setup.seed = static_cast<std::uint32_t>(std::strtoul(next().c_str(), nullptr, 0));
         else if (a == "--headless") {
             front.headless = true;
@@ -459,9 +469,14 @@ int main(int argc, char** argv) {
         std::printf("language %s, %s display\n", language.c_str(), display_switch == 3 ? "windowed" : "full-screen");
     }
     front.windowed_display = display_switch == 3;
-    // totala.ini beside the program (0x47ED40): NoDirectSound starts without sound as -s does
-    // (UseWindowsSound, the Windows wave-out path, has no counterpart: one audio output).
-    if (ta::preferences_int(game_dir, "NoDirectSound", 0) != 0) front.sound = false;
+    // The sound path (0x47ED40): -w or totala.ini's UseWindowsSound the Windows wave-out path
+    // (0x49F610 always says it is there), else -s or NoDirectSound no sound effects; the music
+    // plays on every path (the CD opens whatever they say).
+    {
+        const bool wave = wave_switch || ta::preferences_int(game_dir, "UseWindowsSound", 0) != 0;
+        const bool none = no_direct_sound_switch || ta::preferences_int(game_dir, "NoDirectSound", 0) != 0;
+        front.sound_path = wave ? 2 : none ? 1 : 0;
+    }
     setup.players.clear();
     for (int p = 0; p < players; ++p) setup.players.push_back({p == 0 ? side : 1 - side, p != 0 && ai, -1});
     setup.human = 0;
@@ -519,8 +534,49 @@ int main(int argc, char** argv) {
                 std::printf("link %u %s\n", l.id, l.name.c_str());
             return 0;
         }
-        client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
         client::FrontEndSetup fes;
+        // The CD music (client/cd_audio.h): the shipped program's device plays music/N.mp3 for
+        // CD track N (client/track_file_device.h); --cd-audio system sends the commands to the
+        // system's CD audio instead. The clock is the main loop's.
+        std::uint32_t music_ms = 0;
+        client::TickTimers music_timers([&music_ms] { return music_ms; });
+        client::AudioTrackOutput track_out([&art](const std::string& p) { return art.music_file(p); }, [&music_ms] { return music_ms; });
+        track_out.set_log(front.headless);
+        std::unique_ptr<client::CdCommandDevice> cd_device;
+        client::TrackFileDevice* track_device = nullptr;
+        if (cd_audio == "system") {
+            cd_device = client::system_cd_device([&fes] { return fes.native_window; });
+        } else {
+            client::TrackFileDevice::Env env;
+            env.out = &track_out;
+            env.clock_ms = [&music_ms] { return music_ms; };
+            env.open_read_write = [game_dir](const std::string& rel) { return client::file_opens_read_write((std::filesystem::path(game_dir) / rel).string()); };
+            env.saved_music_volume = [&fes] { return fes.saved_settings.get_int("musicvol", 32); };
+            env.saved_mode = [&fes] { return fes.saved_settings.get_int("cdmode", 4); };
+            auto d = std::make_unique<client::TrackFileDevice>(env);
+            track_device = d.get();
+            cd_device = std::move(d);
+        }
+        std::unique_ptr<client::CdAuxVolume> cd_aux = client::system_aux_volume();
+        std::unique_ptr<client::CdDrives> cd_drives = client::system_cd_drives();
+        // The music's rand(): its own stream (the original draws the main thread's, which in a
+        // battle is the simulation's; kept apart so that the simulation's stream is untouched).
+        sim::Lcg15 music_rand;
+        client::CdMusic::Env menv;
+        menv.device = cd_device.get();
+        menv.aux = cd_aux.get();
+        menv.drives = cd_drives.get();
+        menv.timers = &music_timers;
+        menv.rand = [&music_rand] { return music_rand.next(); };
+        menv.find_player_window = [] { return client::find_cd_player_window(); };
+        menv.close_player_window = [](std::uintptr_t w) { client::close_cd_player_window(w); };
+        client::CdMusic music(menv);
+        fes.timers = &music_timers;
+        fes.music_pass = [track_device] {
+            if (track_device) track_device->update();
+        };
+        fes.music_output = [&track_out](client::AudioOut* a) { track_out.attach(a); };
+        fes.music_clock = [&music_ms](std::uint32_t t) { music_ms = t; };
         fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options
         fes.height = 480;
         fes.settings_path = settings_path;
@@ -570,16 +626,6 @@ int main(int argc, char** argv) {
             fes.main_menu = [&art, cfg, net_screens](client::FrontEnd&) { return ta::make_net_test_screens(art, cfg, net_screens); };
         }
 #endif
-        {
-            // Track types: the saved list, else the original's default for a 16-track disc
-            // (tracks 1-7 battle, the rest building).
-            client::Settings s;
-            s.load(settings_path);
-            const std::string types = s.get_text("CDLISTS", "");
-            for (int t = 1; t <= music.track_count(); ++t)
-                music.types()[static_cast<std::size_t>(t)] = t - 1 < static_cast<int>(types.size()) ? static_cast<std::uint8_t>(types[static_cast<std::size_t>(t - 1)] - '0')
-                                                                 : static_cast<std::uint8_t>(music.track_count() >= 16 && t <= 7 ? 1 : 0);
-        }
         if (!loading_test_file.empty()) {
             // Tests: loading screen frames from a file, one item per line (# comments):
             //   map NAME | nomap          the map line (nomap: none, as for missions)
@@ -725,7 +771,7 @@ int main(int argc, char** argv) {
             fes.width = opt.width;  // (--res: the screen size the battle had)
             fes.height = opt.height;
         }
-        std::printf("front end: %d music tracks, %zu skirmish maps\n", music.track_count(), art.skirmish_maps().size());
+        std::printf("front end: %zu skirmish maps, CD audio %s\n", art.skirmish_maps().size(), cd_audio.c_str());
         if (!key_sweep.empty()) {
             // KEYS:MODS[:X,Y] (a click at X,Y before each key)
             const auto c = key_sweep.find(':');

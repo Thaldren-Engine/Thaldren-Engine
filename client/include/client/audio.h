@@ -27,18 +27,23 @@ public:
     void run(const SoundCommand& c);
     // Stops every effect voice of the samples in `samples` (their table goes away).
     void forget(const std::vector<Sample>& samples);
-    // Effect volume (the original's wave-output volume: fxvol x 1024 of 65535, linear) and
-    // music volume, both 0..1.
+    // The wave-output volume (fxvol x 1024 of 65535, linear, 0..1). On Windows Vista and later
+    // the original's waveOutSetVolume sets the program's whole audio session: it scales every
+    // sound the program makes, the music included (measured: docs/RE_MEMORY.md, "Sound
+    // volume"). Here it scales the effect voices, the narration and the music channel.
     void set_fx_volume(float volume);
-    void set_music_volume(int volume);  // 0..256
-    // Music channel: one track at a time.
-    void play_music(std::shared_ptr<const Sample> track);
-    void stop_music();
-    // Holds the music where it is (true) or lets it go on (false).
-    void pause_music(bool paused);
+    // The music stream's own volume, 0..256 (the music library's 0..1).
+    void set_music_volume(int volume);
+    // Music channel: one stream at a time. Starts `track` at sample frame `frame` (repeating
+    // from its start at the end when `repeat`).
+    void music_start(std::shared_ptr<const Sample> track, std::uint64_t frame, bool repeat);
+    // Stops the stream where it is (its position stays for music_frame).
+    void music_halt();
+    void music_set_repeat(bool repeat);
+    // Playing: started, not halted, not run out.
     bool music_playing() const;
-    // Seconds of the music track played so far (0 when none).
-    double music_position() const;
+    // The stream's position in its sample frames.
+    std::uint64_t music_frame() const;
     bool ok() const { return impl_ != nullptr; }
 
     struct Impl;

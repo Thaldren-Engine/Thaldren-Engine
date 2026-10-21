@@ -101,6 +101,7 @@ add_library(ta_compat STATIC
     ta_compat/src/battle_loader.cpp
     ta_compat/src/battle_types.cpp
     ta_compat/src/campaign.cpp
+    ta_compat/src/cd_check.cpp
     ta_compat/src/mission_text.cpp
     ta_compat/src/notice_texts.cpp
     ta_compat/src/online_services.cpp
@@ -165,7 +166,7 @@ target_compile_options(net_tests PRIVATE ${FP_FLAGS} ${WARN_FLAGS})
 add_test(NAME net_tests COMMAND net_tests)
 
 add_executable(compat_tests tests/compat_tests.cpp)
-target_link_libraries(compat_tests PRIVATE ta_compat)
+target_link_libraries(compat_tests PRIVATE ta_compat client)
 target_compile_options(compat_tests PRIVATE ${WARN_FLAGS})
 target_compile_definitions(compat_tests PRIVATE
     FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ta_compat/tests/fixtures")
