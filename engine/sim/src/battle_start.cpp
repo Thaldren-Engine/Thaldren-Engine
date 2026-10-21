@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "sim/battle.h"
+#include "sim/x87.h"
 
 namespace sim {
 
@@ -43,11 +44,11 @@ std::uint16_t type_by_name(Battle& b, const std::string& name) {
 
 std::int32_t start_energy(const BattleStart& s, int k) {
     const StartPlayer& sp = s.players[static_cast<std::size_t>(k)];
-    return sp.energy >= 0 ? sp.energy : static_cast<std::int32_t>(s.start_energy);
+    return sp.energy >= 0 ? sp.energy : x87::ftol32(static_cast<double>(s.start_energy));
 }
 std::int32_t start_metal(const BattleStart& s, int k) {
     const StartPlayer& sp = s.players[static_cast<std::size_t>(k)];
-    return sp.metal >= 0 ? sp.metal : static_cast<std::int32_t>(s.start_metal);
+    return sp.metal >= 0 ? sp.metal : x87::ftol32(static_cast<double>(s.start_metal));
 }
 
 // Starting resources (0x465E30), for every record: skirmish the player's settings, network
@@ -66,7 +67,7 @@ void init_resources(Battle& b, const BattleStart& s) {
             // Missions: the schema's amounts per record (player 0 the human's, 1 the computer's),
             // also as the storage bonus (truncated, at least 200).
             const float e = s.mission.energy[static_cast<std::size_t>(k)], m = s.mission.metal[static_cast<std::size_t>(k)];
-            set_storage_bonus(p, b.player_economy[static_cast<std::size_t>(k)], static_cast<std::int32_t>(m), static_cast<std::int32_t>(e));
+            set_storage_bonus(p, b.player_economy[static_cast<std::size_t>(k)], mission_storage_amount(m), mission_storage_amount(e));
             p.energy_stored = e;
             p.metal_stored = m;
         }
@@ -74,6 +75,8 @@ void init_resources(Battle& b, const BattleStart& s) {
 }
 
 }  // namespace
+
+std::int32_t mission_storage_amount(float amount) { return x87::ftol32(static_cast<double>(amount)); }
 
 void shuffle_start_positions(std::vector<std::int32_t>& ids, std::uint32_t& state) {
     Lcg15 rand;

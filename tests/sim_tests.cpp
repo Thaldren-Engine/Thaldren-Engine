@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <vector>
 
 #include <string>
@@ -688,11 +689,6 @@ void test_orders() {
     add_paralysis(c, units[2], 40);
     add_paralysis(c, units[2], 2);
     CHECK_EQ(units[2].orders->kind == mission::kParalyze && units[2].orders->param0 == 42 && !units[2].orders->next, true);
-    // The add is a plain 32-bit add (0x489E69): past INT32_MAX it wraps.
-    units[2].orders->param0 = 0x7FFFFFF0;
-    add_paralysis(c, units[2], 0x20);
-    CHECK_EQ(units[2].orders->param0, static_cast<std::int32_t>(0x80000010u));
-    units[2].orders->param0 = 42;
     // The add is a plain 32-bit add (0x489E69): past INT32_MAX it wraps.
     units[2].orders->param0 = 0x7FFFFFF0;
     add_paralysis(c, units[2], 0x20);
@@ -1854,6 +1850,16 @@ void test_game_flow() {
         CHECK_EQ(s.accum_y, -7);
         CHECK_EQ(s.magnitude, -1);  // (-5 + 2) / 2 toward zero, not -2
         CHECK_EQ(s.ticks_left, -1);
+    }
+    {
+        // A mission's float start amounts reach the storage bonus through __ftol: truncation,
+        // low 32 bits; NaN and values outside int64 give the integer indefinite (low half 0).
+        CHECK_EQ(sim::mission_storage_amount(1000.9f), 1000);
+        CHECK_EQ(sim::mission_storage_amount(-200.7f), -200);
+        CHECK_EQ(sim::mission_storage_amount(3.0e9f), static_cast<std::int32_t>(0xB2D05E00u));
+        CHECK_EQ(sim::mission_storage_amount(-3.0e9f), static_cast<std::int32_t>(0x4D2FA200u));
+        CHECK_EQ(sim::mission_storage_amount(1.0e20f), 0);
+        CHECK_EQ(sim::mission_storage_amount(std::numeric_limits<float>::quiet_NaN()), 0);
     }
     {
         sim::command::Command c;

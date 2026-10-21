@@ -113,4 +113,8 @@ bool start_battle(Battle& battle, const BattleStart& start, std::string& error);
 // position p with one of the positions before it (never itself).
 void shuffle_start_positions(std::vector<std::int32_t>& ids, std::uint32_t& loading_rand_state);
 
+// A mission's float start amount as the storage bonus receives it (0x465F2E): the CRT's
+// __ftol, truncating, low 32 bits kept (NaN and out-of-range values give 0x80000000'00000000).
+std::int32_t mission_storage_amount(float amount);
+
 }  // namespace sim
