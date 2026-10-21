@@ -827,3 +827,15 @@ target_compile_options(vfs_harness PRIVATE /W4 /permissive- /fp:precise)
 add_executable(sort_harness sort_harness.cpp)
 target_include_directories(sort_harness PRIVATE ${ROOT}/ta_compat/include)
 target_compile_options(sort_harness PRIVATE /W4 /permissive- /fp:precise)
+
+# Palette tables: the original's alpha / shade / light builders vs ta::build_*_table.
+add_executable(palette_harness
+    palette_harness.cpp
+    ${ROOT}/ta_compat/src/palette_tables.cpp
+    ${ROOT}/ta_compat/src/crt_strtod.cpp
+    ${ROOT}/ta_compat/src/hpi.cpp
+    ${ROOT}/ta_compat/src/inflate.cpp
+    ${ROOT}/ta_compat/src/tdf.cpp
+)
+target_include_directories(palette_harness PRIVATE ${ROOT}/ta_compat/include ${ROOT}/engine/sim/include)
+target_compile_options(palette_harness PRIVATE /W4 /permissive- /fp:precise)

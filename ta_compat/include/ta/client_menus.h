@@ -27,6 +27,7 @@
 #include "ta/battle_loader.h"
 #include "ta/client_world.h"
 #include "ta/hpi.h"
+#include "ta/palette_tables.h"
 
 namespace ta {
 
@@ -38,6 +39,8 @@ public:
     client::MenuContent& content() { return content_; }
     const std::string& game_dir() const { return game_dir_; }
     Vfs& vfs() { return vfs_; }
+    // The palette and its colour tables as loaded (or built) at start-up.
+    const PaletteTables& palette_tables() const { return tables_; }
 
     // A screen's layout by GUI file name ("SKIRMISH" or "SKIRMISH.GUI"), with the
     // background the original shows behind it.
@@ -95,6 +98,7 @@ private:
 
     std::string game_dir_;
     Vfs vfs_;
+    PaletteTables tables_;
     client::MenuContent content_;
     std::array<render::Rgb, 256> guipal_{};
     std::map<std::string, std::vector<std::uint8_t>> gafs_;

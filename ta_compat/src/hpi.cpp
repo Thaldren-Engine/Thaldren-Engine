@@ -857,6 +857,8 @@ void Vfs::refresh_shadows() {
     if (!archives_.empty()) mark_shadows("", -1, true);
 }
 
+std::filesystem::path Vfs::disk_file(std::string_view path) const { return disk_path(root_, path); }
+
 Vfs::Located Vfs::locate(std::string_view path) {
     if (!root_.empty()) {
         // A loose file wins (the game opens the path relative to the game directory first).

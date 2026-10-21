@@ -232,10 +232,10 @@ bool ClientWorld::load(const std::string& game_dir, const BattleRequest& request
     // install that adds totala3.hpi, totala4.hpi and worlds.hpi.
     vfs_.mount_game_dir(game_dir);
     vfs_.scan();
-    if (!load_palette(vfs_, palette_) || !load_blend_table(vfs_, blend_)) {
-        error = "cannot load the palette / blend table";
-        return false;
-    }
+    // The start-up's palette and tables (built when missing; the start-up wrote the cache).
+    if (!load_palette_tables(vfs_, false, tables_, error)) return false;
+    for (std::size_t i = 0; i < 256; ++i) palette_[i] = {tables_.palette[i * 4], tables_.palette[i * 4 + 1], tables_.palette[i * 4 + 2]};
+    blend_ = tables_.alpha;
     // The map line: the map's name, none for missions.
     if (progress) progress(0.0f, "map:" + (request.start.provider == 1 ? std::string() : request.map));
     if (!setup_battle(error, progress)) return false;

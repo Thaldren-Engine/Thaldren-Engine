@@ -21,6 +21,7 @@
 #include "ta/inflate.h"
 #include "ta/notice_texts.h"
 #include "ta/online_services.h"
+#include "ta/palette_tables.h"
 #include "ta/preferences.h"
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
@@ -666,6 +667,137 @@ void test_online_services() {
     }
 }
 
+
+// The palette table builders (0x4BA750 / 0x4BADF0 / 0x4BABD0): hashes of the tables the
+// original's builders produce for generated palettes (palette_harness: the port gives the same
+// bytes on these, the shipped palette and 200 random palettes).
+std::uint64_t fnv64(const std::vector<std::uint8_t>& v) {
+    std::uint64_t h = 1469598103934665603ull;
+    for (std::uint8_t b : v) h = (h ^ b) * 1099511628211ull;
+    return h;
+}
+
+void test_palette_tables() {
+    namespace fs = std::filesystem;
+    ta::PaletteBytes syn{}, bw{}, five{}, black{};
+    for (std::size_t i = 0; i < 256; ++i) {
+        syn[i * 4] = static_cast<std::uint8_t>(i);
+        syn[i * 4 + 1] = static_cast<std::uint8_t>(255 - i);
+        syn[i * 4 + 2] = static_cast<std::uint8_t>(i * 7);
+        for (std::size_t k = 0; k < 3; ++k) {
+            bw[i * 4 + k] = (i & 1) ? 255 : 0;
+            five[i * 4 + k] = static_cast<std::uint8_t>((i % 5) * 60 + k);
+        }
+    }
+    CHECK(fnv64(ta::build_alpha_table(syn)) == 0x8F6D3F3770684F23ull);
+    CHECK(fnv64(ta::build_shade_table(syn)) == 0x543005E4849BC643ull);
+    CHECK(fnv64(ta::build_light_table(syn)) == 0x65C5720D49449FA6ull);
+    CHECK(fnv64(ta::build_alpha_table(black)) == 0x07B316F51699D983ull);
+    CHECK(fnv64(ta::build_shade_table(black)) == 0x1D00C08067BE8383ull);
+    CHECK(fnv64(ta::build_light_table(black)) == 0x1D00C08067BE8383ull);
+    CHECK(fnv64(ta::build_alpha_table(bw)) == 0x0625475D44A8ED83ull);
+    CHECK(fnv64(ta::build_shade_table(bw)) == 0xB074277A2E6C9183ull);
+    CHECK(fnv64(ta::build_light_table(bw)) == 0xABE39FCB1F44C383ull);
+    CHECK(fnv64(ta::build_alpha_table(five)) == 0x48BB4B2B5E2D81ABull);
+    CHECK(fnv64(ta::build_shade_table(five)) == 0x3C2A2D8E243FAC7Eull);
+    CHECK(fnv64(ta::build_light_table(five)) == 0x236C9D1E9C8CFA3Aull);
+    {
+        // Nothing within 40 of the colour's sum: the entry at the position the scan stopped.
+        const ta::SortedPalette s = ta::sort_palette(bw);
+        CHECK(s.sum[127] == 0 && s.sum[128] == 765);
+        CHECK(ta::nearest_entry(bw, s, 127, 127, 127) == s.order[128]);
+        CHECK(ta::nearest_entry(bw, s, 255, 255, 200) == s.order[128]);  // within 40 of 765: the first of the ties
+        CHECK(ta::nearest_entry(bw, s, 255, 255, 255) == s.order[128]);
+        // Above every sum + 40 (not possible with bytes) / below: position 0 when the scan ends.
+        const ta::SortedPalette z = ta::sort_palette(black);
+        CHECK(ta::nearest_entry(black, z, 200, 200, 200) == z.order[0]);
+    }
+    // The PCX colour map: the last 768 bytes of a file with manufacturer 0x0A, version 5.
+    std::vector<std::uint8_t> pcx(0x80 + 10 + 0x300, 0);
+    pcx[0] = 0x0A;
+    pcx[1] = 0x05;
+    for (std::size_t i = 0; i < 0x300; ++i) pcx[pcx.size() - 0x300 + i] = static_cast<std::uint8_t>(i * 3 + 1);
+    {
+        ta::PaletteBytes p{};
+        CHECK(ta::pcx_palette(pcx, p));
+        CHECK(p[0] == 1 && p[1] == 4 && p[2] == 7 && p[3] == 0 && p[4] == 10 && p[1023] == 0 && p[1022] == static_cast<std::uint8_t>(767 * 3 + 1));
+        std::vector<std::uint8_t> bad = pcx;
+        bad[1] = 3;
+        CHECK(!ta::pcx_palette(bad, p));
+    }
+    // The start-up sequence over a game folder holding only palettes\PALETTE.PCX (and a stale
+    // PALETTE.ALP): the PAL is built from the PCX and written, the stale table deleted, all three
+    // tables built and written; a second load reads them back.
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "compat_tests_palettes";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "palettes", ec);
+    auto write = [](const fs::path& p, const std::vector<std::uint8_t>& b) {
+        std::ofstream o(p, std::ios::binary);
+        o.write(reinterpret_cast<const char*>(b.data()), static_cast<std::streamsize>(b.size()));
+    };
+    auto read = [](const fs::path& p) {
+        std::ifstream in(p, std::ios::binary);
+        return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    write(dir / "palettes" / "PALETTE.PCX", pcx);
+    write(dir / "palettes" / "PALETTE.ALP", std::vector<std::uint8_t>(65536, 0x11));
+    write(dir / "palettes" / "PALETTE.SHD", {});  // empty: missing
+    {
+        ta::Vfs vfs;
+        vfs.language.clear();
+        vfs.set_cd_drives({});
+        vfs.mount_game_dir(dir);
+        ta::PaletteTables t;
+        std::string fatal;
+        CHECK(ta::load_palette_tables(vfs, true, t, fatal));
+        CHECK(t.built_palette && t.built_alpha && t.built_shade && t.built_light);
+        ta::PaletteBytes p{};
+        ta::pcx_palette(pcx, p);
+        CHECK(t.palette == p);
+        CHECK(t.alpha == ta::build_alpha_table(p) && t.shade == ta::build_shade_table(p) && t.light == ta::build_light_table(p));
+        CHECK(read(dir / "palettes" / "PALETTE.PAL") == std::vector<std::uint8_t>(p.begin(), p.end()));
+        CHECK(read(dir / "palettes" / "PALETTE.ALP") == t.alpha);
+        CHECK(read(dir / "palettes" / "PALETTE.SHD") == t.shade);
+        CHECK(read(dir / "palettes" / "PALETTE.LHT") == t.light);
+        ta::PaletteTables u;
+        CHECK(ta::load_palette_tables(vfs, false, u, fatal));
+        CHECK(!u.built_palette && !u.built_alpha && !u.built_shade && !u.built_light);
+        CHECK(u.palette == t.palette && u.alpha == t.alpha && u.shade == t.shade && u.light == t.light);
+    }
+    {
+        // A loaded PAL keeps loose tables; without side effects nothing is written.
+        write(dir / "palettes" / "PALETTE.LHT", std::vector<std::uint8_t>(100, 0x22));  // short: zero-filled
+        fs::remove(dir / "palettes" / "PALETTE.SHD", ec);
+        ta::Vfs vfs;
+        vfs.language.clear();
+        vfs.set_cd_drives({});
+        vfs.mount_game_dir(dir);
+        ta::PaletteTables t;
+        std::string fatal;
+        CHECK(ta::load_palette_tables(vfs, false, t, fatal));
+        CHECK(!t.built_palette && !t.built_alpha && t.built_shade && !t.built_light);
+        CHECK(t.light.size() == 8192 && t.light[99] == 0x22 && t.light[100] == 0);
+        CHECK(!fs::exists(dir / "palettes" / "PALETTE.SHD"));
+    }
+    {
+        // No palettes folder: nothing to build the palette from (the original's fatal error
+        // with the path); with a PCX but no folder... (not possible: a loose PCX needs it).
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        ta::Vfs vfs;
+        vfs.language.clear();
+        vfs.set_cd_drives({});
+        vfs.mount_game_dir(dir);
+        ta::PaletteTables t;
+        std::string fatal;
+        CHECK(!ta::load_palette_tables(vfs, true, t, fatal));
+        CHECK(fatal == "palettes\\PALETTE.PCX");
+        CHECK(!fs::exists(dir / "palettes"));
+    }
+    fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main() {
@@ -686,6 +818,7 @@ int main() {
     test_notice_texts();
     test_preferences();
     test_online_services();
+    test_palette_tables();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

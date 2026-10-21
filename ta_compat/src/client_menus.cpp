@@ -83,10 +83,13 @@ const char* background_of(const std::string& gui) {
 bool MenuArt::load(const std::string& game_dir, std::string& error) {
     game_dir_ = game_dir;
     vfs_.mount_game_dir(game_dir);
-    if (!load_palette(vfs_, content_.palette) || !load_blend_table(vfs_, content_.blend)) {
-        error = "cannot load the palette / blend table";
-        return false;
-    }
+    // The palette and its tables (0x491200: 0x42A400, then 0x42E140 / 0x42E1D0 / 0x42E260),
+    // built and cached in the game folder when a file is missing. A fatal error is the
+    // original's message box with the path (0x4B6290).
+    if (!load_palette_tables(vfs_, true, tables_, error)) return false;
+    for (std::size_t i = 0; i < 256; ++i)
+        content_.palette[i] = {tables_.palette[i * 4], tables_.palette[i * 4 + 1], tables_.palette[i * 4 + 2]};
+    content_.blend = tables_.alpha;
     std::vector<std::uint8_t> gp;
     if (vfs_.read("palettes\\GUIPAL.PAL", gp) && gp.size() >= 1024)
         for (std::size_t i = 0; i < 256; ++i) guipal_[i] = {gp[i * 4], gp[i * 4 + 1], gp[i * 4 + 2]};
@@ -113,10 +116,8 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
                 sound_index_[upper(s->name())] = static_cast<int>(content_.samples.size());
                 content_.samples.push_back(std::move(smp));
             }
-    vfs_.read("palettes\\PALETTE.LHT", content_.light);
-    if (content_.light.size() < 0x2000) content_.light.clear();
-    vfs_.read("palettes\\PALETTE.SHD", content_.shade);
-    if (content_.shade.size() < 0x2000) content_.shade.clear();
+    content_.light = tables_.light;
+    content_.shade = tables_.shade;
     content_.click_sound = sound("SmallButton");
     content_.error_sound = sound("NOTOKTOBUILD");
     content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
