@@ -197,6 +197,17 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     // Only a received 0x1C shows a line ("Player %s has disconnected" with the record's session
     // name, kind 4, from the packet's sender: 0x453D40 case 0x1A); a player sent away (0x453010)
     // shows nothing.
+    // A received 0x27 naming a known player (0x453D40; TotalA.exe itself never sends one: the
+    // only store of 0x27 as a byte is in the key routine): "%s %s" of the record's name and the
+    // translated "has modified his executable.  Game integrity breached." (0x45530C), as twelve
+    // console lines of kind 8 with the named record's index byte +0x146 (logo, beep).
+    net_->on_modified_executable = [this](int slot) {
+        char line[256];
+        std::snprintf(line, sizeof line, "%s %s", names_[static_cast<std::size_t>(slot)].c_str(),
+                      tr("has modified his executable.  Game integrity breached.").c_str());
+        const std::uint8_t state = inner_->battle().players[static_cast<std::size_t>(slot)].state;
+        for (int k = 0; k < 12; ++k) inner_->client().message(line, GameClient::kPlayerNote, state);
+    };
     net_->on_disconnected = [this](int slot, int from) {
         // (The format goes through the translation, 0x454FD6.)
         char line[256];

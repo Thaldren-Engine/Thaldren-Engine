@@ -18,6 +18,7 @@
 #include "sim/victory.h"
 #include "sim/x87.h"
 #include "ta/translate.h"
+#include "ta/battle_loader.h"
 #include "ta/client_loading.h"
 #include "ta/client_menus.h"
 #include "ta/tdf.h"
@@ -54,24 +55,37 @@ void draw_run_time_labels(FrontEnd& fe, render::Image8& out, const std::vector<W
 void add_run_time_label(std::vector<Widget>& widgets, const std::string& text, int x, int y, int width, int attribs);
 
 // The original's message box (0x4ABD90): MSGBOX.GUI opened with flag 0x800 (the screen under it
-// dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to 320
-// pixels (0x4AC4C0) and cut at the line breaks into labels ("TEXT", centred across the box, from
+// dimmed once) and the stock panel; the text (translated; English keeps it) word-wrapped to the
+// caller's width (0x4AC4C0; 320 for most, 480 for the skirmish refusals) and cut at the line breaks into labels ("TEXT", centred across the box, from
 // y 20, one row every 5 + the font's height); the box as wide as the widest line + 20 and
 // lines x 25 + OK's height + 40 high, centred on the screen; OK at 15 pixels from the right and
 // bottom edges, the Enter and Escape default and the focus. OK closes it (no sound).
 class MessageBox : public LayoutScreen {
 public:
-    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under) : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(translate(text)) {
+    MessageBox(MenuArt& art, std::string text, const render::ClipRect* under, int width = 320)
+        : LayoutScreen(art.layout("MSGBOX")), art_(art), text_(translate(text)), width_(width) {
         if (under) {
             under_ = *under;
             has_under_ = true;
         }
     }
+    ~MessageBox() override {
+        if (panel_client_) panel_client_->dim_panel(false);
+    }
     bool see_through() const override { return true; }
+    // The screen under it shown as it is (a surface the caller redraws every pass).
+    void set_no_dim() { no_dim_ = true; }
+    // Over a running battle: the 0x800 flag dims the side panel's layout (the top layout there)
+    // while the box is open; the battle view is drawn anew every pass.
+    void over_battle(client::GameClient& c) {
+        no_dim_ = true;
+        panel_client_ = &c;
+        c.dim_panel(true);
+    }
     void draw(FrontEnd& fe, render::Image8& out) override {
         if (!placed_) arrange(fe, out.width, out.height);
-        if (has_under_) dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
-        else dim_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
+        if (has_under_ && !no_dim_) dim_rect(fe, out, under_.x0, under_.y0, under_.x1, under_.y1);
+        else if (!no_dim_) dim_rect(fe, out, 0, 0, out.width - 1, out.height - 1);
         LayoutScreen::draw(fe, out);
     }
 
@@ -83,7 +97,9 @@ protected:
         const client::Font* lf = mc.font ? mc.font : mc.small_font;
         std::vector<std::string> lines;
         if (lf) {
-            const std::string wrapped = wrap_for_width(*lf, text_, 320);
+            // (A broken line keeps the break's '\r': the box's width (0x4A5030) and the label's
+            // centring count its glyph.)
+            const std::string wrapped = wrap_for_width(*lf, text_, width_, true);
             std::size_t at = 0;
             while (at <= wrapped.size()) {
                 const std::size_t nl = wrapped.find('\n', at);
@@ -132,12 +148,15 @@ private:
     MenuArt& art_;
     std::string text_;
     render::ClipRect under_{};
+    int width_ = 320;
     bool has_under_ = false;
+    bool no_dim_ = false;
+    client::GameClient* panel_client_ = nullptr;
 };
 
 }  // namespace
 
-std::string wrap_for_width(const client::Font& f, const std::string& t, int width) {
+std::string wrap_for_width(const client::Font& f, const std::string& t, int width, bool cr) {
     std::string out;
     std::size_t line_start = 0;
     for (std::size_t i = 0; i < t.size(); ++i) {
@@ -150,7 +169,8 @@ std::string wrap_for_width(const client::Font& f, const std::string& t, int widt
                 --k;
                 --j;
             }
-            out.back() = '\n';
+            out.back() = cr ? '\r' : '\n';
+            if (cr) out.push_back('\n');
             line_start = out.size();
             i = j;
         }
@@ -158,8 +178,22 @@ std::string wrap_for_width(const client::Font& f, const std::string& t, int widt
     return out;
 }
 
-void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under) {
-    if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text, under));
+std::string leave_reason_text(int reason) {
+    switch (reason) {
+    case 3: return "The game is closed";
+    case 4: return "You did not have the correct password";
+    case 5: return "The game is full";
+    case 6: return "You have lost connection with the game";
+    case 7: return "You need a unit you don't have for this game";
+    case 8: return "You need a newer version of the game to enter";
+    case 9: return "No watching is allowed for this game";
+    case 10: return "The creator has left the game";
+    default: return "You were rejected from the game";
+    }
+}
+
+void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const render::ClipRect* under, int width) {
+    if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text, under, width));
     else std::printf("message: %s\n", text.c_str());
 }
 
@@ -1005,7 +1039,9 @@ protected:
         } else if (is(w, "Difficulty")) {
             difficulty_ = (difficulty_ + 1) % 3;
         } else if (is(w, "SelectMap")) {
-            fe.push(std::make_unique<SelectMap>(art_, map_, [this](const std::string& m) { map_ = m; }));
+            // 0x47AAF0: without a map to list (0x434BF0 counts none) a 320-wide box instead.
+            if (art_.skirmish_maps().empty()) show_message(fe, art_, translate("There are no skirmish maps to choose from"));
+            else fe.push(std::make_unique<SelectMap>(art_, map_, [this](const std::string& m) { map_ = m; }));
         } else if (is(w, "PrevMenu")) {
             save(fe.settings());
             fe.apply_settings();
@@ -1021,13 +1057,27 @@ protected:
     }
 
     void start(FrontEnd& fe) {
+        // 0x47AE60 (Start): the player count GS+0x2A3C = computer players + 1, the map info loaded
+        // with it (0x435A20); then the refusals, each a 480-wide box (0x4ABD90 with 0x1E0, OK,
+        // fitted; the text translated): no map info, no player or no computer player, more
+        // players than the picked schema's start positions (0x437300 < GS+0x2A3C), one allied
+        // group (0x479760).
         int humans = 0, computers = 0;
         for (const Row& r : rows_) {
             humans += r.kind == 1;
             computers += r.kind == 2;
         }
+        const int start_positions = map_start_position_count(art_.vfs(), map_, computers + 1);
+        if (start_positions < 0) {
+            show_message(fe, art_, translate("The terrain for the selected map does not exist."), nullptr, 0x1E0);  // (0x47B0CB)
+            return;
+        }
         if (humans == 0 || computers == 0) {
-            show_message(fe, art_, translate("There must be at least one player and one computer opponent"));  // (0x47B0CB)
+            show_message(fe, art_, translate("There must be at least one player and one computer opponent"), nullptr, 0x1E0);  // (0x47B0CB)
+            return;
+        }
+        if (start_positions < computers + 1) {
+            show_message(fe, art_, translate("There are too many players enabled for this map"), nullptr, 0x1E0);  // (0x47B008)
             return;
         }
         // Everyone in one alliance (other than "none") is refused.
@@ -1043,7 +1093,7 @@ protected:
                 else if (group != r.ally) one_group = false;
             }
         if (one_group && group >= 0) {
-            show_message(fe, art_, translate("All players may not be in the same allied group."));  // (0x47B0CB)
+            show_message(fe, art_, translate("All players may not be in the same allied group."), nullptr, 0x1E0);  // (0x47B0CB)
             return;
         }
         save(fe.settings());
@@ -1430,6 +1480,47 @@ private:
     MenuArt& art_;
     int kind_ = 0;
     int focus_choice_ = -1;
+};
+
+// A network battle's local player out but kept watching (0x464F80, no computer player of this
+// machine fighting): YESORNO.GUI opened with flags 0x900 (centred on the screen; the side panel
+// dimmed under it), TITLE "You're out!  Continue Watching?", CHOICE1 "Yes", CHOICE2 "No" (set as
+// captions: translated), CHOICE1 the Enter and CHOICE2 the Escape default. Handler 0x464DE0: a
+// press plays "BigButton"; Yes announces the watch mode again (0x450F90) and clears the won flag;
+// No ends the game for this machine (end flags: ending set, won cleared). Either closes it.
+class WatchQuestion : public LayoutScreen {
+public:
+    WatchQuestion(MenuArt& art, client::BattleSession& s) : LayoutScreen(art.layout("YESORNO")), art_(art), s_(s) {
+        open_centred_ = -1;
+        if (Widget* w = widget("TITLE")) set_caption(*w, "You're out!  Continue Watching?");
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, "Yes");
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, "No");
+        enter_default_ = "CHOICE1";
+        s.client().dim_panel(true);
+    }
+    ~WatchQuestion() override { s_.client().dim_panel(false); }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        sfx(fe, art_, "BigButton");
+        sim::Battle& b = s_.battle();
+        if (is(w, "CHOICE1")) {
+            b.end_game.flags = static_cast<std::uint16_t>(b.end_game.flags & ~sim::end_game_flags::kWon);
+            fe.pop();
+        } else if (is(w, "CHOICE2")) {
+            b.end_game.flags = static_cast<std::uint16_t>((b.end_game.flags | sim::end_game_flags::kEnding) & ~sim::end_game_flags::kWon);
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+    client::BattleSession& s_;
 };
 
 // The restart dialog (RESTART.GUI over DRESTART, 0x4604A0; opened centred right of the side
@@ -2560,6 +2651,10 @@ public:
         battle_palette_ = palette;
         phase_ = 0;
     }
+    // A network game left by this machine's player for `reason` (its record's leaving byte).
+    void set_leaving_reason(int reason) {
+        if (reason != 0 && reason != 2) reject_text_ = leave_reason_text(reason);
+    }
     // A campaign mission (0x41F0A0 / 0x41F400 with the campaign buttons, 0x41DA60 the glamour).
     void set_campaign(CampaignEnd c) {
         campaign_ = true;
@@ -2687,6 +2782,20 @@ public:
                 phase_ = 6;
                 return;
             default:  // 0 the battle's last pass, 1 the switch to the end states, 4 one more state
+                if (phase_ == 1 && !reject_text_.empty()) {
+                    // 0x41F7F0 case 0 of a network game: the local record's leaving byte other
+                    // than 0 and 2 (left on its own) shows why (0x452C40, translated) in a 320-wide
+                    // box (OK, fitted) over the copy of the last frame, which is put back each
+                    // pass with the console's lines (case 1, 0x464060: not dimmed); the end
+                    // goes on once it is closed.
+                    auto box = std::make_unique<MessageBox>(art_, translate(reject_text_), nullptr, 320);
+                    box->set_no_dim();
+                    reject_text_.clear();
+                    if (art_.layout("MSGBOX")) {
+                        fe.push(std::move(box));
+                        return;
+                    }
+                }
                 ++phase_;
                 return;
             }
@@ -2923,6 +3032,7 @@ private:
     render::Image8 last_;
     render::Palette battle_palette_{};
     int phase_ = -1, fade_left_ = 0;
+    std::string reject_text_;  // why this machine's player was sent away (shown at the end)
     std::int64_t fade_deadline_ = 0;
     // A campaign mission's end (set_campaign): its buttons, the glamour picture's fade.
     std::array<std::uint8_t, 256> hud_{};
@@ -2989,6 +3099,7 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
         client::GameClient& c = s.client();
         c.set_pointer_hidden(true);
         bo->begin_fade(render::execute(c.draw(), s.content().blend), s.content().palette);
+        if (s.network()) bo->set_leaving_reason(s.local_leaving_reason());
         return bo;
     };
     setup.game_menu = [&art](FrontEnd&, client::BattleSession&) -> std::unique_ptr<client::Screen> {
@@ -3024,6 +3135,28 @@ void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSe
     setup.hooks.timeout_dialog = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         if (!s.network() || !art.layout("TIMEOUT") || s.timed_out_player() < 0) return nullptr;
         return std::make_unique<TimeoutDialog>(art, s);
+    };
+    setup.hooks.enumerate_units = [&art](FrontEnd& fe) {
+        // 0x42A8D0's end: definitions dropped for their version alone (none for a wrong copyright
+        // line or a loose file under the CD check): the system's box "Error" with the text
+        // translated (0x42B310 -> 0x4B6B80).
+        UnitDefContext ctx;
+        load_unit_context(art.vfs(), ctx);
+        if (unit_files_incompatible_notice(art.vfs(), ctx))
+            fe.system_message("Error", translate("Incompatible units found.  They will be ignored.  Please download the latest version of the game."));
+    };
+    setup.hooks.watch_dialog = [&art](FrontEnd&, client::BattleSession& s, int kind) -> std::unique_ptr<client::Screen> {
+        if (kind == 1) {
+            if (!art.layout("YESORNO")) return nullptr;
+            return std::make_unique<WatchQuestion>(art, s);
+        }
+        // (0x465803: 500 wide, OK, fitted, translated)
+        if (!art.layout("MSGBOX")) return nullptr;
+        auto box = std::make_unique<MessageBox>(
+            art, translate("You are placed in watch mode because you are hosting AI players which are still alive.  If you exit, they will be terminated."),
+            nullptr, 500);
+        box->over_battle(s.client());
+        return box;
     };
     setup.hooks.control_menu = [&art](FrontEnd&, client::BattleSession& s) -> std::unique_ptr<client::Screen> {
         const sim::Battle& b = s.battle();

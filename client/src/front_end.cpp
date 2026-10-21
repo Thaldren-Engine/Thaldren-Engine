@@ -272,6 +272,12 @@ public:
     void frame(std::uint32_t now) {
         now_ = now;
         ++frame_no_;
+        // (0x496BB0 starts each front-end pass with 0x42BD10: the unit definitions enumerated when
+        // there are none yet or a battle's loading asked for it again.)
+        if (units_due_ && !in_battle() && !pending_ && !loading_) {
+            units_due_ = false;
+            if (s_.hooks.enumerate_units) s_.hooks.enumerate_units(*this);
+        }
         take_screenshot();
         graveyard_.clear();  // screens closed during the last pass go now
         retired_.reset();    // then a battle left during it
@@ -310,6 +316,13 @@ public:
                     }
             }
             sim::Battle& b = session_->battle();
+            // The local player put in watch mode: its question or box (taken once).
+            if (b.victory.watch_prompt != 0) {
+                const int kind = b.victory.watch_prompt;
+                b.victory.watch_prompt = 0;
+                if (s_.hooks.watch_dialog)
+                    if (auto d = s_.hooks.watch_dialog(*this, *session_, kind)) push(std::move(d));
+            }
             if (s_.music) {
                 const int me = b.settings.local_player;
                 if (!session_->client().paused() && stack_.size() == battle_base_)
@@ -328,10 +341,9 @@ public:
                 end_battle(o);
             }
         }
-        for (auto& sc : stack_)
-            if (sc) {
-                if (&sc == &stack_.back()) sc->frame(*this, now);
-            }
+        // The top screen's pass (a screen it pushes or uncovers has its first pass next time; the
+        // stack may change during the call).
+        if (!stack_.empty() && stack_.back()) stack_.back()->frame(*this, now);
         if (s_.music) s_.music->update(ticks, audio_);
     }
 
@@ -452,6 +464,12 @@ public:
 
     // The loop sets this: draws and shows a frame at once (the loading screen's progress).
     std::function<void()> present_now;
+    // The window loop sets this: the system's message box (null: printed).
+    std::function<void(const std::string&, const std::string&)> system_box;
+    void system_message(const std::string& title, const std::string& text) override {
+        if (system_box) system_box(title, text);
+        else FrontEnd::system_message(title, text);
+    }
     const render::BlendTable& blend() const { return s_.content->blend; }
     float load_fraction() const {
         int sum = 0;
@@ -622,6 +640,7 @@ private:
 
     void finish_battle(bool ask_session = true) {
         if (!session_) return;
+        units_due_ = true;  // (the battle's loading, GameData_LoadAll, set GS+0x14397)
         std::unique_ptr<BattleSession> s = std::move(session_);
         const BattleOutcome o = ended_ ? outcome_ : BattleOutcome::Quit;
         ended_ = false;
@@ -671,6 +690,7 @@ private:
     BattleOutcome outcome_ = BattleOutcome::None;
     BattleLauncher pending_;
     bool loading_ = false;
+    bool units_due_ = true;  // the unit definitions to be enumerated at the next front-end pass
     LoadingState load_;
     std::chrono::steady_clock::time_point load_clock_start_{};
     bool quit_ = false;
@@ -980,6 +1000,13 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     SDL_HideCursor();
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
+    // (0x4B6B80: MessageBoxA(NULL, text, title, MB_OK | MB_TOPMOST): no owner, no icon; the
+    // program waits for it)
+    run.system_box = [](const std::string& title, const std::string& text) {
+        SDL_ShowCursor();
+        SDL_ShowSimpleMessageBox(0, title.c_str(), text.c_str(), nullptr);
+        SDL_HideCursor();
+    };
     use_system_clipboard();   // the paste keys
     run.warp_ = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
     std::unique_ptr<render::GpuRenderer> gpu;

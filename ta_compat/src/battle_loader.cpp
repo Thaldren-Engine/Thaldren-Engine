@@ -319,4 +319,17 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     return lb;
 }
 
+int map_start_position_count(Vfs& vfs, const std::string& map_name, int players) {
+    std::vector<std::uint8_t> ota;
+    if (!vfs.read(vfs.virtual_path("maps", map_file_name(vfs, map_name), "ota"), ota)) return -1;
+    const std::unique_ptr<TdfSection> root = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size())).root;
+    const TdfSection* header = root ? root->child("GlobalHeader") : nullptr;
+    if (!header) return 0;
+    const int schema = select_schema(*header, players);
+    const TdfSection* s = schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
+    std::vector<sim::StartRule> rules;
+    if (s) read_start_rules(*s, rules);
+    return static_cast<int>(rules.size());
+}
+
 }  // namespace ta

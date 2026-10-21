@@ -214,6 +214,9 @@ public:
     // and its lead message, the kills and losses panel's flashes (the original's kill handler,
     // 0x4866D0's end, and 0x4948B0).
     void on_kill_counted(int attacker_slot, const sim::Unit& victim);
+    // A player's last unit died in a skirmish or network game: the console line worded by the
+    // battle's rand() value (0x47BD70 / 0x450380).
+    void on_player_out(int player, std::uint32_t rand_value);
     void on_under_attack(sim::Unit& unit);
     void forget_speech(sim::Unit& unit);  // a unit died: its queued notices go
     // A console line (0x463CA0): kind 2 the game's own notes, 1 unit notices (param: the unit),
@@ -275,6 +278,8 @@ public:
     const sim::StepBudget& budget() const { return budget_; }
     int selected_count() const;
     std::uint16_t hover_unit() const { return hover_; }
+    // Tests (frame_harness): the unit under the pointer as given (until the pointer moves).
+    void set_hover_for_tests(std::uint16_t id) { hover_ = id; }
     const ClientOptions& options() const { return opt_; }
     // The selection outlines of the selected units in a battle view scene (draw() does this;
     // tests that build the scene themselves call it).

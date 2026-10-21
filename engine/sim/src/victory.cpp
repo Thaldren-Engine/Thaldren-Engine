@@ -118,8 +118,7 @@ void Battle::victory_turn(int slot) {
         if (!count_down(end_game)) return;
         if (settings.game_mode == 2) {
             deathmatch_respawn(slot);
-        } else if (settings.provider == 3 && side.lobby_status == 0 &&
-                   (victory.sides[settings.local_player].wants_watch || [&] {
+        } else if (settings.provider == 3 && side.lobby_status == 0 && (victory.sides[settings.local_player].wants_watch || [&] {
                        int ai = 0;
                        for (const PlayerSlot& p : players)
                            if (&p - players.data() < 10 && p.active && p.controller == 2 && p.state != 10 && has_units_or_none_made(p)) ++ai;
@@ -131,6 +130,22 @@ void Battle::victory_turn(int slot) {
                 settings.explore = false;
                 settings.fog_of_war = false;
                 if (sight_ready_) rebuild_sight(true);
+                // Then (0x464F80): without a computer player fighting (0x457BC0 = 0) the question
+                // (YESORNO.GUI); else, with a human still fighting and not watching (0x457CB0 > 0),
+                // the box, and the won flag cleared.
+                int ai = 0, humans = 0;
+                for (int s = 0; s < 10; ++s) {
+                    const PlayerSlot& p = players[static_cast<std::size_t>(s)];
+                    const VictorySide& v = victory.sides[static_cast<std::size_t>(s)];
+                    if (p.active && p.controller == 2 && p.state != 10 && has_units_or_none_made(p)) ++ai;
+                    if (playing(p) && has_units_or_none_made(p) && (p.controller == 1 || (p.controller == 3 && v.human)) && !v.watching) ++humans;
+                }
+                if (ai == 0) {
+                    victory.watch_prompt = 1;
+                } else if (humans > 0) {
+                    victory.watch_prompt = 2;
+                    end_game.flags = static_cast<std::uint16_t>(end_game.flags & ~end_game_flags::kWon);
+                }
             }
         } else {
             end_game.flags = static_cast<std::uint16_t>((end_game.flags | end_game_flags::kEnding) & ~end_game_flags::kWon);

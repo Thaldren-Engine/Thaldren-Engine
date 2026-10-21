@@ -543,6 +543,7 @@ bool ClientWorld::build_content(std::string& error) {
             std::string n = sp.name;
             if (n.empty()) n = sp.kind == sim::PlayerKind::Computer ? (upper(request_.sides[p]) == "ARM" ? "Arm" : "Core") : "Player";
             c.player_names[p] = n;
+            c.player_sides[p] = upper(request_.sides[p]) == "ARM" ? 0 : 1;
         }
         // The settings page's set-up values (network games: the host's room record holds the
         // resources in hundreds: the start's values are those).

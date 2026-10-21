@@ -1589,8 +1589,25 @@ int main(int argc, char** argv) {
             std::printf("%s: %s, top layout %08X\n", s.c_str(), ok ? "opened" : "failed", top);
             continue;
         } else if (s.rfind("msgbox:", 0) == 0) {
-            // msgbox:TEXT: the original's message box (0x4ABD90: 320 pixels, OK, sized to the text).
-            ok = r.call(0x004ABD90, 0, {g.gui(), r.str(s.substr(7)), 0x140, 1, 1});
+            // msgbox:TEXT: the original's message box (0x4ABD90: 320 pixels, OK, sized to the text);
+            // msgbox:W:TEXT another width; msgbox:W:OK:FIT:TEXT also its OK switch (0: hidden) and
+            // fit switch (0: the box W wide).
+            std::string t = s.substr(7);
+            u32 width = 0x140, with_ok = 1, fit = 1;
+            auto num_field = [&](u32& v) {
+                const auto c = t.find(':');
+                if (c == std::string::npos || c == 0 || t.find_first_not_of("0123456789") != c) return false;
+                v = static_cast<u32>(std::atoi(t.c_str()));
+                t = t.substr(c + 1);
+                return true;
+            };
+            if (num_field(width)) {
+                u32 a = 0, b = 0;
+                const std::string keep = t;
+                if (num_field(a) && num_field(b)) with_ok = a, fit = b;
+                else t = keep;
+            }
+            ok = r.call(0x004ABD90, 0, {g.gui(), r.str(t), width, with_ok, fit});
             Frame f;
             if (ok && g.grab(f)) write_bmp(out + "msgbox.bmp", f);
             std::printf("%s: %s\n", s.c_str(), ok ? "shown" : "failed");

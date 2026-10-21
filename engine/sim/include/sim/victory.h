@@ -44,6 +44,11 @@ struct VictoryState {
     std::array<VictorySide, 10> sides{};
     std::uint32_t cd_force_tick = 0;    // copy-protection mismatch: forced defeat step (0: none drawn)
     std::uint32_t respawns = 0;         // deathmatch commanders placed
+    // The local player was just put in watch mode (0x464F80, presentation): 1 the question "You're
+    // out!  Continue Watching?" (no computer player of this machine fighting), 2 the box that
+    // computer players keep it watching (some human still fighting); 0 none. The user interface
+    // takes it (and clears it).
+    std::uint8_t watch_prompt = 0;
 };
 
 }  // namespace sim

@@ -307,6 +307,8 @@ struct Content {
     // The players' names as the battle's records hold them (the kills and losses panel, the
     // lead messages).
     std::array<std::string, 10> player_names;
+    // Each player's side as the shared record's side byte (+0x95) holds it: 0 Arm, else Core.
+    std::array<std::uint8_t, 10> player_sides{};
     // What the game menu's settings page shows of the set-up (0x45F1D0): the
     // skirmish's fixed start locations, the local player's starting resources.
     struct GameInfo {

@@ -463,40 +463,26 @@ protected:
 // pixels down and then the font height + 5 apart; the box as wide as the widest line + 20 (or the
 // given width), as tall as lines x 25 + the OK button's height + 40, centred on the screen, OK at
 // 15 pixels in from the bottom-right corner; the screen under it dimmed (open flag 0x800); the
-// stock panel.
+// stock panel. Without OK (the caller's switch 0) the gadget is hidden and the box keeps its room.
 class NetMessage : public LayoutScreen {
 public:
-    NetMessage(MenuArt& art, const std::string& text_in, int width, bool fit, std::function<void(FrontEnd&)> done = {})
+    NetMessage(MenuArt& art, const std::string& text_in, int width, bool fit, std::function<void(FrontEnd&)> done = {}, bool with_ok = true)
         : LayoutScreen(art.layout("MSGBOX")), art_(art), done_(std::move(done)) {
         // The text goes through the translation first (0x4ABDC7; a caller's width stays the one
         // it measured).
         const std::string text = translate(text_in);
         // Measured in the interface's caption font (the labels then draw in the small one).
         const client::Font* f = art.content().font;
-        // Word wrap: at the end of a word, when the line is at least as wide as the limit, the line
-        // breaks at its last space or hyphen.
-        std::string line;
-        for (std::size_t i = 0; i <= text.size(); ++i) {
-            if (i < text.size() && text[i] != ' ' && text[i] != '\n') {
-                line += text[i];
-                continue;
-            }
-            const bool nl = i < text.size() && text[i] == '\n';
-            if (f && f->text_width(line) >= width) {
-                const auto at = line.find_last_of(" -", line.size() - 1);
-                if (at != std::string::npos && at > 0) {
-                    lines_.push_back(line.substr(0, line[at] == '-' ? at + 1 : at));
-                    line = line.substr(at + 1);
-                }
-            }
-            if (nl || i == text.size()) {
-                lines_.push_back(line);
-                line.clear();
-            } else {
-                line += ' ';
-            }
+        // Word wrap (0x4AC4C0): at the end of a word, when the line is at least as wide as the
+        // limit, its last space or hyphen becomes "\r\n"; the result is cut into labels at each
+        // '\n' (strtok: no empty ones), a broken line keeping its '\r' (counted by the box's width,
+        // 0x4A5030, and by the label's centring).
+        const std::string wrapped = f ? wrap_for_width(*f, text, width, true) : text;
+        for (std::size_t at = 0; at <= wrapped.size();) {
+            const std::size_t nl = std::min(wrapped.find('\n', at), wrapped.size());
+            if (nl > at) lines_.push_back(wrapped.substr(at, nl - at));
+            at = nl + 1;
         }
-        while (lines_.size() > 1 && lines_.back().empty()) lines_.pop_back();
         int w = width;
         if (fit) {
             w = 0;
@@ -512,11 +498,19 @@ public:
             if (Widget* o = widget("OK")) {
                 o->x = h.w - o->w - 15;
                 o->y = h.h - o->h - 15;
+                if (!with_ok) o->active = false;
             }
         }
         line_height_ = f ? f->height : 12;
     }
     bool see_through() const override { return true; }
+    // Closes itself at its (passes + 1)th own pass: drawn in the pass that opened it and in
+    // `passes` more (a box the original covers with the next screen it opens).
+    void close_after(int passes) { close_after_ = passes; }
+    void frame(FrontEnd& fe, std::uint32_t now) override {
+        LayoutScreen::frame(fe, now);
+        if (close_after_ > 0 && ++passes_ > close_after_) fe.pop();
+    }
 
 protected:
     void draw_under(FrontEnd& fe, render::Image8& out) override {
@@ -547,11 +541,12 @@ protected:
         if (done) done(fe);
     }
 
-private:
+protected:
     MenuArt& art_;
     std::vector<std::string> lines_;
     int line_height_ = 12;
     std::function<void(FrontEnd&)> done_;
+    int close_after_ = 0, passes_ = 0;
 };
 
 void show_net_message(FrontEnd& fe, MenuArt& art, const std::string& text, int width = 200, std::function<void(FrontEnd&)> done = {}) {
@@ -792,6 +787,84 @@ void find_games(NetPart& part) {
     part.found = part.session->sessions();
 }
 
+// The games asked for as the game list does it (0x441460): before the session service is asked
+// (0x4C9E50) a box is put on the screen, 150 wide, fitted to its text, no OK (0x4ABD90 with
+// 0x96, 0, 1; the text translated): "Updating..." with the TCP/IP provider, "Connecting  (ESC to
+// abort)" with any other; it goes when the answer is in (0x4A9660). The enumeration repeats while
+// the service is still connecting (a modem dialling); Escape then gives up. A failed enumeration
+// (an address the service cannot use, Escape) returns failure (-1). Here the box stays up while
+// the session is pumped pass by pass; `done` gets whether the games were found.
+class FindGamesBox : public NetMessage {
+public:
+    FindGamesBox(std::shared_ptr<NetPart> part, std::function<void(FrontEnd&, bool)> done)
+        : NetMessage(part->art, translate(box_text(*part)), 0x96, true, {}, false), part_(std::move(part)), found_(std::move(done)) {}
+    static const char* box_text(const NetPart& p) {
+        return providers()[static_cast<std::size_t>(p.provider)].kind == ProviderKind::Tcpip ? "Updating..." : "Connecting  (ESC to abort)";
+    }
+    void handle(FrontEnd& fe, const InputEvent& e) override {
+        // (0x4C9E50 reads only the key queue: Escape stops it.)
+        if (e.type == InputEvent::Type::KeyDown && e.key == client::keys::kEscape) finish(fe, false);
+    }
+    void frame(FrontEnd& fe, std::uint32_t) override {
+        if (finished_) return;
+        // (the box is on the screen before the service is asked: one drawn pass first)
+        if (!shown_) {
+            shown_ = true;
+            return;
+        }
+        using clock = std::chrono::steady_clock;
+        NetPart& part = *part_;
+        if (!part.session) return finish(fe, false);
+        part.session->pump();
+        if (!part.session->error().empty()) return finish(fe, false);
+        if (!asked_) {
+            if (!started_) {
+                started_ = true;
+                part.found.clear();
+                limit_ = clock::now() + std::chrono::seconds(45);
+            }
+            if (!part.session->provider().ready()) {
+                if (clock::now() >= limit_) finish(fe, false);
+                return;
+            }
+            asked_ = true;
+            part.session->find();
+            until_ = clock::now() + std::chrono::milliseconds(1500);
+            return;
+        }
+        if (clock::now() < until_) return;
+        part.found = part.session->sessions();
+        finish(fe, true);
+    }
+
+private:
+    void finish(FrontEnd& fe, bool ok) {
+        if (finished_) return;
+        finished_ = true;
+        auto done = found_;
+        fe.pop();
+        if (done) done(fe, ok);
+    }
+    std::shared_ptr<NetPart> part_;
+    std::function<void(FrontEnd&, bool)> found_;
+    bool shown_ = false, started_ = false, asked_ = false, finished_ = false;
+    std::chrono::steady_clock::time_point limit_{}, until_{};
+};
+
+// 0x443CB0 when the games could not be asked for: the game list closes, "Invalid TCP/IP Address"
+// (whatever the provider) is shown 200 wide with OK, and the menu state goes back to the
+// connection screen (sub-state 3: the service closed, 0x450DD0; state 0x0F: SELPROV opened anew,
+// 0x444580). The new connection screen is opened over the box two passes later, so the box is
+// seen for two frames and then lies under the connection screen; here it closes itself then and
+// the connection screen below shows.
+void show_invalid_address(FrontEnd& fe, NetPart& part) {
+    part.session.reset();
+    if (!part.art.layout("MSGBOX")) return;
+    auto box = std::make_unique<NetMessage>(part.art, translate("Invalid TCP/IP Address"), 200, true);
+    box->close_after(1);
+    fe.push(std::move(box));
+}
+
 // ------------------------------------------------------------------ serial (SERIAL.GUI)
 // 0x442560 (handler 0x4423C0): PORTS (COM1..COM4, the registry's SERPORT picked), SPEEDS (115200,
 // 57600, 38400, 19200, 14400, 9600; SERBAUD); HOST waits on the cable for a game of its own, JOIN
@@ -914,6 +987,8 @@ std::array<std::string, 11> game_columns(const GameEntry& g) {
 }
 
 class NewMulti;
+std::vector<GameEntry> found_entries(const NetPart& part);
+void open_game_list(FrontEnd& fe, const std::shared_ptr<NetPart>& part);
 class SelGame : public NetScreen {
 public:
     SelGame(std::shared_ptr<NetPart> part, std::vector<GameEntry> games)
@@ -926,6 +1001,13 @@ public:
         fill();
     }
     void enter(FrontEnd& fe) override;
+    void startup_check(FrontEnd& fe);
+    // The games found (the list's rows anew).
+    void set_games(std::vector<GameEntry> games) {
+        games_ = std::move(games);
+        fill();
+    }
+    bool waiting_ = false;  // the games are being asked for (the box over the list)
 
 protected:
     void fill() {
@@ -960,7 +1042,7 @@ protected:
     }
     void on_press(FrontEnd& fe, Widget& w) override;
     void join(FrontEnd& fe, bool watch);
-    void rebuild();
+    void rebuild(FrontEnd& fe);
     std::shared_ptr<NetPart> part_;
     std::vector<GameEntry> games_;
 };
@@ -1041,6 +1123,31 @@ std::vector<GameEntry> found_entries(const NetPart& part) {
     return out;
 }
 
+// 0x443CB0: the game list opened, then the games asked for over it (0x441460's box); when they
+// cannot be, the list closes and "Invalid TCP/IP Address" shows (show_invalid_address).
+void open_game_list(FrontEnd& fe, const std::shared_ptr<NetPart>& part) {
+    if (part->test || !part->session || !part->art.layout("MSGBOX")) {
+        if (!part->test) find_games(*part);
+        fe.push(make_selgame(part, found_entries(*part)));
+        return;
+    }
+    part->found.clear();
+    std::unique_ptr<client::Screen> s = make_selgame(part, {});
+    SelGame* list = static_cast<SelGame*>(s.get());
+    list->waiting_ = true;
+    fe.push(std::move(s));
+    fe.push(std::make_unique<FindGamesBox>(part, [part, list](FrontEnd& f, bool ok) {
+        list->waiting_ = false;
+        if (ok) {
+            list->set_games(found_entries(*part));
+            list->startup_check(f);
+            return;
+        }
+        f.pop();  // the game list (0x4A9660)
+        show_invalid_address(f, *part);
+    }));
+}
+
 // The player's data in the session (0x451220): the password typed, then the words 0 and 0x50.
 std::vector<std::uint8_t> session_player_data(const std::string& password) {
     std::vector<std::uint8_t> d(21, 0);
@@ -1109,9 +1216,8 @@ void TcpAsk::ok(FrontEnd& fe) {
             show_loop_message(fe, art_, kServiceError);
             return;
         }
-        find_games(*part_);
     }
-    fe.push(make_selgame(part_, found_entries(*part_)));
+    open_game_list(fe, part_);
 }
 
 void SerialAsk::on_press(FrontEnd& fe, Widget& w) {
@@ -1139,8 +1245,7 @@ void SerialAsk::on_press(FrontEnd& fe, Widget& w) {
         fe.push(std::make_unique<NewMulti>(part_));
         return;
     }
-    if (!part_->test) find_games(*part_);
-    fe.push(make_selgame(part_, found_entries(*part_)));
+    open_game_list(fe, part_);
 }
 
 void ModemAsk::on_press(FrontEnd& fe, Widget& w) {
@@ -1168,14 +1273,17 @@ void ModemAsk::on_press(FrontEnd& fe, Widget& w) {
         fe.push(std::make_unique<NewMulti>(part_));
         return;
     }
-    if (!part_->test) find_games(*part_);
-    fe.push(make_selgame(part_, found_entries(*part_)));
+    open_game_list(fe, part_);
 }
 
 void SelGame::enter(FrontEnd& fe) {
     NetScreen::enter(fe);
-    // (0x443CB0 / 0x4437C0: a start-up address left by a hosting start (-h) with a player name
-    // opens the new game screen; the address is used up)
+    if (!waiting_) startup_check(fe);
+}
+
+void SelGame::startup_check(FrontEnd& fe) {
+    // (0x443CB0 / 0x4437C0, once the games are in: a start-up address left by a hosting start
+    // (-h) with a player name opens the new game screen; the address is used up)
     auto& st = part_->cfg.startup;
     if (!st || st->address.empty() || !st->host || part_->nickname.empty()) return;
     st->address.clear();
@@ -1190,6 +1298,14 @@ void SelGame::on_press(FrontEnd& fe, Widget& w) {
             // (Back from a room the session went with it: the provider is opened anew.)
             std::string err;
             if (!part_->session) open_provider(*part_, err);
+            if (part_->session && art_.layout("MSGBOX")) {
+                // (0x4437C0 does not look at the result: a failed enumeration leaves the list as
+                // it was.)
+                fe.push(std::make_unique<FindGamesBox>(part_, [this](FrontEnd&, bool ok) {
+                    if (ok) set_games(found_entries(*part_));
+                }));
+                return;
+            }
             if (part_->session) {
                 find_games(*part_);
                 games_ = found_entries(*part_);
@@ -1250,7 +1366,7 @@ void SelGame::join(FrontEnd& fe, bool watch) {
         for (std::size_t k = 0; k < part_->found.size(); ++k)
             if (entry_of(part_->found[k]).name == want) found = static_cast<int>(k);
         if (found < 0) {
-            rebuild();
+            rebuild(fe);
             return;
         }
         row = found;
@@ -1269,7 +1385,7 @@ void SelGame::join(FrontEnd& fe, bool watch) {
         if (s.state() != net::dplay::Session::State::Joined) {
             std::string err;
             open_provider(*part_, err);
-            rebuild();
+            rebuild(fe);
             return;
         }
     }
@@ -1278,12 +1394,26 @@ void SelGame::join(FrontEnd& fe, bool watch) {
 
 // 0x443CB0 again: the games asked for anew, the fields from the kept name and password, the
 // list taking the focus.
-void SelGame::rebuild() {
-    if (!part_->test && part_->session) find_games(*part_);
-    if (!part_->test) games_ = found_entries(*part_);
+void SelGame::rebuild(FrontEnd& fe) {
     set_edit("NICKNAME", part_->nickname);
     set_edit("PASSWORD", part_->password);
     focus_edit("GAMENAME");
+    if (!part_->test && part_->session && art_.layout("MSGBOX")) {
+        // (the box over the list, as at its first opening; a failure closes the list)
+        games_.clear();
+        fill();
+        fe.push(std::make_unique<FindGamesBox>(part_, [this](FrontEnd& f, bool ok) {
+            if (ok) {
+                set_games(found_entries(*part_));
+                return;
+            }
+            f.pop();  // the game list
+            show_invalid_address(f, *part_);
+        }));
+        return;
+    }
+    if (!part_->test && part_->session) find_games(*part_);
+    if (!part_->test) games_ = found_entries(*part_);
     fill();
 }
 
@@ -1406,8 +1536,24 @@ public:
             } else if (kind == "lounge") {
                 fe.push(net_screens_detail::make_lounge(as_void(part_), true, arg));
             } else if (kind == "message") {
-                const auto c2 = arg.find(':');
-                show_net_message(fe, part_->art, c2 == std::string::npos ? arg : arg.substr(c2 + 1), c2 == std::string::npos ? 200 : std::atoi(arg.c_str()));
+                // message:TEXT (200 wide), message:WIDTH:TEXT, message:WIDTH:OK:FIT:TEXT (the
+                // inputs of gui_harness msgbox:)
+                std::string t = arg;
+                int width = 200, with_ok = 1, fit = 1;
+                auto num_field = [&](int& v) {
+                    const auto c = t.find(':');
+                    if (c == std::string::npos || c == 0 || t.find_first_not_of("0123456789") != c) return false;
+                    v = std::atoi(t.c_str());
+                    t = t.substr(c + 1);
+                    return true;
+                };
+                if (num_field(width)) {
+                    const std::string keep = t;
+                    int a = 0, b = 0;
+                    if (num_field(a) && num_field(b)) with_ok = a, fit = b;
+                    else t = keep;
+                }
+                if (part_->art.layout("MSGBOX")) fe.push(std::make_unique<NetMessage>(part_->art, t, width, fit != 0, nullptr, with_ok != 0));
             }
         }
     }
@@ -1602,19 +1748,7 @@ struct LiveRoom {
 };
 
 // Why a machine is out of the room (0x452C40), shown over the game list.
-std::string out_text(int reason) {
-    switch (reason) {
-    case 3: return "The game is closed";
-    case 4: return "You did not have the correct password";
-    case 5: return "The game is full";
-    case 6: return "You have lost connection with the game";
-    case 7: return "You need a unit you don't have for this game";
-    case 8: return "You need a newer version of the game to enter";
-    case 9: return "No watching is allowed for this game";
-    case 10: return "The creator has left the game";
-    default: return "You were rejected from the game";
-    }
-}
+std::string out_text(int reason) { return leave_reason_text(reason); }
 
 // Writes a room in the room file format (read_lounge / gui_harness lounge:).
 void write_lounge(const std::string& path, const struct LoungeState& st);
@@ -3310,6 +3444,12 @@ protected:
     // (0x444A20, VIEWMAP).
     void open_map(FrontEnd& fe) {
         if (host_) {
+            // 0x444EA0: no map name in the map info (+0xA14 empty, 0x435C40) or no map to list
+            // (0x434BF0 counts none): a 320-wide box (OK, fitted, translated) instead.
+            if (st_.map.empty() || art_.skirmish_maps().empty()) {
+                show_net_message(fe, art_, translate("There are no multiplayer maps to choose from"), 320);
+                return;
+            }
             auto live = live_;
             MenuArt* art = &art_;
             fe.push(make_room_map_choice(art_, st_.map, [live, art](const std::string& map) {

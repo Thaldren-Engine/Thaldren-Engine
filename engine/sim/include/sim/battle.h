@@ -169,6 +169,9 @@ public:
     virtual void forget_fog(Unit& unit) = 0;
     virtual void victory_unit_destroyed(Unit& unit) = 0;
     virtual void player_out_of_units(int player) = 0;
+    // A skirmish or network game's console line for it, worded by the C runtime rand() value
+    // the battle drew (0x47BD70 / 0x450380; presentation only).
+    virtual void player_out_notice(int /*player*/, std::uint32_t /*rand_value*/) {}
     virtual void commander_died(int player) = 0;
     // The real-time clock in steps (read by the hover bob; not deterministic in the original).
     virtual std::uint32_t clock_ticks() = 0;
@@ -565,8 +568,9 @@ private:
     void player_out_of_units(int p) override {
         // The message that a player is out of units picks its wording with one C runtime
         // rand() (skirmish 0x47BD70, "obliterated"; network game 0x450380, "has left", while
-        // this machine's player is present — always, here). The message itself is presentation.
-        if (settings.provider == 2 || settings.provider == 3) crt_rand.next();
+        // this machine's player is present — always, here). The message itself is presentation
+        // (player_out_notice).
+        if (settings.provider == 2 || settings.provider == 3) outside_.player_out_notice(p, crt_rand.next());
         outside_.player_out_of_units(p);
     }
     void commander_died(int p) override {

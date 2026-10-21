@@ -126,6 +126,7 @@ public:
         return static_cast<int>(net_->timeout_seconds()) - static_cast<int>(since / 30) + 120;
     }
     void reject_player(int slot, int reason) override { net_->reject(slot, static_cast<std::uint8_t>(reason)); }
+    int local_leaving_reason() const override { return local_ < 0 || local_ > 9 ? 0 : net_->leaving(local_); }
     bool host() const override {
         for (int k = 0; k < 10; ++k) {
             const net::RoomPlayer& r = net_->room()[static_cast<std::size_t>(k)];

@@ -138,7 +138,7 @@ std::uint32_t weapon_section_checksum(const WeaponFiles& w, const std::string* n
 
 // Fills the stub fields read while enumerating; returns false if the unit is incompatible.
 bool load_stub(Vfs& vfs, const UnitDefContext& ctx, const WeaponFiles& weapons, const std::string& file,
-               UnitDefRecord& u, bool& aborted) {
+               UnitDefRecord& u, bool& aborted, bool* tampered = nullptr) {
     const std::string path = vfs.virtual_path("units", file, "FBI");
     std::vector<std::uint8_t> data;
     if (!vfs.read(path, data)) return true;  // unopenable: record stays blank
@@ -171,7 +171,12 @@ bool load_stub(Vfs& vfs, const UnitDefContext& ctx, const WeaponFiles& weapons, 
     const std::int32_t major = sim::x87::ftol32(major_f);
     const std::int32_t minor = sim::x87::ftol32(std::floor((v - static_cast<double>(major)) * 10.0));
     bool compatible = major < ctx.game_version_major || (major == ctx.game_version_major && minor <= ctx.game_version_minor);
-    if (vfs.is_loose(path) && ctx.cd_check_enabled) compatible = false;
+    // (A loose file under the CD check, and below a wrong copyright line, also set 0x42A8D0's
+    // "tampered" flag, which keeps the incompatible-units message away.)
+    if (vfs.is_loose(path) && ctx.cd_check_enabled) {
+        compatible = false;
+        if (tampered) *tampered = true;
+    }
     std::string copyright = s->get_string("Copyright", 0x80, "Run to the Village!  Warn your brother!");
     if (copyright.size() >= kCopyrightYearOffset + 4) {
         copyright.replace(kCopyrightYearOffset, 4, "0000");
@@ -179,7 +184,10 @@ bool load_stub(Vfs& vfs, const UnitDefContext& ctx, const WeaponFiles& weapons, 
         // The game writes the year digits past the string's end; it can never match then.
         copyright += '\x01';
     }
-    if (copyright != kCopyrightTemplate) compatible = false;
+    if (copyright != kCopyrightTemplate) {
+        compatible = false;
+        if (tampered) *tampered = true;
+    }
     u.type_flags = compatible ? (u.type_flags | unit_flags::kVersionCompatible) : (u.type_flags & ~unit_flags::kVersionCompatible);
     u.max_this_unit = -1;
     return compatible;
@@ -489,6 +497,19 @@ void load_unit_context(Vfs& vfs, UnitDefContext& ctx) {
     }
 }
 
+bool unit_files_incompatible_notice(Vfs& vfs, const UnitDefContext& ctx) {
+    const WeaponFiles weapons = load_weapon_files(vfs, ctx);
+    const auto files = ctx.enumerated_unit_files ? *ctx.enumerated_unit_files : vfs.enumerate("units\\*.FBI");
+    bool aborted = false, tampered = false;
+    std::size_t kept = 1;
+    for (std::size_t i = 0; i < files.size() && !aborted; ++i) {
+        UnitDefRecord u;
+        load_stub(vfs, ctx, weapons, files[i], u, aborted, &tampered);
+        if (u.type_flags & unit_flags::kVersionCompatible) ++kept;
+    }
+    return kept != files.size() + 1 && !tampered;
+}
+
 UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable* features) {
     UnitDefTable table;
     const WeaponFiles weapons = load_weapon_files(vfs, ctx);
@@ -502,11 +523,11 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
     none.corpse_feature_id = 0;
     std::vector<UnitDefRecord> units;
     units.push_back(none);
-    bool aborted = false;
+    bool aborted = false, tampered = false;
     for (std::size_t i = 0; i < files.size() && !aborted; ++i) {
         UnitDefRecord u;
         u.index = static_cast<std::uint16_t>(i + 1);
-        load_stub(vfs, ctx, weapons, files[i], u, aborted);
+        load_stub(vfs, ctx, weapons, files[i], u, aborted, &tampered);
         units.push_back(std::move(u));
     }
     if (aborted) table.notes.push_back("an FBI without [UNITINFO] aborted enumeration (game behaviour)");
@@ -518,6 +539,9 @@ UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable
         if (units[i].type_flags & unit_flags::kVersionCompatible) kept.push_back(std::move(units[i]));
         else table.notes.push_back("incompatible: " + units[i].source_file);
     }
+    // (The table holds a record for every file; those an abandoned enumeration never reached
+    // stay blank and are dropped as well.)
+    table.incompatible_notice = kept.size() != files.size() + 1 && !tampered;
     sort_like_original(kept, 1, kept.size(),
                        [](const UnitDefRecord& a, const UnitDefRecord& b) { return stricmp_c(a.unit_name, b.unit_name) < 0; });
     for (std::size_t i = 2; i < kept.size(); ++i) {
