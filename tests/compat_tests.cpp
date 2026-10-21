@@ -16,6 +16,7 @@
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
 #include "ta/translate.h"
+#include "ta/unitdefs.h"
 
 namespace {
 
@@ -276,6 +277,30 @@ void test_skirmish_schema_rows() {
     fs::remove_all(dir, ec);
 }
 
+// The model box from the footprint (0x42D079): shifts, halving and sums wrap at 32 bits.
+void test_footprint_model_box() {
+    ta::UnitDefRecord u;
+    u.footprint_x = 3;
+    u.footprint_z = 2;
+    u.model_max_y = 0x50000;
+    u.model_min_y = 0;
+    ta::footprint_model_box(u);
+    CHECK(u.model_min_x == -0x180000 && u.model_max_x == 0x180000);
+    CHECK(u.model_min_z == -0x100000 && u.model_max_z == 0x100000);
+    CHECK(u.model_size_x == 0x300000 && u.model_size_y == 0x50000 && u.model_size_z == 0x200000);
+    CHECK(u.model_avg_size == 0x500000 / 3);
+    // A footprint of 2048 shifts into the sign bit: -(2048 << 20) wraps to INT32_MIN, halved
+    // toward zero; the size then wraps too (the original's shl / sub / add).
+    u.footprint_x = 2048;
+    u.footprint_z = 4095;
+    ta::footprint_model_box(u);
+    CHECK(u.model_min_x == -0x40000000 &&u.model_max_x == -0x40000000);
+    CHECK(u.model_size_x == 0);
+    CHECK(u.model_max_z == static_cast<std::int32_t>(0xFFF00000u) / 2 && u.model_min_z == static_cast<std::int32_t>(0x00100000u) / 2);
+    CHECK(u.model_size_z == static_cast<std::int32_t>(static_cast<std::uint32_t>(-0x80000) - 0x80000u));
+    CHECK(u.model_avg_size == u.model_size_z / 3);
+}
+
 } // namespace
 
 int main() {
@@ -292,6 +317,7 @@ int main() {
     test_restrict_list();
     test_translations();
     test_skirmish_schema_rows();
+    test_footprint_model_box();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -428,14 +428,7 @@ void load_properties(Vfs& vfs, const UnitDefContext& ctx, CategoryRegistry& cats
         }
     }
 
-    u.model_min_x = (u.footprint_x * -0x100000) / 2;
-    u.model_min_z = (u.footprint_z * -0x100000) / 2;
-    u.model_max_x = (static_cast<std::int32_t>(u.footprint_x) << 20) / 2;
-    u.model_max_z = (static_cast<std::int32_t>(u.footprint_z) << 20) / 2;
-    u.model_size_x = u.model_max_x - u.model_min_x;
-    u.model_size_y = u.model_max_y - u.model_min_y;
-    u.model_size_z = u.model_max_z - u.model_min_z;
-    u.model_avg_size = (u.model_size_z + u.model_size_x) / 3;
+    footprint_model_box(u);
 
     if ((c & unit_flags::kCanCloakFromCost) && u.min_cloak_distance == 0) u.min_cloak_distance = 0x50;
 }
@@ -508,6 +501,28 @@ bool unit_files_incompatible_notice(Vfs& vfs, const UnitDefContext& ctx) {
         if (u.type_flags & unit_flags::kVersionCompatible) ++kept;
     }
     return kept != files.size() + 1 && !tampered;
+}
+
+void footprint_model_box(UnitDefRecord& u) {
+    // 0x42D079: (-footprint) << 20 and footprint << 20 halved toward zero (cdq; sub; sar), then
+    // the sizes and (z + x) / 3, all 32-bit and wrapping (footprints are any FBI int16).
+    // The halving is written as the original's cdq; sub; sar (add the sign bit, shift): MSVC /O2
+    // compiles `(int)(0u - x) / 2` as `-((int)x / 2)`, wrong when x is 0x80000000 (footprint 2048).
+    auto shl20_half = [](std::int32_t v) {
+        const std::uint32_t w = static_cast<std::uint32_t>(v) << 20;
+        return static_cast<std::int32_t>(w + (w >> 31)) >> 1;
+    };
+    auto wsub = [](std::int32_t a, std::int32_t b) {
+        return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b));
+    };
+    u.model_min_x = shl20_half(-static_cast<std::int32_t>(u.footprint_x));
+    u.model_min_z = shl20_half(-static_cast<std::int32_t>(u.footprint_z));
+    u.model_max_x = shl20_half(u.footprint_x);
+    u.model_max_z = shl20_half(u.footprint_z);
+    u.model_size_x = wsub(u.model_max_x, u.model_min_x);
+    u.model_size_y = wsub(u.model_max_y, u.model_min_y);
+    u.model_size_z = wsub(u.model_max_z, u.model_min_z);
+    u.model_avg_size = static_cast<std::int32_t>(static_cast<std::uint32_t>(u.model_size_z) + static_cast<std::uint32_t>(u.model_size_x)) / 3;
 }
 
 UnitDefTable load_unit_defs(Vfs& vfs, const UnitDefContext& ctx, FeatureDefTable* features) {

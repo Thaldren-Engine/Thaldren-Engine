@@ -139,6 +139,10 @@ void load_unit_context(Vfs& vfs, UnitDefContext& ctx);
 
 class FeatureDefTable;
 
+// The model box from the footprint (0x42D079): min = ((-f) << 20) / 2, max = (f << 20) / 2 per
+// axis (C division), size = max - min (y too), average size = (size z + size x) / 3; 32-bit wrapping.
+void footprint_model_box(UnitDefRecord& u);
+
 // Enumerate, filter, sort and load every unit definition. With a feature table,
 // each corpse is looked up there (and appended if missing), as the game does
 // during battle loading; corpse_feature_id then holds the index.
