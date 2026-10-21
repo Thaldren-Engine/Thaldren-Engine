@@ -9,10 +9,12 @@
 #include <filesystem>
 #include <fstream>
 
+#include "client/sound_rules.h"
 #include "ta/battle_loader.h"
 #include "ta/crt_strtod.h"
 #include "ta/hpi.h"
 #include "ta/inflate.h"
+#include "ta/notice_texts.h"
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
 #include "ta/translate.h"
@@ -276,6 +278,50 @@ void test_skirmish_schema_rows() {
     fs::remove_all(dir, ec);
 }
 
+// Unit notices carry the behaviour's own text (0x47F780: the caller's text replaces the
+// notice table's; "<type>: <text>" on the console when priority > 10 - unitchattext).
+void test_notice_texts() {
+    using T = sim::SpeechText;
+    CHECK(ta::speech_text(T::None) == nullptr);
+    CHECK(std::string(ta::speech_text(T::UnableToCreate)) == "Unable to create any more units");
+    CHECK(std::string(ta::speech_text(T::CantReachSite)) == "I can't reach the construction site");
+    CHECK(std::string(ta::speech_text(T::CloudOfVapor)) == "That unit is a cloud of vapor and cannot be captured");
+    CHECK(std::string(ta::speech_text(T::ResurrectionFailed)) == "Resurrection failed");    // 0x404DEF
+    CHECK(std::string(ta::speech_text(T::RessurectionFailed)) == "Ressurection failed");    // 0x404F6F (sic)
+    CHECK(std::string(ta::speech_text(T::RepairAborted)) == "Repair aborted.");
+    CHECK(std::string(ta::speech_text(T::Guarding)) == "Guarding");
+    for (int k = 1; k <= static_cast<int>(T::ResurrectionComplete); ++k) CHECK(ta::speech_text(static_cast<T>(k)) != nullptr);
+
+    struct Host : client::NoticeQueue::Host {
+        std::vector<std::string> shown;
+        std::uint32_t tick() override { return 100; }
+        std::uint32_t rand() override { return 0; }
+        int sound_count(std::uint16_t, std::uint32_t) override { return 0; }
+        void speak(std::uint16_t, std::uint32_t, int) override {}
+        bool unit_alive(std::uint16_t) override { return true; }
+        void show(std::uint16_t, const std::string& text) override { shown.push_back(text); }
+    };
+    Host h;
+    client::NoticeQueue::Levels lv;  // unitchat 10, unitchattext 5
+    client::NoticeQueue q;
+    q.queue(h, lv, 3, 7, ta::speech_text(T::UnableToCreate));  // "cant" (priority 8)
+    CHECK(q.size() == 1 && q.text_at(0) == "Unable to create any more units");
+    q.frame(h, lv);
+    CHECK(h.shown.size() == 1 && h.shown[0] == "Unable to create any more units");
+    q.queue(h, lv, 3, 7);  // no text of its own: the table's
+    CHECK(q.size() == 1 && q.text_at(0) == "Cannot Comply");
+    q.frame(h, lv);
+    // "ok" (priority 5) with the order's acknowledgement text: shown only above level 5.
+    q.queue(h, lv, 3, 5, ta::speech_text(T::Guarding));
+    CHECK(q.size() == 1 && q.text_at(0) == "Guarding");
+    q.frame(h, lv);
+    CHECK(h.shown.size() == 2 && h.shown[1] == "Cannot Comply");
+    lv.unit_chat_text = 6;
+    q.queue(h, lv, 3, 5, ta::speech_text(T::Guarding));
+    q.frame(h, lv);
+    CHECK(h.shown.size() == 3 && h.shown[2] == "Guarding");
+}
+
 } // namespace
 
 int main() {
@@ -292,6 +338,7 @@ int main() {
     test_restrict_list();
     test_translations();
     test_skirmish_schema_rows();
+    test_notice_texts();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

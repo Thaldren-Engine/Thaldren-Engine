@@ -55,7 +55,7 @@ bool world_sound(const SoundView& v, const std::array<std::int32_t, 3>& pos, con
     return true;
 }
 
-void NoticeQueue::queue(Host& h, const Levels& l, std::uint16_t unit, std::uint32_t id) {
+void NoticeQueue::queue(Host& h, const Levels& l, std::uint16_t unit, std::uint32_t id, const char* text) {
     if (id == 0 || id >= 24) return;
     const std::uint32_t tick = h.tick();
     if (next_[id] > tick) return;  // still within its gap
@@ -71,7 +71,9 @@ void NoticeQueue::queue(Host& h, const Levels& l, std::uint16_t unit, std::uint3
     e.tick = tick;
     e.unit = unit;
     e.priority = kNotices[id].priority;
-    if (kNotices[id].text) e.text = tr(kNotices[id].text);  // (translated when queued: 0x47F7C5 / 0x47F89E)
+    // The caller's text, else the table's (0x47F780), translated when queued (0x47F7C5 / 0x47F89E).
+    if (!text) text = kNotices[id].text;
+    if (text) e.text = tr(text);
     // Before the first entry of lower priority.
     std::size_t at = 0;
     while (at < entries_.size() && entries_[at].priority >= e.priority) ++at;

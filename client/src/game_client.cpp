@@ -483,14 +483,14 @@ void GameClient::notices_frame() {
     notices_.frame(h, notice_levels());
 }
 
-void GameClient::on_speech(sim::Unit& u, std::uint32_t id) {
+void GameClient::on_speech(sim::Unit& u, std::uint32_t id, const char* text) {
     // Notices of the viewed player's units with the alive flag and without the dying flag
-    // (0x47F780) join the queue.
+    // (0x47F780) join the queue, with the caller's text when it gives one.
     if (id == 0 || id >= 24 || b_.ticks[u.id].type_index == 0 || b_.ticks[u.id].owner != viewed_player() || !(u.flags & 0x10000000u) ||
         (u.flags & 0x4000u))
         return;
     NoticeHost h(*this);
-    notices_.queue(h, notice_levels(), u.id, id);
+    notices_.queue(h, notice_levels(), u.id, id, text);
 }
 
 void GameClient::forget_speech(sim::Unit& u) {

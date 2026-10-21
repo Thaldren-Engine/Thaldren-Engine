@@ -72,8 +72,11 @@ public:
         bool speech = true;                      // the speech switch
     };
     // Queues notice `id` of `unit` (the caller has checked the unit: the viewed player's, alive,
-    // not dying).
-    void queue(Host& h, const Levels& l, std::uint16_t unit, std::uint32_t id);
+    // not dying). `text`, when given, is shown instead of the table's text (0x47F780: the
+    // caller's text replaces it; translated either way).
+    void queue(Host& h, const Levels& l, std::uint16_t unit, std::uint32_t id, const char* text = nullptr);
+    // The text a queued entry shows (tests).
+    const std::string& text_at(std::size_t index) const { return entries_[index].text; }
     // The frame's notice: it speaks unless the last one spoken is still within its 30 steps,
     // then only its text shows.
     void frame(Host& h, const Levels& l);

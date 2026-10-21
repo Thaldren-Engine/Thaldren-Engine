@@ -87,3 +87,6 @@ if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
     target_link_libraries(frame_harness PRIVATE ta_compat_client)
     target_compile_options(frame_harness PRIVATE /W4 /permissive-)
 endif()
+
+# The compatibility tests also check client rules fed by the importer (the unit notices' texts).
+target_link_libraries(compat_tests PRIVATE client)
