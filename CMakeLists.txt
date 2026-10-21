@@ -103,6 +103,7 @@ add_library(ta_compat STATIC
     ta_compat/src/campaign.cpp
     ta_compat/src/mission_text.cpp
     ta_compat/src/notice_texts.cpp
+    ta_compat/src/online_services.cpp
     ta_compat/src/preferences.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp

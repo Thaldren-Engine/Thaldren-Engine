@@ -9,6 +9,10 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
+#include <map>
 
 #include "client/sound_rules.h"
 #include "ta/battle_loader.h"
@@ -16,6 +20,7 @@
 #include "ta/hpi.h"
 #include "ta/inflate.h"
 #include "ta/notice_texts.h"
+#include "ta/online_services.h"
 #include "ta/preferences.h"
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
@@ -428,6 +433,239 @@ void test_preferences() {
     fs::remove_all(dir, ec);
 }
 
+// A minimal 32-bit DLL with an export table (module name, exported names) for the online
+// services' recognition.
+std::vector<std::uint8_t> fake_dll(const std::string& module, const std::vector<std::string>& names, bool dll = true, std::uint16_t machine = 0x14C) {
+    std::vector<std::uint8_t> f(0x400, 0);
+    auto p16 = [&](std::size_t o, std::uint32_t v) { f[o] = static_cast<std::uint8_t>(v); f[o + 1] = static_cast<std::uint8_t>(v >> 8); };
+    auto p32 = [&](std::size_t o, std::uint32_t v) { p16(o, v & 0xFFFF); p16(o + 2, v >> 16); };
+    f[0] = 'M';
+    f[1] = 'Z';
+    p32(0x3C, 0x80);
+    p32(0x80, 0x4550);
+    p16(0x84, machine);
+    p16(0x86, 1);                      // one section
+    p16(0x94, 0xE0);                   // optional header size
+    p16(0x96, dll ? 0x2102 : 0x0102);  // characteristics
+    const std::size_t opt = 0x98;
+    p16(opt, 0x10B);
+    p32(opt + 96, 0x1000);             // export directory RVA
+    const std::size_t sec = opt + 0xE0;
+    std::memcpy(&f[sec], ".rdata", 6);
+    p32(sec + 8, 0x200);                // virtual size
+    p32(sec + 12, 0x1000);              // RVA
+    p32(sec + 16, 0x200);               // raw size
+    p32(sec + 20, 0x200);               // raw offset
+    // Export directory at RVA 0x1000 (file 0x200): name RVA, count, name table RVA.
+    const std::size_t e = 0x200;
+    std::size_t str = 0x300;  // strings from RVA 0x1100
+    auto put = [&](const std::string& s) {
+        const std::uint32_t rva = static_cast<std::uint32_t>(0x1000 + (str - 0x200));
+        std::memcpy(&f[str], s.data(), s.size());
+        str += s.size() + 1;
+        return rva;
+    };
+    p32(e + 12, put(module));
+    p32(e + 24, static_cast<std::uint32_t>(names.size()));
+    p32(e + 32, 0x1040);  // name pointer table at file 0x240
+    for (std::size_t i = 0; i < names.size(); ++i) p32(0x240 + 4 * i, put(names[i]));
+    return f;
+}
+
+// The connection screen's online links (online.dll 3 and its extension DLLs, reproduced as
+// rules; docs/RE_MEMORY.md "Online services") over a made-up machine.
+void test_online_services() {
+    struct Machine {
+        std::map<std::string, std::vector<std::uint8_t>> files;  // upper-case path -> bytes
+        std::vector<ta::OnlineSystem::Found> listing;
+        std::map<std::string, std::pair<std::uint32_t, std::vector<std::uint8_t>>> values;  // "HKLM|key|value"
+        std::vector<std::string> keys;                                                     // "HKLM|key"
+        std::vector<std::pair<std::string, unsigned>> drives = {{"C:\\", 3}};
+        bool drive_list = true;
+    };
+    auto up = [](std::string s) {
+        for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return s;
+    };
+    auto sys_of = [&](Machine& m) {
+        ta::OnlineSystem s;
+        s.find_files = [&m](const std::string&, const std::string& pattern) {
+            return pattern == "ta*.dll" ? m.listing : std::vector<ta::OnlineSystem::Found>{};
+        };
+        s.exists = [&m, up](const std::string& p) { return m.files.count(up(p)) != 0; };
+        s.read_file = [&m, up](const std::string& p) {
+            auto it = m.files.find(up(p));
+            return it == m.files.end() ? std::vector<std::uint8_t>{} : it->second;
+        };
+        s.key_opens = [&m](bool user, const std::string& key) {
+            return std::find(m.keys.begin(), m.keys.end(), (user ? "HKCU|" : "HKLM|") + key) != m.keys.end();
+        };
+        s.query = [&m](bool user, const std::string& key, const std::string& value, std::uint32_t size, std::uint32_t& type,
+                       std::vector<std::uint8_t>& data) -> long {
+            const std::string k = (user ? "HKCU|" : "HKLM|") + key;
+            if (std::find(m.keys.begin(), m.keys.end(), k) == m.keys.end()) return 2;
+            auto it = m.values.find(k + "|" + value);
+            if (it == m.values.end()) return 2;
+            type = it->second.first;
+            if (it->second.second.size() > size) return 234;  // ERROR_MORE_DATA
+            data = it->second.second;
+            return 0;
+        };
+        s.drives = [&m](std::vector<std::string>& roots) -> std::uint32_t {
+            if (!m.drive_list) return 0;
+            for (const auto& d : m.drives) roots.push_back(d.first);
+            return static_cast<std::uint32_t>(roots.size() * 4);
+        };
+        s.drive_type = [&m](const std::string& root) {
+            for (const auto& d : m.drives)
+                if (d.first == root) return d.second;
+            return 1u;
+        };
+        return s;
+    };
+    auto sz = [](const std::string& s) {
+        std::vector<std::uint8_t> v(s.begin(), s.end());
+        v.push_back(0);
+        return v;
+    };
+    const std::string dir = "C:\\Games\\TA\\";
+    const std::vector<std::string> ext_exports = {"TotalAExtAction", "TotalAExtGetButtonText", "TotalAExtVersion"};
+    Machine m;
+    auto add_ext = [&](const std::string& file, const std::string& module) {
+        m.files[up(dir + file)] = fake_dll(module, ext_exports);
+        m.listing.push_back({file, false});
+    };
+    // No online.dll: no links, a press fails without a reason.
+    {
+        ta::OnlineServices s(sys_of(m), "C:\\Games\\TA");
+        CHECK(s.links().empty());
+        std::string msg = "x";
+        CHECK(s.press(0, msg, {}) == 2 && msg.empty());
+    }
+    m.files[up(dir + "online.dll")] = fake_dll("ONLINE.dll", {"ONLGetLinkInfo", "ONLGetVersion", "ONLLoadConfigFile", "ONLProcessButtonCommand"});
+    // The listing in the system's order; a folder, a DLL that is no extension, a 64-bit one.
+    add_ext("tadwngox.dll", "TADWNGOX.dll");
+    add_ext("taheatx.dll", "TAHEATX.dll");
+    m.listing.push_back({"tadir.dll", true});
+    m.files[up(dir + "tafoo.dll")] = fake_dll("TAFOO.dll", {"Something"});
+    m.listing.push_back({"tafoo.dll", false});
+    m.files[up(dir + "ta64.dll")] = fake_dll("TAKALIX.dll", ext_exports, true, 0x8664);
+    m.listing.push_back({"ta64.dll", false});
+    add_ext("takalix.dll", "TAKALIX.dll");
+    add_ext("tamplayx.dll", "TAMPLAYX.dll");
+    add_ext("tatenx.dll", "TATENX.dll");
+    add_ext("tawirepx.dll", "TAWIREPX.dll");
+    auto names = [](const std::vector<ta::OnlineLink>& l) {
+        std::string s;
+        for (const auto& k : l) s += std::to_string(k.id) + ":" + k.name + ";";
+        return s;
+    };
+    {
+        // Nothing installed: the Mplayer one first (it changes places with DWANGO).
+        ta::OnlineServices s(sys_of(m), "C:\\Games\\TA");
+        CHECK(names(s.links()) == "0:www.cavedog.com;1:Unit Download;2:Get Mplayer;3:Get HEAT;4:Get Kali;5:DWANGO;6:Play Free on TEN;7:Get Wireplay (UK);");
+        std::vector<std::pair<std::string, bool>> opened;
+        bool ok = true;
+        auto open = [&](const std::string& t, bool p) {
+            opened.push_back({t, p});
+            return ok;
+        };
+        std::string msg;
+        CHECK(s.press(0, msg, open) == 0 && opened.back().first == "http://www.cavedog.com" && !opened.back().second);
+        CHECK(s.press(1, msg, open) == 0 && opened.back().first == "http://www.totalannihilation.com/ta/unit0.htm");
+        CHECK(s.press(5, msg, open) == 0 && opened.back().first == "http://www.dwango.com/html/totala.html");
+        CHECK(s.press(6, msg, open) == 0 && opened.back().first == "http://www.ten.net/totala");
+        CHECK(s.press(4, msg, open) == 0 && opened.back().first == "http://www.kali.net/games/annihilation");
+        // No CD in a CD-ROM drive: the installation CD question with the button's text.
+        const std::size_t before = opened.size();
+        CHECK(s.press(2, msg, open) == 1 && msg == "Please insert the Installation CD (Disc 1) and select\n\n\"Get Mplayer\" again.");
+        CHECK(s.press(3, msg, open) == 1 && msg == "Please insert the Installation CD (Disc 1) and select\n\n\"Get HEAT\" again.");
+        CHECK(s.press(7, msg, open) == 1 && msg == "Please insert the Installation CD (Disc 1) and select\n\n\"Get Wireplay (UK)\" again.");
+        CHECK(opened.size() == before);
+        // The CD's set-up program on a CD-ROM drive (a fixed drive with it does not count).
+        m.drives = {{"C:\\", 3}, {"E:\\", 5}};
+        m.files[up("C:\\Internet\\HEAT\\katalyst.exe")] = {1};
+        CHECK(s.press(3, msg, open) == 1);
+        m.files[up("E:\\Internet\\HEAT\\katalyst.exe")] = {1};
+        m.files[up("E:\\Internet\\Mplayer\\mplaynow.exe")] = {1};
+        CHECK(s.press(3, msg, open) == 0 && opened.back().first == "E:\\Internet\\HEAT\\katalyst.exe" && opened.back().second);
+        CHECK(s.press(2, msg, open) == 0 && opened.back().first == "E:\\Internet\\Mplayer\\mplaynow.exe");
+        m.drive_list = false;
+        CHECK(s.press(7, msg, open) == 2 && msg == "No CD-ROM drives found.");
+        m.drive_list = true;
+        // The opener failing.
+        ok = false;
+        CHECK(s.press(0, msg, open) == 2 && msg == "Unable to browse to URL: http://www.cavedog.com");
+        CHECK(s.press(5, msg, open) == 2 && msg == "Unable to browse to URL: http://www.dwango.com/html/totala.html");
+        CHECK(s.press(2, msg, open) == 2 && msg == "Unable to execute command: E:\\Internet\\Mplayer\\mplaynow.exe");
+        ok = true;
+        CHECK(s.press(9, msg, open) == 2 && msg == "Internal error");
+        CHECK(s.press(0xFFFFFFFFu, msg, open) == 2 && msg.empty());
+        CHECK(ta::OnlineServices::failure_text("DWANGO") ==
+              "The DWANGO service failed or took\n\ntoo long. Please see the readme\n\nfile for more information.");
+    }
+    {
+        // Installed services.
+        m.drives = {{"C:\\", 3}};
+        m.keys = {"HKLM|Software\\Segasoft\\HEAT\\Main", "HKCU|Software\\Kali\\Kali95\\Misc",
+                  "HKLM|SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Wireplay.exe"};
+        m.values["HKLM|Software\\Segasoft\\HEAT\\Main|Current Version"] = {1, sz("1.0")};
+        m.values["HKCU|Software\\Kali\\Kali95\\Misc|Location"] = {1, sz("C:\\Kali")};
+        m.values["HKLM|SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Wireplay.exe|Path"] = {2, sz("D:\\Wire/")};
+        m.files[up(dir + "ta.mpi")] = {1};
+        ta::OnlineServices s(sys_of(m), dir);
+        CHECK(names(s.links()) == "0:www.cavedog.com;1:Unit Download;2:Play on Mplayer;3:Play on HEAT;4:Play on Kali;5:DWANGO;6:Play Free on TEN;7:Play on Wireplay;");
+        std::vector<std::pair<std::string, bool>> opened;
+        auto open = [&](const std::string& t, bool p) {
+            opened.push_back({t, p});
+            return true;
+        };
+        std::string msg;
+        CHECK(s.press(2, msg, open) == 0 && opened.back().first == "http://www.mplayer.com/cgi-bin/mplayer-set-up.sh?dist=16Q");
+        CHECK(s.press(3, msg, open) == 0 && opened.back().first == "http://www.heat.net/pub/totala");
+        CHECK(s.press(4, msg, open) == 0 && opened.back().first == "C:\\Kali\\Kali95.exe" && opened.back().second);
+        CHECK(s.press(7, msg, open) == 0 && opened.back().first == "D:\\Wire/Wireplay.exe" && opened.back().second);
+        // A HEAT version longer than its 10-byte buffer: not installed. A Kali key without its
+        // Location: the button says Play, the press goes to the web page.
+        m.values["HKLM|Software\\Segasoft\\HEAT\\Main|Current Version"] = {1, sz("1.0.0.12345")};
+        m.values.erase("HKCU|Software\\Kali\\Kali95\\Misc|Location");
+        // The Mplayer key alone (no ta.mpi) shows Play; its press needs the Root Directory.
+        m.files.erase(up(dir + "ta.mpi"));
+        m.keys.push_back("HKLM|Software\\Mpath\\Mplayer\\Main\\");
+        CHECK(names(s.links()) == "0:www.cavedog.com;1:Unit Download;2:Play on Mplayer;3:Get HEAT;4:Play on Kali;5:DWANGO;6:Play Free on TEN;7:Play on Wireplay;");
+        CHECK(s.press(4, msg, open) == 0 && opened.back().first == "http://www.kali.net/games/annihilation");
+        CHECK(s.press(2, msg, open) == 1);
+        m.values["HKLM|Software\\Mpath\\Mplayer\\Main\\|Root Directory"] = {1, sz("C:\\Mplayer")};
+        CHECK(s.press(2, msg, open) == 0 && opened.back().first == "http://www.mplayer.com/cgi-bin/mplayer-set-up.sh?dist=16Q");
+        // An extension file gone since the links were made.
+        m.files.erase(up(dir + "tatenx.dll"));
+        CHECK(s.press(6, msg, open) == 2 && msg == "Unable to load extension DLL.");
+        // Translated names (a translation replaces the name, 31 characters at most).
+        auto tr = [](const std::string& t) { return t == "DWANGO" ? std::string("DWANGO-Netz mit einem sehr langen Namen") : t; };
+        const auto l = s.links(tr);
+        CHECK(l.size() == 7 && l[5].name == "DWANGO-Netz mit einem sehr lang");
+    }
+    {
+        // At most ten extensions; the Mplayer one moves first only from places 1..9.
+        Machine n;
+        n.files[up(dir + "online.dll")] = m.files[up(dir + "online.dll")];
+        for (int k = 0; k < 11; ++k) {
+            const std::string f = "tadw" + std::to_string(k) + ".dll";
+            n.files[up(dir + f)] = fake_dll("TADWNGOX.dll", ext_exports);
+            n.listing.push_back({f, false});
+        }
+        n.files[up(dir + "tamplay.dll")] = fake_dll("TAMPLAYX.dll", ext_exports);
+        n.listing.insert(n.listing.begin() + 10, {"tamplay.dll", false});
+        ta::OnlineServices s(sys_of(n), dir);
+        const auto l = s.links();
+        CHECK(l.size() == 12 && l[2].name == "DWANGO" && l[11].name == "DWANGO");
+        n.listing.erase(n.listing.begin() + 10);
+        n.listing.insert(n.listing.begin() + 9, {"tamplay.dll", false});
+        const auto l2 = s.links();
+        CHECK(l2.size() == 12 && l2[2].name == "Get Mplayer" && l2[11].name == "DWANGO");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -447,6 +685,7 @@ int main() {
     test_footprint_model_box();
     test_notice_texts();
     test_preferences();
+    test_online_services();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

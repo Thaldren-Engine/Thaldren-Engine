@@ -47,7 +47,7 @@ did not list and ranks what is still missing by what a player or a peer could se
 | Console commands | 128 | 109 | 18 | 1 | 0 |
 | Data files and formats | 19 | 11 | 1 | 6 | 1 |
 | Front end (menus, campaign, movies) | 462 | 188 | 239 | 33 | 2 |
-| Network | 326 | 162 | 107 | 53 | 4 |
+| Network | 326 | 166 | 107 | 53 | 0 |
 | Rendering | 114 | 68 | 41 | 3 | 2 |
 | Saves | 38 | 34 | 4 | 0 | 0 |
 | Simulation | 965 | 691 | 258 | 13 | 3 |
@@ -56,11 +56,13 @@ did not list and ranks what is still missing by what a player or a peer could se
 | Library: MSVC C runtime | 417 | 2 | 0 | 415 | 0 |
 | Library: MSVC std::string | 15 | 0 | 0 | 15 | 0 |
 | Library: zlib 1.0.4 inflate (ported as ta_compat inflate) | 43 | 43 | 0 | 0 | 0 |
-| **Total** | 3124 | 1560 | 773 | 779 | 12 |
+| **Total** | 3124 | 1564 | 773 | 779 | 8 |
 
 (The "Data files" row is small because most format readers are cited from RE_MEMORY's format
-sections and land with the subsystem that uses them. The 12 not-ported functions are the three
-items ranked below; two of them, `0x444580` and `0x4B5980`, are ported except for that part.)
+sections and land with the subsystem that uses them. The 8 not-ported functions are the two
+items ranked below; one of them, `0x4B5980`, is ported except for that part. The online-service
+buttons, item 1 of the first version of this list (`0x444580`'s links, `0x44475D`, `0x45B490`,
+`0x45B250`), are ported: see below.)
 
 ## Ported in this sweep
 
@@ -68,43 +70,20 @@ items ranked below; two of them, `0x444580` and `0x4B5980`, are ported except fo
 |---|---|---|---|
 | Unit notices show the order behaviour's own text. `Unit_QueueSpeech` uses the table text only when the caller gives none; the behaviours pass 43 texts ("Unable to create any more units", "I can't reach the construction site", "Capture failed", "Landing aborted: all pads are occupied", "Ressurection failed" (sic) …) and the acknowledgements their mission word ("Guarding", "Repairing", "Loading unit" …). At the default unitchattext 5 a failed build showed "ARMCOM: Cannot Comply" where the original shows "ARMCOM: Unable to create any more units" | `0x47F780`, `0x438880`, strings `0x5010CC`..`0x501CFC` | `ta_compat/src/notice_texts.cpp` (`ta::speech_text`), `GameClient::on_speech(unit, id, text)`, `NoticeQueue::queue(…, text)`, `ta_compat/src/client_battle_setup.cpp` | compat_tests `test_notice_texts`; each string's push site checked in the disassembly (the two resurrection texts: `0x404DEF` / `0x404F6F`) |
 | The unit limit is the session value GS+0x37EEC: at start-up `[Preferences] UnitLimit` of `totala.ini` beside the program (default 250, more than 500 → 500, less than 20 → 20), replaced by a loaded save's `maxunits`; it is not a registry setting (the client read a `UnitLimit` setting). `NoDirectSound` from the same file starts without sound as `-s` does | `0x491200`, `0x49F5A0`, `0x432610` (from `0x497180`), readers `0x4971F1`, `0x449C3B`; `0x47ED40` | `ta_compat/src/preferences.cpp` (`ta::profile_int`, `preferences_unit_limit`, `preferences_int`), `FrontEnd::unit_limit()`, ta_play | compat_tests `test_preferences`: 42 cases of GetPrivateProfileIntA's parsing measured on Windows 11 (sections, keys, quotes, signs, hex, wrap-around) and the clamp |
+| The online-service buttons of the connection screen: "www.cavedog.com", "Unit Download" and one per service extension DLL beside the program (`ta*.dll` in the system's listing order, at most 10, the Mplayer one moved first), copies of the hidden SERVICEX 21 pixels apart, captions from each extension's probe ("Get Mplayer" / "Play on Mplayer", "Get HEAT", "Get Kali", "DWANGO", "Play Free on TEN", "Get Wireplay (UK)" …: registry keys in the 32-bit view, ta.mpi); a press plays BigButton and opens the web page or service program (then the program ends, as the original's exit(0)), or shows the installation-CD question / the failure text in a 320-wide box | `0x444580` → `0x45B490` (online.dll 3: `ONLGetLinkInfo` 0x10001BB0, scan 0x10001750), `0x44475D`; handler `0x4441A0` → `0x45B250` (`ONLProcessButtonCommand` 0x100011E0), `0x45B640`; the six extensions' `TotalAExtGetButtonText` / `TotalAExtAction` | `ta_compat/src/online_services.cpp` (`ta::OnlineServices`, `real_online_system`: the DLLs' answers as rules, nothing loaded), `SelProv::add_service_buttons` / `press_service` in `ta_compat/src/client_net_screens.cpp`, the client hook `FrontEndHooks::open_external` (ta_play: ShellExecuteA / CreateProcessA; `--open-log FILE` for tests, `--online-links`) | compat_tests `test_online_services` (35 checks: listing order, exclusions, the ten limit and the Mplayer move, every probe, every press outcome and message); gui_harness `links:… selprov:…` against ta_play `--net-screen selprov` on this machine (8 buttons): 0 differing pixels; the press of "Get Mplayer" by its quick key G (gui_harness `onlpress:1:TEXT press:g frame`, the call into online.dll answered with its CD text) against ta_play: 0 differing pixels in four frames |
 
-After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 240 / 0, battle_menus_check ok (skirmish, net host, net join), game_flow all identical, whole-game replays g8 (3,000 steps), s2 (4,500), g9 (2,759) identical.
+After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 240 / 0, battle_menus_check ok (skirmish, net host, net join), game_flow all identical, whole-game replays g8 (3,000 steps), s2 (4,500), g9 (2,759) identical. After the online-service buttons (2026-10-21): sim_tests 5859 / 0, net_tests 514 / 0, compat_tests 284 / 0, battle_menus_check ok.
 
 ## Not ported, ranked by what a player or peer sees
 
-1. **The online-service buttons on the multiplayer connection screen** (Network front end;
-   medium). The Steam installation ships `online.dll` (version 3) and six service extension
-   DLLs (`tadwngox`, `taheatx`, `takalix`, `tamplayx`, `tatenx`, `tawirepx`). When SELPROV.GUI
-   opens (`0x444580`) the original asks `online.dll` for its links (`0x45B490`:
-   `ONLGetVersion` > 2, then `ONLGetLinkInfo`, entries of 0x24 bytes: id and a 32-byte name,
-   each name translated) and adds one button per entry (`0x44475D`): a copy of the hidden
-   template gadget `SERVICEX` (81, 221, 321 × 20), named `SERVICE<n>`, made active, each next
-   one at y + height + 1. online.dll always gives two links, id 0 "www.cavedog.com" and id 1
-   "Unit Download", then one entry per `ta*.dll` in the program's folder that loads as an
-   extension (`TotalAExtVersion`, button text from `TotalAExtGetButtonText`; at most 10; the
-   Mplayer one moved first). The extension texts depend on whether the service is installed
-   ("Play on Kali" / "Get Kali", "Play on HEAT" / "Get HEAT", "Play on Mplayer" / "Get Mplayer",
-   "Play on Wireplay" / "Get Wireplay (UK)", "Play Free on TEN", DWANGO). Pressing one runs
-   `ONLProcessButtonCommand(id)` (`0x45B250`, through the screen's handler `0x4441A0`): the links
-   open their web pages (ShellExecute), an extension its service program or download page. So
-   on a Steam installation the original's connection screen shows up to eight more buttons
-   than the rewrite's. gui_harness's `selprov` scene stubs `0x45B490` (no links), which is why
-   the screen compared identical. *Implementation note:* the rewrite cannot load these 32-bit
-   DLLs; the faithful route is to reproduce online.dll's answer (its two fixed links, the
-   extension DLLs found by `ta*.dll`, the Mplayer reordering, the limit) and each known
-   extension's button-text rule (its registry probe) as data, read the button texts from that,
-   clone `SERVICEX` as `0x44475D` does, and open the link with the platform's URL opener on a
-   press. Check the drawn screen with gui_harness's `selprov` once the stub returns the real
-   links (the harness can call the DLL's exports in the suspended original).
-2. **Mouse trails switched off while the program runs** (platform; small). At start-up
+1. **Mouse trails switched off while the program runs** (platform; small). At start-up
    (`0x4B5980`) the original saves the user's mouse-trail setting
    (`SystemParametersInfoA(SPI_GETMOUSETRAILS)`) and sets it to 0 with `SPIF_UPDATEINIFILE`;
    it restores the saved value at exit (`0x4B6110`). Seen only by users who have mouse trails
    on (Windows' default is off), and the rewrite hides the system pointer over its window. A
    Windows-only call pair at the window's creation and destruction would match it (the original
    writes the user profile, so a crash leaves the trails off; the same would hold).
-3. **Palette tables built when the files are missing** (data; small to medium, invisible with
+2. **Palette tables built when the files are missing** (data; small to medium, invisible with
    the shipped data). The original loads `palettes\PALETTE.ALP` / `.SHD` / `.LHT` and, when a
    file is absent, computes the table (alpha `0x4BA750` — the rule is in RE_MEMORY — shade
    `0x4BADF0`, light `0x4BABD0`) and writes it out (`0x4BC290`); `0x429330` likewise builds
@@ -144,7 +123,7 @@ against two or more originals (NETWORK).
   120), debug and trace texts (the packet pool's trace, netCondenser, Smacker statistics,
   "Unit Builder Probe", "FRATE" … about 110), DirectPlay error texts and HAPINET traces (about
   70), the unit-notice texts (ported above), MCI command strings (14), the online.dll / reporter
-  names (item 1, N/A), CD prompts and checksum messages (N/A), assertion file names
+  names (reporter: N/A; online.dll's texts: ported), CD prompts and checksum messages (N/A), assertion file names
   (`c:\cavedog\wargame\*.cpp`). No other player-visible text was found missing.
 - **Keys the readers ask for** (452). Not in the rewrite's text: the GUI slider fields `thick`,
   `knobpos`, `knobsize`, `itemheight`, `hotornot`, `nuttin`, `texturenumber`, `totalgadgets`
@@ -160,10 +139,10 @@ against two or more originals (NETWORK).
   `GetUserNameA` — the default network name (ported, `os_user_name`); clipboard — the paste keys
   (ported); `GetAsyncKeyState` / `GetKeyState` / `SetCursorPos` / `GetCursorPos` — input
   (CLIENT); `CreateSemaphoreA` — the single-instance check (FRONTEND 1.6); `GlobalMemoryStatus` —
-  the room's memory field (NETWORK); `SystemParametersInfoA` — mouse trails (item 2); `RegisterHotKey`,
+  the room's memory field (NETWORK); `SystemParametersInfoA` — mouse trails (item 1); `RegisterHotKey`,
   `DeviceIoControl`, `VirtualAlloc` … — the Cavedog runtime (N/A); `PlaySoundA` / `aux*` /
   `waveOut*Volume` — the Windows sound path and the 1998 mixer restore (N/A); `ShellExecuteA` —
-  online.dll's links (item 1) and the runtime's help viewer; DirectDraw / DirectSound /
+  online.dll's links (ported: the client's `open_external` hook) and the runtime's help viewer; DirectDraw / DirectSound /
   DirectPlay / smackw32 — replaced by the rewrite's own platform, sound, network and movie code.
 - **Files.** Every pattern and name in the strings is read by the rewrite or listed N/A:
   `*.HPI/*.UFO/*.CCX` + `rev%s.GP3`, `Maps\*.ota`, `Weapons\*.tdf`, the GUI files (SELVMODE,
