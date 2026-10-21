@@ -332,6 +332,10 @@ public:
     virtual void restart_battle(BattleLauncher launcher) { start_battle(std::move(launcher)); }
     // Ends the program.
     virtual void quit() = 0;
+    // Ends the program at once, without its message loop's end (the original's exit(0) after an
+    // online service started, 0x4441A0): what WinMain does after the loop (0x4B6110: the mouse
+    // trails put back) does not happen.
+    virtual void exit_at_once() { quit(); }
     // Exit to Windows as the original does it (the main menu's EXIT, 0x425D80 state 8; the exit
     // menu's "Exit Game" answered Yes, 0x4605C0 -> 0x491C60): in a battle the music goes silent
     // and the session leaves the game (network games: the local players' units die and the
@@ -411,6 +415,9 @@ struct FrontEndSetup {
     // The screenshot key (Ctrl+F9, in menus and battles): the frame shown last goes to
     // <shot_dir>/<shot_prefix>NNNN.pcx (front.h, save_numbered_picture).
     std::string shot_dir, shot_prefix;
+    // Set by run_front_end: the window's loop ended the way the original's message loop does
+    // (window closed, Exit to Windows, Alt+F4), not by exit_at_once() or a failed window.
+    bool loop_ended = false;
 };
 
 struct FrontOptions;  // client/front.h

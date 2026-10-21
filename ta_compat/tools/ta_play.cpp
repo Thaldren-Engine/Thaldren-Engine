@@ -82,6 +82,7 @@
 
 #include "client/front.h"
 #include "client/game_client.h"
+#include "client/mouse_trails.h"
 #include "client/music.h"
 #include "render/presenter.h"
 #include "ta/campaign.h"
@@ -109,6 +110,17 @@ std::string own_folder(const char* argv0) {
 #endif
     const auto cut = s.find_last_of("\\/");
     return cut == std::string::npos ? std::string(".") : s.substr(0, cut);
+}
+
+// The system's parameters call for the mouse trails (SystemParametersInfoA; none elsewhere).
+client::SystemParametersCall system_parameters() {
+#ifdef _WIN32
+    return [](std::uint32_t action, std::uint32_t param, void* data, std::uint32_t flags) {
+        return static_cast<int>(SystemParametersInfoA(action, param, data, flags));
+    };
+#else
+    return nullptr;
+#endif
 }
 
 // Opens a web address or starts a program as online.dll does: ShellExecuteA(no window, "open",
@@ -467,8 +479,25 @@ int main(int argc, char** argv) {
         }
     }
 
+    // The mouse trails (0x4B5980 / 0x4B6110): a window run switches them off before it loads
+    // anything and puts the user's setting back when its loop ends normally; the other ends
+    // (errors, an online service started) leave them off, as the original's exits do.
+    client::MouseTrails trails(system_parameters());
     if (!direct) {
         // The original's front end.
+        const bool program_run = !front.headless && key_sweep.empty() && !online_links && loading_test_file.empty();
+#ifdef _WIN32
+        // The program runs once (0x49E830): a second start finds the semaphore "Total
+        // Annihilation" and ends at once with -1. (Headless test runs may run side by side.)
+        if (program_run) {
+            if (HANDLE h = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "Total Annihilation")) {
+                CloseHandle(h);
+                return -1;
+            }
+            CreateSemaphoreA(nullptr, 1, 1, "Total Annihilation");
+        }
+#endif
+        if (program_run) trails.switch_off();
         ta::MenuArt art;
         std::string err;
         if (!art.load(game_dir, err)) {
@@ -710,20 +739,14 @@ int main(int argc, char** argv) {
             }
             return client::run_key_sweep(fes, key_sweep.substr(0, c), mods, cx, cy, typed);
         }
-#ifdef _WIN32
-        // The program runs once (0x49E830): a second start finds the semaphore "Total
-        // Annihilation" and ends at once with -1. (Headless test runs may run side by side.)
-        if (!front.headless) {
-            if (HANDLE h = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "Total Annihilation")) {
-                CloseHandle(h);
-                return -1;
-            }
-            CreateSemaphoreA(nullptr, 1, 1, "Total Annihilation");
-        }
-#endif
-        return client::run_front_end(fes, front);
+        const int rc = client::run_front_end(fes, front);
+        if (program_run && fes.loop_ended) trails.restore();
+        return rc;
     }
 
+    // (A direct battle in a window: the trails as for the menus.)
+    const bool window_battle = !front.headless && dump_pages_dir.empty();
+    if (window_battle) trails.switch_off();
     auto world = std::make_unique<ta::ClientWorld>();
     std::string err;
     std::function<void(float, const std::string&)> trace;
@@ -783,6 +806,7 @@ int main(int argc, char** argv) {
     game.center_on({at[0] << 16, 0, at[1] << 16});
     game.set_pointer_hidden(!front.draw_pointer);  // --no-pointer: frames as the original's screen surface has them
     const int rc = client::run_client(game, world->content(), front);
+    if (window_battle && rc == 0) trails.restore();
     std::printf("game tick %u, scroll (%d, %d), %d selected\n", world->battle().game_tick(), game.scroll_x(), game.scroll_y(),
                 game.selected_count());
     // A summary of the players' units at the end (smoke tests).

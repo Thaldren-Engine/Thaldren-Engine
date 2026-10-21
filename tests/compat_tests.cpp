@@ -14,6 +14,7 @@
 #include <cstring>
 #include <map>
 
+#include "client/mouse_trails.h"
 #include "client/sound_rules.h"
 #include "ta/battle_loader.h"
 #include "ta/crt_strtod.h"
@@ -798,6 +799,55 @@ void test_palette_tables() {
     fs::remove_all(dir, ec);
 }
 
+// The mouse trails (0x4B5980 / 0x4B6110): the calls, their parameters and flags.
+void test_mouse_trails() {
+    struct Call {
+        std::uint32_t action, param;
+        bool data;
+        std::uint32_t flags;
+    };
+    std::vector<Call> calls;
+    int setting = 7;
+    bool query_works = true;
+    client::MouseTrails m([&](std::uint32_t action, std::uint32_t param, void* data, std::uint32_t flags) {
+        calls.push_back({action, param, data != nullptr, flags});
+        if (action == 0x5E) {
+            if (!query_works) return 0;
+            *static_cast<std::uint32_t*>(data) = static_cast<std::uint32_t>(setting);
+        } else if (action == 0x5D) {
+            setting = static_cast<int>(param);
+        }
+        return 1;
+    });
+    m.switch_off();
+    CHECK(calls.size() == 2);
+    if (calls.size() == 2) {
+        CHECK(calls[0].action == 0x5E && calls[0].param == 0 && calls[0].data && calls[0].flags == 1);
+        CHECK(calls[1].action == 0x5D && calls[1].param == 0 && !calls[1].data && calls[1].flags == 1);
+    }
+    CHECK(setting == 0 && m.saved() == 7);
+    m.restore();
+    CHECK(calls.size() == 3 && calls[2].action == 0x5D && calls[2].param == 7 && !calls[2].data && calls[2].flags == 1);
+    CHECK(setting == 7);
+    // A failed query leaves the saved word as it was (0 at start): the restore sets 0.
+    calls.clear();
+    query_works = false;
+    client::MouseTrails n([&](std::uint32_t action, std::uint32_t param, void* data, std::uint32_t flags) {
+        calls.push_back({action, param, data != nullptr, flags});
+        if (action == 0x5E) return query_works ? 1 : 0;
+        setting = static_cast<int>(param);
+        return 1;
+    });
+    n.switch_off();
+    n.restore();
+    CHECK(calls.size() == 3 && n.saved() == 0 && calls[2].param == 0 && setting == 0);
+    // Without a system call nothing happens.
+    client::MouseTrails none(nullptr);
+    none.switch_off();
+    none.restore();
+    CHECK(none.saved() == 0);
+}
+
 } // namespace
 
 int main() {
@@ -819,6 +869,7 @@ int main() {
     test_preferences();
     test_online_services();
     test_palette_tables();
+    test_mouse_trails();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

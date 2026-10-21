@@ -716,7 +716,7 @@ void SelProv::press_service(FrontEnd& fe, const Widget& w) {
     std::string message;
     const int r = services_->press(links_[static_cast<std::size_t>(n)].id, message, fe.hooks().open_external, [](const std::string& s) { return translate(s); });
     if (r == 0) {
-        fe.quit();
+        fe.exit_at_once();
         return;
     }
     if (message.empty()) message = OnlineServices::failure_text(links_[static_cast<std::size_t>(n)].name);

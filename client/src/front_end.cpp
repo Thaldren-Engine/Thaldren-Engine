@@ -108,6 +108,10 @@ public:
         start_battle(std::move(launcher));
     }
     void quit() override { quit_ = true; }
+    void exit_at_once() override {
+        quit_ = true;
+        exited_at_once_ = true;
+    }
     void exit_to_windows() override {
         if (session_ && !ended_) {
             if (s_.music) s_.music->set_mood(MusicMood::Silent);  // (0x4CE690(4))
@@ -183,6 +187,7 @@ public:
         if (s_.music) s_.music->set_mood(MusicMood::Silent);
     }
     bool done() const { return quit_ || (stack_.empty() && !session_ && !pending_); }
+    bool exited_at_once() const { return exited_at_once_; }
 
     void handle(const InputEvent& e) {
         if (e.type == InputEvent::Type::Quit) {
@@ -695,6 +700,7 @@ private:
     LoadingState load_;
     std::chrono::steady_clock::time_point load_clock_start_{};
     bool quit_ = false;
+    bool exited_at_once_ = false;
     bool exiting_ = false;
     const Screen* chat_screen_ = nullptr;  // the network chat line's screen while it is open  // exit to Windows: the next frame is the black one, then the end
     AudioOut* audio_ = nullptr;
@@ -1140,6 +1146,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         SDL_Delay(1);
     }
     run.present_now = nullptr;
+    setup.loop_ended = !run.exited_at_once();
     gpu.reset();
     if (tex) SDL_DestroyTexture(tex);
     if (sr) SDL_DestroyRenderer(sr);
