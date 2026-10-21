@@ -434,6 +434,12 @@ struct Options {
     int pcx = 0;
     // --camera N: the camera stage of a step against the client's (N random states), nothing else.
     int camera = 0;
+    // --debug-view MODE [--debug-info]: the debug view on (GS+0x3923B bit 1, developer mode's
+    // F11) with the terrain view MODE (GS+0x14280, 0..4) and INFO (bit 0): the terrain marks,
+    // the see-through units and the first selected unit's route (compared within the view), the
+    // status line (its rows), the bottom bar's numbers (the bottom bar's rows). Implies --hud.
+    bool debug_view = false, debug_info = false;
+    int debug_grid = 0;
 };
 
 struct Stats {
@@ -465,6 +471,8 @@ int main(int argc, char** argv) {
         else if (a == "--shards" && k + 1 < argc) opt.shards = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
+        else if (a == "--debug-view" && k + 1 < argc) opt.hud = true, opt.debug_view = true, opt.debug_grid = std::atoi(argv[++k]);
+        else if (a == "--debug-info") opt.hud = true, opt.debug_view = true, opt.debug_info = true;
         else if (a == "--minimap") opt.minimap = true;
         else if (a == "--minimap-steps" && k + 1 < argc) opt.minimap = true, opt.minimap_steps = std::atoi(argv[++k]);
         else if (a == "--pcx" && k + 1 < argc) opt.pcx = std::atoi(argv[++k]);
@@ -647,6 +655,9 @@ int main(int argc, char** argv) {
         r.w32(gs + gViewRect + 12, static_cast<u32>(H - 33));
         r.w32(gs + gViewW, static_cast<u32>(W - 128));
         r.w32(gs + gViewH, static_cast<u32>(H - 64));
+        // (the view's size in whole cells: the terrain marks' columns, 0x418310)
+        r.w32(gs + 0x1423B, static_cast<u32>((W - 128) / 16));
+        r.w32(gs + 0x1423F, static_cast<u32>((H - 64) / 16));
         r.w32(gs + gSchema, o.alloc(16));
         r.write(gs + gHud, world.content().hud.data(), 256);
     }
@@ -1096,6 +1107,13 @@ int main(int argc, char** argv) {
                 r.write(at, fnt.data(), fnt.size());
                 r.w32(gs + 0x391F9, at);
             }
+            // (--debug-view: the small font, fonts\smlfont.FNT at GS+0x391FD, 0x42A320)
+            std::vector<u8> sml;
+            if (opt.debug_view && vfs.read("fonts\\smlfont.FNT", sml)) {
+                const u32 at = o.alloc(static_cast<u32>(sml.size()) + 16);
+                r.write(at, sml.data(), sml.size());
+                r.w32(gs + 0x391FD, at);
+            }
             r.w32(gs + 0x37EFE, 3);
             const u8 ret8[3] = {0xC2, 0x08, 0x00};
             const u32 ret_at = r.alloc(16, PAGE_EXECUTE_READWRITE);
@@ -1247,6 +1265,11 @@ int main(int argc, char** argv) {
         for (const render::Sprite8* a : {L.panel_top, L.panel_bottom})
             if (a) top_rows = std::max(top_rows, a->height);
         if (L.panel_side) side_cols = std::max(side_cols, L.panel_side->width);
+    }
+    // --debug-view: the status line's rows are compared on their own (the scene has no interface).
+    if (opt.debug_view) {
+        const int fh = world.content().console_font ? world.content().console_font->height : 12;
+        top_rows = std::max(top_rows, fh * 3 - 10 + 2 * fh + 2);
     }
     // --minimap: the map's scroll extent, its stored picture (when the map file has one; else
     // the original samples the tiles), and the battle loading's minimap set-up (0x4669B0).
@@ -1633,6 +1656,29 @@ int main(int argc, char** argv) {
         if (!opt.fog) scene.fog = nullptr;
         scene.dithered_fog = opt.dither;
         if (opt.hud) gc.add_selection_outlines(scene);
+        if (opt.debug_view) {
+            // The debug view on the client (its frame counter showing 42: the original is given
+            // the same) and in the scene: see-through units, the terrain marks after the terrain,
+            // the selected unit's route before the fog.
+            client::DebugViewState dv;
+            dv.on = true;
+            dv.info = opt.debug_info;
+            dv.grid = opt.debug_grid;
+            dv.quick_keys = false;
+            dv.frate_shown = 42;
+            gc.set_debug_view(dv);
+            if (opt.debug_grid)
+                for (render::UnitInstance& ui : scene.units) ui.translucent = true;
+            scene.after_terrain = [&](render::DrawList& out) {
+                if (opt.debug_grid) {
+                    std::uint32_t st = scene.crt_rand_state;
+                    gc.draw_terrain_debug(out, scene.camera, st);
+                    scene.crt_rand_state = st;
+                }
+                if (opt.debug_grid == 2) gc.draw_pointer_cross(out);
+            };
+            if (opt.debug_info) scene.before_fog = [&](render::DrawList& out) { gc.draw_route_debug(out); };
+        }
         render::DrawList list = render::build_draw_list(scene);
         {
             // The same background pattern under the frame (only the interface's area keeps it).
@@ -2053,6 +2099,70 @@ int main(int argc, char** argv) {
             if (cnt) r.write(gs + 0x1491F, eff.data(), cnt * 0x54);
             r.w32(gs + 0x1491B, cnt);
         }
+        // --debug-view: the view's bits, the terrain mode, the pointer's map point and cell, the
+        // frame counter (showing 42), page flipping possible, the bottom bar's other numbers, the
+        // route search's cells and the types' movement classes.
+        if (opt.debug_view) {
+            const u16 bits = static_cast<u16>(2 | (opt.debug_info ? 1 : 0));
+            r.write(gs + 0x3923B, &bits, 2);
+            const u8 grid = static_cast<u8>(opt.debug_grid);
+            r.write(gs + gDebugGrid, &grid, 1);
+            if (opt.verbose)
+                std::printf("  debug view: grid %u, view cells %u, map %ux%u, contour %u\n", grid, r.r32(gs + 0x1423B), r.r32(gs + gMapW), r.r32(gs + gMapH),
+                            r.r32(0x00511DD0));
+            const sim::Vec3i cp = gc.cursor_world();
+            r.w32(gs + 0x2CAA, static_cast<u32>(cp[0]));
+            r.w32(gs + 0x2CAE, static_cast<u32>(cp[1]));
+            r.w32(gs + 0x2CB2, static_cast<u32>(cp[2]));
+            const i16 pcx = static_cast<i16>(static_cast<u32>(cp[0]) >> 20), pcz = static_cast<i16>(static_cast<u32>(cp[2]) >> 20);
+            r.write(gs + 0x2C8E, &pcx, 2);
+            r.write(gs + 0x2C90, &pcz, 2);
+            r.w32(o.display + 0x1E6, 42);
+            r.w32(o.display + 0x1DA, 0);
+            r.w32(o.display + 0x1DE, GetTickCount());
+            r.w32(o.display + 0x9C, 1);
+            r.w32(gs + 0x0C, o.display);  // (the program's display record, GS+0xC: the bottom bar's PFSTATE / PFABLE)
+            r.w32(gs + 0x38A3B, 0);
+            r.w32(gs + 0x14353, static_cast<u32>(b.live_units));
+            for (u32 p = 1; p <= 3; ++p) r.w32(gs + gPlayers + p * kPlayerSize + 0x10, 0);
+            // (the players' unit ranges, +0x6F / +0x71: the first selected unit's search, 0x48C190)
+            for (u32 p = 0; p < 10 && p < b.players.size(); ++p) {
+                const u16 lo = static_cast<u16>(b.players[p].first_unit), hi = static_cast<u16>(b.players[p].last_unit);
+                r.write(gs + gPlayers + p * kPlayerSize + 0x6F, &lo, 2);
+                r.write(gs + gPlayers + p * kPlayerSize + 0x71, &hi, 2);
+            }
+            {
+                const sim::RouteSearch& rs = b.route_search;
+                const u32 n = static_cast<u32>(mw * mh);
+                std::vector<u8> cells_rs(static_cast<std::size_t>(n) * 4, 0);
+                if (rs.width == mw)
+                    for (u32 i = 0; i < n && i < rs.cell_flags.size(); ++i) {
+                        cells_rs[i * 4] = rs.cell_flags[i];
+                        cells_rs[i * 4 + 1] = i < rs.cell_dir.size() ? rs.cell_dir[i] : 0;
+                    }
+                const u32 grid_at = o.alloc(n * 4 + 16), obj = o.alloc(0x40);
+                r.write(grid_at, cells_rs.data(), cells_rs.size());
+                r.w32(obj + 0x1C, grid_at);
+                r.w32(obj + 0x20, static_cast<u32>(mw));
+                r.w32(gs + 0x14207, obj);
+            }
+            {
+                std::vector<u32> class_at(b.move_classes.size(), 0);
+                for (std::size_t k = 0; k < b.move_classes.size(); ++k) {
+                    const sim::MoveClass& mc = b.move_classes[k];
+                    if (!mc.named || mc.grid.empty()) continue;
+                    const u32 g = o.alloc(static_cast<u32>(mc.grid.size()) * 4 + 16), c = o.alloc(0x40);
+                    r.write(g, mc.grid.data(), mc.grid.size() * 4);
+                    r.w32(c + 0x10, static_cast<u32>(mc.width));
+                    r.w32(c + 0x18, g);
+                    class_at[k] = c;
+                }
+                for (std::size_t t = 1; t < b.types.size(); ++t) {
+                    const int mc = b.types[t].route.move_class;
+                    r.w32(udefs + static_cast<u32>(t) * kDefSize + 0x1B6, mc >= 0 && static_cast<std::size_t>(mc) < class_at.size() ? class_at[static_cast<std::size_t>(mc)] : 0u);
+                }
+            }
+        }
         // The original's frame.
         const bool frame_ok = o.call(kVisibleList, 0, {}) && o.call(kDrawFrame, 0, {1, 0});
         if (opt.shards > 0) {
@@ -2173,6 +2283,52 @@ int main(int argc, char** argv) {
             }
             st.pixels += td;
             differs(td);
+
+            if (opt.debug_view) {
+                // The status line (and the +NetStats line's place under it) where it lies over
+                // the view: from row 32 down to two console font heights below its top.
+                const int fh = world.content().console_font ? world.content().console_font->height : 12;
+                const int y1 = std::min(H - 33, fh * 3 - 10 + 2 * fh + 1);
+                // (only the three texts' boxes: the scene's extra shots are in the original's frame
+                // only, and may lie anywhere else)
+                const client::Font* cfont = world.content().console_font;
+                const int ty = fh * 3 - 10;
+                std::vector<std::array<int, 2>> spans;
+                if (cfont) {
+                    spans.push_back({0x83, 0x83 + cfont->text_width("FRATE: 42")});
+                    spans.push_back({0xBC, 0xBC + cfont->text_width("[Release]")});
+                    spans.push_back({0x1EE, 0x1EE + cfont->text_width(opt.debug_info ? "MODE DEBUG INFO ON" : "MODE DEBUG INFO OFF")});
+                }
+                auto in_text = [&](int x, int y) {
+                    if (y < ty || y > ty + fh) return false;
+                    for (const auto& s : spans)
+                        if (x >= s[0] && x <= s[1]) return true;
+                    return false;
+                };
+                long long dd = 0, dn = 0;
+                render::Image8 simg(W, H, 0);
+                for (int y = 32; y <= y1; ++y)
+                    for (int x = 129; x < W; ++x) {
+                        const std::size_t i = static_cast<std::size_t>(y * W + x);
+                        if (!in_text(x, y)) continue;
+                        ++dn;
+                        if (theirs[i] != cf.pixels[i]) {
+                            ++dd;
+                            simg.pixels[i] = 0xFF;
+                        }
+                    }
+                std::printf("  debug view: status line rows 32..%d: %lld of %lld pixels differ\n", y1, dd, dn);
+                if (!opt.out_dir.empty() && dd) {
+                    render::Image8 a(W, H);
+                    a.pixels = theirs;
+                    const std::string base = opt.out_dir + "/dbg_" + std::to_string(opt.seed) + "_" + std::to_string(sc);
+                    render::write_bmp(base + "_orig.bmp", a, world.palette_);
+                    render::write_bmp(base + "_client.bmp", cf, world.palette_);
+                    render::write_bmp(base + "_diff.bmp", simg, world.palette_);
+                }
+                st.pixels += dd;
+                differs(dd);
+            }
 
             // Compares what a change (placement, Shift) adds to the view in both frames: every view
             // pixel either frame changes is compared between the two changed frames.

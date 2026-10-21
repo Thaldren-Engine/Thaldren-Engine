@@ -611,11 +611,16 @@ private:
                       const std::function<void(int, int, int, int, std::uint8_t)>& line) const;
     bool debug_key(int k);                // 0x4956C0
     void toggle_debug_view();             // F11 (0x495E90 case 0xEC)
+
+public:
+    // (public for the frame comparisons)
     // 0x418310 with a terrain view mode: the cell marks (and the contour lines, per cell),
     // drawn on a layer of their own; draws the C runtime's rand() (mode 1) from `rand_state`.
     void draw_terrain_debug(render::DrawList& out, const render::Camera& camera, std::uint32_t& rand_state) const;
     void draw_pointer_cross(render::DrawList& out) const;  // mode 2's mark at the pointer's map point
     void draw_route_debug(render::DrawList& out) const;    // 0x417F30 -> the route goal's 0x417E00
+
+private:
     void draw_debug_line(render::Image8& o);                // FRATE / [Release] / MODE / INFO, +NetStats
     bool draw_info_bar(render::Image8& o);                  // the bottom bar's numbers (INFO on)
     std::string net_stats_text();                           // 0x415FA0

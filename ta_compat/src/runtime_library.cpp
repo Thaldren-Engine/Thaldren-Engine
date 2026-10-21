@@ -372,7 +372,12 @@ CrashRecord record_of(const EXCEPTION_POINTERS* ep) {
     r.code = e.ExceptionCode;
     // A trap the SSE unit raised under -fpufussy names the x87's exception the original gets.
     if (r.code == 0xC00002B4u || r.code == 0xC00002B5u) {
+#if defined(_M_X64)
         const DWORD mx = c.MxCsr;
+#else
+        DWORD mx = 0;
+        std::memcpy(&mx, c.ExtendedRegisters + 24, 4);  // (FXSAVE layout: MXCSR at +24)
+#endif
         if (mx & 1) r.code = 0xC0000090u;        // invalid operation
         else if (mx & 4) r.code = 0xC000008Eu;   // divide by zero
     }
@@ -389,7 +394,7 @@ CrashRecord record_of(const EXCEPTION_POINTERS* ep) {
     r.fpu_control = c.FloatSave.ControlWord, r.fpu_status = c.FloatSave.StatusWord, r.fpu_tag = c.FloatSave.TagWord;
     r.fpu_error_offset = c.FloatSave.ErrorOffset, r.fpu_error_selector = c.FloatSave.ErrorSelector;
     r.fpu_data_offset = c.FloatSave.DataOffset, r.fpu_data_selector = c.FloatSave.DataSelector;
-    r.cr0_npx_state = c.FloatSave.Cr0NpxState;
+    r.cr0_npx_state = c.FloatSave.Spare0;  // (the Cr0NpxState word)
 #endif
     r.eflags = c.EFlags, r.cs = c.SegCs, r.ss = c.SegSs, r.ds = c.SegDs, r.es = c.SegEs, r.fs = c.SegFs, r.gs = c.SegGs;
     r.context_flags = c.ContextFlags;
