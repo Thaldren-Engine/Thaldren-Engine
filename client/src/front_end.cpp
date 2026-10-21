@@ -609,7 +609,7 @@ private:
                 m->stop();
             } else if (w == "mode") {
                 // (0x4175E0 -> 0x4CE690: the music mood, 0 building .. 4 silent)
-                if (n >= 0 && n <= 4) m->set_mood(static_cast<MusicMood>(n));
+                m->set_mood(static_cast<MusicMood>(static_cast<std::uint8_t>(n)));  // (any number: no track has another mood)
             }
         };
         session_->client().warp_pointer = [this](int x, int y) {

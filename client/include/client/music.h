@@ -30,8 +30,14 @@ public:
     bool enabled() const { return enabled_; }
     void set_mode(int mode) { mode_ = mode; }
     int mode() const { return mode_; }
-    void set_volume(int volume_0_64) { volume_ = volume_0_64; }
+    // The music volume setting (0..64). The player's own volume follows it (0x4D00D0 with
+    // the setting flag) except while a fade's step is set — during a fade and after one cut
+    // short by another mood change, until a fade ends or the music stops — when the change is
+    // not taken at all.
+    void set_volume(int volume_0_64);
     int volume() const { return volume_; }
+    // The player's own volume (CD volume units: musicvol << 10, at most 0xFFFF).
+    int level() const { return level_cfg_; }
     void set_repeat_track(int t) { repeat_ = t; }
     int repeat_track() const { return repeat_; }
     std::vector<std::uint8_t>& types() { return types_; }  // [track] = mood it plays for ([0] unused)
@@ -70,11 +76,18 @@ private:
     int current_ = 1;          // track number the next pick starts from
     bool playing_ = false;
     bool paused_ = false;
-    // Fade out: the volume falls by a ninth of the full value every 2 ticks; then the
-    // next track starts (after 120 ticks of silence when the new mood is building).
-    int fade_level_ = -1, fade_step_ = 0;
+    // The player's volume in the CD volume's units (musicvol << 10, at most 0xFFFF: the
+    // sound manager's +0x20) and the output's level now.
+    int level_cfg_ = 32 << 10;
+    void apply_level(int level);
+    void set_level_setting(int level);  // 0x4D00D0(level, 0)
+    // Fade out (0x4CE690, timer 0x4CE5E0 every 2 ticks): the level falls by the step (about
+    // 1/18 of the volume; the sound manager's +0x284, left set when a mood change cuts the
+    // fade short) until it reaches 0 — the track keeps playing unheard — then the pick, or for
+    // the building mood the pick 120 ticks later (timer 0x4CE5B0).
+    bool fade_on_ = false, delay_on_ = false;
+    int fade_level_ = 0, fade_step_ = 0;
     std::uint32_t next_fade_tick_ = 0, delay_until_ = 0;
-    bool pick_after_delay_ = false;
     std::shared_ptr<const Sample> pending_;
     AudioOut* out_ = nullptr;
     bool want_start_ = false;

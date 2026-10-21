@@ -14,6 +14,7 @@
 #include <cstring>
 #include <map>
 
+#include "client/music.h"
 #include "client/sound_rules.h"
 #include "ta/battle_loader.h"
 #include "ta/crt_strtod.h"
@@ -369,6 +370,55 @@ void test_notice_texts() {
     CHECK(h.shown.size() == 3 && h.shown[2] == "Guarding");
 }
 
+// The music player's mood change (0x4CE690), fade (0x4CE5E0) and pick (0x4CDB40) as the
+// original runs them: a fade of the musicvol 32 volume (32768, step −1820) takes 19 fires of
+// its 2-tick timer; the faded track keeps playing until the pick replaces it; a mood change
+// during the fade picks at once and leaves the fade's step set, so a volume change is not
+// taken until a fade ends or the music stops; a stop starts the next walk from track 1.
+void test_music_fade() {
+    auto sample = std::make_shared<client::Sample>();
+    client::MusicPlayer m([&](int) { return std::shared_ptr<const client::Sample>(sample); }, 16);
+    for (int t = 1; t <= 16; ++t) m.types()[static_cast<std::size_t>(t)] = t <= 7 ? 1 : 0;  // 1-7 battle, 8-16 building
+    m.set_mode(4);
+    m.set_volume(32);
+    CHECK(m.level() == 32768);
+    std::uint32_t now = 0;
+    m.update(now, nullptr);
+    m.set_mood(client::MusicMood::Building);  // from silence: picked at once
+    const int building = m.current_track();
+    CHECK(m.is_playing() && building >= 8);
+    m.set_mood(client::MusicMood::Battle);
+    int fires = 0;
+    while (m.current_track() == building && fires < 40) {
+        now += 2;
+        m.update(now, nullptr);
+        ++fires;
+    }
+    CHECK(fires == 19);
+    CHECK(m.is_playing() && m.current_track() >= 1 && m.current_track() <= 7);
+    // Cut short: back to building after 10 ticks of the fade: the battle track is not of the
+    // mood, a building track is picked at once; the volume setting is then not taken.
+    m.set_mood(client::MusicMood::Building);
+    for (int k = 0; k < 5; ++k) m.update(now += 2, nullptr);
+    m.set_mood(client::MusicMood::Battle);
+    CHECK(m.current_track() >= 1 && m.current_track() <= 7);
+    m.set_volume(64);
+    CHECK(m.level() == 32768);
+    // A full fade (to building: its pick 120 ticks after the fade's end) clears the step.
+    m.set_mood(client::MusicMood::Building);
+    const int battle = m.current_track();
+    for (int k = 0; k < 19; ++k) m.update(now += 2, nullptr);
+    CHECK(m.current_track() == battle && m.is_playing());  // faded, still playing, the pick waits
+    m.update(now += 119, nullptr);
+    CHECK(m.current_track() == battle);
+    m.update(now += 1, nullptr);
+    CHECK(m.current_track() >= 8);
+    m.set_volume(64);
+    CHECK(m.level() == 0xFFFF);
+    m.stop();
+    CHECK(!m.is_playing() && m.current_track() == 1);
+}
+
 // totala.ini [Preferences] as GetPrivateProfileIntA reads it (values measured with the system
 // call on Windows 11) and the start-up unit limit (0x491200).
 void test_preferences() {
@@ -686,6 +736,7 @@ int main() {
     test_notice_texts();
     test_preferences();
     test_online_services();
+    test_music_fade();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

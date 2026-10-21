@@ -42,6 +42,7 @@
 #include "render/presenter.h"
 #include "sim/battle.h"
 #include "sim/targeting.h"
+#include "sim/x87_trig.h"
 #include "ta/client_world.h"
 #include "ta/model3do.h"
 #include "ta/render_assets.h"
@@ -1614,6 +1615,16 @@ int main(int argc, char** argv) {
                 p.expire_tick = b.game_tick() + static_cast<std::uint32_t>(rnd(-5, 40));
                 p.ground_height = static_cast<std::int16_t>(gh);
             }
+            // Debugging: FH_SHOTS_KEEP=a,b keeps only the scene's shots a..b (the random draws
+            // stay as they were).
+            if (const char* keep = std::getenv("FH_SHOTS_KEEP")) {
+                int a = 0, z = -1;
+                std::sscanf(keep, "%d,%d", &a, &z);
+                int n = 0;
+                for (int k = 0; k < b.projectiles.count; ++k)
+                    if (k >= a && k <= z) b.projectiles.slots[static_cast<std::size_t>(n++)] = b.projectiles.slots[static_cast<std::size_t>(k)];
+                b.projectiles.count = n;
+            }
         }
         // --shards: the battle's world effects replaced for this scene by shards of random
         // units' textured quads (a random frame of an animated texture as the copied cursor's,
@@ -3070,6 +3081,65 @@ int main(int argc, char** argv) {
                 std::printf("  shot type %d at %d,%d colour %u frame %p %dx%d off %d,%d\n", p.render_type, render::screen_x(scene.camera, p.pos[0]),
                             render::screen_y(scene.camera, p.pos[1], p.pos[2]), p.colour, static_cast<const void*>(p.frame), p.frame ? p.frame->width : 0,
                             p.frame ? p.frame->height : 0, p.frame ? p.frame->x_offset : 0, p.frame ? p.frame->y_offset : 0);
+        if (const char* at = diff ? std::getenv("FH_CMDS_AT") : nullptr) {
+            // Debugging: the engine's draw commands whose box covers the pixel X,Y.
+            int px = 0, py = 0;
+            std::sscanf(at, "%d,%d", &px, &py);
+            for (const render::UnitInstance& ui : scene.units)
+                if (ui.unit) {
+                    const std::size_t id = static_cast<std::size_t>(ui.unit - b.units.data());
+                    const std::size_t ti = id < b.ticks.size() ? b.ticks[id].type_index : 0;
+                    std::printf("  unit %zu type %zu (%s) at %d,%d ground %d flags %08X\n", id, ti,
+                                ti < world.defs_.units.size() ? world.defs_.units[ti].unit_name.c_str() : "?",
+                                render::screen_x(scene.camera, ui.unit->pos[0]), render::screen_y(scene.camera, ui.unit->pos[1], ui.unit->pos[2]),
+                                ui.ground ? 1 : 0, ui.unit->flags);
+                }
+            for (std::size_t k = 0; k < list.cmds.size(); ++k) {
+                const render::DrawCmd& c = list.cmds[k];
+                int x0 = c.x, y0 = c.y, x1 = c.x1, y1 = c.y1;
+                if (c.sprite) {
+                    x0 = c.x - c.sprite->x_offset;
+                    y0 = c.y - c.sprite->y_offset;
+                    x1 = x0 + c.sprite->width - 1;
+                    y1 = y0 + c.sprite->height - 1;
+                } else if (c.op == render::DrawOp::Lens) {
+                    x0 = c.x - 11, y0 = c.y - 11, x1 = c.x + 10, y1 = c.y + 10;
+                }
+                if (std::min(x0, x1) <= px && px <= std::max(x0, x1) && std::min(y0, y1) <= py && py <= std::max(y0, y1))
+                    std::printf("  cmd %zu op %d at %d,%d..%d,%d clip %d,%d,%d,%d\n", k, static_cast<int>(c.op), x0, y0, x1, y1, c.clip.x0, c.clip.y0,
+                                c.clip.x1, c.clip.y1);
+            }
+        }
+        if (diff && std::getenv("FH_SHOT_POLYS"))
+            // Debugging: model shots' faces as projected (0x46BAE0's point rule).
+            for (const render::ProjectileInstance& p : scene.projectiles) {
+                if (p.render_type != 1 && p.render_type != 3 && p.render_type != 6) continue;
+                for (int part = 0; part < 2; ++part) {
+                    const render::ProjectileInstance::Node& n = part ? p.child : p.node;
+                    if (!n.piece || !n.vertices) continue;
+                    const std::array<std::int16_t, 3>& ang = part ? p.child_angles : p.angles;
+                    std::vector<std::array<int, 2>> pts;
+                    for (const auto& v : *n.vertices) {
+                        std::int32_t q[3];
+                        sim::x87::rotate_point_3d(v.data(), q, ang.data());
+                        const std::int32_t rx = static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[0]) - (static_cast<std::uint32_t>(sx) << 16));
+                        const std::int32_t rz = static_cast<std::int32_t>(static_cast<std::uint32_t>(p.pos[2]) - (static_cast<std::uint32_t>(sy) << 16));
+                        const int x = static_cast<std::int16_t>(static_cast<std::uint32_t>(q[0] + rx) >> 16) + 128;
+                        const int y = static_cast<std::int16_t>(static_cast<std::uint32_t>(rz - q[2]) >> 16) -
+                                      (static_cast<std::int16_t>(static_cast<std::uint32_t>(q[1] + p.pos[1]) >> 16) >> 1) + 32;
+                        pts.push_back({x, y});
+                    }
+                    std::printf("  model shot type %d part %d:", p.render_type, part);
+                    for (std::size_t k = static_cast<std::size_t>(n.piece->first_drawn); k < n.piece->primitives.size(); ++k) {
+                        const render::ModelPrimitive& pr = n.piece->primitives[k];
+                        std::printf(" [%s", pr.flat ? "flat" : "tex");
+                        for (std::uint16_t ix : pr.indices)
+                            if (ix < pts.size()) std::printf(" %d,%d", pts[ix][0], pts[ix][1]);
+                        std::printf("]");
+                    }
+                    std::printf("\n");
+                }
+            }
         if (!opt.out_dir.empty() && (diff || opt.verbose) && written < 40) {
             ++written;
             render::Image8 a(W, H), e(W, H);
