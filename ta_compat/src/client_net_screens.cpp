@@ -3645,9 +3645,9 @@ std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<v
     live->transport = std::move(transport);
     live->session = std::make_shared<net::NetSession>(*live->transport);
     live->room = std::make_shared<net::BattleRoom>(*live->session, host, id, part->nickname);
-    live->crt_rand = std::make_shared<sim::Lcg15>();
-    // This machine's C runtime rand(): the host's start position shuffle draws it (an input).
-    live->crt_rand->set_state(static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    // This machine's C runtime rand(): the main thread's one stream (client/main_rand.h; the
+    // host's start position shuffle 0x4568C0 and the -e send loss draw it). Not owned here.
+    live->crt_rand = std::shared_ptr<sim::Lcg15>(std::shared_ptr<sim::Lcg15>(), &fe.crt_rand());
     // The start-up switches: -p packets a second (0x4619E0), -e the dropped share (it draws rand()).
     if (part->cfg.packet_rate_set) {
         net::NetTiming t = net::NetTiming::from_rate(part->cfg.packet_rate);

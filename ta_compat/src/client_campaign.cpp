@@ -185,7 +185,7 @@ client::BattleLauncher mission_launcher(MenuArt& art, const std::string& save_di
     rq.battle_rng_seed = clock_value();
     rq.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
     // (the program's one C runtime rand() goes on into the battle, as for a skirmish)
-    rq.crt_rand_state = menus_rand().state();
+    rq.crt_rand_state = fe.crt_rand().state();
     return [&art, save_dir, progress, info, rq, options](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
         const BattleRequest req = make_mission_request(art.vfs(), info, rq);
         std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, 0, options, lp, error);
@@ -297,7 +297,7 @@ public:
         small_font_ = art_.fnt_font("smlfont");
         side_font_ = art_.fnt_font(side_ == 0 ? "armfont" : "corefont");
         // The wind shown and its countdown.
-        sim::Lcg15& rnd = menus_rand();
+        sim::Lcg15& rnd = fe.crt_rand();
         // (tests: TA_BRIEF_RAND=S puts rand() on state S here, as gui_harness's srand:S does)
         if (const char* t = std::getenv("TA_BRIEF_RAND")) rnd.set_state(static_cast<std::uint32_t>(std::strtoul(t, nullptr, 0)));
         const int span = info_.max_wind - info_.min_wind + 1;
@@ -336,7 +336,7 @@ public:
         }
         // PANORAMA (0x478790): once per pass.
         if (pan_) {
-            sim::Lcg15& rnd = menus_rand();
+            sim::Lcg15& rnd = fe.crt_rand();
             if (--countdown_ < 1) {
                 wind_ += static_cast<int>(rnd.next()) % 5 - 2;
                 if (wind_ < info_.min_wind) wind_ = info_.min_wind;

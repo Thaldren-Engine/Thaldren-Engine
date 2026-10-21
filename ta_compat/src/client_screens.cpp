@@ -41,13 +41,6 @@ bool is(const Widget& w, const char* name) { return upper(w.name) == upper(name)
 // theirs; docs/RE_MEMORY.md, "Client", "Menu sounds").
 void sfx(FrontEnd& fe, MenuArt& art, const char* name) { fe.play_sound(art.sound(name)); }
 
-// The menus' rand() stream (the main menu's sparks draw from it; what is left of it is the
-// simulation thread's rand() state at the start of a battle, as in the original).
-sim::Lcg15& menu_rand() {
-    static sim::Lcg15 r;
-    return r;
-}
-
 // ------------------------------------------------------------------ message box (MSGBOX.GUI)
 void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h);
 void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
@@ -214,8 +207,6 @@ void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const ren
     if (art.layout("MSGBOX")) fe.push(std::make_unique<MessageBox>(art, text, under, width));
     else std::printf("message: %s\n", text.c_str());
 }
-
-sim::Lcg15& menus_rand() { return menu_rand(); }
 
 namespace {
 
@@ -1286,10 +1277,11 @@ protected:
         req.start.ai_difficulty = difficulty_;
         req.start.local_player = static_cast<std::uint8_t>(human);
         req.start.unit_limit = static_cast<std::uint16_t>(fe.unit_limit());  // GS+0x37EEC (0x4971F1)
-        // The inputs the original takes from clocks, and the menus' rand() state.
+        // The inputs the original takes from clocks, and the main thread's rand() state (the
+        // front end hands the battle the main thread's state again when its loading ends).
         req.start.battle_rng_seed = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         req.start.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
-        req.start.crt_rand_state = menu_rand().state();
+        req.start.crt_rand_state = fe.crt_rand().state();
         const std::string dir = art_.game_dir();
         const client::ClientOptions opt = client_options(fe.settings(), fe.width(), fe.height());
         fe.start_battle([dir, req, human, opt](const client::LoadProgress& progress, std::string& error) -> std::unique_ptr<client::BattleSession> {
@@ -1485,7 +1477,7 @@ public:
         }
         do {
             LayoutScreen::draw(fe, out);
-            if (pending_ > 0) step_sparks(out);
+            if (pending_ > 0) step_sparks(fe.crt_rand(), out);
         } while (pending_ > 0 && --pending_ > 0);
         shown_ = out;
     }
@@ -1502,12 +1494,12 @@ protected:
         std::uint8_t life = 0, turn = 0;
         int pos = 0;
     };
-    void step_sparks(render::Image8& surface) {
+    // (the main thread's rand(), client/main_rand.h)
+    void step_sparks(sim::Lcg15& rnd, render::Image8& surface) {
         const client::ScreenLayout* L = layout();
         if (!L || !L->background || L->background->width != 640 || L->background->height < 480) return;
         if (surface.width != 640 || surface.height < 480) return;
         const render::Sprite8& bg = *L->background;
-        sim::Lcg15& rnd = menu_rand();
         std::uint8_t* scr = surface.pixels.data();
         for (Spark& s : sparks_) {
             if (!s.on) {

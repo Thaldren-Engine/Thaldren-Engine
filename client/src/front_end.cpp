@@ -58,6 +58,7 @@ public:
     }
     ~Runner() override {
         end_music();
+        mr().leave();
         // Screens go before the battle they may refer to.
         graveyard_.clear();
         while (!stack_.empty()) stack_.pop_back();
@@ -154,6 +155,7 @@ public:
     void stop_narration() override { menu_sounds_.push_back({-1, MenuSound::StopNarration}); }
     void stop_sounds() override { menu_sounds_.push_back({-1, MenuSound::StopAll}); }
     CdMusic* music() override { return s_.music; }
+    sim::Lcg15& crt_rand() override { return mr().stream(); }
     const Settings& saved_settings() const override { return s_.saved_settings; }
     void write_registry() override {
         // (0x430F00 writes every setting; CDAudioVolume is the CD's aux volume, -1 without one)
@@ -382,12 +384,22 @@ public:
         pointer_.step(s_.content->cursor_timing, ticks - pointer_ticks_);
         pointer_ticks_ = ticks;
         if (pending_) run_launcher();
+        // The pass (0x499890) in the original's order, which is also the order of the main
+        // thread's rand() draws (docs/RE_MEMORY.md, "One main-thread rand() stream"): the input
+        // (0x4A9FD0, the events above), the music's judge (0x494E70: a mood change, a pick), the
+        // sounds (0x47F680: the wave-out path's loop), the tick timers (0x4B6370: the music's
+        // fade and delay, a pick), then the state's routine (GS+0x391F5: the battle's steps and
+        // drawing, or the menu screen's pass).
         if (in_battle() && !ended_ && s_.music) {
             // The music's battle / peace judge (0x494E70, every pass of a running battle, before
             // the battle's own routine; menus over it and pauses do not stop it).
             const sim::Battle& b = session_->battle();
             judge_.update(ticks, b.players[static_cast<std::size_t>(b.settings.local_player)].alive_count, *s_.music);
         }
+        if (sound_path_ == 2) wave_.pass(now_);
+        if (s_.timers) s_.timers->pump();
+        // (the music library's own thread: its turn, not part of the original's pass)
+        if (s_.music_pass) s_.music_pass();
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
             session_->frame(now);
@@ -425,12 +437,6 @@ public:
                 end_battle(o);
             }
         }
-        // The wave-out path's loop sound again when nothing plays (0x47F680 -> 0x49F620), the
-        // tick timers (0x4B6370: the music's fade and delay) and the music device's own turns,
-        // then the state's routine.
-        if (sound_path_ == 2) wave_.pass(now_);
-        if (s_.timers) s_.timers->pump();
-        if (s_.music_pass) s_.music_pass();
         // The top screen's pass (a screen it pushes or uncovers has its first pass next time; the
         // stack may change during the call).
         if (!stack_.empty() && stack_.back()) stack_.back()->frame(*this, now);
@@ -633,6 +639,7 @@ private:
         // A battle that ended and is still kept (the campaign's statistics screen, which stays
         // under the next mission's briefing) is left now, before the next one loads.
         if (session_ && ended_) {
+            mr().leave();  // (the main thread's rand() goes on from the battle's)
             std::unique_ptr<BattleSession> old = std::move(session_);
             ended_ = false;
             battle_base_ = 0;
@@ -681,6 +688,9 @@ private:
         ended_ = false;
         battle_base_ = stack_.size();
         judge_.reset();
+        // The battle's rand() is the main thread's (the loading thread's draws stay behind): from
+        // here every main-thread draw, the loading's end pick below first, is the battle's.
+        mr().enter(session_->battle().crt_rand);
         if (s_.music) {
             // (0x497F40 at the loading's end: the mood building, then the pick unless the CD
             // says it plays)
@@ -766,6 +776,7 @@ private:
     void finish_battle(bool ask_session = true) {
         if (!session_) return;
         units_due_ = true;  // (the battle's loading, GameData_LoadAll, set GS+0x14397)
+        mr().leave();
         std::unique_ptr<BattleSession> s = std::move(session_);
         const BattleOutcome o = ended_ ? outcome_ : BattleOutcome::Quit;
         ended_ = false;
@@ -849,6 +860,8 @@ private:
     bool reopen_music_ = false;     // the CD closed while switched away (0x509720)
     bool music_ended_ = false, music_started_ = false;
     WaveOutChannel wave_;           // the wave-out sound path
+    MainRand own_rand_;             // the main thread's rand() when the program gives none
+    MainRand& mr() { return s_.main_rand ? *s_.main_rand : own_rand_; }
 
 public:
     std::size_t sound_count_ = 0;

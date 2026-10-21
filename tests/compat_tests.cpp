@@ -17,11 +17,14 @@
 
 #include "client/mouse_trails.h"
 #include "client/cd_audio.h"
+#include "client/main_rand.h"
 #include "client/content.h"
 #include "client/sound_desk.h"
 #include "client/sound_rules.h"
 #include "client/track_file_device.h"
 #include "net/lobby.h"
+#include "sim/economy.h"
+#include "sim/rng.h"
 #include "ta/battle_loader.h"
 #include "ta/cd_check.h"
 #include "ta/crt_strtod.h"
@@ -1175,6 +1178,90 @@ void test_cd_music() {
     CHECK(closed == 0x1234 && !m4.player_window_open());
 }
 
+// One main-thread rand() (client/main_rand.h; docs/RE_MEMORY.md "One main-thread rand()
+// stream"): the menus, the CD music's picks and the battle draw from one sequence, in the order
+// of the original's pass (0x499890: the judge 0x494E70, the tick timers 0x4B6370, then the
+// battle's steps); a battle takes the main thread's state when its loading ends and gives it
+// back when it is left.
+void test_main_rand_order() {
+    CrtRand ref;  // the one per-thread state, as the original's main thread has it
+    ref.s = 0x00C0FFEEu;
+    client::MainRand mr(0x00C0FFEEu);  // srand(time(NULL)) at start-up
+    std::uint32_t ms = 0;
+    client::TickTimers timers([&ms] { return ms; });
+    timers.start(30);
+    FakeCd cd;
+    FakeDrives drives;
+    client::CdMusic::Env env;
+    env.device = &cd;
+    env.drives = &drives;
+    env.timers = &timers;
+    env.rand = [&mr] { return mr.next(); };
+    client::CdMusic m(env);
+    CHECK(m.open());
+    static const std::uint8_t kTypes[16] = {1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    m.set_types(kTypes);
+    m.set_mode(4);
+    m.set_volume(32 << 10, false);
+    // The menus: the main menu's sparks draw two values.
+    CHECK(mr.next() == ref.next());
+    CHECK(mr.next() == ref.next());
+    // A battle loads: its loading thread left its own state in the battle's stream.
+    sim::Lcg15 battle;
+    battle.set_state(0xDEADBEEFu);
+    mr.enter(battle);
+    CHECK(battle.state() == ref.s && mr.in_battle());
+    // The loading's end (0x497F40): the pick by mood draws r = rand() & 15 from the battle's
+    // stream, before the first step.
+    m.pick();
+    ref.next();
+    CHECK(battle.state() == ref.s);
+    // A pass: the judge turns the mood to battle (a fade: no draw); the tick timers step the fade
+    // until it ends and pick (one draw); then the battle's step: the wind (one draw).
+    auto at = [](int tick) { return static_cast<std::uint32_t>((tick * 1000 + 29) / 30); };
+    m.set_mood(1);
+    CHECK(battle.state() == ref.s);
+    int tick = 0;
+    for (int k = 0; k < 19; ++k) {
+        tick += 2;
+        ms = at(tick);
+        timers.pump();
+    }
+    CHECK(m.fade_step() == 0);
+    ref.next();
+    CHECK(battle.state() == ref.s);
+    sim::WindState w;
+    w.max_speed = 2000;
+    sim::BattleRng rng;
+    sim::step_wind(w, 1, rng, battle);
+    ref.next();
+    CHECK(w.changed && battle.state() == ref.s);
+    // The other order (the step first, then the timers' pick) gives other values: the order is
+    // the stream's.
+    {
+        CrtRand a, b;
+        a.s = b.s = 77;
+        const std::uint32_t pick_first = a.next() & 15, wind_after = a.next();
+        const std::uint32_t wind_first = b.next(), pick_after = b.next() & 15;
+        CHECK(pick_first != pick_after || wind_after != wind_first);
+    }
+    // The battle is left: the menus and the music go on from the battle's state.
+    mr.leave();
+    CHECK(!mr.in_battle() && mr.state() == ref.s);
+    m.stop();
+    m.set_mood(0);  // (from battle: a fade, then 120 ticks, then the pick)
+    for (int k = 0; k < 19; ++k) {
+        tick += 2;
+        ms = at(tick);
+        timers.pump();
+    }
+    ms = at(tick + 120);
+    timers.pump();
+    ref.next();
+    CHECK(mr.state() == ref.s && battle.state() != ref.s);
+    CHECK(mr.next() == ref.next());
+}
+
 void test_cd_track_lists() {
     std::uint32_t ms = 0;
     client::TickTimers timers([&ms] { return ms; });
@@ -1571,6 +1658,7 @@ int main() {
     test_cd_timers();
     test_cd_drives();
     test_cd_music();
+    test_main_rand_order();
     test_cd_track_lists();
     test_track_file_device();
     test_battle_music_judge();

@@ -23,6 +23,8 @@
 //   WORD                a word that is no switch is the language (the original's bare word;
 //                       else the setting "language", else english): german, french, ...
 //   --seed N            the battle's random seed
+//   --srand N           the main thread's rand() seed (default: the time, as the original's
+//                       srand(time(NULL)); the menus, the music and the battles draw from it)
 //   --headless          no window: run --frames N frames at 30 per second with --script FILE
 //                       (see client/front.h) and write --shots a,b,c as <--out PREFIX>NNNN.bmp
 //   --gpu-check         headless: also draw the screenshots on the GPU and compare
@@ -64,6 +66,7 @@
 #include <functional>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -82,6 +85,7 @@
 
 #include "client/front.h"
 #include "client/game_client.h"
+#include "client/main_rand.h"
 #include "client/mouse_trails.h"
 #include "client/cd_audio.h"
 #include "client/cd_audio_system.h"
@@ -283,6 +287,9 @@ int main(int argc, char** argv) {
     int display_switch = 0;
     bool wave_switch = false, no_direct_sound_switch = false;  // -w, -s (0x49EE30)
     std::string cd_audio = "tracks";  // --cd-audio tracks / system: the CD audio device
+    // The main thread's rand() seed: srand(time(NULL)) at start-up (WinMain 0x49E8BB); --srand N
+    // (tests) gives it.
+    std::uint32_t main_srand = static_cast<std::uint32_t>(std::time(nullptr));
     std::string language_word;
     for (int i = dir_given ? 2 : 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -419,6 +426,7 @@ int main(int argc, char** argv) {
         // starts without sound.
         else if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && (a[1] == 's' || a[1] == 'S')) no_direct_sound_switch = true;
         else if (a == "--cd-audio") cd_audio = next();
+        else if (a == "--srand") main_srand = static_cast<std::uint32_t>(std::strtoul(next().c_str(), nullptr, 0));
         else if (a == "--seed") setup.seed = static_cast<std::uint32_t>(std::strtoul(next().c_str(), nullptr, 0));
         else if (a == "--headless") {
             front.headless = true;
@@ -559,15 +567,16 @@ int main(int argc, char** argv) {
         }
         std::unique_ptr<client::CdAuxVolume> cd_aux = client::system_aux_volume();
         std::unique_ptr<client::CdDrives> cd_drives = client::system_cd_drives();
-        // The music's rand(): its own stream (the original draws the main thread's, which in a
-        // battle is the simulation's; kept apart so that the simulation's stream is untouched).
-        sim::Lcg15 music_rand;
+        // The main thread's one rand() (client/main_rand.h): the menus, the network room, the
+        // music's picks and, while a battle runs, the battle's stream.
+        client::MainRand main_rand(main_srand);
+        fes.main_rand = &main_rand;
         client::CdMusic::Env menv;
         menv.device = cd_device.get();
         menv.aux = cd_aux.get();
         menv.drives = cd_drives.get();
         menv.timers = &music_timers;
-        menv.rand = [&music_rand] { return music_rand.next(); };
+        menv.rand = [&main_rand] { return main_rand.next(); };
         menv.find_player_window = [] { return client::find_cd_player_window(); };
         menv.close_player_window = [](std::uintptr_t w) { client::close_cd_player_window(w); };
         client::CdMusic music(menv);
