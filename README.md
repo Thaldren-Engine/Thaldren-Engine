@@ -84,7 +84,7 @@ The client is `build/client/ta_play.exe`.
 ctest --test-dir build
 ```
 
-- `sim_tests`, `net_tests` and `compat_tests` need nothing else.
+- `sim_tests`, `net_tests`, `compat_tests` and `render_tests` need nothing else.
 - With `-DTA_GAME_DIR=<your Total Annihilation folder>`, more tests check the importers against
   every archive, unit, weapon, model and feature of your installed game.
 - `game_flow` and `game_replay` compare the engine with recordings of the original program

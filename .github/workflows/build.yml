@@ -25,7 +25,7 @@ jobs:
         run: cmake --build build
 
       - name: Unit tests
-        run: ctest --test-dir build --output-on-failure -R "^(sim|net|compat)_tests$"
+        run: ctest --test-dir build --output-on-failure
 
       - name: Upload the client
         uses: actions/upload-artifact@v4
