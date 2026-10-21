@@ -156,13 +156,38 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
         (void)h;
         return all;
     };
-    // Sides.
+    // Sides. The start-up's side reader (0x431A60, from 0x491200) stops the program with the
+    // system's box (0x4B6290: "Total Annihilation", an error icon, exit(1)) at the first of a
+    // side's interface regions it lacks — "No [<region>] in GAMEDATA/SIDEDATA.TDF for
+    // side:<name>" — or when the side's font file cannot be loaded (the box shows the path).
     if (vfs_.read("gamedata\\sidedata.tdf", f))
         if (auto root = parse_tdf(f))
             for (int k = 0;; ++k) {
                 const TdfSection* s = root->child("SIDE" + std::to_string(k));
                 if (!s) break;
+                const std::string name = s->get_string("name", 30, "");
                 sides_.push_back(s->get_string("name", 32, ""));
+                const std::string font = s->get_string("font", 256, "");
+                if (!font.empty()) {
+                    const std::string path = vfs_.virtual_path("fonts", font, "FNT");
+                    std::vector<std::uint8_t> fb;
+                    if (!vfs_.read(path, fb)) {
+                        error = path;
+                        fatal_ = true;
+                        return false;
+                    }
+                }
+                static const char* const kRegions[] = {
+                    "LOGO", "ENERGYBAR", "ENERGYNUM", "METALBAR", "METALNUM", "TOTALUNITS", "TOTALTIME", "ENERGY0", "METAL0", "ENERGYMAX",
+                    "METALMAX", "ENERGYPRODUCED", "ENERGYCONSUMED", "METALPRODUCED", "METALCONSUMED", "LOGO2", "UNITNAME", "DAMAGEBAR",
+                    "UNITMETALMAKE", "UNITMETALUSE", "UNITENERGYMAKE", "UNITENERGYUSE", "MISSIONTEXT", "UNITNAME2", "DAMAGEBAR2", "NAME",
+                    "DESCRIPTION"};
+                for (const char* region : kRegions)
+                    if (!s->child(region)) {
+                        error = std::string("No [") + region + "] in GAMEDATA/SIDEDATA.TDF for side:" + name;
+                        fatal_ = true;
+                        return false;
+                    }
             }
     // Music: music\1.mp3, 2.mp3, ... next to the game.
     for (int n = 1; n < 100; ++n) {

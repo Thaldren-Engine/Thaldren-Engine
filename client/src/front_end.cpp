@@ -162,6 +162,9 @@ public:
     int desktop_w_ = 1920, desktop_h_ = 1080;
     bool focused_ = true;
     bool window_focused() const override { return focused_; }
+    bool sound_driver_missing_ = false;
+    int exit_code_ = 0;  // the program's exit code (1 after the original's fatal box)
+    bool sound_driver_missing() const override { return sound_driver_missing_; }
     std::vector<std::array<int, 2>> modes_;
     void display_modes(std::vector<std::array<int, 2>>& out) const override { out = modes_; }
     // The frame size now: a battle's own, else the menus'.
@@ -578,6 +581,13 @@ private:
         loading_ = false;
         if (!s) {
             std::printf("battle failed to start: %s\n", error.c_str());
+            if (error.rfind("fatal:", 0) == 0) {
+                // The original's fatal box (0x4B6290: the program's name as the title, then
+                // exit(1)).
+                fatal_box(error.substr(6), !system_box);
+                exit_code_ = 1;
+                quit();
+            }
             return;
         }
         // The end of the loading stops every sound (the menus' loop too; 0x497F40).
@@ -947,6 +957,15 @@ int run_key_sweep(FrontEndSetup& setup, const std::string& keys_arg, const std::
     return 0;
 }
 
+void fatal_box(const std::string& text, bool headless) {
+    std::printf("fatal: %s\n", text.c_str());
+#ifdef CLIENT_HAVE_SDL
+    if (!headless) SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Total Annihilation", text.c_str(), nullptr);
+#else
+    (void)headless;
+#endif
+}
+
 int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     Runner run(setup);
     run.draw_pointer_ = o.draw_pointer;
@@ -1021,18 +1040,24 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         } else {
             std::printf("no battle running\n");
         }
-        return 0;
+        return run.exit_code_;
     }
 #ifdef CLIENT_HAVE_SDL
+    // The display's set-up failing (0x4B5980): the original's box (owner the window, the
+    // program's name as the title, no icon) and the end of the program.
+    auto environment_failed = [] {
+        SDL_ShowSimpleMessageBox(0, "Total Annihilation", "Error:  Environment Initialization Failed!\nCheck your DirectX setup", nullptr);
+        return 1;
+    };
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         std::printf("SDL_Init: %s\n", SDL_GetError());
-        return 1;
+        return environment_failed();
     }
     const int scale = std::max(1, o.scale);
     SDL_Window* win = SDL_CreateWindow(o.title.c_str(), w * scale, h * scale, 0);
     if (!win) {
         std::printf("SDL_CreateWindow: %s\n", SDL_GetError());
-        return 1;
+        return environment_failed();
     }
     SDL_HideCursor();
     confine_pointer(win, nullptr);
@@ -1062,8 +1087,18 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         tex = sr ? SDL_CreateTexture(sr, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, w, h) : nullptr;
         if (tex) SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
     }
+    if (!gpu && !tex) {
+        if (sr) SDL_DestroyRenderer(sr);
+        SDL_DestroyWindow(win);
+        return environment_failed();
+    }
     AudioOut audio;
-    if (o.sound && !audio.open()) std::printf("no sound output: %s\n", SDL_GetError());
+    if (o.sound && !audio.open()) {
+        // No output device: the original's DirectSound start failing with "no driver" leaves
+        // the game silent and the first main menu says so (0x4CEF90 / 0x4263B0).
+        std::printf("no sound output: %s\n", SDL_GetError());
+        run.sound_driver_missing_ = true;
+    }
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(w) * static_cast<std::size_t>(h) * 4);
     const std::uint64_t start = SDL_GetTicks();
     if (const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay())) {
@@ -1182,7 +1217,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     if (tex) SDL_DestroyTexture(tex);
     if (sr) SDL_DestroyRenderer(sr);
     SDL_DestroyWindow(win);
-    return 0;
+    return run.exit_code_;
 #else
     std::printf("built without SDL3: only --headless is available\n");
     return 1;

@@ -382,6 +382,9 @@ public:
     // The menus' pointer look (0x491C80: 19 the plain pointer, 20 the hourglass): what the
     // pointer shows outside the top screen's box (Screen::pointer_box); kept until changed.
     virtual void set_pointer_look(int /*look*/) {}
+    // The sound output could not be opened (the original's "no sound driver": silent, and the
+    // first main menu shows "No sound driver is available for use.", 0x4263B0).
+    virtual bool sound_driver_missing() const { return false; }
     // The display's modes (width, height), when the platform lists them (else none).
     virtual void display_modes(std::vector<std::array<int, 2>>& out) const { out.clear(); }
     // The loading screen's state while a battle loads (null otherwise): a network game's
@@ -426,6 +429,11 @@ struct FrontEndSetup {
 struct FrontOptions;  // client/front.h
 // Runs menus and battles until the program quits. Returns a process exit code.
 int run_front_end(FrontEndSetup& setup, const FrontOptions& options);
+
+// The original's fatal box (0x4B6290: MessageBoxA with an error icon, "Total Annihilation" as
+// the title; the program then ends with exit code 1): shown at once and waited for; headless
+// (or without a window system) printed.
+void fatal_box(const std::string& text, bool headless);
 // Tests: for each key of `keys` (comma list, or "all": a..z, 0..9, enter, esc, tab, space, bksp
 // and the arrows) and each modifier set of `mods` (comma list of none, shift, ctrl, alt joined
 // by '+'), a fresh front end opens its first screens (two frames and a drawing), gets the key as

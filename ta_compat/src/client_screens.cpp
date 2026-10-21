@@ -1289,6 +1289,8 @@ public:
             // later starts play 1.zrb unless a network switch started the program (GS+0x39245),
             // which then opens the multiplayer screens (main menu sub-state 6) after the movies.
             started_ = true;
+            // (0x4263B0, once: the sound start found no driver, a 500-wide box over the menu)
+            if (fe.sound_driver_missing()) show_message(fe, art_, "No sound driver is available for use.\n", nullptr, 500);
             const bool net_start = fe.hooks().network_start && fe.hooks().network_start() && fe.hooks().multiplayer_menu;
             if (net_start) fe.push(fe.hooks().multiplayer_menu(fe));
             if (art_.full_screen) {

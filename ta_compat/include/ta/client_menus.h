@@ -34,6 +34,9 @@ namespace ta {
 class MenuArt {
 public:
     bool load(const std::string& game_dir, std::string& error);
+    // load() failed the way the original's start-up stops the program (its own system box with
+    // `error` as the text, "Total Annihilation" as the title, then exit code 1).
+    bool fatal() const { return fatal_; }
 
     client::MenuContent& content() { return content_; }
     const std::string& game_dir() const { return game_dir_; }
@@ -94,6 +97,7 @@ private:
     client::Font gaf_font(const std::string& path);
 
     std::string game_dir_;
+    bool fatal_ = false;
     Vfs vfs_;
     client::MenuContent content_;
     std::array<render::Rgb, 256> guipal_{};

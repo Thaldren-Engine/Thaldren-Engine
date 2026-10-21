@@ -136,6 +136,21 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
         if (!mounted) added |= vfs.mount(a, err);
     }
     if (added) vfs.refresh_shadows();
+    // The game data's loading (GameData_LoadAll 0x42D2E0, at the start of every battle load):
+    // without gamedata\moveinfo.tdf, then without gamedata\sidedata.tdf, the program stops with
+    // the system's box (0x4B6290: "Total Annihilation", an error icon, exit(1)); the texts are
+    // the original's (the second names the wrong file).
+    {
+        std::vector<std::uint8_t> probe;
+        if (!vfs.read("gamedata\\moveinfo.tdf", probe)) {
+            error = "fatal:Can't load MOVEINFO.TDF";
+            return nullptr;
+        }
+        if (!vfs.read("gamedata\\sidedata.tdf", probe)) {
+            error = "fatal:Can't load GAMEDATA.TDF";
+            return nullptr;
+        }
+    }
     auto lb = std::make_unique<LoadedBattle>();
     // The map info's name (0x435DA0: a translated map name's base text when no file has the name)
     // and its files by the localized path builder (maps-<language>\ first, 0x435430 kind 1).

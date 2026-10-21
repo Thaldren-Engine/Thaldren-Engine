@@ -472,7 +472,8 @@ int main(int argc, char** argv) {
         ta::MenuArt art;
         std::string err;
         if (!art.load(game_dir, err)) {
-            std::fprintf(stderr, "%s\n", err.c_str());
+            if (art.fatal()) client::fatal_box(err, front.headless);  // (the original's start-up box)
+            else std::fprintf(stderr, "%s\n", err.c_str());
             return 1;
         }
         // Movies need a full screen in the original; the window stands for one, a headless run
