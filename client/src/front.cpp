@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <memory>
 #include <sstream>
 
 #include "client/audio.h"
@@ -186,6 +187,13 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
         if (!gpu) std::printf("GPU backend unavailable: %s\n", render::GpuRenderer::last_error().c_str());
     }
 #endif
+    {
+        auto windowed = std::make_shared<bool>(o.windowed_display);
+        client.toggle_display = [windowed]() {
+            *windowed = !*windowed;
+            std::printf("display: %s\n", *windowed ? "window" : "full screen");
+        };
+    }
     std::size_t next = 0;
     int total_steps = 0;
     // CLIENT_PROFILE=N: every N frames, the average time of each part of a frame, with the CPU
@@ -397,6 +405,23 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
     use_system_clipboard();   // the paste keys
     client.warp_pointer = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
+    // Developer mode's '~': the stand-in for the full screen and a plain window at the desktop's
+    // corner, in turn (see run_front_end).
+    auto windowed = std::make_shared<bool>(false);
+    client.toggle_display = [win, scale, w, h, windowed]() {
+        *windowed = !*windowed;
+        if (!*windowed) {
+            SDL_SetWindowBordered(win, true);
+            fit_window_to_frame(win, w, h, scale);
+        } else {
+            SDL_SetWindowFullscreen(win, false);
+            SDL_SetWindowBordered(win, false);
+            SDL_SetWindowSize(win, w * scale, h * scale);
+            SDL_SetWindowPosition(win, 0, 0);
+            SDL_SyncWindow(win);
+        }
+        confine_pointer(win, nullptr);
+    };
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {

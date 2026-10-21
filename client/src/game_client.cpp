@@ -1033,6 +1033,12 @@ void GameClient::handle(const InputEvent& e) {
         break;
     case InputEvent::Type::Text:
         text_events_ = true;
+        if (e.key == '~' && opt_.debug_commands) {
+            // Developer mode: '~' switches between the full screen and a window (0x499890 takes
+            // it off the key queue before anything else sees it, the chat line too: 0x4B5910).
+            if (toggle_display) toggle_display();
+            break;
+        }
         if (!chat_) {
             InputEvent k = e;
             k.type = InputEvent::Type::KeyDown;
@@ -1281,6 +1287,11 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
         static const char kTo[] = "!@#$%^&*()_+{}:\"<>?~|";
         if (k >= 'a' && k <= 'z') k = std::toupper(k);
         else if (const char* p = std::strchr(kFrom, k)) k = kTo[p - kFrom];
+    }
+    if (k == '~' && !typed && opt_.debug_commands && (!chat_ || !text_events_)) {
+        // (developer mode's display switch, as for the typed character in handle())
+        if (toggle_display) toggle_display();
+        return;
     }
     // The chat line takes every key while it is open (its text field's editing, 0x4AB720):
     // Enter sends the line and closes it, Escape closes it with the line dropped; Backspace

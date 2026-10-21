@@ -778,6 +778,8 @@ int main(int argc, char** argv) {
         s.load(settings_path);
         front.shot_dir = ta::screenshot_dir(game_dir, s);
         front.shot_prefix = ta::kScreenshotPrefix;
+        // (developer mode from the settings, as the program's start-up reads it)
+        game.options_mut().debug_commands = client::FrontEnd::developer_from_settings(s);
     }
     const auto at = world->start_position(0);
     game.center_on({at[0] << 16, 0, at[1] << 16});

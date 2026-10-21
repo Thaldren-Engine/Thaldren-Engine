@@ -160,6 +160,9 @@ public:
     // Moves the system pointer to frame pixel (x, y) (SetCursorPos; the view drag); unset: the
     // client's own pointer position only.
     std::function<void(int x, int y)> warp_pointer;
+    // Developer mode's '~' (0x499890 -> 0x4B5910): the display goes from the full screen to a
+    // window of the screen's size and back.
+    std::function<void()> toggle_display;
     // The film (debug switch; Ctrl+F10, 0x495E90 case 0xD7, and the battle loop 0x496790): a
     // frame is due once the game tick reaches the next film tick; the front writes the frame it
     // draws next into the film's folder (FRAMnnnn.pcx) and calls film_written.

@@ -344,6 +344,17 @@ public:
     // setup's unit_limit), replaced by a loaded save's maxunits (0x432610); skirmish starts, save
     // loads and the network room's host slider read it.
     int& unit_limit() { return unit_limit_; }
+    // Developer mode (GS+0x37F2F bit 1): read from the settings (0x42F9A0: on only when
+    // DisplaymodeDepth is 256 and Games is 1, values the settings writer never writes) at
+    // start-up, on entering the skirmish menu (0x4273E8) and by the row-count cheat (0x47BB52);
+    // the console's password line ("+Now Film Chris Include Reload Assert", 0x416E90) sets or
+    // clears it in a battle, and the menus keep what the battle left. A running battle holds it
+    // as its client's debug_commands option.
+    bool& developer_mode() { return developer_; }
+    void read_developer_mode() { developer_ = developer_from_settings(settings()); }
+    static bool developer_from_settings(const Settings& s) {
+        return s.get_int("DisplaymodeDepth", 0) == 256 && s.get_int("Games", 0) == 1;
+    }
     virtual FrontEndHooks& hooks() = 0;
     // Menu art and sounds (the importer's), the frame size, the menu palette.
     virtual const MenuContent& menu_content() const = 0;
@@ -383,6 +394,7 @@ public:
 
 protected:
     int unit_limit_ = 250;
+    bool developer_ = false;
 };
 
 // ---------------------------------------------------------------- running it

@@ -954,6 +954,7 @@ protected:
         save(s);
         s.set_int("NumSkirmishPlayers", n);
         fe.apply_settings();
+        fe.read_developer_mode();  // (0x47BB52: 0x42F9A0 again)
         load(s);
         widgets_.resize(described_);
         build_rows();
@@ -1223,7 +1224,10 @@ protected:
                 else ring_follow_ = true;
             }
         } else if (is(w, "Skirmish")) {
-            if (art_.layout("SKIRMISH")) fe.push(std::make_unique<Skirmish>(art_, fe.settings()));
+            if (art_.layout("SKIRMISH")) {
+                fe.read_developer_mode();  // (0x4273E8: the settings read again, 0x42F9A0)
+                fe.push(std::make_unique<Skirmish>(art_, fe.settings()));
+            }
         } else if (is(w, "Options")) {
             fe.push(std::make_unique<OptionsMenu>(art_, false));
         } else if (is(w, "PrevMenu")) {

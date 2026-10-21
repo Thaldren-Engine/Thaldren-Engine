@@ -54,6 +54,7 @@ public:
     Runner(FrontEndSetup& setup) : s_(setup) {
         if (!s_.settings_path.empty()) settings_.load(s_.settings_path);
         unit_limit_ = s_.unit_limit;
+        developer_ = developer_from_settings(settings_);  // (0x491200 -> 0x42F9A0)
     }
     ~Runner() override {
         // Screens go before the battle they may refer to.
@@ -207,6 +208,14 @@ public:
             return;
         }
         if (pending_) return;
+        if ((e.type == InputEvent::Type::Text || (e.type == InputEvent::Type::KeyDown && !e.text_follows)) && e.key == '~' &&
+            (in_battle() ? session_->client().options().debug_commands : developer_)) {
+            // Developer mode: the main loop's frame (0x499890) takes '~' off the key queue in
+            // every state, before the screens and the battle see it, and switches the display
+            // between the full screen and a window (0x4B5910).
+            if (toggle_display_) toggle_display_();
+            return;
+        }
         if (is_screenshot_key(e)) {
             // Taken off the queue at the start of the next pass, before anything is drawn: the
             // picture is the frame shown last (0x499890).
@@ -558,6 +567,11 @@ private:
         judge_.reset();
         if (s_.music) s_.music->set_mood(MusicMood::Building);
         BattleSession* sess = session_.get();
+        // Developer mode is one switch of the program's state: the battle takes it as it is.
+        session_->client().options_mut().debug_commands = developer_;
+        session_->client().toggle_display = [this]() {
+            if (toggle_display_) toggle_display_();
+        };
         session_->client().on_chat = [sess](const std::string& text) { sess->send_chat(text); };
         // Settings the battle saves at once (the original writes the registry, 0x430F00).
         session_->client().save_setting = [this](const char* name, int value) {
@@ -643,6 +657,7 @@ private:
         if (!session_) return;
         units_due_ = true;  // (the battle's loading, GameData_LoadAll, set GS+0x14397)
         std::unique_ptr<BattleSession> s = std::move(session_);
+        developer_ = s->client().options().debug_commands;  // (the password line's change stays)
         const BattleOutcome o = ended_ ? outcome_ : BattleOutcome::Quit;
         ended_ = false;
         battle_base_ = 0;
@@ -675,6 +690,7 @@ public:
     // The palette the screen shows for a frame's palette.
     render::Palette display_palette(const render::Palette& p) const { return display_gamma_ == 1.0f ? p : gamma_palette(p, display_gamma_); }
     std::function<void(int, int)> warp_;  // the window's pointer warp (frame pixels)
+    std::function<void()> toggle_display_;  // developer mode's '~': full screen <-> window
 
 private:
     bool shot_pending_ = false;
@@ -934,6 +950,14 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         }
 #endif
         run.log_sounds_ = true;
+        {
+            // (tests: the display switch is logged)
+            auto windowed = std::make_shared<bool>(o.windowed_display);
+            run.toggle_display_ = [windowed]() {
+                *windowed = !*windowed;
+                std::printf("display: %s\n", *windowed ? "window" : "full screen");
+            };
+        }
         run.begin(nullptr);
         // The loading screen is shown once, half way, when screenshots are wanted.
         bool loading_shot = false;
@@ -1045,6 +1069,28 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     }
     int cur_w = w, cur_h = h;  // the frame size the window shows (menus 640 x 480, battles their own)
     int frame_no = 0;
+    // Developer mode's '~' (0x4B5910 -> 0x4B5510): the original leaves its exclusive full screen
+    // for a window of the screen's size at its place (the top-left corner, no border, no longer
+    // top-most) and back. Here: the window that stands for the full screen, and a plain window of
+    // the frame's size at the desktop's corner.
+    bool windowed = false;
+    auto place_window = [&]() {
+        if (!windowed) {
+            SDL_SetWindowBordered(win, true);
+            fit_window_to_frame(win, cur_w, cur_h, scale);
+        } else {
+            SDL_SetWindowFullscreen(win, false);
+            SDL_SetWindowBordered(win, false);
+            SDL_SetWindowSize(win, cur_w * scale, cur_h * scale);
+            SDL_SetWindowPosition(win, 0, 0);
+            SDL_SyncWindow(win);
+        }
+        confine_pointer(win, nullptr);
+    };
+    run.toggle_display_ = [&]() {
+        windowed = !windowed;
+        place_window();
+    };
     auto present = [&]() -> bool {
         const render::Palette* pal = nullptr;
         render::DrawList list = run.draw(pal);
@@ -1052,8 +1098,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             // The screen size changes between the menus and a battle (the chosen display mode).
             cur_w = list.width;
             cur_h = list.height;
-            fit_window_to_frame(win, cur_w, cur_h, scale);
-            confine_pointer(win, nullptr);
+            place_window();
             rgba.assign(static_cast<std::size_t>(cur_w) * static_cast<std::size_t>(cur_h) * 4, 0);
             if (tex) {
                 SDL_DestroyTexture(tex);
