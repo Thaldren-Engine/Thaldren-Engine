@@ -93,6 +93,7 @@
 #include "ta/client_world.h"
 #include "ta/online_services.h"
 #include "ta/preferences.h"
+#include "ta/runtime_library.h"
 #include "ta/translate.h"
 
 namespace {
@@ -227,6 +228,12 @@ int pointer_selftest() {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // The runtime library's start-up first (WinMain 0x49E830 -> 0x4DA1D0(8), 0x4D8E50): its own
+    // switches (-debughelper ends the program here, -fpufussy), the crash log to ErrorLog.txt and
+    // the out-of-memory handler.
+    ta::runtime::start(GetCommandLineA(), "Total Annihilation");
+#endif
     // The game folder: the first argument when it isn't an option, else the executable's own
     // folder (the program placed in the game folder, as the original runs).
     // (A first word that names no folder is the original's language word, below.)
@@ -278,21 +285,9 @@ int main(int argc, char** argv) {
         if (a.size() >= 2 && (a[0] == '-' || a[0] == '/') && a[1] != '-') {
             // The 1998 debug library's own switches (0x4DA0E0; dash only, case-insensitive
             // prefixes) are taken by it first and do nothing here: "-dprinton" is not -d.
-            static const char* const kLibrarySwitches[] = {
-                "-memfussy", "-memnofussy", "-memfrontalign", "-gonzo", "-memset", "-memnoset", "-fpufussy",
-                "-fpunofussy", "-dprinton", "-dprintoff", "-dprintfile", "-memorystatus", "-performancestatus",
-                "-disableimagehlp", "-enableimagehlp", "-disableimagehlplines", "-enableimagehlplines", "-debughelper",
-                "-saveresources"};
-            bool library = false;
-            for (const char* sw : kLibrarySwitches) {
-                const std::size_t n = std::char_traits<char>::length(sw);
-                if (a.size() < n) continue;
-                bool same = true;
-                for (std::size_t k = 0; k < n && same; ++k)
-                    same = std::tolower(static_cast<unsigned char>(a[k])) == static_cast<unsigned char>(sw[k]);
-                if (same) library = true;
-            }
-            if (library) continue;
+            // (What they do happens in the library itself, which reads the whole command line:
+            // ta::runtime::start above.)
+            if (ta::runtime::is_library_switch(a)) continue;
             const char l = static_cast<char>(std::tolower(static_cast<unsigned char>(a[1])));
             if (l == 'd') {
                 display_switch = a.size() > 2 && (a[2] == 'f' || a[2] == 'F') ? 2 : 3;
@@ -402,8 +397,11 @@ int main(int argc, char** argv) {
             front.headless = true;
 #ifdef _WIN32
             // Headless runs never show error dialogs; a crash prints where it happened.
+            // (The runtime library's crash log is written first.)
             SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
-            SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+            static LPTOP_LEVEL_EXCEPTION_FILTER library_filter = nullptr;
+            library_filter = SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+                if (library_filter) library_filter(ep);
                 const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleA(nullptr));
                 const auto at = reinterpret_cast<std::uintptr_t>(ep->ExceptionRecord->ExceptionAddress);
                 std::fprintf(stderr, "crash: exception %08lx at module offset 0x%llx\n", ep->ExceptionRecord->ExceptionCode,

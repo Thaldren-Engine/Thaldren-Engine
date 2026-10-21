@@ -23,6 +23,7 @@
 #include "ta/online_services.h"
 #include "ta/preferences.h"
 #include "ta/restrict_list.h"
+#include "ta/runtime_library.h"
 #include "ta/tdf.h"
 #include "ta/translate.h"
 #include "ta/unitdefs.h"
@@ -666,6 +667,71 @@ void test_online_services() {
     }
 }
 
+void test_runtime_library() {
+    namespace rt = ta::runtime;
+    // 0x4D9F60: anywhere in the line (the path too), any case, ended by the end, a blank or '='.
+    CHECK(rt::find_switch("TotalA.exe -FPUFussy", "-fpufussy") == 20);
+    CHECK(rt::find_switch("x -fpufussy=1", "-fpufussy") == 11);
+    CHECK(rt::find_switch("x -fpufussyy", "-fpufussy") == std::string_view::npos);
+    CHECK(rt::find_switch("C:\\a-memset\\TotalA.exe", "-memset") == std::string_view::npos);
+    CHECK(rt::find_switch("C:\\a -memset\tq", "-memset") == 12);
+    CHECK(rt::find_switch("", "-memset") == std::string_view::npos);
+    // 0x4D9FE0: off wins.
+    CHECK(rt::switch_value("a -fpufussy -fpunofussy", false, "-fpufussy", "-fpunofussy") == false);
+    CHECK(rt::switch_value("a -fpufussy", false, "-fpufussy", "-fpunofussy") == true);
+    {
+        const rt::Switches s = rt::read_switches("TotalA.exe -memset=0x12AB -disableimagehlp -memfrontalign");
+        CHECK(s.setmemory && s.setvalue == 0x12ABu && !s.imagehlp && s.memfussy && !s.backalign && s.gonzo && !s.fpufussy && !s.debughelper);
+        const rt::Switches d = rt::read_switches("TotalA.exe -memset 77 -gonzo -debughelper");
+        CHECK(d.setvalue == 77u && !d.gonzo && d.debughelper && !d.memfussy && d.imagehlp);
+        CHECK(rt::read_switches("TotalA.exe").setvalue == 0xDEADBEEFu);
+    }
+    // 0x4DA0E0: the game's parser skips words beginning with one of the nineteen.
+    CHECK(rt::library_switches().size() == 19);
+    CHECK(rt::is_library_switch("-DPrintOnSomething") && rt::is_library_switch("-saveresources") && !rt::is_library_switch("/memfussy") &&
+          !rt::is_library_switch("-d"));
+    CHECK(rt::exception_name(0xC0000094u) == "Integer Divide by Zero" && rt::exception_name(0x80000003u) == "Breakpoint" &&
+          rt::exception_name(0x12345678u) == "Unknown exception type");
+    // The log.
+    rt::CrashRecord r;
+    r.code = 0xC0000005u;
+    r.flags = 0;
+    r.address = 0x00401234u;
+    r.params = {1, 0x10};
+    r.eax = 1, r.ebx = 2, r.ecx = 3, r.edx = 4, r.esi = 5, r.edi = 6, r.ebp = 7, r.esp = 0x0012FF00u, r.eip = 0x00401234u;
+    r.eflags = 0x246, r.cs = 0x1B, r.ss = 0x23, r.ds = 0x23, r.es = 0x23, r.fs = 0x3B, r.gs = 0, r.context_flags = 0x1003F;
+    r.code_bytes[0] = 0x8B;
+    r.call_stack = {0x00401234u, 0x00402000u};
+    r.stack_start = 0x0012FF00u;
+    r.stack_words = {1, 2, 3};
+    CHECK(rt::crash_log_head("C:\\Games\\TA\\TotalA.exe", r) == "TotalA caused an Access Violation in\nmodule TotalA.exe at 001b:00401234.\n");
+    rt::MachineInfo m;
+    m.time = "Wed Oct 21 12:00:00 2026\n";
+    m.program = "C:\\Games\\TA\\TotalA.exe";
+    m.user = "me";
+    m.machine = "BOX";
+    m.exe_dated = true;
+    m.exe_size = 1000;
+    m.dos_date = static_cast<std::uint16_t>(((2026 - 1980) << 9) | (10 << 5) | 21);
+    m.dos_time = static_cast<std::uint16_t>((12 << 11) | (34 << 5) | 28);
+    m.link_stamp = 0x3640A6F4u;
+    m.link_time = "Mon Oct 26 16:00:20 1998\n";
+    m.processors = 2;
+    m.total_phys = 64u << 20;
+    m.stack_from = 0x00130000u, m.stack_to = 0x00030000u;
+    const std::string body = rt::crash_log_body("Global Exception Handler", r, m);
+    CHECK(body.rfind("Exception handler called in Global Exception Handler. Time: Wed Oct 21 12:00:00 2026\r\nC:\\Games\\TA\\TotalA.exe, run by me on "
+                     "BOX\r\nExecutable is 1000 bytes long and dated 10/21/2026 12:34:56\r\nUTC link time: 3640a6f4 - Mon Oct 26 16:00:20 1998\r\n"
+                     "Library version 996. Library date Jun 30 1998 16:08:53\r\n2 processors\r\n64 MBytes physical memory\r\nStack goes from "
+                     "00130000 to 00030000\r\nInstruction pointer is 00401234\r\nExceptionCode = C0000005 - Access Violation\r\nAccess violation: "
+                     "Illegal write, data address 0x00000010\r\nExceptionFlags = 00000000\tExceptionAddress = 00401234\r\nParameters = 00000001\t"
+                     "00000010\r\n\r\nRegisters:\r\nEAX=00000001 CS=001B EIP=00401234 EFLGS=00000246\r\n",
+                     0) == 0);
+    CHECK(body.find("Bytes at CS:EIP:\r\n8b 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\r\n\r\nCall stack:\r\n00401234 00402000\r\nStack dump:\r\n"
+                    "0012FF00: 00000001 00000002 00000003\r\n\r\nDr0 = ") != std::string::npos);
+    CHECK(body.size() > 10 && body.compare(body.size() - 10, 10, "\r\n\r\n\r\n\r\n\r\n") == 0);
+}
+
 } // namespace
 
 int main() {
@@ -686,6 +752,7 @@ int main() {
     test_notice_texts();
     test_preferences();
     test_online_services();
+    test_runtime_library();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -105,6 +105,7 @@ add_library(ta_compat STATIC
     ta_compat/src/notice_texts.cpp
     ta_compat/src/online_services.cpp
     ta_compat/src/preferences.cpp
+    ta_compat/src/runtime_library.cpp
     ta_compat/src/cob.cpp
     ta_compat/src/crt_strtod.cpp
     ta_compat/src/featuredefs.cpp
