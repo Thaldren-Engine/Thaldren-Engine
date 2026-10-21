@@ -2113,6 +2113,28 @@ int main(int argc, char** argv) {
             if (cnt) r.write(gs + 0x1491F, eff.data(), cnt * 0x54);
             r.w32(gs + 0x1491B, cnt);
         }
+        // Animated textures: each unit type's primitives' animation cursors as the engine's are
+        // now (the models were written with frame 0; the pieces drawn straight onto the frame
+        // show the cursor's frame, the cached sprites frame 0).
+        for (std::size_t k = 0; k < type_model.size(); ++k) {
+            if (!type_model[k] || !world.types_[k]) continue;
+            const render::Model& m = world.types_[k]->model;
+            const auto& frames = world.textures_.cursor_frames();
+            std::vector<u32> nodes;
+            Original::walk(r, type_model[k], nodes);
+            for (std::size_t i = 0; i < nodes.size() && i < m.pieces.size(); ++i) {
+                const u32 prims = r.r32(nodes[i] + 0x28);
+                const auto& mp = m.pieces[i].primitives;
+                for (std::size_t q = 0; q < mp.size(); ++q) {
+                    const render::ModelPrimitive& p = mp[q];
+                    if (p.flat || !p.texture || !p.texture->animated || p.texture->team_coloured || p.texture->frames.empty() || p.cursor < 0 ||
+                        static_cast<std::size_t>(p.cursor) >= frames.size())
+                        continue;
+                    r.w32(prims + static_cast<u32>(q) * 0x20 + 0x10,
+                          static_cast<u32>(frames[static_cast<std::size_t>(p.cursor)] % p.texture->frames.size()));
+                }
+            }
+        }
         // The original's frame.
         const bool frame_ok = o.call(kVisibleList, 0, {}) && o.call(kDrawFrame, 0, {1, 0});
         if (opt.shards > 0) {

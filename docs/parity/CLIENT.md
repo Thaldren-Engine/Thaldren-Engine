@@ -159,6 +159,13 @@ summary at the end gives the counts after this round.
 
 ## 6. Summary
 
+*2026-10-21* recount (105 rows, the status column): BUILT+VERIFIED 49, BUILT-UNVERIFIED 52,
+PARTIAL 0, MISSING 0, NOT-APPLICABLE 4. 1.11 has no PARTIAL part left (the lens, compared); 3.8's
+fade is the original's state machine now (compat_tests); 2.51's open point was a misreading. Open:
+the ARMAP pad-light pixels of one frame_harness scene (1.11 note; the harness now also writes the
+engine's texture animation cursors into the original's models each scene, which did not change
+that scene: not explained yet).
+
 Counts after the open-items pass (*2026-10-20*): 99 items — BUILT+VERIFIED 46, BUILT-UNVERIFIED 49, PARTIAL 0 (1.11 keeps one
 PARTIAL part: render type 2, the lens), MISSING 0, NOT-APPLICABLE 4 (earlier this round: 36 / 52 / 6 / 1 / 4; start: 26 / 17 /
 18 / 33 / 4 of 98). The previous summary's open list was stale: TALK2.GUI (2.9) and the briefing page (2.15) are built (not

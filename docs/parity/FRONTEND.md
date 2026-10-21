@@ -167,3 +167,12 @@ output, mousespeed, ackfx, buildfx: no screen of this area uses them. 7.2 the SE
 10.5 the original's error texts. (11.1 the battle room's START glow and 11.2 the menus'
 insertion point / underlines / focus marking: resolved *2026-10-20*.) 1.1 the state machine is a screen stack by design. 5.12 the
 mission keys' effects belong to SIM.
+
+*2026-10-21* recount (76 rows, the latest status of each): BUILT+VERIFIED 17, BUILT-UNVERIFIED 39,
+PARTIAL 2, MISSING 0, N/A 18. The paragraph above is stale where it lists 1.6, 9.3, 9.5, 4.4,
+8.1, 8.2, 8.5, 8.6 and 7.2 (all built or N/A since). Still PARTIAL: 9.2 (-w, the Windows wave-out
+path: one audio output) and 10.5 (the start-up boxes are the original's now; the many other
+fatal boxes for damaged data keep the client's texts). This round: 2.3 (the movie clock measured
+on smackw32 and built, the focus rule, the missing-file sound stop), 2.4 (re-read), 2.7
+(BUILT+VERIFIED: the 200-wide box and the current font's line step, 0 of 43,621 pixels), 3.7
+(new: the menus' pointer look), 10.5 (start-up and loading boxes).
