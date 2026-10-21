@@ -88,6 +88,10 @@ public:
     virtual bool tab_bar() const { return false; }
     // As the top screen it shows no pointer (movies).
     virtual bool hides_pointer() const { return false; }
+    // The top layout's header box on the frame (the pointer inside it is drawn as the plain
+    // pointer's first frame, outside it as the look set by FrontEnd::set_pointer_look); false:
+    // no box.
+    virtual bool pointer_box(int& /*x0*/, int& /*y0*/, int& /*x1*/, int& /*y1*/) const { return false; }
 };
 
 // ---------------------------------------------------------------- battles
@@ -375,6 +379,9 @@ public:
     // Whether the program's window has the keyboard focus (GetFocus() == the window; headless:
     // always).
     virtual bool window_focused() const { return true; }
+    // The menus' pointer look (0x491C80: 19 the plain pointer, 20 the hourglass): what the
+    // pointer shows outside the top screen's box (Screen::pointer_box); kept until changed.
+    virtual void set_pointer_look(int /*look*/) {}
     // The display's modes (width, height), when the platform lists them (else none).
     virtual void display_modes(std::vector<std::array<int, 2>>& out) const { out.clear(); }
     // The loading screen's state while a battle loads (null otherwise): a network game's

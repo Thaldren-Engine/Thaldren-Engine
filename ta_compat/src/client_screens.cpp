@@ -750,7 +750,7 @@ public:
     }
     void enter(FrontEnd& fe) override {
         if (Widget* m = widget("MapName")) m->text = translate(translate_lowered(map_));  // (the map info's shown name, 0x435A20, as a caption)
-        (void)fe;
+        fe.set_pointer_look(19);  // (0x47AAF0 / 0x47BBB0)
     }
 
 protected:
@@ -1074,6 +1074,7 @@ protected:
         } else if (is(w, "PrevMenu")) {
             save(fe.settings());
             fe.apply_settings();
+            fe.set_pointer_look(20);  // (0x47AE60)
             fe.pop();
             return;
         } else if (is(w, "Start")) {
@@ -1166,6 +1167,7 @@ protected:
         req.start.crt_rand_state = menu_rand().state();
         const std::string dir = art_.game_dir();
         const client::ClientOptions opt = client_options(fe.settings(), fe.width(), fe.height());
+        fe.set_pointer_look(20);  // (0x47AE60: the start taken)
         fe.start_battle([dir, req, human, opt](const client::LoadProgress& progress, std::string& error) -> std::unique_ptr<client::BattleSession> {
             return SkirmishSession::start(dir, req, human, opt, progress, error);
         });
@@ -1191,6 +1193,7 @@ public:
             if (Widget* w = widget("Skirmish")) w->quickkey = w->quickkey_char = 's';
     }
     void enter(FrontEnd& fe) override {
+        fe.set_pointer_look(19);  // (0x4777A0)
         if (Widget* w = widget("NewCamp")) w->grayed = !fe.hooks().campaign_menu;
         if (Widget* w = widget("LoadGame")) w->grayed = !fe.hooks().load_game_menu;
         // AnyMsn is shown with the all-missions setting (0x4777A0).
@@ -1214,6 +1217,9 @@ protected:
         else if (is(w, "Skirmish")) sfx(fe, art_, "Skirmish");
         else if (is(w, "Options")) sfx(fe, art_, "Options");
         else if (is(w, "PrevMenu")) sfx(fe, art_, "Previous");
+        // (0x4775A0: the hourglass look on every way out of the screen)
+        if (is(w, "NewCamp") || is(w, "AnyMsn") || is(w, "LoadGame") || is(w, "Skirmish") || is(w, "Options") || is(w, "PrevMenu"))
+            fe.set_pointer_look(20);
         if (is(w, "NewCamp")) {
             if (fe.hooks().campaign_menu) fe.push(fe.hooks().campaign_menu(fe));
         } else if (is(w, "AnyMsn")) {
@@ -1400,6 +1406,9 @@ protected:
         if (is(w, "SINGLE") || is(w, "MULTI")) sfx(fe, art_, "BigButton");
         else if (is(w, "EXIT")) sfx(fe, art_, "Exit");
         else if (is(w, "INTRO") || is(w, "Credits")) sfx(fe, art_, "SmlButton");
+        // (0x425D80: the pointer look 20, the hourglass, on every way out of the menu; the
+        // movies' only when they play)
+        if (is(w, "SINGLE") || is(w, "MULTI") || is(w, "EXIT")) fe.set_pointer_look(20);
         if (is(w, "SINGLE")) {
             fe.push(std::make_unique<SinglePlayer>(art_));
         } else if (is(w, "MULTI")) {
@@ -1414,6 +1423,7 @@ protected:
                 show_message(fe, art_, "Debug:  You must be in full-screen mode to play a movie.", nullptr, 200);  // (0x4ABD90, width 200)
                 return;
             }
+            fe.set_pointer_look(20);
             play_movies(fe, art_, {is(w, "INTRO") ? "2.zrb" : "5.zrb"}, is(w, "INTRO") && shift_, {});
         }
     }
@@ -2773,6 +2783,7 @@ public:
         }
         LayoutScreen::draw(fe, out);
     }
+    void enter(FrontEnd& fe) override { fe.set_pointer_look(19); }  // (the statistics' set-up 0x41F0A0)
     void frame(FrontEnd& fe, std::uint32_t now) override {
         const std::uint32_t t = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) * 30 / 1000);
         if (phase_ >= 0 && phase_ <= 5) {
@@ -2983,9 +2994,11 @@ protected:
         if (is(w, "MainMenu") || is(w, "LoadGame") || is(w, "SaveGame") || is(w, "Start") || is(w, "Missions")) sfx(fe, art_, "BigButton");
         else if (is(w, "Difficulty")) sfx(fe, art_, "Skirmish");
         if (is(w, "MainMenu")) {
+            fe.set_pointer_look(20);  // (0x41EC50)
             fe.to_main_menu();
         } else if (campaign_ && (is(w, "Start") || is(w, "Missions"))) {
             // (0x41EC50: the archives rescanned, the chosen mission's briefing)
+            fe.set_pointer_look(20);
             const Widget* l = widget("Missions");
             const int sel = l && l->selected >= 0 ? l->selected : camp_.mission;
             if (camp_.start) camp_.start(fe, sel);

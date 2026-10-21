@@ -776,6 +776,8 @@ void SelProv::on_press(FrontEnd& fe, Widget& w) {
     if (is(w, "SELECT")) {
         if (ListState* L = list("DPLAY")) choose(fe, L->selected);
     } else if (upper(w.name).compare(0, 7, "SERVICE") == 0) {
+        // (0x4441A0: the hourglass while the link runs, then the plain pointer)
+        fe.set_pointer_look(19);
         press_service(fe, w);
     } else if (is(w, "SETTINGS")) {
         sfx(fe, art_, "Options");

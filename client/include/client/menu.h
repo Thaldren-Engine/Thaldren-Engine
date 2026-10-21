@@ -106,6 +106,8 @@ struct MenuContent {
     int click_sound = -1, error_sound = -1;
     const std::vector<render::Sprite8>* cursor = nullptr;  // the menu pointer
     FrameTiming cursor_timing;                             // its frames' times (1/30 s) and looping
+    const std::vector<render::Sprite8>* cursor_busy = nullptr;  // pointer look 20, the hourglass
+    FrameTiming cursor_busy_timing;
     // Loads a screen's layout by name (nullptr when the game has none). The result stays valid
     // for the life of the content.
     std::function<const ScreenLayout*(const std::string& name)> layout;
@@ -164,6 +166,14 @@ public:
     void handle(FrontEnd& fe, const InputEvent& e) override;
     void draw(FrontEnd& fe, render::Image8& out) override;
     const render::Palette* palette() const override { return layout_ ? layout_->palette : nullptr; }
+    bool pointer_box(int& x0, int& y0, int& x1, int& y1) const override {
+        if (widgets_.empty() || !placed_) return false;
+        x0 = ox_;
+        y0 = oy_;
+        x1 = ox_ + widgets_.front().w - 1;
+        y1 = oy_ + widgets_.front().h - 1;
+        return true;
+    }
 
     Widget* widget(const std::string& name);
     const ScreenLayout* layout() const { return layout_; }

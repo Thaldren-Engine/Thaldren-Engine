@@ -294,6 +294,7 @@ public:
         }
         pointer_.step(s_.content->cursor_timing, ticks - pointer_ticks_);
         pointer_ticks_ = ticks;
+        choose_pointer_look(ticks);
         if (pending_) run_launcher();
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
@@ -493,9 +494,38 @@ private:
         }
     }
 
+    // The menus' pointer (0x4AB440 every interface pass): inside the top screen's box the plain
+    // pointer's first frame; outside it the look 0x491C80 set last (20: the hourglass, its
+    // animation started again each time the pointer leaves the box; 19 or none set: the plain
+    // pointer).
+    bool pointer_outside_box() {
+        if (stack_.empty()) return false;
+        int x0 = 0, y0 = 0, x1 = -1, y1 = -1;
+        if (!stack_.back()->pointer_box(x0, y0, x1, y1)) return false;
+        return mouse_x_ < x0 || mouse_x_ > x1 || mouse_y_ < y0 || mouse_y_ > y1;
+    }
+    void choose_pointer_look(std::uint32_t ticks) {
+        const bool busy = look_ == 20 && s_.content->cursor_busy && !s_.content->cursor_busy->empty() && pointer_outside_box();
+        if (busy && !busy_shown_) {
+            busy_.start(s_.content->cursor_busy_timing);
+            busy_ticks_ = ticks;
+        }
+        busy_shown_ = busy;
+        if (busy) {
+            busy_.step(s_.content->cursor_busy_timing, ticks - busy_ticks_);
+            busy_ticks_ = ticks;
+        }
+    }
+    void set_pointer_look(int look) override { look_ = look; }
     void add_pointer(render::DrawList& list) {
         if (!draw_pointer_ || pointer_off_) return;
         if (!stack_.empty() && stack_.back()->hides_pointer() && !in_battle()) return;
+        if (busy_shown_ && !in_battle()) {
+            const auto* c = s_.content->cursor_busy;
+            if (busy_.ended) return;
+            list.blit(&(*c)[static_cast<std::size_t>(busy_.frame) % c->size()], mouse_x_, mouse_y_, {0, 0, list.width - 1, list.height - 1}, true);
+            return;
+        }
         const auto* c = s_.content->cursor;
         if (c && !c->empty()) {
             if (pointer_.ended) return;
@@ -712,6 +742,10 @@ private:
     std::uint32_t now_ = 0;
     FrameClock pointer_;  // the menu pointer's animation
     std::uint32_t pointer_ticks_ = 0;
+    int look_ = 0;              // the menus' pointer look (0x491C80; 0: none set yet)
+    bool busy_shown_ = false;   // the hourglass shown (look 20, the pointer outside the top box)
+    FrameClock busy_;
+    std::uint32_t busy_ticks_ = 0;
     bool pointer_started_ = false;
     int mouse_x_ = 0, mouse_y_ = 0;
     bool pointer_off_ = false;  // the system pointer is outside the picture

@@ -276,6 +276,7 @@ public:
             enter_in_game();
             return;
         }
+        fe.set_pointer_look(19);  // (0x478E80)
         Campaign c;
         const int index = progress_->mission;
         std::string error;
@@ -452,6 +453,7 @@ protected:
             if (!ok_) return;
             mount_cd_archives(art_.vfs(), art_.game_dir());
             fe.stop_narration();
+            fe.set_pointer_look(20);  // (0x478CB0)
             fe.start_battle(mission_launcher(art_, save_dir_, progress_, info_, fe));
         } else if (named(w, "SHUTUP")) {
             fe.play_sound(art_.sound("Options"));
@@ -465,6 +467,7 @@ protected:
         } else if (named(w, "PrevMenu")) {
             fe.stop_narration();
             fe.play_sound(art_.sound("Previous"));
+            fe.set_pointer_look(20);  // (0x478CB0)
             fe.pop();
         }
     }
@@ -733,6 +736,7 @@ public:
 
     void enter(client::FrontEnd& fe) override {
         if (set_up_ && !again_) return;
+        fe.set_pointer_look(19);  // (0x478240)
         if (again_) {
             // Back from the briefing: the screen is set up anew (state 0xB/0xC sub-state 3 calls
             // 0x478240 again).
@@ -862,6 +866,7 @@ protected:
             start(fe);
         } else if (named(w, "PrevMenu")) {
             fe.play_sound(art_.sound("Previous"));
+            fe.set_pointer_look(20);  // (0x477AB0)
             fe.pop();
         } else if (named(w, "Difficulty")) {
             fe.play_sound(art_.sound("SmlButton"));
@@ -899,6 +904,7 @@ protected:
         fe.settings().set_int("Difficulty", progress->difficulty);
         fe.apply_settings();  // (the settings saved, 0x430F00)
         again_ = true;
+        fe.set_pointer_look(20);  // (0x477AB0)
         fe.push(std::make_unique<BriefingScreen>(art_, save_dir_, progress));
     }
 
