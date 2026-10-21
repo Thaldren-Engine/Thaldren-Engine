@@ -53,6 +53,7 @@ class Runner final : public FrontEnd {
 public:
     Runner(FrontEndSetup& setup) : s_(setup) {
         if (!s_.settings_path.empty()) settings_.load(s_.settings_path);
+        unit_limit_ = s_.unit_limit;
     }
     ~Runner() override {
         // Screens go before the battle they may refer to.

@@ -93,6 +93,7 @@ void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<st
 // --- The Summary section (GameSave_SaveAll 0x4326B0 / the load menu 0x492360).
 struct SaveSummary {
     std::int32_t max_units = 0;
+    bool has_max_units = false;    // the key is there (0x432610 then sets the session's unit limit)
     bool has_campaign = false;     // the key is absent for skirmishes (no campaign name)
     std::string campaign, mission, map, thumbs, description;
     bool has_description = false;

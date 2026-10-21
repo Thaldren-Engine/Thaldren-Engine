@@ -336,6 +336,10 @@ public:
     virtual void exit_to_windows() { quit(); }
 
     virtual Settings& settings() = 0;
+    // The session's unit limit (GS+0x37EEC): set at start-up from totala.ini (0x491200, the
+    // setup's unit_limit), replaced by a loaded save's maxunits (0x432610); skirmish starts, save
+    // loads and the network room's host slider read it.
+    int& unit_limit() { return unit_limit_; }
     virtual FrontEndHooks& hooks() = 0;
     // Menu art and sounds (the importer's), the frame size, the menu palette.
     virtual const MenuContent& menu_content() const = 0;
@@ -372,6 +376,9 @@ public:
     // The system's own message box (0x4B6B80: MessageBoxA with no owner, MB_OK | MB_TOPMOST):
     // shown at once and waited for (headless: printed).
     virtual void system_message(const std::string& title, const std::string& text) { std::printf("system message: %s: %s\n", title.c_str(), text.c_str()); }
+
+protected:
+    int unit_limit_ = 250;
 };
 
 // ---------------------------------------------------------------- running it
@@ -380,6 +387,7 @@ struct FrontEndSetup {
     MenuContent* content = nullptr;
     int width = 640, height = 480;
     std::string settings_path;           // where the settings live (loaded at start, saved at exit)
+    int unit_limit = 250;                // the session's unit limit at start-up (FrontEnd::unit_limit)
     FrontEndHooks hooks;
     std::function<std::unique_ptr<Screen>(FrontEnd&)> main_menu;
     // Draws the loading screen (on a frame of the menus' size).

@@ -3607,7 +3607,7 @@ std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<v
     // This machine's record (0x449BB0): its screen size, the CD.
     room.set_screen(static_cast<std::uint16_t>(fe.settings().get_int("DisplaymodeWidth", 640)),
                     static_cast<std::uint16_t>(fe.settings().get_int("DisplaymodeHeight", 480)));
-    const int limit = std::clamp(fe.settings().get_int("UnitLimit", 250), 20, 500);
+    const int limit = static_cast<std::uint16_t>(fe.unit_limit());  // GS+0x37EEC (0x449C3B)
     if (host) {
         room.set_game_name(part->game_name);
         room.set_map_ready(true);

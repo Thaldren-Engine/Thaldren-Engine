@@ -1201,7 +1201,7 @@ private:
         inputs.battle_rng_seed = clock_value();
         inputs.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
         inputs.crt_rand_state = clock_value() * 2654435761u;
-        inputs.unit_limit = static_cast<std::uint16_t>(std::clamp(fe.settings().get_int("UnitLimit", 250), 20, 500));
+        inputs.unit_limit = static_cast<std::uint16_t>(fe.unit_limit());  // GS+0x37EEC
         // The set-up table: read at start-up (0x42F9A0) when the skirmish menu has not been
         // open yet (the rows below the count, as the skirmish screen reads them).
         if (!art_.setup_read) {
@@ -1225,13 +1225,17 @@ private:
             const BankSection* ps = save->bank.find("Player " + std::to_string(k));
             art_.setup_kinds[static_cast<std::size_t>(k)] = ps ? ps->get_int("Controller", 0) : 0;
         }
-        fe.start_battle([&art, save, progress, options, dir, inputs](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
+        client::FrontEnd* front = &fe;
+        fe.start_battle([&art, save, progress, options, dir, inputs, front](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
             auto view = std::make_shared<LoadedView>();
             BattleRequest req;
             if (!make_saved_game_request(art.vfs(), *save, inputs, req, *view, error)) return nullptr;
             int human = req.start.local_player;
             std::unique_ptr<SkirmishSession> s = SkirmishSession::start(art.game_dir(), req, human, options, lp, error);
             if (!s) return nullptr;
+            // The loaded game's maxunits becomes the session's unit limit (0x432610, after the
+            // tables are made: this battle keeps the limit it started with; later games use it).
+            if (save->summary.has_max_units) front->unit_limit() = static_cast<std::uint16_t>(save->summary.max_units);
             s->client().set_scroll(view->camera_x, view->camera_z);
             if (progress) {
                 auto m = std::make_unique<MissionSession>(std::move(s), art, dir, progress);
