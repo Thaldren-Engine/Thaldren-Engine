@@ -44,9 +44,16 @@ void MovieScreen::enter(FrontEnd& fe) {
         finish(fe);
         return;
     }
-    start_ms_ = fe.now_ms();
-    if (!sound_.pcm.empty()) fe.play_narration_sample(&sound_);
-    show_next();
+    // The library's clock (movie_harness --wait): the first frame comes one frame time after
+    // the open, each later one a frame time after the one before was shown.
+    next_due_ = fe.now_ms() + interval();
+}
+
+std::uint32_t MovieScreen::interval() const {
+    // Whole milliseconds, rounded up (33.33 ms frames come every 34 ms).
+    const double ms = movie_.frame_ms();
+    const auto whole = static_cast<std::uint32_t>(ms);
+    return static_cast<double>(whole) < ms ? whole + 1 : std::max<std::uint32_t>(whole, 1);
 }
 
 void MovieScreen::show_next() {
@@ -86,18 +93,26 @@ void MovieScreen::frame(FrontEnd& fe, std::uint32_t now_ms) {
             std::fill(screen_.begin(), screen_.end(), 0);
             done_ = false;
             shown_ = -1;
-            start_ms_ = now_ms;
             fe.stop_narration();
-            if (!sound_.pcm.empty()) fe.play_narration_sample(&sound_);
-            if (ok_) show_next();
+            next_due_ = now_ms + interval();
             return;
         }
         finish(fe);
         return;
     }
-    // One frame a pass when its time has come (the player's wait).
-    const double due = static_cast<double>(shown_ + 1) * movie_.frame_ms();
-    if (static_cast<double>(now_ms - start_ms_) >= due) show_next();
+    // 0x47C3A0 shows (and advances) a frame only while the window has the focus; the library's
+    // clock runs on, so the frame due comes at once when the focus is back, the next one a frame
+    // time later.
+    if (!fe.window_focused()) return;
+    // One frame a pass when its time has come (the player's wait). (The original's loop checks
+    // the clock continuously; a pass's own lateness is not carried into the next frame unless it
+    // is a whole frame time or more, as after a stall.)
+    if (static_cast<std::int32_t>(now_ms - next_due_) < 0) return;
+    const std::uint32_t late = now_ms - next_due_;
+    next_due_ = (late >= interval() ? now_ms : next_due_) + interval();
+    // The movie's sound starts with its first frame (SmackDoFrame of frame 0).
+    if (shown_ < 0 && !sound_.pcm.empty()) fe.play_narration_sample(&sound_);
+    show_next();
 }
 
 void MovieScreen::draw(FrontEnd&, render::Image8& out) {

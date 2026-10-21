@@ -1,7 +1,8 @@
 #pragma once
 // A movie on the front end (docs/RE_MEMORY.md, "Movies"): the player of the original's front
 // end. Every sound stops and the screen goes black first; the pointer is not shown; the frames
-// come at the movie's own rate, each placed at x 0, y (480 - its shown height) / 2 of the
+// come at the movie's own rate (the first one a frame time after the start, each a frame time
+// after the last, in whole milliseconds; none while the window lacks the focus), each placed at x 0, y (480 - its shown height) / 2 of the
 // 640 x 480 screen (rows between interlaced lines stay black), with the palette the movie
 // carries; its sound plays on the narration channel (the effect volume applies, as the wave
 // output's volume does to the original's sound buffers). A typed character — any key that
@@ -40,11 +41,12 @@ public:
 private:
     void finish(FrontEnd& fe);
     void show_next();
+    std::uint32_t interval() const;
 
     std::vector<std::uint8_t> bytes_;
     SmackerFile movie_;
     bool ok_ = false, repeat_ = false, started_ = false, done_ = false, finished_ = false;
-    std::uint32_t start_ms_ = 0;
+    std::uint32_t next_due_ = 0;  // when the next frame is due (the main loop's clock)
     int shown_ = -1;
     std::vector<std::uint8_t> screen_;  // 640 x 480, kept from frame to frame
     render::Palette palette_{};

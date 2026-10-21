@@ -92,7 +92,7 @@ public:
 protected:
     void arrange(FrontEnd& fe, int fw, int fh) {
         // The wrapping and the widths are measured in the interface's font (the labels then draw
-        // in the small one); the rows are 5 + 13 apart (the text routine's own font height).
+        // in the small one); the rows are 5 + the text routine's current font height apart.
         const client::MenuContent& mc = fe.menu_content();
         const client::Font* lf = mc.font ? mc.font : mc.small_font;
         std::vector<std::string> lines;
@@ -118,7 +118,10 @@ protected:
         place(fw, fh);
         ox_ = (fw - h.w) / 2;
         oy_ = (fh - h.h) / 2;
-        const int step = 5 + 13;
+        // (0x4C1450: the display's current font, the interface font on the menus — 14 rows on the
+        // main menu, single player, skirmish and options screens, gui_harness; it was taken as
+        // 13 before, which put the second line of a two-line box a row too high.)
+        const int step = 5 + (lf ? lf->height : 13);
         for (std::size_t k = 0; k < lines.size(); ++k) {
             Widget t;
             t.kind = WidgetKind::Label;
@@ -1239,12 +1242,16 @@ private:
 // ------------------------------------------------------------------ movies (0x426780)
 // Plays the movies in turn, each with a player of its own (a key ends the one playing; the next
 // starts), then runs `after`. A movie whose file is missing is passed over, as the original's
-// existence check does.
+// existence check does — after the player's first step, which stops every sound (0x47F750 comes
+// before the check in 0x426780).
 void play_movies(FrontEnd& fe, MenuArt& art, std::vector<std::string> names, bool repeat_first, std::function<void(FrontEnd&)> after) {
     while (!names.empty()) {
         std::vector<std::uint8_t> bytes = art.movie(names.front());
         names.erase(names.begin());
-        if (bytes.empty()) continue;
+        if (bytes.empty()) {
+            fe.stop_sounds();
+            continue;
+        }
         auto next = [&art, names, after](FrontEnd& f) mutable { play_movies(f, art, std::move(names), false, std::move(after)); };
         fe.push(std::make_unique<client::MovieScreen>(std::move(bytes), repeat_first, std::move(next)));
         return;
@@ -1404,7 +1411,7 @@ protected:
             // plays 2.zrb (again and again while Shift was held, until a key), the credits 5.zrb;
             // then the main menu again.
             if (!art_.full_screen) {
-                show_message(fe, art_, "Debug:  You must be in full-screen mode to play a movie.");
+                show_message(fe, art_, "Debug:  You must be in full-screen mode to play a movie.", nullptr, 200);  // (0x4ABD90, width 200)
                 return;
             }
             play_movies(fe, art_, {is(w, "INTRO") ? "2.zrb" : "5.zrb"}, is(w, "INTRO") && shift_, {});

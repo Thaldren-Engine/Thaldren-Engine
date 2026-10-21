@@ -12,6 +12,8 @@
 // Usage: movie_harness <smackw32.dll> <movie.zrb> [more movies] [--frames N] [--dump PREFIX]
 //   --frames N   compare at most N frames of each movie (default: all)
 //   --dump P     writes the first differing frame of each movie as P<movie>_orig.raw / _ours.raw
+//   --wait MS    the library's frame clock instead: when SmackWait lets each of 60 frames through,
+//                the player stalled MS ms before frame 30 (sound off)
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -89,12 +91,14 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::vector<std::string> movies;
-    int max_frames = -1;
+    int max_frames = -1, stall = 0;
+    bool wait_test = false;
     std::string dump;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) max_frames = std::atoi(argv[++i]);
         else if (a == "--dump" && i + 1 < argc) dump = argv[++i];
+        else if (a == "--wait" && i + 1 < argc) wait_test = true, stall = std::atoi(argv[++i]);
         else movies.push_back(a);
     }
     HMODULE lib = LoadLibraryA(argv[1]);
@@ -115,6 +119,42 @@ int main(int argc, char** argv) {
     if (!open || !close || !do_frame || !next || !to_buffer || !track_data) {
         std::fprintf(stderr, "missing library entry points\n");
         return 1;
+    }
+    if (wait_test) {
+        // The library's frame clock (SmackWait, sound off as here): when each frame becomes due,
+        // with the player stalled for `stall` ms before frame 30 (a window without the focus:
+        // 0x47C3A0 neither shows nor advances a frame then).
+        auto wait = reinterpret_cast<std::uint32_t(__stdcall*)(void*)>(GetProcAddress(lib, "_SmackWait@4"));
+        void* smk = wait ? open(movies.front().c_str(), 0xFE100, 0xFFFFFFFFu) : nullptr;
+        if (!smk) {
+            std::fprintf(stderr, "cannot open the movie / no SmackWait\n");
+            return 1;
+        }
+        std::vector<std::uint8_t> buf(640 * 480, 0);
+        const std::uint32_t lh = rd(smk, 8);
+        timeBeginPeriod(1);
+        LARGE_INTEGER q0, qf, q;
+        QueryPerformanceFrequency(&qf);
+        QueryPerformanceCounter(&q0);
+        double last = 0;
+        for (int f = 0; f < 120; ++f) {
+            if (f == 30) Sleep(static_cast<DWORD>(stall));
+            int polls = 0;
+            while (wait(smk)) {
+                ++polls;
+                Sleep(0);
+            }
+            QueryPerformanceCounter(&q);
+            const double t = static_cast<double>(q.QuadPart - q0.QuadPart) * 1000.0 / static_cast<double>(qf.QuadPart);
+            to_buffer(smk, 0, (480 - lh) >> 1, 640, lh, buf.data(), 0);
+            do_frame(smk);
+            std::printf("frame %d due at %.3f ms (+%.3f, %d polls)\n", f, t, t - last, polls);
+            last = t;
+            next(smk);
+        }
+        timeEndPeriod(1);
+        close(smk);
+        return 0;
     }
     int failures = 0;
     for (const std::string& path : movies) {

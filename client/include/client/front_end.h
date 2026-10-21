@@ -372,6 +372,9 @@ public:
     virtual std::uint32_t now_ms() const = 0;
     // The desktop's size in pixels (the screen-size choices depend on it).
     virtual void desktop_size(int& w, int& h) const = 0;
+    // Whether the program's window has the keyboard focus (GetFocus() == the window; headless:
+    // always).
+    virtual bool window_focused() const { return true; }
     // The display's modes (width, height), when the platform lists them (else none).
     virtual void display_modes(std::vector<std::array<int, 2>>& out) const { out.clear(); }
     // The loading screen's state while a battle loads (null otherwise): a network game's

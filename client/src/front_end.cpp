@@ -160,6 +160,8 @@ public:
         h = desktop_h_;
     }
     int desktop_w_ = 1920, desktop_h_ = 1080;
+    bool focused_ = true;
+    bool window_focused() const override { return focused_; }
     std::vector<std::array<int, 2>> modes_;
     void display_modes(std::vector<std::array<int, 2>>& out) const override { out = modes_; }
     // The frame size now: a battle's own, else the menus'.
@@ -1091,6 +1093,8 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         const std::uint32_t now = static_cast<std::uint32_t>(SDL_GetTicks() - start);
         feed_script(frame_no, now);
         SDL_Event ev;
+        // (A script run drives the window without the system's focus: it counts as focused.)
+        if (win && o.script.empty()) run.focused_ = (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS) != 0;
         while (SDL_PollEvent(&ev)) {
             confine_pointer(win, &ev);
             InputEvent e;
