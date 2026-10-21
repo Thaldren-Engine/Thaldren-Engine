@@ -735,9 +735,44 @@ static void test_battle_leave_paths() {
     }
 }
 
+// Packet 0x28 (0x4573D0 / 0x457540): the stored amounts, then the storage, then the six battle
+// totals as floats (FSTP dword of the doubles); the receiver puts them into the sender's record
+// (FLD dword, FSTP qword).
+static void test_view_state_packet() {
+    LeaveRig r;
+    r.a.settings.provider = 3;
+    sim::PlayerSlot& p = r.a.players[0];
+    sim::PlayerEconomy& e = r.a.player_economy[0];
+    p.units_killed = 3;
+    p.units_lost = 0xFFFF;
+    p.metal_stored = 123.5f;
+    p.energy_stored = 456.25f;
+    e.metal_storage = 1000.0f;
+    e.energy_storage = 2000.0f;
+    e.energy_produced = 0.1;
+    e.energy_consumed = 1e10 / 3;
+    e.energy_wasted = 7.0;
+    e.metal_produced = 2.5;
+    e.metal_consumed = 1.0 / 3;
+    e.metal_wasted = 0.0;
+    for (int k = 0; k < 4; ++k) r.na.player_sensor_turn(0);  // every fourth turn
+    r.nb.poll();
+    const sim::PlayerSlot& q = r.b.players[0];
+    const sim::PlayerEconomy& f = r.b.player_economy[0];
+    CHECK(q.units_killed == 3 && q.units_lost == 0xFFFF);
+    CHECK(q.metal_stored == 123.5f && q.energy_stored == 456.25f);
+    CHECK(f.metal_storage == 1000.0f && f.energy_storage == 2000.0f);
+    CHECK(f.energy_produced == static_cast<double>(static_cast<float>(0.1)) && f.energy_produced != 0.1);
+    CHECK(f.energy_consumed == static_cast<double>(static_cast<float>(1e10 / 3)));
+    CHECK(f.energy_wasted == 7.0 && f.metal_produced == 2.5 && f.metal_wasted == 0.0);
+    CHECK(f.metal_consumed == static_cast<double>(static_cast<float>(1.0 / 3)));
+    CHECK(r.nb.view_state(0).valid && r.nb.view_state(0).metal == 123.5f && r.nb.view_state(0).energy_storage == 2000.0f);
+}
+
 int main() {
     test_dplay();
     test_battle_leave_paths();
+    test_view_state_packet();
     test_bitstream();
     test_codec();
     test_frames();

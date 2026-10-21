@@ -295,14 +295,23 @@ void NetBattle::send_view_state(int player, int to, bool ask) {
     const sim::PlayerSlot& p = battle_->players[static_cast<std::size_t>(player)];
     const sim::PlayerEconomy& e = battle_->player_economy[static_cast<std::size_t>(player)];
     u8 pk[58] = {packet::kViewState, static_cast<u8>(ask ? 1 : 0)};
-    put32(pk + 2, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.units_killed)));
-    put32(pk + 6, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.units_lost)));
-    put32(pk + 10, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.commanders_killed)));
-    put32(pk + 14, static_cast<std::uint32_t>(static_cast<std::int32_t>(p.commanders_lost)));
-    putf(pk + 18, e.metal_storage);
-    putf(pk + 22, e.energy_storage);
-    putf(pk + 26, p.metal_stored);
-    putf(pk + 30, p.energy_stored);
+    // The record's words go out sign-extended (MOVSX); then the stored amounts, the storage
+    // and the six battle totals, each double stored as a float (FSTP dword).
+    auto word = [](std::uint16_t v) { return static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int16_t>(v))); };
+    put32(pk + 2, word(p.units_killed));
+    put32(pk + 6, word(p.units_lost));
+    put32(pk + 10, word(p.commanders_killed));
+    put32(pk + 14, word(p.commanders_lost));
+    putf(pk + 18, p.metal_stored);
+    putf(pk + 22, p.energy_stored);
+    putf(pk + 26, e.metal_storage);
+    putf(pk + 30, e.energy_storage);
+    putf(pk + 34, static_cast<float>(e.energy_produced));
+    putf(pk + 38, static_cast<float>(e.energy_consumed));
+    putf(pk + 42, static_cast<float>(e.energy_wasted));
+    putf(pk + 46, static_cast<float>(e.metal_produced));
+    putf(pk + 50, static_cast<float>(e.metal_consumed));
+    putf(pk + 54, static_cast<float>(e.metal_wasted));
     if (to >= 0) {
         if (!leaving_[static_cast<std::size_t>(to)]) send_to(p.net_id, battle_->players[static_cast<std::size_t>(to)].net_id, pk, 58);
         return;
@@ -706,12 +715,30 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
             vs.losses = static_cast<std::int16_t>(get16(p + 6));
             vs.commanders_killed = static_cast<std::int16_t>(get16(p + 10));
             vs.commanders_lost = static_cast<std::int16_t>(get16(p + 14));
-            vs.metal_storage = getf(p + 18);
-            vs.energy_storage = getf(p + 22);
-            vs.metal = getf(p + 26);
-            vs.energy = getf(p + 30);
+            vs.metal = getf(p + 18);
+            vs.energy = getf(p + 22);
+            vs.metal_storage = getf(p + 26);
+            vs.energy_storage = getf(p + 30);
             for (int k = 0; k < 6; ++k) vs.values[k] = getf(p + 34 + 4 * k);
             vs.valid = true;
+            // The sender's record takes them over: its counters (+0xFC/+0xFE/+0x104/+0x106), stored
+            // amounts (+0x98/+0x8C), storage (+0xA8/+0xA4) and battle totals (FLD dword, FSTP qword).
+            sim::PlayerSlot& rp = b.players[static_cast<std::size_t>(from)];
+            sim::PlayerEconomy& re = b.player_economy[static_cast<std::size_t>(from)];
+            rp.units_killed = get16(p + 2);
+            rp.units_lost = get16(p + 6);
+            rp.commanders_killed = get16(p + 10);
+            rp.commanders_lost = get16(p + 14);
+            rp.metal_stored = vs.metal;
+            rp.energy_stored = vs.energy;
+            re.metal_storage = vs.metal_storage;
+            re.energy_storage = vs.energy_storage;
+            re.energy_produced = vs.values[0];
+            re.energy_consumed = vs.values[1];
+            re.energy_wasted = vs.values[2];
+            re.metal_produced = vs.values[3];
+            re.metal_consumed = vs.values[4];
+            re.metal_wasted = vs.values[5];
         }
         if (p[1] != 0) {
             const bool won = b.victory_met();
