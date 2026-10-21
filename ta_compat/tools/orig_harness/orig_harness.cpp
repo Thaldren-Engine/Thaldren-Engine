@@ -24,8 +24,9 @@
 namespace {
 
 // Thread procedure (stdcall, one argument: Job*):
-//   for each string: results_f64[i] = atof(s); results_i32[i] = atoi(s)
-// Job layout: u32 count, u32 strings (char**), u32 out_f64, u32 out_i32.
+//   for each string: results_f64[i] = atof(s); results_i32[i] = atoi(s);
+//   _atoflt(&results_f32[i], s) (sscanf's "%f" into a float)
+// Job layout: u32 count, u32 strings (char**), u32 out_f64, u32 out_i32, u32 out_f32.
 const std::uint8_t kStub[] = {
     0x55, 0x8B, 0xEC, 0x56, 0x57, 0x53,  // push ebp; mov ebp,esp; push esi; push edi; push ebx
     0x8B, 0x5D, 0x08,                    // mov ebx,[ebp+8]
@@ -33,7 +34,7 @@ const std::uint8_t kStub[] = {
     0x8B, 0x7B, 0x04,                    // mov edi,[ebx+4]
     // loop:
     0x85, 0xF6,                          // test esi,esi
-    0x74, 0x30,                          // jz done
+    0x74, 0x43,                          // jz done
     0xFF, 0x37,                          // push dword [edi]
     0xB8, 0x60, 0x45, 0x4E, 0x00,        // mov eax,0x004E4560 (atof)
     0xFF, 0xD0,                          // call eax
@@ -48,9 +49,15 @@ const std::uint8_t kStub[] = {
     0x8B, 0x4B, 0x0C,                    // mov ecx,[ebx+0xC]
     0x89, 0x01,                          // mov [ecx],eax
     0x83, 0x43, 0x0C, 0x04,              // add dword [ebx+0xC],4
+    0xFF, 0x37,                          // push dword [edi]
+    0xFF, 0x73, 0x10,                    // push dword [ebx+0x10]
+    0xB8, 0xD0, 0x3A, 0x4F, 0x00,        // mov eax,0x004F3AD0 (_atoflt)
+    0xFF, 0xD0,                          // call eax
+    0x83, 0xC4, 0x08,                    // add esp,8
+    0x83, 0x43, 0x10, 0x04,              // add dword [ebx+0x10],4
     0x83, 0xC7, 0x04,                    // add edi,4
     0x4E,                                // dec esi
-    0xEB, 0xCC,                          // jmp loop
+    0xEB, 0xB9,                          // jmp loop
     // done:
     0x5B, 0x5F, 0x5E, 0x5D,              // pop ebx; pop edi; pop esi; pop ebp
     0x33, 0xC0,                          // xor eax,eax
@@ -75,8 +82,9 @@ bool start_child(const std::string& exe, const std::string& dir, Child& c) {
     return c.stub && WriteProcessMemory(c.pi.hProcess, c.stub, kStub, sizeof kStub, &n) && n == sizeof kStub;
 }
 
-// Runs atof/atoi in the child for every string; fills the result vectors.
-bool run_batch(Child& c, const std::vector<std::string>& strs, std::vector<double>& f, std::vector<int>& i) {
+// Runs atof/atoi/_atoflt in the child for every string; fills the result vectors.
+bool run_batch(Child& c, const std::vector<std::string>& strs, std::vector<double>& f, std::vector<int>& i,
+               std::vector<std::uint32_t>& f32) {
     const std::uint32_t count = static_cast<std::uint32_t>(strs.size());
     std::vector<std::uint8_t> text;
     std::vector<std::uint32_t> offsets;
@@ -85,18 +93,19 @@ bool run_batch(Child& c, const std::vector<std::string>& strs, std::vector<doubl
         text.insert(text.end(), s.begin(), s.end());
         text.push_back(0);
     }
-    const std::size_t total = 16 + count * 4u + count * 8u + count * 4u + text.size();
+    const std::size_t total = 20 + count * 4u + count * 8u + count * 4u + count * 4u + text.size();
     auto* remote = static_cast<std::uint8_t*>(
         VirtualAllocEx(c.pi.hProcess, nullptr, total, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
     if (!remote) return false;
     const auto base = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(remote));
-    const std::uint32_t ptrs = base + 16, out_f = ptrs + count * 4u, out_i = out_f + count * 8u, txt = out_i + count * 4u;
+    const std::uint32_t ptrs = base + 20, out_f = ptrs + count * 4u, out_i = out_f + count * 8u, out_s = out_i + count * 4u,
+                        txt = out_s + count * 4u;
     std::vector<std::uint8_t> buf(total);
-    const std::uint32_t job[4] = {count, ptrs, out_f, out_i};
-    std::memcpy(buf.data(), job, 16);
+    const std::uint32_t job[5] = {count, ptrs, out_f, out_i, out_s};
+    std::memcpy(buf.data(), job, 20);
     for (std::uint32_t k = 0; k < count; ++k) {
         const std::uint32_t p = txt + offsets[k];
-        std::memcpy(buf.data() + 16 + k * 4u, &p, 4);
+        std::memcpy(buf.data() + 20 + k * 4u, &p, 4);
     }
     std::memcpy(buf.data() + (txt - base), text.data(), text.size());
     SIZE_T n = 0;
@@ -107,9 +116,12 @@ bool run_batch(Child& c, const std::vector<std::string>& strs, std::vector<doubl
     CloseHandle(th);
     f.resize(count);
     i.resize(count);
+    f32.resize(count);
     const bool ok = ReadProcessMemory(c.pi.hProcess, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(out_f)), f.data(),
                                       count * 8u, &n) &&
                     ReadProcessMemory(c.pi.hProcess, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(out_i)), i.data(),
+                                      count * 4u, &n) &&
+                    ReadProcessMemory(c.pi.hProcess, reinterpret_cast<LPCVOID>(static_cast<std::uintptr_t>(out_s)), f32.data(),
                                       count * 4u, &n);
     VirtualFreeEx(c.pi.hProcess, remote, 0, MEM_RELEASE);
     return ok;
@@ -213,13 +225,15 @@ int main(int argc, char** argv) {
     if (!start_child(argv[1], argv[2], child)) return 1;
 
     unsigned long atof_bad = 0, atoi_bad = 0, modern_differs = 0, modern_differs_game = 0;
+    unsigned long scanf_bad = 0, scanf_via_double_differs = 0, scanf_via_double_differs_game = 0;
     constexpr std::size_t kBatch = 100000;
     std::vector<double> f;
     std::vector<int> iv;
+    std::vector<std::uint32_t> fs;
     for (std::size_t start = 0; start < all.size(); start += kBatch) {
         const std::size_t end = (std::min)(all.size(), start + kBatch);
         std::vector<std::string> batch(all.begin() + static_cast<std::ptrdiff_t>(start), all.begin() + static_cast<std::ptrdiff_t>(end));
-        if (!run_batch(child, batch, f, iv)) {
+        if (!run_batch(child, batch, f, iv, fs)) {
             std::fprintf(stderr, "remote batch failed (%lu)\n", GetLastError());
             TerminateProcess(child.pi.hProcess, 1);
             return 1;
@@ -238,6 +252,18 @@ int main(int argc, char** argv) {
                         std::printf("  game value where modern strtod differs: \"%s\"\n", batch[k].c_str());
                 }
             }
+            // sscanf "%f" into a float: straight from the 80-bit intermediate.
+            const float sf = ta::crt_scanf_float(batch[k]);
+            std::uint32_t sb;
+            std::memcpy(&sb, &sf, 4);
+            if (fs[k] != sb && ++scanf_bad <= 25)
+                std::printf("SCANF %%f MISMATCH \"%s\": orig %08x ours %08x\n", batch[k].c_str(), fs[k], sb);
+            const float via_double = static_cast<float>(got);
+            std::uint32_t vb;
+            std::memcpy(&vb, &via_double, 4);
+            if (fs[k] != vb && start + k < corpus_size) ++scanf_via_double_differs_game;
+            if (fs[k] != vb && ++scanf_via_double_differs <= 10)
+                std::printf("  (float(atof) differs from %%f: \"%s\" orig %08x via double %08x)\n", batch[k].c_str(), fs[k], vb);
             const int gi = ta::msvc_atoi(batch[k]);
             if (iv[k] != gi && ++atoi_bad <= 25) std::printf("ATOI MISMATCH \"%s\": orig %d ours %d\n", batch[k].c_str(), iv[k], gi);
         }
@@ -248,8 +274,10 @@ int main(int argc, char** argv) {
 
     std::printf("checked %zu strings (%zu distinct values from game data + edge cases, %lu random)\n", all.size(), corpus_size,
                 random_count);
-    std::printf("atof mismatches: %lu\natoi mismatches: %lu\n", atof_bad, atoi_bad);
+    std::printf("atof mismatches: %lu\natoi mismatches: %lu\nscanf %%f mismatches: %lu\n", atof_bad, atoi_bad, scanf_bad);
     std::printf("(a modern strtod would differ from the original on %lu strings, %lu of them game data values)\n",
                 modern_differs, modern_differs_game);
-    return (atof_bad || atoi_bad) ? 1 : 0;
+    std::printf("(rounding atof's double to a float would differ from %%f on %lu strings, %lu of them game data values)\n",
+                scanf_via_double_differs, scanf_via_double_differs_game);
+    return (atof_bad || atoi_bad || scanf_bad) ? 1 : 0;
 }

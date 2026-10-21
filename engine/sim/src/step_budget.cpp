@@ -18,7 +18,7 @@ int StepBudget::update(std::uint32_t now_ms, std::int32_t remote_lag_ticks) {
     if (remote_lag_ticks >= 900) {
         const std::int32_t lag = std::min<std::int32_t>(remote_lag_ticks, 3600);
         double throttle = static_cast<double>(3600 - lag) * 0.00037037037037037035;
-        if (throttle < 0.01) throttle = 0.01;
+        if (x87::less(throttle, 0.01)) throttle = 0.01;  // 0x495347 (test ah,1)
         rate = throttle * rate;
         lag_throttled = true;
     } else {

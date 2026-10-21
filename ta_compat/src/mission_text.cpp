@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "ta/campaign.h"
+#include "ta/crt_strtod.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -90,7 +91,9 @@ struct Scanner {
             else
                 while (is_digit(*p)) ++p;
         }
-        out = static_cast<float>(msvc_atof(std::string(s, p)));
+        // _fassign -> _atoflt: the intermediate goes straight to a float (one rounding from
+        // 64 bits), not through a double as atof's would.
+        out = crt_scanf_float(std::string_view(s, static_cast<std::size_t>(p - s)));
         return true;
     }
 };

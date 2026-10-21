@@ -3,6 +3,7 @@
 #include <cstring>
 
 #include "sim/economy.h"
+#include "sim/x87.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -40,7 +41,8 @@ void init_map_economy(sim::Battle& b, const std::vector<std::uint8_t>& tnt, cons
     const std::int32_t tnt_max = version == 0x1020 ? static_cast<std::int32_t>(h[11]) : 2000;
     b.wind.min_speed = (m.min_wind < 0 || !new_format) ? tnt_min : m.min_wind;
     b.wind.max_speed = (m.max_wind < 0 || !new_format) ? tnt_max : m.max_wind;
-    b.settings.tidal_strength = m.tidal_strength < 0.0f ? 0.5f : m.tidal_strength;
+    // (0x483854: "test ah,1", so an unordered value also takes the default.)
+    b.settings.tidal_strength = sim::x87::less(m.tidal_strength, 0.0) ? 0.5f : m.tidal_strength;
     b.settings.surface_metal = m.surface_metal;  // the map info's value (the computer player's site choice)
     b.wind.denominator = 5000;
     b.wind.next_change_tick = 0;

@@ -1,5 +1,7 @@
 #include "sim/unit_tick.h"
 
+#include "sim/x87.h"
+
 namespace sim {
 namespace {
 
@@ -37,7 +39,7 @@ std::int32_t run_unit_pass(std::vector<Unit>& units, std::vector<UnitTickState>&
             // A selected unit stays selected only while selectable, fully built,
             // not just transferred, and not inside a carrier that forbids it.
             if (u.flags & unit_tick_flags::kSelected) {
-                const bool keep = (u.flags & unit_tick_flags::kSelectable) && u.build_fraction_left == 0.0f && t.transfer_holdoff == 0 &&
+                const bool keep = (u.flags & unit_tick_flags::kSelectable) && x87::equal(u.build_fraction_left, 0.0) && t.transfer_holdoff == 0 &&
                                   (!u.carrier || (u.carrier->flags & unit_tick_flags::kCarrierSelectable));
                 if (!keep) u.flags &= ~unit_tick_flags::kSelected;
             }

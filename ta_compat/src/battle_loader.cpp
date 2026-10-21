@@ -104,7 +104,9 @@ void read_meteors(Vfs& vfs, const TdfSection* schema, sim::MeteorShower& m, std:
         const float duration = static_cast<float>(s.get_float("MeteorDuration", 0.0));
         const float interval = static_cast<float>(s.get_float("MeteorInterval", 0.0));
         m.configure(radius, density, duration, interval);
-        return radius != 0 && density != 0.0f && duration != 0.0f && interval != 0.0f;
+        // (0x4367C1: each value is tested "equal or unordered" against zero.)
+        return radius != 0 && !sim::x87::equal(density, 0.0) && !sim::x87::equal(duration, 0.0) &&
+               !sim::x87::equal(interval, 0.0);
     };
     auto from_default = [&] {
         const std::unique_ptr<TdfSection> d = parse_file(vfs, "gamedata\\meteor.tdf");

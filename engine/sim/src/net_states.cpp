@@ -28,7 +28,7 @@ int unit_type_bits(std::size_t type_count) {
 }
 
 std::uint32_t encode_build_fraction(float f) {
-    if (f == 0.0f) return 0;
+    if (x87::equal(f, 0.0)) return 0;  // 0x48B24C: zero or NaN sends 0
     return static_cast<u32>(1 - x87::ftol32(static_cast<double>(f) * -254.0)) & 0xFFu;
 }
 
@@ -135,7 +135,7 @@ void apply_whole_state(BitReader& r, int bits, WholeStateTarget& u) {
     if (static_cast<i16>(u.type()) != type) u.make(static_cast<u16>(type));
     u.set_hit_points(static_cast<i16>(r.get(16)));
     const double f = decode_build_fraction(r.get(8));
-    if (f != static_cast<double>(u.fraction_left())) {
+    if (!x87::equal(f, u.fraction_left())) {  // 0x48B4D0: an unordered (NaN) fraction counts as equal
         u.set_fraction_left(static_cast<float>(f));
         u.add_flags(kFractionChanged);
     }

@@ -119,7 +119,9 @@ public:
     std::int32_t remote_lag() const;
     // A remote player's alliance answers (the local record's "allied by" bytes, +0x113).
     std::uint8_t allied_by(int local, int remote) const { return allied_by_[static_cast<std::size_t>(local)][static_cast<std::size_t>(remote)]; }
-    // Totals other machines announced for their players (packet 0x28).
+    // Totals other machines announced for their players (packet 0x28; they also go into the
+    // sender's player record, as 0x457540 does). values: energy produced, consumed, wasted,
+    // metal produced, consumed, wasted.
     struct ViewState {
         std::int16_t kills = 0, losses = 0, commanders_killed = 0, commanders_lost = 0;
         float metal_storage = 0, energy_storage = 0, metal = 0, energy = 0;
