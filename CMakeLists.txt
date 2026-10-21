@@ -12,7 +12,10 @@ if(MSVC)
     set(FP_FLAGS /fp:precise)
     set(WARN_FLAGS /W4 /permissive-)
 else()
-    set(FP_FLAGS -ffp-contract=off -fno-fast-math)
+    # -fwrapv: signed overflow wraps like the original's add/imul. The code already routes
+    # arithmetic that can wrap through unsigned helpers (docs/parity/NUMERICS_FIXED.md); this
+    # is the safety net for any site missed. MSVC has no equivalent switch.
+    set(FP_FLAGS -ffp-contract=off -fno-fast-math -fwrapv)
     set(WARN_FLAGS -Wall -Wextra -Wpedantic)
 endif()
 
