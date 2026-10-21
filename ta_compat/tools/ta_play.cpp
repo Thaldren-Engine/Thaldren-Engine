@@ -86,6 +86,7 @@
 #include "ta/client_net_screens.h"
 #include "ta/console_commands.h"
 #include "ta/client_world.h"
+#include "ta/preferences.h"
 #include "ta/translate.h"
 
 namespace {
@@ -407,6 +408,9 @@ int main(int argc, char** argv) {
         std::printf("language %s, %s display\n", language.c_str(), display_switch == 3 ? "windowed" : "full-screen");
     }
     front.windowed_display = display_switch == 3;
+    // totala.ini beside the program (0x47ED40): NoDirectSound starts without sound as -s does
+    // (UseWindowsSound, the Windows wave-out path, has no counterpart: one audio output).
+    if (ta::preferences_int(game_dir, "NoDirectSound", 0) != 0) front.sound = false;
     setup.players.clear();
     for (int p = 0; p < players; ++p) setup.players.push_back({p == 0 ? side : 1 - side, p != 0 && ai, -1});
     setup.human = 0;
@@ -444,6 +448,7 @@ int main(int argc, char** argv) {
         fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options
         fes.height = 480;
         fes.settings_path = settings_path;
+        fes.unit_limit = ta::preferences_unit_limit(game_dir);  // totala.ini [Preferences] UnitLimit (0x491200)
         ta::make_front_end(art, &music, fes);
         {
             client::Settings s;

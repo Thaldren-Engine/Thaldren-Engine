@@ -1156,7 +1156,7 @@ protected:
         req.start.explore = mapping_ != 0;
         req.start.ai_difficulty = difficulty_;
         req.start.local_player = static_cast<std::uint8_t>(human);
-        req.start.unit_limit = static_cast<std::uint16_t>(std::clamp(fe.settings().get_int("UnitLimit", 250), 20, 500));
+        req.start.unit_limit = static_cast<std::uint16_t>(fe.unit_limit());  // GS+0x37EEC (0x4971F1)
         // The inputs the original takes from clocks, and the menus' rand() state.
         req.start.battle_rng_seed = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         req.start.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));

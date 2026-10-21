@@ -11,6 +11,7 @@
 #include "ta/client_world.h"
 #include "ta/model3do.h"
 #include "ta/net_setup.h"
+#include "ta/notice_texts.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -27,8 +28,9 @@ struct ClientWorld::Outside : sim::QuietBattleOutside {
     void play_sound(std::uint16_t s, const sim::Vec3i& p) override {
         if (w->client_) w->client_->on_sound(s, p);
     }
-    void speech(sim::Unit& u, std::uint32_t id, sim::SpeechText) override {
-        if (w->client_) w->client_->on_speech(u, id);
+    void speech(sim::Unit& u, std::uint32_t id, sim::SpeechText t) override {
+        // The behaviour's own text replaces the notice's table text (0x47F780).
+        if (w->client_) w->client_->on_speech(u, id, speech_text(t));
     }
     void forget_speech(sim::Unit& u) override {
         if (w->client_) w->client_->forget_speech(u);

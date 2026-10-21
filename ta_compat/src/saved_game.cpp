@@ -304,6 +304,7 @@ void write_bank(const Bank& bank, std::vector<std::uint8_t>& out, std::vector<st
 
 void read_summary(const BankSection& s, SaveSummary& m) {
     m.max_units = s.get_int("maxunits", 0);
+    m.has_max_units = s.has("maxunits");
     m.has_campaign = s.find_string("Campaign") != nullptr;
     m.campaign = s.get_string("Campaign", "");
     m.mission = s.get_string("Mission", "");

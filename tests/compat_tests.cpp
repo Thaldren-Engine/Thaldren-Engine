@@ -9,10 +9,13 @@
 #include <filesystem>
 #include <fstream>
 
+#include "client/sound_rules.h"
 #include "ta/battle_loader.h"
 #include "ta/crt_strtod.h"
 #include "ta/hpi.h"
 #include "ta/inflate.h"
+#include "ta/notice_texts.h"
+#include "ta/preferences.h"
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
 #include "ta/translate.h"
@@ -301,6 +304,114 @@ void test_footprint_model_box() {
     CHECK(u.model_avg_size == u.model_size_z / 3);
 }
 
+// Unit notices carry the behaviour's own text (0x47F780: the caller's text replaces the
+// notice table's; "<type>: <text>" on the console when priority > 10 - unitchattext).
+void test_notice_texts() {
+    using T = sim::SpeechText;
+    CHECK(ta::speech_text(T::None) == nullptr);
+    CHECK(std::string(ta::speech_text(T::UnableToCreate)) == "Unable to create any more units");
+    CHECK(std::string(ta::speech_text(T::CantReachSite)) == "I can't reach the construction site");
+    CHECK(std::string(ta::speech_text(T::CloudOfVapor)) == "That unit is a cloud of vapor and cannot be captured");
+    CHECK(std::string(ta::speech_text(T::ResurrectionFailed)) == "Resurrection failed");    // 0x404DEF
+    CHECK(std::string(ta::speech_text(T::RessurectionFailed)) == "Ressurection failed");    // 0x404F6F (sic)
+    CHECK(std::string(ta::speech_text(T::RepairAborted)) == "Repair aborted.");
+    CHECK(std::string(ta::speech_text(T::Guarding)) == "Guarding");
+    for (int k = 1; k <= static_cast<int>(T::ResurrectionComplete); ++k) CHECK(ta::speech_text(static_cast<T>(k)) != nullptr);
+
+    struct Host : client::NoticeQueue::Host {
+        std::vector<std::string> shown;
+        std::uint32_t tick() override { return 100; }
+        std::uint32_t rand() override { return 0; }
+        int sound_count(std::uint16_t, std::uint32_t) override { return 0; }
+        void speak(std::uint16_t, std::uint32_t, int) override {}
+        bool unit_alive(std::uint16_t) override { return true; }
+        void show(std::uint16_t, const std::string& text) override { shown.push_back(text); }
+    };
+    Host h;
+    client::NoticeQueue::Levels lv;  // unitchat 10, unitchattext 5
+    client::NoticeQueue q;
+    q.queue(h, lv, 3, 7, ta::speech_text(T::UnableToCreate));  // "cant" (priority 8)
+    CHECK(q.size() == 1 && q.text_at(0) == "Unable to create any more units");
+    q.frame(h, lv);
+    CHECK(h.shown.size() == 1 && h.shown[0] == "Unable to create any more units");
+    q.queue(h, lv, 3, 7);  // no text of its own: the table's
+    CHECK(q.size() == 1 && q.text_at(0) == "Cannot Comply");
+    q.frame(h, lv);
+    // "ok" (priority 5) with the order's acknowledgement text: shown only above level 5.
+    q.queue(h, lv, 3, 5, ta::speech_text(T::Guarding));
+    CHECK(q.size() == 1 && q.text_at(0) == "Guarding");
+    q.frame(h, lv);
+    CHECK(h.shown.size() == 2 && h.shown[1] == "Cannot Comply");
+    lv.unit_chat_text = 6;
+    q.queue(h, lv, 3, 5, ta::speech_text(T::Guarding));
+    q.frame(h, lv);
+    CHECK(h.shown.size() == 3 && h.shown[2] == "Guarding");
+}
+
+// totala.ini [Preferences] as GetPrivateProfileIntA reads it (values measured with the system
+// call on Windows 11) and the start-up unit limit (0x491200).
+void test_preferences() {
+    auto val = [](const std::string& v) { return ta::profile_int("[Preferences]\r\nUnitLimit=" + v + "\r\n", "Preferences", "UnitLimit", 250); };
+    CHECK(val("300") == 300);
+    CHECK(val(" 300") == 300);
+    CHECK(val("300abc") == 300);
+    CHECK(val("-5") == -5);
+    CHECK(val("0x20") == 32);
+    CHECK(val("0xFF") == 255);
+    CHECK(val("0X1F") == 0);
+    CHECK(val("") == 250);
+    CHECK(val("abc") == 0);
+    CHECK(val("+7") == 7);
+    CHECK(val("4000000000") == -294967296);
+    CHECK(val("\"77\"") == 77);
+    CHECK(val("\"7") == 0);
+    CHECK(val("7\"") == 7);
+    CHECK(val("\" 8 \"") == 8);
+    CHECK(val("'9'") == 9);
+    CHECK(val("12 34") == 12);
+    CHECK(val("\t45") == 45);
+    CHECK(val("1e3") == 1);
+    CHECK(val("-2147483649") == 2147483647);
+    CHECK(val("99999999999999") == 276447231);
+    CHECK(val("-0x10") == -16);
+    CHECK(val("0x100000001") == 1);
+    CHECK(val("00x5") == 0);
+    CHECK(val("- 5") == 0);
+    CHECK(val("0x") == 0);
+    auto txt = [](const char* t) { return ta::profile_int(t, "Preferences", "UnitLimit", 250); };
+    CHECK(txt("[preferences]\r\nunitlimit=111\r\n") == 111);
+    CHECK(txt("[ Preferences ]\r\nUnitLimit=112\r\n") == 112);
+    CHECK(txt("[Preferences]\r\n  UnitLimit  =  113  \r\n") == 113);
+    CHECK(txt("[Preferences]\r\nUnitLimit=114\r\nUnitLimit=115\r\n") == 114);
+    CHECK(txt("[Preferences]\r\n[Preferences]\r\nUnitLimit=116\r\n") == 250);
+    CHECK(txt("[Other]\r\nUnitLimit=1\r\n[Preferences]\r\nUnitLimit=117\r\n[Preferences]\r\nUnitLimit=118\r\n") == 117);
+    CHECK(txt("; c\r\n[Preferences];x\r\nUnitLimit=119;comment\r\n") == 119);
+    CHECK(txt("[Preferences]\nUnitLimit=120\n") == 120);
+    CHECK(txt("UnitLimit=121\r\n[Preferences]\r\n") == 250);
+    CHECK(txt("[Preferences]\r\n;UnitLimit=122\r\n") == 250);
+    CHECK(txt("[Preferences]\r\nUnitLimit\r\n") == 250);
+    CHECK(txt("[Preferences]\r\nUnitLimit=\r\n") == 250);
+
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "compat_tests_prefs";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    CHECK(ta::preferences_unit_limit(dir.string()) == 250);  // no file
+    auto with = [&](const char* body) {
+        std::ofstream(dir / "totala.ini", std::ios::binary) << body;
+        return ta::preferences_unit_limit(dir.string());
+    };
+    CHECK(with("[Preferences]\r\nUnitLimit=400\r\n") == 400);
+    CHECK(with("[Preferences]\r\nUnitLimit=900\r\n") == 500);
+    CHECK(with("[Preferences]\r\nUnitLimit=5\r\n") == 20);
+    CHECK(with("[Preferences]\r\nUnitLimit=-5\r\n") == 20);
+    CHECK(with("[Preferences]\r\nUnitLimit=4000000000\r\n") == 20);  // a negative int
+    CHECK(with("[Preferences]\r\nNoDirectSound=1\r\n") == 250);
+    CHECK(ta::preferences_int(dir.string(), "NoDirectSound", 0) == 1);
+    fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main() {
@@ -318,6 +429,8 @@ int main() {
     test_translations();
     test_skirmish_schema_rows();
     test_footprint_model_box();
+    test_notice_texts();
+    test_preferences();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

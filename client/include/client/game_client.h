@@ -209,7 +209,9 @@ public:
     // An interface sound by sample index (centred; the simulation's cues such as a mission
     // goal met).
     void interface_sound(int sample) { play_ui(sample); }
-    void on_speech(sim::Unit& unit, std::uint32_t id);
+    // A unit notice; `text` (when given) replaces the notice table's console text, as the
+    // original's callers pass their own (0x47F780).
+    void on_speech(sim::Unit& unit, std::uint32_t id, const char* text = nullptr);
     // A kill or loss the battle counted (attacker's player slot, the victim): the kills ranking
     // and its lead message, the kills and losses panel's flashes (the original's kill handler,
     // 0x4866D0's end, and 0x4948B0).
