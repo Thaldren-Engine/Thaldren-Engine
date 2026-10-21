@@ -153,7 +153,27 @@ Sources: `/Thaldren_TotalA.exe`, checked 2026-10-13. Not yet written to `/TotalA
   - Battle RNG (471 draws): `Ai_TryRandomFootprintPlacement`, `Ai_PeriodicRefreshUnitTblById`, `MissionTick_Standby`, `Ai_PickWeightedUnitTypeCandidate`, `Ai_TickSpatialBehaviorSlot`, `Ai_SeekRandomPlacementNearTarget`, `Ai_TickSquadScoutBehaviorSlot`, `Game_UpdateRandomWindState`.
   - `rand()` on the sim thread (6 draws): `Game_UpdateRandomWindState`, `Meteor_TickShower` ×4, **and `CdAudio_SyncPlaybackToMode` (`0x004CDDE8`)**. That last one confirms that non-sim code advances the sim's `rand()` stream. The engine will treat `rand()` draws as inputs recorded per tick.
 
-**Fixed-point formats:** unverified. Record each format here as it is found (position, velocity, angle units, resource amounts).
+**Fixed-point formats** (audited 2026-10-21 against the disassembly; site-by-site evidence in [parity/NUMERICS_FIXED.md](parity/NUMERICS_FIXED.md)):
+
+| Quantity | Original storage | Engine type | Notes |
+|---|---|---|---|
+| Position x, y, z | int32 16.16, unit +0x6A/+0x6E/+0x72; whole part `movsx word` at +2 | `int32_t[3]`, `hi16()` | Cell = 16 whole units = 2^20; cell index by `>> 4` of the whole part or `>> 20` (per site). |
+| Velocity, speed, max velocity, acceleration, brake rate, gravity, wind drift | int32 16.16 per step (per step² for gravity) | `int32_t` | FBI/TDF values through `ftol` (truncate, low 32 bits). |
+| Angles | uint16, 65536 per turn (heading, yaw, elevation); pitch and bank int16 (unit +0x64..+0x69) | `uint16_t` / `int16_t` | Differences as `(int16)(a − b)`. |
+| Turn rate | uint16 (def +0x1BA, zero-extended at 0x43CBCA / 0x43D014) | `uint16_t` | Turn per step int16. |
+| Trig | int16 Q13 (640-entry table) | `int16_t` | See "Trig table". |
+| Map height | uint8 whole units (height, max, min), sea level uint8 | `uint8_t` | Bilinear sample: C division by 16. |
+| Hit points | int16, unit +0x108 (every load `movsx`) | `int16_t` | Max damage uint32 (def +0x1FA); percent = unsigned `(u32)(hp·100) / max`. |
+| Damage modifier, bank/pitch scale, tilt | int32 16.16 | `int32_t` | Products in signed 64 bits, `>> 16` (`__allshr`). |
+| Kill count | uint16, +0xB8 (`movzx`) | `uint16_t` | |
+| Build progress, energy, metal, storage, income, costs | x87 float | `float` | Not fixed point (x87 model above). |
+| Sight, radar, sonar, jammers, worker/heal time, build distance | int16 whole units / steps | `int16_t` | |
+| Weapon range / velocity / reload / area | int32 whole units / int32 16.16 per step / int16 steps / int16 | same | Lifetime `(u32)(range << 16) / (u32)velocity` (unsigned). |
+| Footprint, cells | int16; packed cell uint32 (x \| z << 16) | `int16_t` / `uint32_t` | Footprint centre `(footprint + 2·cell) << 19`. |
+| COB words | uint32 stack; linear 16.16, angular uint16 (`& 0xFFFF`), speeds signed `/ tick rate` | `uint32_t` | |
+| RNG state, game tick | uint32 | `uint32_t` | |
+
+Integer semantics: every add/sub/mul that can wrap is done in `uint32_t` (MSVC folds signed-overflow expressions, e.g. `(x*2)/2 == x`); C division vs `sar` is chosen per site from the instructions; float→int only through `ftol`. **MSVC /O2 miscompiles `(int)(0u − x) / k` as `−((int)x / k)`** (wrong for x = 0x80000000; found 2026-10-21 in the footprint box): halve such values with the original's own idiom (add the sign bit, `sar`).
 
 **Simulation inventory:** see [SIM_INVENTORY.md](SIM_INVENTORY.md) (unverified reference list from `/Thaldren_TotalA.exe`).
 
