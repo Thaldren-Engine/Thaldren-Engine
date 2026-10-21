@@ -49,6 +49,14 @@ add_executable(gaf_dump ${CMAKE_SOURCE_DIR}/ta_compat/tools/gaf_dump.cpp)
 target_link_libraries(gaf_dump PRIVATE ta_compat_render)
 target_compile_options(gaf_dump PRIVATE ${WARN_FLAGS})
 
+# The colour tables computed from the palette against the shipped files.
+add_executable(palette_check ${CMAKE_SOURCE_DIR}/ta_compat/tools/palette_check.cpp)
+target_link_libraries(palette_check PRIVATE ta_compat_render)
+target_compile_options(palette_check PRIVATE ${WARN_FLAGS})
+if(TA_GAME_DIR)
+    add_test(NAME palette_tables_match_game COMMAND palette_check "${TA_GAME_DIR}")
+endif()
+
 add_executable(render_tests tests/render_tests.cpp)
 target_link_libraries(render_tests PRIVATE render)
 target_compile_options(render_tests PRIVATE ${WARN_FLAGS})

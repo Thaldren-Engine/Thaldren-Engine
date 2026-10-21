@@ -173,6 +173,56 @@ BlendTable gray_remap_table(const Palette& palette) {
     return t;
 }
 
+BlendTable mixing_table(const Palette& palette) {
+    const SortedPalette sp(palette);
+    BlendTable t(65536);
+    for (int s = 0; s < 256; ++s)
+        for (int d = 0; d < 256; ++d) {
+            const Rgb& a = palette[static_cast<std::size_t>(s)];
+            const Rgb& b = palette[static_cast<std::size_t>(d)];
+            t[static_cast<std::size_t>(s * 256 + d)] =
+                s == d ? static_cast<std::uint8_t>(s) : sp.nearest(palette, (a.r + b.r) / 2, (a.g + b.g) / 2, (a.b + b.b) / 2);
+        }
+    return t;
+}
+
+std::vector<std::uint8_t> shade_levels(const Palette& palette) {
+    // x87 at 53 bits: the level's factor kept as a double, the component loaded as an integer,
+    // multiplied, truncated (__ftol); the low 16 bits above 0xFF give 0xFF.
+    const SortedPalette sp(palette);
+    std::vector<std::uint8_t> t(32 * 256);
+    double f = 0.0;
+    for (int level = 0; level < 32; ++level) {
+        for (int c = 0; c < 256; ++c) {
+            const Rgb& p = palette[static_cast<std::size_t>(c)];
+            auto part = [&](int v) {
+                const auto r = static_cast<std::int64_t>(static_cast<double>(v) * f);
+                return static_cast<std::uint16_t>(r) > 0xFF ? 0xFF : static_cast<int>(static_cast<std::uint8_t>(r));
+            };
+            t[static_cast<std::size_t>(level * 256 + c)] = sp.nearest(palette, part(p.r), part(p.g), part(p.b));
+        }
+        f -= -0.06875;
+    }
+    return t;
+}
+
+std::vector<std::uint8_t> light_levels(const Palette& palette) {
+    const SortedPalette sp(palette);
+    std::vector<std::uint8_t> t(32 * 256);
+    for (int level = 0; level < 32; ++level) {
+        const double f = 1.0 - static_cast<double>(level) * (-1.0 / 30.0);  // (the constants at 0x4FDBD0 / 0x4FDBD8)
+        for (int c = 0; c < 256; ++c) {
+            const Rgb& p = palette[static_cast<std::size_t>(c)];
+            auto part = [&](int v) {
+                const auto r = static_cast<std::int32_t>(static_cast<std::int64_t>(static_cast<double>(v) * f));
+                return r > 0xFF ? 0xFF : static_cast<int>(static_cast<std::uint8_t>(r));
+            };
+            t[static_cast<std::size_t>(level * 256 + c)] = sp.nearest(palette, part(p.r), part(p.g), part(p.b));
+        }
+    }
+    return t;
+}
+
 std::vector<std::uint8_t> water_tint_table(const Palette& palette) {
     const SortedPalette sp(palette);
     std::vector<std::uint8_t> t(256);

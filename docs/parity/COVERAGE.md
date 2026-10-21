@@ -76,6 +76,16 @@ After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 
 
 ## Not ported, ranked by what a player or peer sees
 
+*2026-10-21*: item 1 is ported (`client/src/front_end.cpp` `mouse_trails_off` /
+`mouse_trails_restore` around the window's life: `SystemParametersInfoA` 0x5E / 0x5D with
+SPIF_UPDATEINIFILE, as `0x4B5980` / `0x4B6110`; not run by the checks: headless runs make no
+window). Item 2 is ported for the three tables (`render::mixing_table`, `shade_levels`,
+`light_levels`; `ta::load_blend_table`, `ta::load_level_table` fall back to them):
+`palette_check` computes all three from `PALETTE.PAL` and compares them with the shipped
+files — **0 of 65,536 / 8,192 / 8,192 bytes differ**, so the shipped files are these routines'
+output. Left: the write-out of the computed tables (`0x4BC290`) and the `<name>.PAL` cache of
+`0x429330` (files in the game folder, nothing on the screen).
+
 1. **Mouse trails switched off while the program runs** (platform; small). At start-up
    (`0x4B5980`) the original saves the user's mouse-trail setting
    (`SystemParametersInfoA(SPI_GETMOUSETRAILS)`) and sets it to 0 with `SPIF_UPDATEINIFILE`;
@@ -94,9 +104,13 @@ After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 
    `__ftol` calls) and use them when the read fails; the cache write is a side effect on the
    game folder that has no player-visible consequence.
 
-Related but already tracked by the parity documents (not repeated here): the movie states and
-CD prompts (FRONTEND), the music cross-fade (CLIENT; the lens shot `0x4B9360` / `0x4B91B0` was built and compared *2026-10-21*, CLIENT 1.11), the network items
-against two or more originals (NETWORK).
+Related but already tracked by the parity documents (not repeated here): the CD prompts
+(FRONTEND), the network items against two or more originals (NETWORK). *2026-10-21*, ported
+since: the lens shot `0x4B9360` / `0x4B91B0` (CLIENT 1.11, compared), the movie player's clock,
+focus rule and message box (`0x426780`, `0x47C3A0`, `0x47C6C0`; FRONTEND 2.3, 2.7), the music
+fade exactly (`0x4CE690`, `0x4CE5E0`, `0x4CDB40`; CLIENT 3.8), the menus' pointer look
+(`0x491C80`, `0x4AB440`; FRONTEND 3.7), the start-up / loading error boxes (`0x4B5980`,
+`0x4263B0`, `0x431A60`, GameData_LoadAll; FRONTEND 10.5).
 
 ## N/A (with the reason)
 

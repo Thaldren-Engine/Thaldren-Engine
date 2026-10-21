@@ -802,7 +802,30 @@ int sdl_key(SDL_Keycode k) {
 
 }  // namespace
 
+#ifdef _WIN32
+extern "C" __declspec(dllimport) int __stdcall SystemParametersInfoA(unsigned action, unsigned param, void* pv, unsigned win_ini);
+#endif
+
 namespace {
+// The window's mouse-trail pair (0x4B5980 / 0x4B6110; Windows only).
+unsigned mouse_trails_off() {
+#ifdef _WIN32
+    unsigned trails = 0;
+    SystemParametersInfoA(0x5E /* SPI_GETMOUSETRAILS */, 0, &trails, 1);
+    SystemParametersInfoA(0x5D /* SPI_SETMOUSETRAILS */, 0, nullptr, 1);
+    return trails;
+#else
+    return 0;
+#endif
+}
+void mouse_trails_restore(unsigned trails) {
+#ifdef _WIN32
+    SystemParametersInfoA(0x5D /* SPI_SETMOUSETRAILS */, trails, nullptr, 1);
+#else
+    (void)trails;
+#endif
+}
+
 std::vector<std::string> split_list(const std::string& v) {
     std::vector<std::string> o;
     for (std::size_t a = 0; a <= v.size();) {
@@ -1062,6 +1085,9 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     SDL_HideCursor();
     confine_pointer(win, nullptr);
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
+    // Mouse trails off while the program runs (0x4B5980: SPI_GETMOUSETRAILS kept, then
+    // SPI_SETMOUSETRAILS 0, both with SPIF_UPDATEINIFILE; 0x4B6110 puts the kept value back).
+    const unsigned mouse_trails = mouse_trails_off();
     // (0x4B6B80: MessageBoxA(NULL, text, title, MB_OK | MB_TOPMOST): no owner, no icon; the
     // program waits for it)
     run.system_box = [](const std::string& title, const std::string& text) {
@@ -1217,6 +1243,7 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     if (tex) SDL_DestroyTexture(tex);
     if (sr) SDL_DestroyRenderer(sr);
     SDL_DestroyWindow(win);
+    mouse_trails_restore(mouse_trails);
     return run.exit_code_;
 #else
     std::printf("built without SDL3: only --headless is available\n");

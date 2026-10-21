@@ -861,11 +861,12 @@ bool ClientWorld::build_content(std::string& error) {
     // Scene art.
     for (int k = 0; k < 3; ++k) glows_[static_cast<std::size_t>(k)] = render::glow_frames(k, 0xC0FFEEu + static_cast<std::uint32_t>(k));
     {
+        // (computed from the palette when the files are missing, 0x42E260 / 0x42E1D0)
         std::vector<std::uint8_t> lht;
-        if (vfs_.read("palettes\\PALETTE.LHT", lht)) light_table_ = render::light_blend_table(lht);
+        if (load_level_table(vfs_, "LHT", lht)) light_table_ = render::light_blend_table(lht);
         if (lht.size() >= 32 * 256) c.light_levels.assign(lht.begin(), lht.begin() + 32 * 256);
         // Unit looks: the shade table (lit structures) and the water tint (units seen under water).
-        if (!vfs_.read("palettes\\PALETTE.SHD", shade_table_) || shade_table_.size() < 32 * 256) shade_table_.clear();
+        if (!load_level_table(vfs_, "SHD", shade_table_) || shade_table_.size() < 32 * 256) shade_table_.clear();
         c.shade_levels = shade_table_;  // (also a layout dimmed under the chat line)
         water_table_ = render::water_tint_table(palette_);
     }

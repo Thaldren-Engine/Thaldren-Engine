@@ -113,10 +113,9 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
                 sound_index_[upper(s->name())] = static_cast<int>(content_.samples.size());
                 content_.samples.push_back(std::move(smp));
             }
-    vfs_.read("palettes\\PALETTE.LHT", content_.light);
-    if (content_.light.size() < 0x2000) content_.light.clear();
-    vfs_.read("palettes\\PALETTE.SHD", content_.shade);
-    if (content_.shade.size() < 0x2000) content_.shade.clear();
+    // (computed from the palette when the files are missing, 0x42E260 / 0x42E1D0)
+    load_level_table(vfs_, "LHT", content_.light);
+    load_level_table(vfs_, "SHD", content_.shade);
     content_.click_sound = sound("SmallButton");
     content_.error_sound = sound("NOTOKTOBUILD");
     content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
