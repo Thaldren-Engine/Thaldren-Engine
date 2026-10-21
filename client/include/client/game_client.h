@@ -278,6 +278,8 @@ public:
     const sim::StepBudget& budget() const { return budget_; }
     int selected_count() const;
     std::uint16_t hover_unit() const { return hover_; }
+    // Tests (frame_harness): the unit under the pointer as given (until the pointer moves).
+    void set_hover_for_tests(std::uint16_t id) { hover_ = id; }
     const ClientOptions& options() const { return opt_; }
     // The selection outlines of the selected units in a battle view scene (draw() does this;
     // tests that build the scene themselves call it).

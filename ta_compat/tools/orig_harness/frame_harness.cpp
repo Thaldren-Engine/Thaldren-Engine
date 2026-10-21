@@ -13,6 +13,8 @@
 //
 // Usage: frame_harness <TotalA.exe> <game_dir> [scenes] [seed] [out_dir] [--map NAME]
 //                      [--res WxH] [--steps N] [--no-fog] [--no-mapping] [--dither] [--players N] [--verbose] [--hud]
+//   (--hud with FH_UNSEEN set: the pointer's unit is one the viewed player does not see, under
+//   radar or sonar: the bottom bar's "R: " / "S: " Unidentified object.)
 //   --hud also compares the interface the frame draws: the top bar (with random resource
 //   values covering every number format), the bottom bar, the selection outlines, the
 //   placement outline of a random structure at a random view point, and the queued-order view
@@ -1447,6 +1449,22 @@ int main(int argc, char** argv) {
             }
             gc.handle(mv);
             hover = gc.hover_unit();
+            // FH_UNSEEN: the unit under the pointer is one of another player that the viewed
+            // player does not see (as under a radar or sonar dot), detected by radar (flag 0x100)
+            // or sonar (0x200) at random: the bottom bar's "R: " / "S: " "Unidentified object"
+            // (0x46B6F3, the sight test 0x465AC0 failing).
+            if (std::getenv("FH_UNSEEN")) {
+                std::vector<std::uint16_t> unseen;
+                for (std::size_t i = 1; i < b.units.size(); ++i)
+                    if (b.ticks[i].type_index && b.ticks[i].owner != 0 && !b.unit_seen_by(0, b.units[i])) unseen.push_back(static_cast<std::uint16_t>(i));
+                if (!unseen.empty()) {
+                    const std::uint16_t id = unseen[static_cast<std::size_t>(rnd(0, static_cast<int>(unseen.size()) - 1))];
+                    sim::Unit& u = b.units[id];
+                    u.flags = (u.flags & ~0x300u) | (rnd(0, 1) ? 0x200u : 0x100u);
+                    gc.set_hover_for_tests(id);
+                    hover = id;
+                }
+            }
         }
         const u8 view = 0;
         u16 visual = 0x02 | 0x04 | 0x08 | 0x10 | 0x20;  // anti-aliasing, shadows, unit and feature shadows, shading
