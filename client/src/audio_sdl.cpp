@@ -50,10 +50,11 @@ struct AudioOut::Impl {
     };
     std::vector<Voice> voices;
     float fx_volume = 1.0f;
+    bool effects_muted = false;  // the window inactive (the voices go on, unheard)
     int music_volume = 256;
     std::shared_ptr<const Sample> music;
-    std::uint64_t music_pos = 0, music_step = 0;
-    bool music_paused = false;
+    std::uint64_t music_pos = 0, music_step = 0;  // 32.32 frames
+    bool music_on = false, music_repeat = false;
     std::vector<float> mix;
     std::vector<std::int16_t> out;
 
@@ -67,7 +68,8 @@ struct AudioOut::Impl {
             for (Voice& v : m.voices) {
                 if (!v.s) continue;
                 const std::size_t n = v.s->pcm.size() / static_cast<std::size_t>(std::max(1, v.s->channels));
-                const float lv = v.left * m.fx_volume, rv = v.right * m.fx_volume;
+                const float gain = m.effects_muted ? 0.0f : m.fx_volume;
+                const float lv = v.left * gain, rv = v.right * gain;
                 for (int f = 0; f < frames; ++f) {
                     std::size_t at = static_cast<std::size_t>(v.pos >> 32);
                     if (at >= n) {
@@ -85,18 +87,23 @@ struct AudioOut::Impl {
                     v.pos += v.step;
                 }
             }
-            if (m.music && !m.music_paused) {
+            if (m.music && m.music_on) {
                 const Sample& s = *m.music;
                 const std::size_t n = s.pcm.size() / static_cast<std::size_t>(std::max(1, s.channels));
-                const float mv = m.music_volume / 256.0f;
+                const float mv = m.music_volume / 256.0f * m.fx_volume;
                 for (int f = 0; f < frames; ++f) {
-                    const std::size_t at = static_cast<std::size_t>(m.music_pos >> 32);
+                    std::size_t at = static_cast<std::size_t>(m.music_pos >> 32);
                     if (at >= n) {
-                        m.music.reset();
-                        break;
+                        if (!m.music_repeat || n == 0) {
+                            m.music_on = false;  // run out (the position stays at the end)
+                            m.music_pos = static_cast<std::uint64_t>(n) << 32;
+                            break;
+                        }
+                        m.music_pos %= static_cast<std::uint64_t>(n) << 32;
+                        at = static_cast<std::size_t>(m.music_pos >> 32);
                     }
                     float a = 0, b = 0;
-                    read_frame(s, n, m.music_pos, false, a, b);
+                    read_frame(s, n, m.music_pos, m.music_repeat, a, b);
                     m.mix[static_cast<std::size_t>(f) * 2] += a * mv;
                     m.mix[static_cast<std::size_t>(f) * 2 + 1] += b * mv;
                     m.music_pos += m.music_step;
@@ -175,38 +182,53 @@ void AudioOut::set_fx_volume(float v) {
     impl_->fx_volume = std::clamp(v, 0.0f, 1.0f);
 }
 
+void AudioOut::set_effects_muted(bool muted) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->effects_muted = muted;
+}
+
 void AudioOut::set_music_volume(int v) {
     if (!impl_) return;
     std::lock_guard<std::mutex> g(impl_->lock);
     impl_->music_volume = std::clamp(v, 0, 256);
 }
 
-void AudioOut::play_music(std::shared_ptr<const Sample> track) {
+void AudioOut::music_start(std::shared_ptr<const Sample> track, std::uint64_t frame, bool repeat) {
     if (!impl_) return;
     std::lock_guard<std::mutex> g(impl_->lock);
     impl_->music = std::move(track);
-    impl_->music_pos = 0;
-    impl_->music_step = impl_->music ? (static_cast<std::uint64_t>(impl_->music->rate) << 32) / static_cast<std::uint64_t>(impl_->rate) : 0;
+    impl_->music_repeat = repeat;
+    impl_->music_on = impl_->music != nullptr && !impl_->music->pcm.empty();
+    if (!impl_->music_on) return;
+    const std::uint64_t n = impl_->music->pcm.size() / static_cast<std::size_t>(std::max(1, impl_->music->channels));
+    if (frame > n) frame = n;  // (past the end: at the end)
+    impl_->music_pos = frame << 32;
+    impl_->music_step = (static_cast<std::uint64_t>(std::max(1, impl_->music->rate)) << 32) / static_cast<std::uint64_t>(impl_->rate);
 }
 
-void AudioOut::stop_music() { play_music(nullptr); }
-
-void AudioOut::pause_music(bool paused) {
+void AudioOut::music_halt() {
     if (!impl_) return;
     std::lock_guard<std::mutex> g(impl_->lock);
-    impl_->music_paused = paused;
+    impl_->music_on = false;
+}
+
+void AudioOut::music_set_repeat(bool repeat) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->music_repeat = repeat;
 }
 
 bool AudioOut::music_playing() const {
     if (!impl_) return false;
     std::lock_guard<std::mutex> g(impl_->lock);
-    return impl_->music != nullptr;
+    return impl_->music != nullptr && impl_->music_on;
 }
 
-double AudioOut::music_position() const {
-    if (!impl_) return 0.0;
+std::uint64_t AudioOut::music_frame() const {
+    if (!impl_) return 0;
     std::lock_guard<std::mutex> g(impl_->lock);
-    return impl_->music ? static_cast<double>(impl_->music_pos >> 32) / impl_->music->rate : 0.0;
+    return impl_->music ? impl_->music_pos >> 32 : 0;
 }
 
 } // namespace client

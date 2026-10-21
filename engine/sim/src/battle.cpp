@@ -450,7 +450,7 @@ void Battle::refresh_passability(std::int16_t x, std::int16_t z, std::int16_t w,
 
 void Battle::step_units_and_projectiles() {
     sync_settings();
-    run_unit_pass(units, ticks, players, unit_env_, *this, camera_countdown_);
+    live_units = run_unit_pass(units, ticks, players, unit_env_, *this, camera_countdown_);
     update_projectiles(projectile_world_);
 }
 

@@ -76,4 +76,70 @@ void SoundDesk::flush(const std::string& label) {
     }
 }
 
+// ---------------------------------------------------------------- the wave-out path
+
+namespace {
+constexpr int kWaveVoice = -2;  // PlaySoundA's one sound
+}
+
+bool WaveOutChannel::playing(std::uint32_t now_ms) const {
+    if (!current_) return false;
+    if (current_loop_) return true;
+    const std::size_t frames = current_->pcm.size() / static_cast<std::size_t>(std::max(1, current_->channels));
+    const std::uint64_t ms = static_cast<std::uint64_t>(frames) * 1000u / static_cast<std::uint64_t>(std::max(1, current_->rate));
+    return static_cast<std::uint64_t>(now_ms - started_ms_) < ms;
+}
+
+bool WaveOutChannel::start(const Sample* s, bool loop, std::uint32_t now_ms) {
+    // (a new sound stops the one playing; data that is not a RIFF WAVE file plays nothing)
+    if (current_ && out_) {
+        SoundCommand stop;
+        stop.kind = SoundCommand::Kind::Stop;
+        stop.voice = kWaveVoice;
+        out_->run(stop);
+    }
+    current_ = nullptr;
+    if (!s || !s->riff || s->pcm.empty()) {
+        if (log_) std::printf("wave: %s does not play\n", s ? s->name.c_str() : "(none)");
+        return false;
+    }
+    current_ = s;
+    current_loop_ = loop;
+    started_ms_ = now_ms;
+    ++started_;
+    if (log_) std::printf("wave: play %s%s\n", s->name.c_str(), loop ? " (loop)" : "");
+    if (out_) {
+        SoundCommand c;
+        c.voice = kWaveVoice;
+        c.sample = s;
+        c.loop = loop;
+        c.gain_left = c.gain_right = 1.0f;  // the file's own level
+        out_->run(c);
+    }
+    return true;
+}
+
+bool WaveOutChannel::play(const Sample* s, bool loop, std::uint32_t now_ms) {
+    if (loop) loop_ = s;
+    return start(s, loop, now_ms);
+}
+
+void WaveOutChannel::pass(std::uint32_t now_ms) {
+    // PlaySoundA(loop, SND_ASYNC | SND_MEMORY | SND_NOSTOP): once more (not looping) when
+    // nothing plays.
+    if (loop_ && !playing(now_ms)) start(loop_, false, now_ms);
+}
+
+void WaveOutChannel::stop_all() {
+    if (current_ && out_) {
+        SoundCommand stop;
+        stop.kind = SoundCommand::Kind::Stop;
+        stop.voice = kWaveVoice;
+        out_->run(stop);
+    }
+    if (log_ && current_) std::printf("wave: stop\n");
+    current_ = nullptr;
+    loop_ = nullptr;
+}
+
 }  // namespace client

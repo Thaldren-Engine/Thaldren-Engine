@@ -366,6 +366,20 @@ void NetBattle::send_chat(const std::string& text, int recipients, const std::ar
     }
 }
 
+void NetBattle::send_sound(std::int32_t sound, const sim::Vec3i* world_pos, const std::uint8_t* stale) {
+    // 0x47F0C0 / 0x47F300: type 0x13, byte 1 = 1 (both routines), the id at 2; the world sound's
+    // position at 6, 10, 14; the interface sound leaves 6..17 as its stack held them.
+    u8 pk[18] = {packet::kSound, 1};
+    if (stale && !world_pos) std::memcpy(pk + 6, stale, 12);
+    put32(pk + 2, static_cast<std::uint32_t>(sound));
+    if (world_pos) {
+        put32(pk + 6, static_cast<std::uint32_t>((*world_pos)[0]));
+        put32(pk + 10, static_cast<std::uint32_t>((*world_pos)[1]));
+        put32(pk + 14, static_cast<std::uint32_t>((*world_pos)[2]));
+    }
+    broadcast(first_local_net_id(), pk, 18);
+}
+
 void NetBattle::send_pause(bool paused) {
     paused_ = paused;
     u8 pk[3] = {packet::kSpeed, 0, static_cast<u8>(paused ? 1 : 0)};
@@ -532,6 +546,7 @@ void NetBattle::network_input() {
         Message msg;
         if (!transport_.receive(msg)) return false;
         counters_.bytes_received += static_cast<std::uint32_t>(msg.bytes.size());
+        ++counters_.frames_received;
         f = msg.from;
         t = msg.to;
         m = std::move(msg.bytes);
@@ -540,6 +555,7 @@ void NetBattle::network_input() {
     Delivered d;
     while (receiver_.next(battle_->game_tick(), sender_.timing().frame_timing, read, d)) {
         if (d.packet.empty()) continue;
+        counters_.packet_bytes_received += static_cast<std::uint32_t>(d.packet.size());  // (0x415EF0, direction 0)
         const int from = slot_of(d.from);
         int to = slot_of(d.to);
         if (to == 10) to = slot_of(first_local_net_id());  // addressed to everybody
@@ -569,6 +585,7 @@ void NetBattle::network_input() {
         }
         last_heard_[static_cast<std::size_t>(from)] = clock_;
         ++counters_.packets_received;
+        ++counters_.packets_from[static_cast<std::size_t>(from)];  // (the sender record's +0x10, 0x453D40)
         if (type < counters_.by_type.size()) ++counters_.by_type[type];
         dispatch(from, to, d.packet);
         if (type == packet::kGameStart) break;
@@ -658,12 +675,22 @@ void NetBattle::dispatch(int from, int to, const std::vector<std::uint8_t>& v) {
     case packet::kFinished:
         b.apply_finished_packet(p);
         break;
-    case packet::kSound:
-        if (p[1] == 0)
-            inner_.play_sound(static_cast<std::uint16_t>(get32(p + 2)),
-                              sim::Vec3i{static_cast<std::int32_t>(get32(p + 6)), static_cast<std::int32_t>(get32(p + 10)),
-                                         static_cast<std::int32_t>(get32(p + 14))});
+    case packet::kSound: {
+        // 0x453D40 case 0x11: byte 1 zero -> the world sound at the packet's position (0x47F300
+        // with the echo off), else the interface sound (0x47F0C0 with the echo off). The id is
+        // the packet's dword; 0xFFFF plays nothing (both routines test it). An id past the bank
+        // reads past the original's table (an input; the client plays nothing for it).
+        const std::int32_t id = static_cast<std::int32_t>(get32(p + 2));
+        if (id == 0xFFFF) break;
+        if (p[1] == 0) {
+            if (id >= 0 && id < 0xFFFF)
+                inner_.play_sound(static_cast<std::uint16_t>(id), sim::Vec3i{static_cast<std::int32_t>(get32(p + 6)), static_cast<std::int32_t>(get32(p + 10)),
+                                                                            static_cast<std::int32_t>(get32(p + 14))});
+        } else if (on_interface_sound) {
+            on_interface_sound(id);
+        }
         break;
+    }
     case packet::kOwnership: {
         const int ns = slot_of(static_cast<std::int32_t>(get32(p + 3)));
         if (ns != 10 && plays(ns)) b.apply_ownership_packet(ns, p);

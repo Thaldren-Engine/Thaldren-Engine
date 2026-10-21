@@ -41,13 +41,6 @@ bool is(const Widget& w, const char* name) { return upper(w.name) == upper(name)
 // theirs; docs/RE_MEMORY.md, "Client", "Menu sounds").
 void sfx(FrontEnd& fe, MenuArt& art, const char* name) { fe.play_sound(art.sound(name)); }
 
-// The menus' rand() stream (the main menu's sparks draw from it; what is left of it is the
-// simulation thread's rand() state at the start of a battle, as in the original).
-sim::Lcg15& menu_rand() {
-    static sim::Lcg15 r;
-    return r;
-}
-
 // ------------------------------------------------------------------ message box (MSGBOX.GUI)
 void draw_back_tile(MenuArt& art, render::Image8& out, const render::ClipRect& clip, int x0, int y0, int w, int h);
 void dim_rect(FrontEnd& fe, render::Image8& out, int x0, int y0, int x1, int y1);
@@ -218,8 +211,6 @@ void show_message(FrontEnd& fe, MenuArt& art, const std::string& text, const ren
     else std::printf("message: %s\n", text.c_str());
 }
 
-sim::Lcg15& menus_rand() { return menu_rand(); }
-
 namespace {
 
 // ------------------------------------------------------------------ options
@@ -246,6 +237,32 @@ std::vector<std::array<int, 2>> display_modes(FrontEnd& fe) {
     return m;
 }
 
+// What the options menu found when it opened (0x460160): the settings, and the CD's chosen
+// track (0x512FD9) and track types 0..99 (0x512F75).
+client::Settings& options_saved() {
+    static client::Settings s;
+    return s;
+}
+struct MusicSaved {
+    int chosen = 0;
+    std::array<std::uint8_t, 100> types{};
+};
+MusicSaved& music_saved() {
+    static MusicSaved m;
+    return m;
+}
+// The options menu's Cancel and the music page's Undo for the CD (0x45FC60, 0x45D280): the
+// saved types copied into tracks 1.. (one place off), the mode set, the CD picking when the
+// switch changes (its own switch left), the chosen track.
+void restore_music(client::FrontEnd& fe, const client::Settings& before) {
+    client::CdMusic* m = fe.music();
+    if (!m) return;
+    m->set_types(music_saved().types.data());
+    m->set_mode(before.get_int("cdmode", 4) & 0xFF);
+    if (((fe.settings().get_int("musicmode", 1) ^ before.get_int("musicmode", 1)) & 1) != 0) m->pick();
+    m->set_chosen(music_saved().chosen);
+}
+
 // One options page (full-screen in the menus, the side panel pages in a battle). The
 // widgets map to settings by name, the same on both kinds of pages.
 class OptionsPage : public LayoutScreen {
@@ -259,7 +276,9 @@ public:
 protected:
     void load(FrontEnd& fe) {
         const client::Settings& s = fe.settings();
-        client::MusicPlayer* m = fe.music();
+        client::CdMusic* m = fe.music();
+        // The music page's shown track (0x512FE0): the chosen one in mode 3 (0x45D7C0).
+        if (m && widget("TRACKNUM") && s.get_int("cdmode", 4) == 3) shown_track() = m->chosen();
         for (Widget& w : widgets_) {
             if (w.kind == WidgetKind::ScrollBar) {
                 // Sliders: range and value.
@@ -277,13 +296,18 @@ protected:
                 else if (is(w, "LEFTCLICK")) w.stage = std::clamp(s.get_int("Interface Type", 0), 0, 1);
                 else if (is(w, "NOTRAK")) w.stage = s.get_int("musicmode", 1) ? 1 : 0;
                 else if (is(w, "TRACKMODE")) w.stage = std::clamp(s.get_int("cdmode", 4) - 1, 0, 3);
-                else if (is(w, "TRACKTYPE") && m) w.stage = m->types()[static_cast<std::size_t>(std::clamp(track_, 0, m->track_count()))];
+                else if (is(w, "TRACKTYPE") && m) w.stage = m->type(shown_track());
                 else if (is(w, "SHADING")) w.stage = s.get_int("Shading", 1) ? 1 : 0;
                 else if (is(w, "ANTI")) w.stage = s.get_int("Anti-Alias", 1) ? 1 : 0;
                 else if (is(w, "BSHADOWS")) w.stage = s.get_int("FeatureShadows", 1) ? 1 : 0;
             }
         }
-        if (m && track_ == 0) track_ = std::max(1, m->current_track());
+        if (m && widget("TRACKNUM")) {
+            music_gadgets(fe);  // (0x45D130, 0x45C3F0)
+            // (by mood: the shown track takes the type switch's stage, its own type)
+            if (s.get_int("cdmode", 4) == 4)
+                if (const Widget* t = widget("TRACKTYPE")) m->set_type(shown_track(), static_cast<std::uint8_t>(t->stage));
+        }
         // Screen size: a slider over the display modes (only outside a battle).
         modes_ = display_modes(fe);
         for (Widget& w : widgets_)
@@ -296,8 +320,61 @@ protected:
         }
         labels(fe);
     }
+    // The music page's gadgets (0x45D130, then 0x45C3F0): the switch and the mode's stages; with
+    // the music off the volume slider, the CD buttons and the mode switch grayed; the type switch
+    // usable only with the music on in mode 4 (by mood), showing the shown track's type; the
+    // track number ("%d", "NO DISC" for 0) grayed with the music off; in mode 3 the shown track
+    // becomes the chosen one.
+    void music_gadgets(FrontEnd& fe) {
+        client::CdMusic* m = fe.music();
+        const client::Settings& s = fe.settings();
+        const bool on = (s.get_int("musicmode", 1) & 1) != 0;
+        const int mode = s.get_int("cdmode", 4) & 0xFF;
+        if (Widget* w = widget("NOTRAK")) w->stage = on ? 1 : 0;
+        if (Widget* w = widget("TRACKMODE")) w->stage = std::clamp(mode - 1, 0, std::max(0, w->stages - 1));
+        if (Widget* w = widget("MUSICVOL")) w->grayed = !on;
+        for (const char* n : {"CDPREV", "CDSTOP", "CDPLAY", "CDNEXT", "TRACKMODE"})
+            if (Widget* w = widget(n)) w->grayed = !on;
+        if (Widget* w = widget("TRACKTYPE")) {
+            w->grayed = !(on && mode == 4);
+            if (m) w->stage = m->type(shown_track());
+        }
+        if (Widget* w = widget("TRACKNUM")) {
+            w->text = shown_track() == 0 ? "NO DISC" : std::to_string(shown_track());
+            w->grayed = !on;
+        }
+        if (m && mode == 3) m->set_chosen(shown_track());
+    }
+
+public:
+    // The music page's per-pass routine (0x45D0C0): the shown track follows the player's
+    // current one (by the number the page shows).
+    void music_pass(FrontEnd& fe) {
+        client::CdMusic* m = fe.music();
+        Widget* t = widget("TRACKNUM");
+        if (!m || !t) return;
+        if (std::atoi(t->text.c_str()) != m->current()) {
+            shown_track() = m->current();
+            music_gadgets(fe);
+        }
+    }
+    // The music page closing (0x45D280 with no gadget): in a battle the mode / mood picks, in
+    // the menus the CD stops.
+    void leave(FrontEnd& fe) {
+        client::CdMusic* m = fe.music();
+        if (!m || !widget("TRACKNUM")) return;
+        if (in_battle_) m->pick();
+        else m->stop();
+    }
+    // The shown track (0x512FE0, the program's: it stays from one opening to the next).
+    static int& shown_track() {
+        static int t = 0;
+        return t;
+    }
+
+protected:
     void labels(FrontEnd& fe) {
-        if (Widget* t = widget("TRACKNUM")) t->text = track_ ? "#" + std::to_string(track_) : "NO DISC";
+        if (Widget* t = widget("TRACKNUM")) t->text = shown_track() == 0 ? "NO DISC" : std::to_string(shown_track());
         // GAMETEXT stays empty (the original never fills it); MAXLINESTEXT shows the text lines.
         if (Widget* m = widget("MAXLINESTEXT")) {
             const int n = fe.settings().get_int("textlines", 10);
@@ -316,7 +393,7 @@ protected:
     }
     void on_press(FrontEnd& fe, Widget& w) override {
         client::Settings& s = fe.settings();
-        client::MusicPlayer* m = fe.music();
+        client::CdMusic* m = fe.music();
         // Every button of the pages sounds "Options" (the sliders are silent); the sound test
         // plays its file instead, and the sound mode switch first starts the menus' loop when it
         // turns to mono outside a battle (and stops every sound when it turns off).
@@ -352,14 +429,31 @@ protected:
         } else if (is(w, "LEFTCLICK")) {
             s.set_int("Interface Type", w.stage);
         } else if (is(w, "NOTRAK")) {
-            s.set_int("musicmode", w.stage);
+            // (0x45D280: the switch's bit; the CD switched on or off; the page's gadgets)
+            s.set_int("musicmode", (s.get_int("musicmode", 1) & ~1) | (w.stage & 1));
+            if (m) m->set_enabled((w.stage & 1) != 0);
+            if (m) music_gadgets(fe);
         } else if (is(w, "TRACKMODE")) {
-            s.set_int("cdmode", w.stage + 1);
-            if (m && w.stage + 1 == 3) m->set_repeat_track(track_);
+            // (the mode is the stage + 1; in mode 4 the shown track's type is the type switch's;
+            // in mode 3 the shown track becomes the chosen one)
+            const int mode = (w.stage + 1) & 0xFF;
+            s.set_int("cdmode", mode);
+            if (m) {
+                m->set_mode(mode);
+                if (mode == 3) {
+                    shown_track() = m->chosen();
+                } else if (mode == 4) {
+                    if (Widget* t = widget("TRACKTYPE")) {
+                        t->stage = m->type(shown_track());
+                        m->set_type(shown_track(), static_cast<std::uint8_t>(t->stage));
+                    }
+                }
+                music_gadgets(fe);
+            }
         } else if (is(w, "TRACKTYPE")) {
-            if (m && track_ >= 1 && track_ <= m->track_count()) {
-                m->types()[static_cast<std::size_t>(track_)] = static_cast<std::uint8_t>(w.stage);
-                save_types(fe);
+            if (m) {
+                m->set_type(shown_track(), static_cast<std::uint8_t>(w.stage));
+                music_gadgets(fe);
             }
         } else if (is(w, "SHADING")) {
             s.set_int("Shading", w.stage);
@@ -368,22 +462,40 @@ protected:
         } else if (is(w, "BSHADOWS")) {
             s.set_int("FeatureShadows", w.stage);
         } else if (is(w, "CDPLAY")) {
-            if (m) m->play(track_);
-        } else if (is(w, "CDSTOP")) {
-            if (m) m->stop();
-        } else if (is(w, "CDNEXT") || is(w, "CDPREV")) {
-            if (m && m->track_count() > 0) {
-                track_ += is(w, "CDNEXT") ? 1 : -1;
-                if (track_ > m->track_count()) track_ = 1;
-                if (track_ < 1) track_ = m->track_count();
-                m->play(track_);
-                load(fe);
+            if (m) m->play_track(shown_track());
+        } else if (is(w, "CDSTOP") || is(w, "CDNEXT") || is(w, "CDPREV")) {
+            // (stop: stopped, then the shown track 1 by the step routine; next / previous: the
+            // shown track one on, wrapping, played when the CD plays, else made current)
+            if (m) {
+                int t = 1;
+                if (is(w, "CDSTOP")) {
+                    m->stop();
+                } else if (is(w, "CDNEXT")) {
+                    t = shown_track() + 1;
+                    if (m->tracks() < t) t = 1;
+                } else {
+                    t = shown_track() - 1;
+                    if (t < 1) t = m->tracks();
+                }
+                shown_track() = m->step_track(t);
+                music_gadgets(fe);
             }
         } else if (is(w, "TEST")) {
             // sounds\explode.wav as a file of its own.
             fe.play_sound_file(art_.sound("ActivateAllStatBars"));
         } else if (is(w, "RESTORE")) {
             restore_defaults(fe);
+        } else if (is(w, "UNDO") && widget("TRACKNUM")) {
+            // The music page's Undo (0x45D280): the volume, the track types, the mode, the
+            // switch and the chosen track as the options menu found them. The types go back one
+            // place off (0x4CE3E0 copies the saved tracks 0.. into tracks 1..), the CD picks when
+            // the switch changes (its own switch is left as it is).
+            const client::Settings saved = options_saved();
+            s.set_int("musicvol", saved.get_int("musicvol", 32));
+            restore_music(fe, saved);
+            s.set_int("cdmode", saved.get_int("cdmode", 4) & 0xFF);
+            s.set_int("musicmode", (s.get_int("musicmode", 1) & ~1) | (saved.get_int("musicmode", 1) & 1));
+            load(fe);
         } else if (is(w, "UNDO")) {
             fe.settings() = saved_;
             load(fe);
@@ -397,9 +509,14 @@ protected:
         for (const Widget& w : widgets_) {
             if (is(w, "FXVOL")) s.set_int("fxvol", 27);
             if (is(w, "MUSICVOL")) {
+                // (0x45D280: the volume 32 and the mode 4, the CD's own mode left as it is; a
+                // switched-off music switched on, and the CD picks)
                 s.set_int("musicvol", 32);
                 s.set_int("cdmode", 4);
-                s.set_int("musicmode", 1);
+                if ((s.get_int("musicmode", 1) & 1) == 0) {
+                    s.set_int("musicmode", s.get_int("musicmode", 1) | 1);
+                    if (fe.music()) fe.music()->pick();
+                }
             }
             if (is(w, "SPEECH")) {
                 s.set_int("unitchat", 10);
@@ -423,17 +540,8 @@ protected:
         }
         load(fe);
     }
-    void save_types(FrontEnd& fe) {
-        client::MusicPlayer* m = fe.music();
-        if (!m) return;
-        std::string v;
-        for (int t = 1; t <= m->track_count(); ++t) v += static_cast<char>('0' + m->types()[static_cast<std::size_t>(t)]);
-        fe.settings().set_text("CDLISTS", v);
-    }
-
     MenuArt& art_;
     bool in_battle_;
-    int track_ = 0;
     client::Settings saved_;
     std::vector<std::array<int, 2>> modes_;
 };
@@ -446,6 +554,11 @@ public:
     void enter(FrontEnd& fe) override {
         if (!entered_) {
             saved_ = fe.settings();
+            options_saved() = saved_;
+            if (client::CdMusic* m = fe.music()) {
+                music_saved().chosen = m->chosen();
+                for (int i = 0; i < 100; ++i) music_saved().types[static_cast<std::size_t>(i)] = m->type(i);
+            }
             entered_ = true;
             // In a battle the panel slides in: "Panel" at once.
             if (in_battle_) sfx(fe, art_, "Panel");
@@ -453,6 +566,7 @@ public:
     }
     void frame(FrontEnd& fe, std::uint32_t now) override {
         LayoutScreen::frame(fe, now);
+        if (page_) page_->music_pass(fe);
         // In a battle the light bar runs across the panel 21 pixels a frame from 0 and stops
         // past 276, with "Options" (the 14th battle frame since the menu opened).
         if (!in_battle_ || slide_ > 276) return;
@@ -504,6 +618,7 @@ protected:
                     for (const auto& [a, b] : rt)
                         if (g == a) g = b;
                 if (art_.layout(g)) {
+                    if (page_) page_->leave(fe);
                     page_ = std::make_unique<OptionsPage>(art_, g, in_battle_);
                     page_->reassign_quick_keys(widgets_);  // the page joins this screen
                     page_->enter(fe);
@@ -516,11 +631,16 @@ protected:
                 return;
             }
         if (is(w, "PREV")) {
+            // (OK: the settings written to the registry, 0x45FC60 -> 0x430F00; the page closes)
             fe.apply_settings();
+            fe.write_registry();
+            if (page_) page_->leave(fe);
             fe.pop();
         } else if (is(w, "CANCEL")) {
+            restore_music(fe, saved_);
             fe.settings() = saved_;
             fe.apply_settings();
+            if (page_) page_->leave(fe);
             fe.pop();
         } else if (is(w, "UNDO")) {
             fe.settings() = saved_;
@@ -957,6 +1077,7 @@ protected:
         save(s);
         s.set_int("NumSkirmishPlayers", n);
         fe.apply_settings();
+        fe.read_developer_mode();  // (0x47BB52: 0x42F9A0 again)
         load(s);
         widgets_.resize(described_);
         build_rows();
@@ -1161,10 +1282,11 @@ protected:
         req.start.ai_difficulty = difficulty_;
         req.start.local_player = static_cast<std::uint8_t>(human);
         req.start.unit_limit = static_cast<std::uint16_t>(fe.unit_limit());  // GS+0x37EEC (0x4971F1)
-        // The inputs the original takes from clocks, and the menus' rand() state.
+        // The inputs the original takes from clocks, and the main thread's rand() state (the
+        // front end hands the battle the main thread's state again when its loading ends).
         req.start.battle_rng_seed = static_cast<std::uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count());
         req.start.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
-        req.start.crt_rand_state = menu_rand().state();
+        req.start.crt_rand_state = fe.crt_rand().state();
         const std::string dir = art_.game_dir();
         const client::ClientOptions opt = client_options(fe.settings(), fe.width(), fe.height());
         fe.set_pointer_look(20);  // (0x47AE60: the start taken)
@@ -1232,7 +1354,10 @@ protected:
                 else ring_follow_ = true;
             }
         } else if (is(w, "Skirmish")) {
-            if (art_.layout("SKIRMISH")) fe.push(std::make_unique<Skirmish>(art_, fe.settings()));
+            if (art_.layout("SKIRMISH")) {
+                fe.read_developer_mode();  // (0x4273E8: the settings read again, 0x42F9A0)
+                fe.push(std::make_unique<Skirmish>(art_, fe.settings()));
+            }
         } else if (is(w, "Options")) {
             fe.push(std::make_unique<OptionsMenu>(art_, false));
         } else if (is(w, "PrevMenu")) {
@@ -1266,6 +1391,39 @@ void play_movies(FrontEnd& fe, MenuArt& art, std::vector<std::string> names, boo
 }
 
 // ------------------------------------------------------------------ main menu (MAINMENU.GUI)
+// The CD player question (0x426200: YESORNO.GUI opened with flags 0x100, centred; asked once,
+// by the main menu, when the Windows CD player held the drive as the CD opened): TITLE "Close
+// Windows CD Player?", CHOICE1 "Yes", CHOICE2 "No" (translated), the focus on CHOICE1. A press
+// sounds SmallButton (0x426190); Yes closes the player's window (0x4CE190).
+class CdPlayerQuestion : public LayoutScreen {
+public:
+    explicit CdPlayerQuestion(MenuArt& art) : LayoutScreen(art.layout("YESORNO")), art_(art) {
+        open_centred_ = -1;
+        if (Widget* w = widget("CHOICE1")) set_caption(*w, translate("Yes"));
+        if (Widget* w = widget("CHOICE2")) set_caption(*w, translate("No"));
+        if (Widget* w = widget("TITLE")) w->text = translate("Close Windows CD Player?");
+    }
+    bool see_through() const override { return true; }
+
+protected:
+    void draw_under(FrontEnd&, render::Image8& out) override {
+        const Widget& h = widgets_.front();
+        draw_back_tile(art_, out, {ox_, oy_, ox_ + h.w - 1, oy_ + h.h - 1}, ox_, oy_, h.w, h.h);
+    }
+    void on_press(FrontEnd& fe, Widget& w) override {
+        sfx(fe, art_, "SmallButton");
+        if (is(w, "CHOICE1")) {
+            if (fe.music()) fe.music()->close_player_window();
+            fe.pop();
+        } else if (is(w, "CHOICE2")) {
+            fe.pop();
+        }
+    }
+
+private:
+    MenuArt& art_;
+};
+
 class MainMenu : public LayoutScreen {
 public:
     explicit MainMenu(MenuArt& art) : LayoutScreen(art.layout("MAINMENU")), art_(art) {
@@ -1279,7 +1437,7 @@ public:
     }
     void enter(FrontEnd& fe) override {
         if (Widget* w = widget("MULTI")) w->grayed = !fe.hooks().multiplayer_menu;
-        if (fe.music()) fe.music()->set_mood(client::MusicMood::Silent);
+        if (fe.music()) fe.music()->set_mood(4);  // (0x4263B0: silent)
         // The menus' ambience: "BGM" looping (it keeps playing through the menus until a battle
         // loads; a second start does nothing while it plays).
         fe.play_sound_loop(art_.sound("BGM"));
@@ -1311,7 +1469,13 @@ public:
         shift_ = e.shift;
         LayoutScreen::handle(fe, e);
     }
-    void frame(FrontEnd&, std::uint32_t) override {
+    void frame(FrontEnd& fe, std::uint32_t) override {
+        // The CD player's question, once per program, over the menu (0x4263B0: 0x51229C).
+        static bool asked = false;
+        if (!asked && fe.music() && fe.music()->player_window_open() && art_.layout("YESORNO")) {
+            asked = true;
+            fe.push(std::make_unique<CdPlayerQuestion>(art_));
+        }
         // The sparks run along the circuit lines of the picture: one move per pass of the
         // program's loop (0x425B80 is the screen's per-pass routine, called by the interface
         // pass; no clock), so as often as frames are shown. The original's loop is held only by
@@ -1332,7 +1496,7 @@ public:
         }
         do {
             LayoutScreen::draw(fe, out);
-            if (pending_ > 0) step_sparks(out);
+            if (pending_ > 0) step_sparks(fe.crt_rand(), out);
         } while (pending_ > 0 && --pending_ > 0);
         shown_ = out;
     }
@@ -1349,12 +1513,12 @@ protected:
         std::uint8_t life = 0, turn = 0;
         int pos = 0;
     };
-    void step_sparks(render::Image8& surface) {
+    // (the main thread's rand(), client/main_rand.h)
+    void step_sparks(sim::Lcg15& rnd, render::Image8& surface) {
         const client::ScreenLayout* L = layout();
         if (!L || !L->background || L->background->width != 640 || L->background->height < 480) return;
         if (surface.width != 640 || surface.height < 480) return;
         const render::Sprite8& bg = *L->background;
-        sim::Lcg15& rnd = menu_rand();
         std::uint8_t* scr = surface.pixels.data();
         for (Spark& s : sparks_) {
             if (!s.on) {
@@ -1826,7 +1990,7 @@ public:
     ~GameMenu() override {
         // Closing it lets the battle and the music go on again (outside network games).
         if (session_) session_->client().set_paused(false);
-        if (music_) music_->set_paused(false);
+        if (music_) music_->pause(false);  // (0x4609B0 closing: 0x4CE910(0), the music goes on)
     }
     bool see_through() const override { return true; }
     void enter(FrontEnd& fe) override {
@@ -1846,7 +2010,7 @@ public:
                 session_ = s;
             }
             music_ = fe.music();
-            if (music_) music_->set_paused(true);
+            if (music_) music_->pause(true);  // (0x460CC0: 0x4CE910(1), in every kind of game)
         }
     }
 
@@ -1887,7 +2051,7 @@ private:
     MenuArt& art_;
     bool opened_ = false;
     client::BattleSession* session_ = nullptr;
-    client::MusicPlayer* music_ = nullptr;
+    client::CdMusic* music_ = nullptr;
 };
 
 // The unit information screen (F1, 0x4942E0; UNITINFOX.GUI opened centred right of the side
@@ -3143,7 +3307,7 @@ std::unique_ptr<client::Screen> make_end_screen(MenuArt& art, const client::EndT
     return bo;
 }
 
-void make_front_end(MenuArt& art, client::MusicPlayer* music, client::FrontEndSetup& setup) {
+void make_front_end(MenuArt& art, client::CdMusic* music, client::FrontEndSetup& setup) {
     setup.content = &art.content();
     setup.music = music;
     setup.main_menu = [&art](FrontEnd&) -> std::unique_ptr<client::Screen> {

@@ -1,0 +1,10 @@
+# The window deactivated in a skirmish (Alt+Tab): WinMain's loop (0x49E830) runs no pass while
+# the window is inactive outside a network game; the battle stops and goes on when the window is
+# activated again (the step budget then decides how much of the gap it catches up).
+# Single Player, Skirmish, Start.
+5 key s
+15 key s
+25 key s
+# a running battle, then 300 frames (10 s) away
+200 deactivate
+500 activate

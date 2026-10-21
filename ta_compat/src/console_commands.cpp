@@ -4,8 +4,10 @@
 #include "ta/console_commands.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <thread>
 
 #include "client/game_client.h"
 #include "sim/ai.h"
@@ -23,6 +25,7 @@
 #include "ta/battle_types.h"
 #include "ta/client_world.h"
 #include "ta/crt_strtod.h"
+#include "ta/runtime_library.h"
 
 namespace ta {
 
@@ -568,7 +571,25 @@ void ConsoleCommands::Impl::build() {
         if (cell < 0) return;
         if (feature_under(cell) < 0xFFFB) sim::remove_feature(b().feature_world(), cell, true);
     });
-    add("DebugBreak", [](const Words&) {});  // needs a debug build's second switch
+    add("DebugBreak", [this](const Words& a) {
+        // 0x417A60: only with developer mode and the debug view on (F11, GS+0x3923B bit 1). Word 1
+        // = 1 or 2: blocks of 32 MB taken without end (0x4B4F10 / 0x4D83B0 "FORCE OUT-OF-MEMORY")
+        // until the memory runs out — the out-of-memory handler (its line and crash log in
+        // ErrorLog.txt, the box, exit code 3; here at once); 3: a division by zero (the crash log,
+        // then the system ends the program); none or 0: from the full screen to a window first
+        // (0x4B5910, then 500 ms), then DebugBreak() (without a debugger the crash log,
+        // "Breakpoint"); any other number: nothing.
+        if (!c.options().debug_commands || !c.debug_view().on) return;
+        const std::int32_t n = a.number(1, 0);
+        if (n == 1 || n == 2) runtime::out_of_memory();
+        if (n == 3) runtime::divide_by_zero();
+        if (n != 0) return;
+        if (c.full_screen()) {
+            if (c.toggle_display) c.toggle_display();
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        runtime::debug_break();
+    });
     add("DPrint", [](const Words&) {});
     add("Edge", [this](const Words& a) {
         // (0x416730: the scroll extent = the map's size less word 1 (default 32) across and word 2

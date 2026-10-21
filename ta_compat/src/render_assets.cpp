@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstring>
 
-#include "render/draw_list.h"
 #include "ta/gaf.h"
 #include "ta/tdf.h"
 
@@ -114,27 +113,8 @@ bool load_palette(Vfs& vfs, render::Palette& out) {
 
 bool load_blend_table(Vfs& vfs, render::BlendTable& out) {
     std::vector<std::uint8_t> d;
-    if (vfs.read("palettes\\PALETTE.ALP", d) && d.size() >= 65536) {
-        out.assign(d.begin(), d.begin() + 65536);
-        return true;
-    }
-    // (0x42E140: no file, the table computed from the palette, 0x4BA750; the original also
-    // writes it out as the file, 0x4BC290, which is left out here)
-    render::Palette p;
-    if (!load_palette(vfs, p)) return false;
-    out = render::mixing_table(p);
-    return true;
-}
-
-bool load_level_table(Vfs& vfs, const char* ext, std::vector<std::uint8_t>& out) {
-    if (vfs.read(std::string("palettes\\PALETTE.") + ext, out) && out.size() >= 0x2000) return true;
-    // (0x42E1D0 / 0x42E260: no file, the table computed from the palette, 0x4BADF0 / 0x4BABD0)
-    render::Palette p;
-    if (!load_palette(vfs, p)) {
-        out.clear();
-        return false;
-    }
-    out = std::string(ext) == "SHD" ? render::shade_levels(p) : render::light_levels(p);
+    if (!vfs.read("palettes\\PALETTE.ALP", d) || d.size() < 65536) return false;
+    out.assign(d.begin(), d.begin() + 65536);
     return true;
 }
 

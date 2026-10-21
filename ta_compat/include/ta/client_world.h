@@ -21,6 +21,7 @@
 #include "ta/battle_features.h"
 #include "ta/battle_loader.h"
 #include "ta/battle_types.h"
+#include "ta/palette_tables.h"
 #include "ta/featuredefs.h"
 #include "ta/hpi.h"
 #include "ta/render_assets.h"
@@ -111,6 +112,7 @@ public:
     std::unique_ptr<LoadedBattle> lb_;  // the battle and everything it points into
     render::Palette palette_{};
     render::BlendTable blend_;
+    PaletteTables tables_;  // the palette and its colour tables (ALP, SHD, LHT)
     WeaponDefTable weapons_;
     FeatureDefTable fdefs_;
     UnitDefContext ctx_;

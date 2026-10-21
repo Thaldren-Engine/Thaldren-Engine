@@ -349,14 +349,46 @@ void GameClient::draw_contours(render::DrawList& out, const render::Camera& came
     // (0x4181D0); each triangle (0x417F60) gets a line wherever a level L = (top / interval) x
     // interval + offset, less the interval while above the top, ... crosses it, coloured by
     // ((L >> 8) - sea level + 256) >> 4 from the table at 0x501D18.
-    const std::int32_t I = opt_.contour_interval, O = opt_.contour_offset;
+    const std::int32_t I = opt_.contour_interval;
     if (I == 0) return;
     if (I < 0) return;  // (the original's level loops never end: the game hangs)
-    static const std::uint8_t kColours[32] = {0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   111, 110, 109, 108, 107, 106,
-                                              88,  87,  86,  85,  84,  83,  82,  81,  80,  255, 255, 255, 255, 255, 255, 255};
     const sim::MapGrid& map = b_.map;
     if (map.width < 2 || map.height < 2 || map.cells.size() < static_cast<std::size_t>(map.width) * static_cast<std::size_t>(map.height)) return;
     const render::ClipRect clip = camera.view_clip();
+    auto sixteenth = [](i32 v) { return (v + ((v >> 31) & 15)) >> 4; };
+    const int sx0 = camera.scroll_x, sy0 = camera.scroll_y;
+    const int x0 = sixteenth(sx0);
+    int z = sixteenth(sy0);
+    const int x1 = std::min((opt_.width - 128) / 16 + 1 + x0, map.width - 1);
+    const int last_row = map.height - 1;
+    auto height = [&](int x, int zz) -> i32 {
+        return map.cells[static_cast<std::size_t>(zz) * static_cast<std::size_t>(map.width) + static_cast<std::size_t>(x)].height;
+    };
+    const std::function<void(int, int, int, int, std::uint8_t)> line = [&](int xa, int ya, int xb, int yb, std::uint8_t c) {
+        out.line(xa, ya, xb, yb, c, clip);
+    };
+    if (z >= last_row || x0 < 0 || z < 0) return;
+    bool more;
+    do {
+        more = false;
+        for (int x = x0; x < x1; ++x) {
+            const i32 bx = (x + 8) * 16, by = (z + 2) * 16;
+            const i32 h[4] = {height(x, z), height(x + 1, z), height(x + 1, z + 1), height(x, z + 1)};
+            const i32 px[4] = {bx - sx0, bx + 16 - sx0, bx + 16 - sx0, bx - sx0};
+            const i32 py[4] = {by - (h[0] >> 1) - sy0, by - (h[1] >> 1) - sy0, by + 16 - (h[2] >> 1) - sy0, by + 16 - (h[3] >> 1) - sy0};
+            if (py[0] < opt_.height) more = true;
+            contour_cell(x, z, px, py, h, line);
+        }
+    } while (more && ++z < last_row);
+}
+
+void GameClient::contour_cell(int, int, const std::int32_t* px, const std::int32_t* py, const std::int32_t* h,
+                              const std::function<void(int, int, int, int, std::uint8_t)>& line) const {
+    // One cell (0x4181D0): four triangles meeting at the corners' mean, each (0x417F60) getting a
+    // line wherever a contour level crosses it.
+    const std::int32_t I = opt_.contour_interval, O = opt_.contour_offset;
+    static const std::uint8_t kColours[32] = {0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   111, 110, 109, 108, 107, 106,
+                                              88,  87,  86,  85,  84,  83,  82,  81,  80,  255, 255, 255, 255, 255, 255, 255};
     const int sea = b_.settings.sea_level;
     auto colour_of = [&](i32 level) -> std::uint8_t {
         const i32 k = (((level >> 8) - sea) + 0x100) >> 4;
@@ -385,8 +417,8 @@ void GameClient::draw_contours(render::DrawList& out, const render::Camera& came
             const i32 dca = hc - ha, dcb = hc - hb;
             do {
                 const i32 t1 = L - ha, t2 = L - hb;
-                out.line((xa * (dca - t1) + t1 * xc) / dca, (ya * (dca - t1) + t1 * yc) / dca, (xb * (dcb - t2) + t2 * xc) / dcb,
-                         (yb * (dcb - t2) + t2 * yc) / dcb, colour_of(L), clip);
+                line((xa * (dca - t1) + t1 * xc) / dca, (ya * (dca - t1) + t1 * yc) / dca, (xb * (dcb - t2) + t2 * xc) / dcb,
+                     (yb * (dcb - t2) + t2 * yc) / dcb, colour_of(L));
                 L -= I;
             } while (hb < L);
         }
@@ -394,41 +426,20 @@ void GameClient::draw_contours(render::DrawList& out, const render::Camera& came
             const i32 dca = hc - ha, dba = hb - ha;
             do {
                 const i32 t = L - ha;
-                out.line((xa * (dca - t) + t * xc) / dca, (ya * (dca - t) + t * yc) / dca, (xa * (dba - t) + t * xb) / dba,
-                         (ya * (dba - t) + t * yb) / dba, colour_of(L), clip);
+                line((xa * (dca - t) + t * xc) / dca, (ya * (dca - t) + t * yc) / dca, (xa * (dba - t) + t * xb) / dba,
+                     (ya * (dba - t) + t * yb) / dba, colour_of(L));
                 L -= I;
             } while (ha < L);
         }
     };
     auto quarter = [](i32 v) { return (v + ((v >> 31) & 3)) >> 2; };
-    auto sixteenth = [](i32 v) { return (v + ((v >> 31) & 15)) >> 4; };
-    const int sx0 = camera.scroll_x, sy0 = camera.scroll_y;
-    const int x0 = sixteenth(sx0);
-    int z = sixteenth(sy0);
-    const int x1 = std::min((opt_.width - 128) / 16 + 1 + x0, map.width - 1);
-    const int last_row = map.height - 1;
-    auto height = [&](int x, int zz) -> i32 {
-        return map.cells[static_cast<std::size_t>(zz) * static_cast<std::size_t>(map.width) + static_cast<std::size_t>(x)].height;
-    };
-    if (z >= last_row || x0 < 0 || z < 0) return;
-    bool more;
-    do {
-        more = false;
-        for (int x = x0; x < x1; ++x) {
-            const i32 bx = (x + 8) * 16, by = (z + 2) * 16;
-            const i32 h[4] = {height(x, z), height(x + 1, z), height(x + 1, z + 1), height(x, z + 1)};
-            const i32 px[4] = {bx - sx0, bx + 16 - sx0, bx + 16 - sx0, bx - sx0};
-            const i32 py[4] = {by - (h[0] >> 1) - sy0, by - (h[1] >> 1) - sy0, by + 16 - (h[2] >> 1) - sy0, by + 16 - (h[3] >> 1) - sy0};
-            if (py[0] < opt_.height) more = true;
-            const i32 cxm = quarter(px[0] + px[2] + px[3] + 2 + px[1]);
-            const i32 cym = quarter(py[1] + py[0] + py[3] + 2 + py[2]);
-            const i32 hm = (h[3] + h[0] + h[2] + h[1]) * 0x40;
-            for (int k = 0; k < 4; ++k) {
-                const int n = (k + 1) & 3;
-                tri(px[k], py[k], h[k] << 8, px[n], py[n], h[n] << 8, cxm, cym, hm);
-            }
-        }
-    } while (more && ++z < last_row);
+    const i32 cxm = quarter(px[0] + px[2] + px[3] + 2 + px[1]);
+    const i32 cym = quarter(py[1] + py[0] + py[3] + 2 + py[2]);
+    const i32 hm = (h[3] + h[0] + h[2] + h[1]) * 0x40;
+    for (int k = 0; k < 4; ++k) {
+        const int n = (k + 1) & 3;
+        tri(px[k], py[k], h[k] << 8, px[n], py[n], h[n] << 8, cxm, cym, hm);
+    }
 }
 
 }  // namespace client

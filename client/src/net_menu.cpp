@@ -194,6 +194,27 @@ NetBattleSession::NetBattleSession(std::unique_ptr<net::Transport> transport, st
     // The dropped messages draw the program's one rand(): the battle's while it runs.
     session_->sender.set_rand([this]() { return static_cast<std::int32_t>(inner_->battle().crt_rand.next()); });
     c.network.set_send_error = [this](int percent) { session_->sender.set_send_error(percent); };
+    // The debug view's network numbers (the bottom bar's PACKETS, the +NetStats line).
+    c.packets_from = [n](int slot) { return slot >= 0 && slot <= 10 ? n->counters().packets_from[static_cast<std::size_t>(slot)] : 0u; };
+    c.net_stats_counters = [n]() {
+        GameClient::NetStatsCounters s;
+        const net::NetCounters& k = n->counters();
+        const net::FrameSender::Stats& f = n->sender().stats();
+        s.packet_bytes_received = k.packet_bytes_received;
+        s.packet_bytes_sent = f.packet_bytes;
+        s.frames_sent = f.frames;
+        s.frame_bytes_sent = f.frame_bytes;
+        s.frames_received = k.frames_received;
+        s.frame_bytes_received = k.bytes_received;
+        s.wire_bytes_sent = f.wire_bytes;
+        return s;
+    };
+    // Packet 0x13: the sounds' echo out (never asked for by the original's callers), and a
+    // received interface echo played here with the echo off (0x453D40 case 0x11 -> 0x47F0C0).
+    c.network.send_sound = [this](std::int32_t sound, const sim::Vec3i* pos) { net_->send_sound(sound, pos); };
+    net_->on_interface_sound = [this](std::int32_t sound) {
+        if (sound >= 0) inner_->client().interface_sound(sound);
+    };
     // Only a received 0x1C shows a line ("Player %s has disconnected" with the record's session
     // name, kind 4, from the packet's sender: 0x453D40 case 0x1A); a player sent away (0x453010)
     // shows nothing.

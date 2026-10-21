@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstdio>
+#include <memory>
 #include <sstream>
 
 #include "client/audio.h"
@@ -116,6 +117,11 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
         } else if (ev == "leave") {
             e.type = InputEvent::Type::PointerLeave;
             out.push_back({frame, e});
+        } else if (ev == "deactivate" || ev == "activate") {
+            // The program window deactivated / activated (WM_ACTIVATE, Alt+Tab).
+            e.type = InputEvent::Type::Activate;
+            e.key = ev == "activate" ? 1 : 0;
+            out.push_back({frame, e});
         } else if (ev == "down" || ev == "up" || ev == "click") {
             e.x = num(2), e.y = num(3), e.button = w.size() > 4 ? num(4) : 1;
             InputEvent m = e;
@@ -186,6 +192,15 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
         if (!gpu) std::printf("GPU backend unavailable: %s\n", render::GpuRenderer::last_error().c_str());
     }
 #endif
+    {
+        auto windowed = std::make_shared<bool>(o.windowed_display);
+        client.toggle_display = [windowed, &client]() {
+            *windowed = !*windowed;
+            client.set_page_flip_possible(!*windowed);
+            std::printf("display: %s\n", *windowed ? "window" : "full screen");
+        };
+        client.set_page_flip_possible(!o.windowed_display);
+    }
     std::size_t next = 0;
     int total_steps = 0;
     // CLIENT_PROFILE=N: every N frames, the average time of each part of a frame, with the CPU
@@ -397,6 +412,24 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     SDL_StartTextInput(win);  // typed characters (Text events) for the text fields
     use_system_clipboard();   // the paste keys
     client.warp_pointer = [win, scale](int x, int y) { SDL_WarpMouseInWindow(win, static_cast<float>(x * scale), static_cast<float>(y * scale)); };
+    // Developer mode's '~': the stand-in for the full screen and a plain window at the desktop's
+    // corner, in turn (see run_front_end).
+    auto windowed = std::make_shared<bool>(false);
+    client.toggle_display = [win, scale, w, h, windowed, &client]() {
+        *windowed = !*windowed;
+        client.set_page_flip_possible(!*windowed);
+        if (!*windowed) {
+            SDL_SetWindowBordered(win, true);
+            fit_window_to_frame(win, w, h, scale);
+        } else {
+            SDL_SetWindowFullscreen(win, false);
+            SDL_SetWindowBordered(win, false);
+            SDL_SetWindowSize(win, w * scale, h * scale);
+            SDL_SetWindowPosition(win, 0, 0);
+            SDL_SyncWindow(win);
+        }
+        confine_pointer(win, nullptr);
+    };
     std::printf("window %dx%d (scale %d)\n", w * scale, h * scale, scale);
     std::unique_ptr<render::GpuRenderer> gpu;
     if (o.gpu) {

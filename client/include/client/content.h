@@ -223,6 +223,7 @@ struct Sample {
     int channels = 1;
     std::vector<std::int16_t> pcm;
     std::string name;  // the sound's file name (logs)
+    bool riff = true;  // a RIFF WAVE file (the system's PlaySound plays only those)
 };
 
 // Shot looks by weapon index (the battle view draws shots through these).
@@ -256,7 +257,7 @@ struct Content {
     const std::vector<render::Sprite8>* nuke_dots = nullptr;
     const std::vector<render::Sprite8>* radar_dots = nullptr;
     const render::Sprite8* radar_dot_hover = nullptr;
-    const Font* small_font = nullptr;
+    const Font* small_font = nullptr;  // fonts\smlfont.FNT (GS+0x391FD: the debug view's terrain marks)
     // The paused sign (drawn at the view's centre).
     const render::Sprite8* paused_sign = nullptr;
     std::vector<std::string> start_messages;      // console lines shown at the start
@@ -265,6 +266,7 @@ struct Content {
         std::string name;
         int metal = 0, energy = 0;
         std::uint16_t flags = 0;  // the definition's flag word (0x200: name only, 0x400: no line)
+        std::string internal_name;  // the definition's own name (shown in the debug view)
     };
     std::vector<FeatureLook> features;
     // A unit's status line on the bottom bar: the text of its head order's mission kind (index

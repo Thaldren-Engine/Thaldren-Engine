@@ -36,6 +36,7 @@
 
 #include "client/content.h"
 #include "client/game_client.h"
+#include "client/main_rand.h"
 #include "render/image.h"
 
 namespace sim {
@@ -45,7 +46,9 @@ class Battle;
 namespace client {
 
 class FrontEnd;
-class MusicPlayer;   // client/music.h
+class CdMusic;       // client/cd_audio.h
+class TickTimers;    // client/cd_audio.h
+class AudioOut;      // client/audio.h
 struct MenuContent;  // client/menu.h
 
 // ---------------------------------------------------------------- settings
@@ -336,6 +339,10 @@ public:
     virtual void restart_battle(BattleLauncher launcher) { start_battle(std::move(launcher)); }
     // Ends the program.
     virtual void quit() = 0;
+    // Ends the program at once, without its message loop's end (the original's exit(0) after an
+    // online service started, 0x4441A0): what WinMain does after the loop (0x4B6110: the mouse
+    // trails put back) does not happen.
+    virtual void exit_at_once() { quit(); }
     // Exit to Windows as the original does it (the main menu's EXIT, 0x425D80 state 8; the exit
     // menu's "Exit Game" answered Yes, 0x4605C0 -> 0x491C60): in a battle the music goes silent
     // and the session leaves the game (network games: the local players' units die and the
@@ -348,6 +355,17 @@ public:
     // setup's unit_limit), replaced by a loaded save's maxunits (0x432610); skirmish starts, save
     // loads and the network room's host slider read it.
     int& unit_limit() { return unit_limit_; }
+    // Developer mode (GS+0x37F2F bit 1): read from the settings (0x42F9A0: on only when
+    // DisplaymodeDepth is 256 and Games is 1, values the settings writer never writes) at
+    // start-up, on entering the skirmish menu (0x4273E8) and by the row-count cheat (0x47BB52);
+    // the console's password line ("+Now Film Chris Include Reload Assert", 0x416E90) sets or
+    // clears it in a battle, and the menus keep what the battle left. A running battle holds it
+    // as its client's debug_commands option.
+    bool& developer_mode() { return developer_; }
+    void read_developer_mode() { developer_ = developer_from_settings(settings()); }
+    static bool developer_from_settings(const Settings& s) {
+        return s.get_int("DisplaymodeDepth", 0) == 256 && s.get_int("Games", 0) == 1;
+    }
     virtual FrontEndHooks& hooks() = 0;
     // Menu art and sounds (the importer's), the frame size, the menu palette.
     virtual const MenuContent& menu_content() const = 0;
@@ -368,16 +386,30 @@ public:
     virtual void stop_narration() {}
     // Every playing sound stops (the sound mode switched off).
     virtual void stop_sounds() {}
-    // The music player (null when there is no music).
-    virtual MusicPlayer* music() = 0;
+    // The CD music player (null when there is no music; client/cd_audio.h).
+    virtual CdMusic* music() = 0;
+    // The main thread's C runtime rand() (client/main_rand.h): the menus, the network room, the
+    // music and, while a battle runs, the battle's own stream are this one sequence.
+    virtual sim::Lcg15& crt_rand() = 0;
+    // The network session flag (GS+0x2A44 bit 0: set when this machine created or joined a game,
+    // 0x426E80 after 0x457710 / 0x450D80; cleared when the session closes, 0x450DD0 / 0x452370,
+    // and by the statistics after a network battle, 0x41EC50). While it is set the main loop
+    // keeps running with the window inactive (WinMain 0x49E830). The flag is set while the
+    // returned token lives (and the front end has not cleared it).
+    virtual std::shared_ptr<void> network_session() { return nullptr; }
+    // The original's settings writer (0x430F00, the registry): what was saved last is what the
+    // music library reads (saved_settings). Called where the original writes the registry
+    // (the options menu's OK, a battle's start, the commands that save).
+    virtual void write_registry() {}
+    virtual const Settings& saved_settings() const = 0;
     // Applies the settings (volumes, speeds, interface options) after an options screen.
     virtual void apply_settings() = 0;
     // Milliseconds since the program started (the main loop's clock).
     virtual std::uint32_t now_ms() const = 0;
     // The desktop's size in pixels (the screen-size choices depend on it).
     virtual void desktop_size(int& w, int& h) const = 0;
-    // Whether the program's window has the keyboard focus (GetFocus() == the window; headless:
-    // always).
+    // Whether the program's window is the active one (the runner's activation state, the same
+    // one the inactive-window pause uses; the movie player's GetFocus() test, 0x47C3A0).
     virtual bool window_focused() const { return true; }
     // The menus' pointer look (0x491C80: 19 the plain pointer, 20 the hourglass): what the
     // pointer shows outside the top screen's box (Screen::pointer_box); kept until changed.
@@ -396,6 +428,7 @@ public:
 
 protected:
     int unit_limit_ = 250;
+    bool developer_ = false;
 };
 
 // ---------------------------------------------------------------- running it
@@ -418,12 +451,28 @@ struct FrontEndSetup {
     // Closing the window while a battle runs: the question shown instead of quitting (null:
     // quit at once).
     std::function<std::unique_ptr<Screen>(FrontEnd&, BattleSession&)> close_prompt;
-    MusicPlayer* music = nullptr;
+    // The CD music (client/cd_audio.h; null: none): the player, the program's tick timers
+    // (pumped once per main-loop pass) and the device's own turns (once per pass).
+    CdMusic* music = nullptr;
+    TickTimers* timers = nullptr;
+    std::function<void()> music_pass;
+    std::function<void(AudioOut*)> music_output;  // the audio output once it is open (null: none)
+    std::function<void(std::uint32_t)> music_clock;  // the main loop's clock (ms) at each pass, for the devices and timers
+    void* native_window = nullptr;  // the program window's handle once it is open (HWND on Windows)
+    // The main thread's rand() (client/main_rand.h; null: the front end keeps its own, seeded 1).
+    // The music's picks draw from it too, so the program that owns the music gives it here.
+    MainRand* main_rand = nullptr;
+    // The registry as the original last wrote it (FrontEnd::saved_settings): the music library
+    // reads its "musicvol" and "cdmode" from here.
+    Settings saved_settings;
     // Applies the settings to a running battle's client (game speed, interface type, ...).
     std::function<void(FrontEnd&, BattleSession&)> apply_to_battle;
     // The screenshot key (Ctrl+F9, in menus and battles): the frame shown last goes to
     // <shot_dir>/<shot_prefix>NNNN.pcx (front.h, save_numbered_picture).
     std::string shot_dir, shot_prefix;
+    // Set by run_front_end: the window's loop ended the way the original's message loop does
+    // (window closed, Exit to Windows, Alt+F4), not by exit_at_once() or a failed window.
+    bool loop_ended = false;
 };
 
 struct FrontOptions;  // client/front.h

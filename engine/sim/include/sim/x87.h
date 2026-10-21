@@ -7,6 +7,19 @@
 
 namespace sim::x87 {
 
+// The FPU's invalid-operation trap unmasked (a program switch; off by default): an
+// out-of-range conversion then faults, as the x87's FISTP does with the trap unmasked.
+inline bool& invalid_traps() {
+    static bool on = false;
+    return on;
+}
+// Raises the invalid operation on the floating-point unit (a fault when its trap is unmasked).
+inline void raise_invalid() {
+    volatile double z = 0.0;
+    volatile double r = z / z;
+    (void)r;
+}
+
 // Truncating float -> int64. NaN or out-of-range yields INT64_MIN
 // (the x87 "integer indefinite" value).
 inline std::int64_t ftol64(double v) {
@@ -14,6 +27,7 @@ inline std::int64_t ftol64(double v) {
     // Doubles next to -2^63 are 2048 apart, so v >= -2^63 is exactly the
     // condition for trunc(v) to fit. NaN fails both comparisons.
     if (!(v >= -kLimit && v < kLimit)) {
+        if (invalid_traps()) raise_invalid();
         return INT64_MIN;
     }
     return static_cast<std::int64_t>(std::trunc(v));

@@ -176,11 +176,26 @@ render::DrawList GameClient::draw() {
     scene.options.unit_shadows = opt_.unit_shadows;
     scene.options.feature_shadows = opt_.feature_shadows;
     add_selection_outlines(scene);
+    // The debug view's terrain views draw every unit see-through (UnitTable_DrawModelComposite
+    // 0x459200 blends whenever GS+0x14280 is not 0).
+    if (debug_.grid != 0)
+        for (render::UnitInstance& ui : scene.units) ui.translucent = true;
+    visible_units_ = scene.units.size();
+    const std::uint32_t rand_before = scene.crt_rand_state;
     // The top bar's art is drawn right after the terrain (its pieces may reach into the view's
     // first rows; units, shots and effects draw over them there): its own piece at x 129, then
     // (wider screens) the bottom bar's piece repeated.
     scene.after_terrain = [this, w, h, &scene](render::DrawList& out) {
-        draw_contours(out, scene.camera);  // (0x418310, right after the terrain)
+        // (0x418310, right after the terrain: the debug view's terrain marks with the contour
+        // lines per cell, else the contour lines alone; mode 2's cross at the pointer)
+        if (debug_.grid != 0) {
+            std::uint32_t state = scene.crt_rand_state;
+            draw_terrain_debug(out, scene.camera, state);
+            scene.crt_rand_state = state;  // (the shots drawn later go on from here)
+            if (debug_.grid == 2) draw_pointer_cross(out);
+        } else {
+            draw_contours(out, scene.camera);
+        }
         if (!side_) return;
         const render::ClipRect all{0, 0, w - 1, bar_redrawn_ ? h - 1 : 31};
         for (int x = 129; side_->panel_top && x < w;) {
@@ -202,6 +217,8 @@ render::DrawList GameClient::draw() {
             sp.pixels = std::move(bars.pixels);
             out.blit(out.keep(std::move(sp)), 0, 0, scene.camera.view_clip(), false);
         }
+        // The debug view with INFO: the first selected unit's route (before the fog).
+        if (debug_.on && debug_.info) draw_route_debug(out);
     };
     // The units drawn this frame (picking, double clicks, notices).
     on_screen_.clear();
@@ -219,7 +236,8 @@ render::DrawList GameClient::draw() {
     // Lightning shots on screen draw the C runtime's rand() while the original draws them
     // (Gfx_DrawProjectiles 0x49BE60, three draws a segment): the simulation's sequence moves on
     // by those draws, as the original's does.
-    if (c_.fill_scene && rand_after != scene.crt_rand_state) b_.crt_rand.set_state(rand_after);
+    // (The debug view's terrain marks draw it too, before the shots: rand_after holds both.)
+    if (c_.fill_scene && rand_after != rand_before) b_.crt_rand.set_state(rand_after);
     {
         // The original's unit drawing (0x45AC20) brings the drawn units' poses up to date in
         // the simulation's state (debris and shards start from them): the battle's own units
@@ -379,6 +397,7 @@ void GameClient::draw_overlay(render::Image8& o, std::vector<std::uint8_t>&) {
     draw_top_bar(o);
     draw_bottom_bar(o);
     draw_minimap(o);
+    draw_debug_line(o);  // (the debug view's status line, after the console)
     // Build buttons' captions: the focus unit's queued count of the type ("+n", none at 0),
     // laid out as the button's description says, in its font and colour (black while pressed).
     if (const Panel* p = current_panel())
@@ -703,6 +722,7 @@ void GameClient::draw_caption(render::Image8& o, const Button& b, const std::str
 }
 
 void GameClient::draw_bottom_bar(render::Image8& o) {
+    if (draw_info_bar(o)) return;  // (the debug view with INFO: its numbers instead)
     if (!side_ || !side_->font) return;
     const Font& f = *side_->font;
     const render::ClipRect all = o.bounds();
@@ -746,9 +766,10 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
         const sim::FeatureTypeInfo& ft = b_.features[k];
         const Content::FeatureLook* fl = k < c_.features.size() ? &c_.features[k] : nullptr;
         const std::uint16_t fflags = fl ? fl->flags : 0;
-        if (fflags & 0x400) return;
+        // (the debug view shows these too, by the definition's own name)
+        if ((fflags & 0x400) && !debug_.on) return;
         // (The description goes through the translation, 0x46B869 / 0x46B887.)
-        std::string n = fl ? tr(fl->name) : std::string();
+        std::string n = fl ? tr(debug_.on ? fl->internal_name : fl->name) : std::string();
         if (!(fflags & 0x200)) {
             char m[32] = "", e[32] = "";
             if (!(ft.metal == 0.0f || ft.metal != ft.metal)) std::snprintf(m, sizeof m, " M:%d", whole(ft.metal));
@@ -773,7 +794,8 @@ void GameClient::draw_bottom_bar(render::Image8& o) {
     if (u.type && (mine || !hides_health(t))) bar(side_->damage_bar, u.hit_points, static_cast<int>(u.type->max_damage));
     // The owner's colour logo in LOGO2.
     draw_logo(o, c_.team_logos, c_.player_colour[static_cast<std::size_t>(t.owner) % c_.player_colour.size()], side_->logo2, dy);
-    if (mine) {
+    // (the debug view shows the numbers, kills and status of every unit, 0x46B0D0)
+    if (mine || debug_.on) {
         bar_text(o, f, "+" + crt_fixed(t.metal_make_prev, 1), side_->unit_metal_make.x1, side_->unit_metal_make.y1 + dy, c_.hud[10]);
         bar_text(o, f, "+" + crt_fixed(t.energy_make_prev, 0), side_->unit_energy_make.x1, side_->unit_energy_make.y1 + dy,
                   c_.hud[10]);

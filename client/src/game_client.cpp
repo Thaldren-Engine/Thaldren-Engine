@@ -313,7 +313,9 @@ int GameClient::frame(std::uint32_t now_ms) {
         b_.profile_mark = nullptr;
     }
     if (mdrag_) view_drag_step();  // (the input pass, before the steps)
+    last_now_ms_ = now_ms;
     int steps = budget_.update(now_ms, network.remote_lag ? network.remote_lag() : 0);
+    budget_steps_ = steps;  // (GS+0x38A3B, the debug view's DELTATIME)
     if (network.remote_lag) steps = std::min(steps, 1);  // network games: one step per frame at most
     for (int k = 0; k < steps; ++k) {
         step_battle(b_);
@@ -399,10 +401,19 @@ void GameClient::minimap_jump(int x, int y) {
 
 // ---- sounds and messages ---------------------------------------------------------------------
 
-void GameClient::play_ui(int sample) {
+// Whether 0x47F0C0 / 0x47F300 send their packet 0x13 when asked: not the wave-out path (it plays
+// and returns first), the effect volume (GS+0x37F0C) and the sound mode (GS+0x37F19 & 7) on,
+// DirectSound present (0x51E690 clear); an id other than 0xFFFF.
+static bool echoes(const ClientOptions& o, int sample) {
+    return sample != 0xFFFF && !o.wave_out && o.fx_volume != 0 && (o.sound_mode & 7) != 0 && !o.no_direct_sound;
+}
+
+void GameClient::play_ui(int sample, bool echo) {
     // An interface sound (0x47F0C0): centred, 5.85 dB down; nothing while the effect volume or
-    // the sound mode is off.
-    if (sample < 0 || opt_.fx_volume == 0 || opt_.sound_mode == 0) return;
+    // the sound mode is off. With `echo` (no caller of the shipped program sets it) packet 0x13
+    // goes to everybody first, with the stack's bytes after the id (zeros here: an input).
+    if (echo && echoes(opt_, sample) && network.send_sound) network.send_sound(sample, nullptr);
+    if (sample < 0 || (!opt_.wave_out && (opt_.fx_volume == 0 || opt_.sound_mode == 0))) return;
     SoundEvent e;
     e.sample = sample;
     sounds_.push_back(e);
@@ -414,10 +425,19 @@ std::vector<SoundEvent> GameClient::take_sounds() {
     return out;
 }
 
-void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos) {
+void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos, bool echo) {
     // A world sound (0x47F300; client/sound_rules.h): judged by the effect settings, the map,
-    // the viewed player's sight and the view.
+    // the viewed player's sight and the view. With `echo` packet 0x13 goes to everybody before
+    // the map and sight tests (whether or not it is heard here).
+    if (echo && echoes(opt_, sample) && network.send_sound) network.send_sound(sample, &pos);
     if (sample == 0xFFFF || sample >= c_.samples.size()) return;
+    if (opt_.wave_out) {
+        // (the wave-out path plays it as an interface sound: no map, sight or view rules)
+        SoundEvent e;
+        e.sample = sample;
+        sounds_.push_back(e);
+        return;
+    }
     SoundView v;
     v.fx_volume = opt_.fx_volume;
     v.sound_mode = opt_.sound_mode;
@@ -457,7 +477,7 @@ struct GameClient::NoticeHost : NoticeQueue::Host {
         if (!l || pick < 0 || static_cast<std::size_t>(pick) >= l->size()) return;
         int sample = (*l)[static_cast<std::size_t>(pick)];
         if (c.opt_.sing) sample = ((c.b_.game_tick() / 30) & 7) == 0 ? c.c_.ui_sounds.honk : c.c_.ui_sounds.sing;
-        if (sample < 0 || c.opt_.fx_volume == 0 || c.opt_.sound_mode == 0) return;
+        if (sample < 0 || (!c.opt_.wave_out && (c.opt_.fx_volume == 0 || c.opt_.sound_mode == 0))) return;
         SoundEvent e;
         e.sample = sample;
         e.one_shot = true;
@@ -1033,6 +1053,12 @@ void GameClient::handle(const InputEvent& e) {
         break;
     case InputEvent::Type::Text:
         text_events_ = true;
+        if (e.key == '~' && opt_.debug_commands) {
+            // Developer mode: '~' switches between the full screen and a window (0x499890 takes
+            // it off the key queue before anything else sees it, the chat line too: 0x4B5910).
+            if (toggle_display) toggle_display();
+            break;
+        }
         if (!chat_) {
             InputEvent k = e;
             k.type = InputEvent::Type::KeyDown;
@@ -1273,6 +1299,24 @@ void GameClient::chat_insert(int ch) {
 }
 
 void GameClient::key_down(const InputEvent& e, bool typed) {
+    // A key the battle's key routine (0x495E90) takes goes, with the debug view on, to the debug
+    // keys (0x4956C0) as well, after the routine's own handling (the chat line's keys do not).
+    const bool to_debug = debug_.on && !chat_;
+    battle_key(e, typed);
+    if (!to_debug) return;
+    int k = e.key;
+    if (!typed && e.shift && !e.ctrl && !e.alt && k >= 0x20 && k < 0x7F) {
+        static const char kFrom[] = "1234567890-=[];',./`\\";
+        static const char kTo[] = "!@#$%^&*()_+{}:\"<>?~|";
+        if (k >= 'a' && k <= 'z') k = std::toupper(k);
+        else if (const char* p = std::strchr(kFrom, k)) k = kTo[p - kFrom];
+    }
+    if (k == '~' && opt_.debug_commands) return;  // (taken by the main loop's frame)
+    if (e.ctrl) return;  // (Ctrl+letter gives other codes; with Alt a letter is its lower-case letter)
+    debug_key(k);
+}
+
+void GameClient::battle_key(const InputEvent& e, bool typed) {
     int k = e.key;
     // A character key that came without its typed character (scripted runs): Shift makes the
     // character a US keyboard would type, as the original's queue would get it.
@@ -1281,6 +1325,11 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
         static const char kTo[] = "!@#$%^&*()_+{}:\"<>?~|";
         if (k >= 'a' && k <= 'z') k = std::toupper(k);
         else if (const char* p = std::strchr(kFrom, k)) k = kTo[p - kFrom];
+    }
+    if (k == '~' && !typed && opt_.debug_commands && (!chat_ || !text_events_)) {
+        // (developer mode's display switch, as for the typed character in handle())
+        if (toggle_display) toggle_display();
+        return;
     }
     // The chat line takes every key while it is open (its text field's editing, 0x4AB720):
     // Enter sends the line and closes it, Escape closes it with the line dropped; Backspace
@@ -1354,6 +1403,7 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
                              b_.players[static_cast<std::size_t>(opt_.player)].active &&
                              b_.settings.player_sight[static_cast<std::size_t>(opt_.player)].watching;
         if (watcher) return;
+        if (debug_.on) return;  // (the debug view: '=' is a debug key)
         const bool up = k == '+' || k == '=';
         if (up ? budget_.game_speed < 20 : budget_.game_speed > 1) {
             set_game_speed(budget_.game_speed + (up ? 1 : -1));
@@ -1430,6 +1480,11 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
     if (k == keys::kF1 + 3 && !e.ctrl) {
         // F4: the kills and losses panel stays out (visual option bit 0x80).
         opt_.scoreboard = !opt_.scoreboard;
+        return;
+    }
+    if (k == keys::kF1 + 10 && !e.ctrl) {
+        // F11: the debug view on / off (developer mode only, 0x495E90 case 0xEC).
+        toggle_debug_view();
         return;
     }
     if (k == keys::kF1 + 11 && !e.ctrl) {
@@ -1510,8 +1565,9 @@ void GameClient::key_down(const InputEvent& e, bool typed) {
         if (opt_.debug_commands && on_command) on_command(last_command_, 0xFFFFFFFFu);
         return;
     }
-    // Quick keys of the shown panel's buttons (either case).
-    if (!e.ctrl && k > 0 && k < 0x100)
+    // Quick keys of the shown panel's buttons (either case); not while the debug view has them
+    // switched off (the battle layout's +0xCC6).
+    if (!e.ctrl && k > 0 && k < 0x100 && debug_.quick_keys)
         if (const Panel* p = current_panel())
             for (const Button& btn : p->buttons)
                 if (btn.quickkey > 0 && std::tolower(btn.quickkey) == std::tolower(k)) {
@@ -1731,6 +1787,12 @@ void GameClient::reset_net_stats() {
     // counters go on: the client counts from their present values).
     net_base_sent_ = net_raw_sent_;
     net_base_received_ = net_raw_received_;
+    // (the +NetStats line's totals too; the compressed bytes, 0x511DC8, go on)
+    if (net_stats_counters) {
+        const std::uint32_t wire = netstats_base_.wire_bytes_sent;
+        netstats_base_ = net_stats_counters();
+        netstats_base_.wire_bytes_sent = wire;
+    }
     bps_.sent = 0;
     bps_.received = 0;
 }

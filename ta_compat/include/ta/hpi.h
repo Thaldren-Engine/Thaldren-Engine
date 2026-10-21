@@ -165,6 +165,9 @@ public:
 
     const std::vector<std::unique_ptr<HpiArchive>>& archives() const { return archives_; }
     const std::filesystem::path& game_dir() const { return root_; }
+    // The disk file a game path names inside the game directory (the original's working
+    // directory: what fopen / DeleteFileA of the relative path reach).
+    std::filesystem::path disk_file(std::string_view path) const;
 
     // Where a path resolves: a loose file (source -1, entry null), the first archive
     // in mount order whose lookup gives a file (source = mount index), or nothing

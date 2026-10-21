@@ -327,12 +327,17 @@ Transcendentals reached by simulation code: `FSQRT` (26 sites: `std::sqrt` is IE
   (`rotate_point_2d`), both emulated.
 - Float to int16 or byte: `__ftol`, then the low bits (`static_cast<i16>(ftol32(...))`). OK.
 
+The palette builders `0x4BABD0` / `0x4BADF0` (light and shade levels: double factors stored
+with `fstp qword`, FILD × factor, `__ftol`) are ported bit-exactly (2026-10-21,
+`ta_compat/src/palette_tables.cpp`; palette_harness: 0 differing bytes against the original on
+245 palettes).
+
 ## 4. OPEN
 
 None in sim-affecting code.
 
 Not audited for bit-exactness (out of scope, display only): render and HUD arithmetic
-(`0x420D20`, `0x458xxx`–`0x459xxx`, `0x468CF0`, `0x46A860`, palettes `0x4BABD0`/`0x4BADF0`),
+(`0x420D20`, `0x458xxx`–`0x459xxx`, `0x468CF0`, `0x46A860`),
 GUI layout (`0x45xxxx`, `0x4A2xxx`), the music volume (`0x4CDB40`).
 `client_loading.cpp:87` and `client_net_screens.cpp` use plain casts where the original uses
 `__ftol`. They agree for every in-range value.

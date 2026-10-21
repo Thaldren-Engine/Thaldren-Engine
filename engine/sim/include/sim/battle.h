@@ -272,6 +272,7 @@ public:
     EffectLists fx_lists;             // the other particle emitters of the effect sweep (sim/effect_lists.h)
     EffectsEnvironment effect_art;    // effect sequences (the rest is synced from the settings)
     Lcg15 crt_rand;                   // the C runtime rand() stream of the simulation thread
+    std::int32_t live_units = 0;      // units the last unit pass went through (presentation only)
     ProjectileTable projectiles;
     MapGrid map;
     UnitBuckets buckets;  // sized by init_buckets() once the map is set

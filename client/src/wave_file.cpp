@@ -68,15 +68,18 @@ bool decode_wav(const std::vector<std::uint8_t>& f, Sample& out) {
         const int rate = static_cast<int>(u32_at(f, fmt + 4));
         const int bits = u16_at(f, fmt + 14);
         fill(out, f, data, data_size, rate, bits, channels);
+        out.riff = true;
         return !out.pcm.empty();
     }
     if (tag_at(f, 0, "DIGI") && tag_at(f, 8, "HSHD") && tag_at(f, 0x20, "SDAT")) {
         int rate = u16_at(f, 0x16) | u16_at(f, 0x18) << 16;
         if (rate == 11000) rate = 11025;
         fill(out, f, 0x28, f.size() - 0x28, rate, 8, 1);
+        out.riff = false;
         return !out.pcm.empty();
     }
     fill(out, f, 0, f.size(), 11025, 8, 1);
+    out.riff = false;
     return !out.pcm.empty();
 }
 

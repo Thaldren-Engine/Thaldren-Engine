@@ -34,7 +34,9 @@ struct InputEvent {
     // keyboard layout; KeyDown still comes for the key itself.
     // PointerLeave: the system pointer left the picture (only possible while the window does not
     // hold it): no pointer is drawn and none is at an edge until the next mouse event.
-    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text, PointerLeave } type = Type::MouseMove;
+    // Activate: the program window activated (key 1) or deactivated (key 0): WM_ACTIVATE's low
+    // word (0x4B5CC0 writes the display's +0xE0); only the front end takes it.
+    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text, PointerLeave, Activate } type = Type::MouseMove;
     int x = 0, y = 0;  // frame coordinates (mouse events)
     int button = 0;    // 1 left, 2 middle, 3 right
     int key = 0;       // keys:: or a character
@@ -65,6 +67,13 @@ struct ClientOptions {
     int sound_mode = 1;              // 0 off, 1 mono (world sounds centred), 2 3D (placed around the view's centre)
     int fx_volume = 27;              // effect volume 0..64 (0: no sounds start at all)
     bool sing = false;               // unit notices replaced by the two "sing" sounds (a command)
+    // The Windows wave-out sound path (-w / UseWindowsSound, 0x51E694): every sound starts
+    // without the effect volume, sound mode, map, sight and view rules (0x47F0C0, 0x47F300,
+    // 0x47FD70 take that path first).
+    bool wave_out = false;
+    // No DirectSound (0x51E690: -s, NoDirectSound, and with the wave-out path): the sounds'
+    // packet 0x13 is never sent (0x47F0C0 / 0x47F300 test it).
+    bool no_direct_sound = false;
     // Typed commands (chat lines starting with '+', docs/RE_MEMORY.md "Console commands").
     bool cheats = false;             // cheat commands allowed (skirmish; network games whose host allows them)
     bool debug_commands = false;     // the debug commands unlocked (by a command)
@@ -83,6 +92,20 @@ struct ClientOptions {
     // height units (x 256), offset by m; 0: none.
     std::int32_t contour_interval = 0, contour_offset = 0;
     bool profile = false;            // "+profile" (GS+0x38DD5): the timing panel
+};
+
+// The original's debug view (developer mode's F11: GS+0x3923B bits 0 and 1, GS+0x14280) and
+// what goes with it. The program keeps all of it from one battle to the next (only its start-up
+// clears it, 0x491200), so a battle starts with what the last one left.
+struct DebugViewState {
+    bool on = false;         // F11 (bit 1): keys go to the debug keys too, the status line shows
+    bool info = false;       // 'i' while on (bit 0): the bottom bar's numbers, the selected unit's route
+    int grid = 0;            // 'm' while on (GS+0x14280, 0..4): the terrain view; units drawn see-through
+    bool quick_keys = true;  // the battle layout's quick keys (GS+0x519 +0xCC6): off while the view is on
+    bool page_flip = false;  // 'P' / 'p' (the display's +0xF0 bit 0; shown as PFSTATE)
+    // The frame counter (0x4B66A0, the display's +0x1DA..+0x1E6): run only by frames showing it.
+    std::int32_t frate_acc = 0, frate_count = 0, frate_shown = 0;
+    std::uint32_t frate_last = 0;
 };
 
 // The minimap's place in its 126 x 126 square for a map whose scroll extent is sw x sh
@@ -127,6 +150,9 @@ public:
         std::function<void(std::uint8_t bit)> toggle_share_flag;
         // "+senderror n" (GS+0x37F35): the share of outgoing messages dropped.
         std::function<void(int percent)> set_send_error;
+        // Packet 0x13, the sound echo (net::NetBattle::send_sound): the sound's bank index and,
+        // for a world sound, its position.
+        std::function<void(std::int32_t sound, const sim::Vec3i* pos)> send_sound;
     };
     NetworkHooks network;
     // The chat line (Enter): a typed line goes here when Enter is pressed again.
@@ -160,6 +186,29 @@ public:
     // Moves the system pointer to frame pixel (x, y) (SetCursorPos; the view drag); unset: the
     // client's own pointer position only.
     std::function<void(int x, int y)> warp_pointer;
+    // Developer mode's '~' (0x499890 -> 0x4B5910): the display goes from the full screen to a
+    // window of the screen's size and back.
+    std::function<void()> toggle_display;
+    // The debug view (program-wide: the front end hands it from battle to battle).
+    const DebugViewState& debug_view() const { return debug_; }
+    void set_debug_view(const DebugViewState& s) { debug_ = s; }
+    // Whether page flipping is possible (the display's +0x9C: the full screen's flipping
+    // surfaces; a window has none). Shown as PFABLE by the debug view's bottom bar.
+    void set_page_flip_possible(bool on) { pfable_ = on; }
+    // The display is the full screen (the display's +0xF0 bit 1; the same as page flipping
+    // possible here).
+    bool full_screen() const { return pfable_; }
+    // The players' packet counts (each player record's +0x10: packets received from it), shown
+    // by the debug view's bottom bar; network games set it.
+    std::function<std::uint32_t(int slot)> packets_from;
+    // The +NetStats line's counters (0x415FA0; network games): see NetStatsCounters.
+    struct NetStatsCounters {
+        std::uint32_t packet_bytes_received = 0, packet_bytes_sent = 0;  // 0x511BC0 / 0x511BC4 (0x415EF0)
+        std::uint32_t frames_sent = 0, frame_bytes_sent = 0;            // 0x511C34 / 0x511BC8 (0x415F40)
+        std::uint32_t frames_received = 0, frame_bytes_received = 0;    // 0x511C48 / 0x511C50
+        std::uint32_t wire_bytes_sent = 0;                              // 0x511DC8: sent frames as they went out
+    };
+    std::function<NetStatsCounters()> net_stats_counters;
     // The film (debug switch; Ctrl+F10, 0x495E90 case 0xD7, and the battle loop 0x496790): a
     // frame is due once the game tick reaches the next film tick; the front writes the frame it
     // draws next into the film's folder (FRAMnnnn.pcx) and calls film_written.
@@ -205,7 +254,9 @@ public:
     void set_pointer_hidden(bool h) { pointer_hidden_ = h; }
 
     // Presentation events from the simulation (the battle's outside forwards them).
-    void on_sound(std::uint16_t sample, const sim::Vec3i& pos);
+    // `echo`: the original's third argument of 0x47F300 (packet 0x13 to the other machines; no
+    // caller in the shipped program sets it).
+    void on_sound(std::uint16_t sample, const sim::Vec3i& pos, bool echo = false);
     // An interface sound by sample index (centred; the simulation's cues such as a mission
     // goal met).
     void interface_sound(int sample) { play_ui(sample); }
@@ -391,6 +442,7 @@ private:
     void mouse_down(const InputEvent& e);
     void mouse_up(const InputEvent& e);
     void key_down(const InputEvent& e, bool typed = false);  // typed: from a Text event
+    void battle_key(const InputEvent& e, bool typed);         // the battle's key routine (0x495E90)
     bool in_category(std::uint16_t type, const char* category) const;
     void left_click_map(const InputEvent& e);
     void right_click_map(const InputEvent& e);
@@ -407,7 +459,8 @@ private:
     void minimap_jump(int x, int y);
     bool on_minimap(int x, int y);
     sim::Vec3i minimap_world(int x, int y);
-    void play_ui(int sample);
+    // 0x47F0C0(sample, echo): `echo` sends packet 0x13 (no caller in the shipped program sets it).
+    void play_ui(int sample, bool echo = false);
     void speak(const sim::Unit& u, std::uint32_t id);
     // Unit notices: the original's speech queue (8 entries by priority, per-notice gaps).
     void select_category(const std::string& category, bool keep);
@@ -554,7 +607,39 @@ private:
     void draw_profile(render::DrawList& list);
     // +contour: the lines over the terrain (0x418310 -> 0x4181D0 / 0x417F60).
     void draw_contours(render::DrawList& out, const render::Camera& camera) const;
-    int film_number_ = 0;              // GS+0x38C53: the film's MOVIEnnn number, 0 while not filming
+    // The debug view (client/src/debug_view.cpp).
+    DebugViewState debug_;
+    bool pfable_ = true;                  // the display's +0x9C
+    std::uint32_t last_now_ms_ = 0;       // the wall clock of the last pass (the frame counter)
+    int budget_steps_ = 0;                // GS+0x38A3B: the steps the last pass's budget gave
+    std::size_t visible_units_ = 0;       // GS+0x14367: the units of the last frame's visible list
+    // +NetStats's rates (0x415FA0; the totals at the last update, the rates, the update's tick).
+    struct NetStatsLine {
+        NetStatsCounters prev{};
+        std::uint32_t tick = 0, wire_prev = 0;
+        std::uint32_t ps = 0, pr = 0, s_count = 0, s_bytes = 0, r_count = 0, r_bytes = 0;
+        std::int32_t compression = 0;
+    } netstats_;
+    NetStatsCounters netstats_base_{};    // the totals "+netstats" started again from (0x417570)
+    // One cell's contour lines (0x4181D0 / 0x417F60) through `line` (x0, y0, x1, y1, colour).
+    void contour_cell(int x, int z, const std::int32_t* px, const std::int32_t* py, const std::int32_t* ht,
+                      const std::function<void(int, int, int, int, std::uint8_t)>& line) const;
+    bool debug_key(int k);                // 0x4956C0
+    void toggle_debug_view();             // F11 (0x495E90 case 0xEC)
+
+public:
+    // (public for the frame comparisons)
+    // 0x418310 with a terrain view mode: the cell marks (and the contour lines, per cell),
+    // drawn on a layer of their own; draws the C runtime's rand() (mode 1) from `rand_state`.
+    void draw_terrain_debug(render::DrawList& out, const render::Camera& camera, std::uint32_t& rand_state) const;
+    void draw_pointer_cross(render::DrawList& out) const;  // mode 2's mark at the pointer's map point
+    void draw_route_debug(render::DrawList& out) const;    // 0x417F30 -> the route goal's 0x417E00
+
+private:
+    void draw_debug_line(render::Image8& o);                // FRATE / [Release] / MODE / INFO, +NetStats
+    bool draw_info_bar(render::Image8& o);                  // the bottom bar's numbers (INFO on)
+    std::string net_stats_text();                           // 0x415FA0
+    int film_number_ = 0;             // GS+0x38C53: the film's MOVIEnnn number, 0 while not filming
     std::string film_folder_;
     std::uint32_t film_next_tick_ = 0;  // GS+0x38C5B
     bool film_due_ = false;

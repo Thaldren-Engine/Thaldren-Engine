@@ -113,16 +113,6 @@ BlendTable light_blend_table(const std::vector<std::uint8_t>& light32);
 // table: entry [src * 256 + dst] = grey of dst, for any src.
 BlendTable gray_remap_table(const Palette& palette);
 
-// The game's colour tables computed from its palette, for when their files are missing (the
-// original's 0x4BA750 / 0x4BADF0 / 0x4BABD0, each through the nearest-colour search above):
-// the mixing table, entry [s * 256 + d] = s when s = d, else the colour nearest to the
-// components' halved sums; the 32-level shade table, level L = each component × (L × 0.06875,
-// a double summed level by level), truncated, above 0xFF → 0xFF; the 32-level light table,
-// level L = each component × (1 + L / 30), truncated, at most 0xFF.
-BlendTable mixing_table(const Palette& palette);
-std::vector<std::uint8_t> shade_levels(const Palette& palette);
-std::vector<std::uint8_t> light_levels(const Palette& palette);
-
 // Turns every Line command into a transient sprite holding exactly the
 // reference line's pixels, so backends without a line primitive stay exact.
 void lines_to_sprites(DrawList& list);

@@ -34,6 +34,11 @@ struct NetCounters {
     // Bytes of the messages handed to and taken from the transport (the original's 0x415F40
     // totals behind the +bps display).
     std::uint32_t bytes_sent = 0, bytes_received = 0;
+    // The debug view's counters (presentation only): messages taken from the transport
+    // (0x415F40 receive side), the bytes of the packets read out of them (0x415EF0, direction
+    // 0) and the packets each player's record counted (+0x10, 0x453D40).
+    std::uint32_t frames_received = 0, packet_bytes_received = 0;
+    std::array<std::uint32_t, 11> packets_from{};
 };
 
 class NetBattle final : public sim::BattleOutside {
@@ -105,6 +110,20 @@ public:
     // A received 0x1C named a known player: the original's console line "Player %s has
     // disconnected" (the record's session name; kind 4, from the packet's sender `from`).
     std::function<void(int slot, int from)> on_disconnected;
+    // Packet 0x13, the sound echo (18 bytes: 0x13, 1, the sound's bank index as a dword, then for
+    // a world sound its position x, y, z as dwords). The world sound routine (0x47F300) and the
+    // interface sound routine (0x47F0C0) send it when their caller asks (an echo argument) and
+    // the sound plays here: an id other than 0xFFFF, the effect volume and the sound mode on,
+    // DirectSound present and not the wave-out path; from the first local playing player to
+    // everybody (Net_BroadcastGuaranteed: only with the network flag). Both write 1 into byte 1,
+    // so a receiver always takes it as an interface sound. The interface sound's bytes 6..17 are
+    // the routine's uninitialised stack (an input: `stale`, 12 bytes; null: zeros). No caller in
+    // the shipped program asks for the echo: it never goes out.
+    void send_sound(std::int32_t sound, const sim::Vec3i* world_pos, const std::uint8_t* stale = nullptr);
+    // A received 0x13 with byte 1 nonzero: the interface sound routine with the echo off
+    // (0x453D40 case 0x11 -> 0x47F0C0(id, 0)); byte 1 zero plays the world sound at the
+    // packet's position (0x47F300(id, pos, 0)) through the battle outside's play_sound.
+    std::function<void(std::int32_t sound)> on_interface_sound;
     // Probe answers (0x07, case 5 of 0x453D40): the sender record's byte +0x21 gets bit 0. The
     // original never reads that bit (no reader of record +0x21 bit 0 in TotalA.exe); kept as state.
     bool probe_answered(int slot) const { return slot >= 0 && slot < 10 && (record21_[static_cast<std::size_t>(slot)] & 1) != 0; }

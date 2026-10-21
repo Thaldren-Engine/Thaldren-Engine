@@ -83,10 +83,16 @@ const char* background_of(const std::string& gui) {
 bool MenuArt::load(const std::string& game_dir, std::string& error) {
     game_dir_ = game_dir;
     vfs_.mount_game_dir(game_dir);
-    if (!load_palette(vfs_, content_.palette) || !load_blend_table(vfs_, content_.blend)) {
-        error = "cannot load the palette / blend table";
+    // The palette and its tables (0x491200: 0x42A400, then 0x42E140 / 0x42E1D0 / 0x42E260),
+    // built and cached in the game folder when a file is missing. A fatal error is the
+    // original's message box with the path (0x4B6290).
+    if (!load_palette_tables(vfs_, true, tables_, error)) {
+        fatal_ = true;
         return false;
     }
+    for (std::size_t i = 0; i < 256; ++i)
+        content_.palette[i] = {tables_.palette[i * 4], tables_.palette[i * 4 + 1], tables_.palette[i * 4 + 2]};
+    content_.blend = tables_.alpha;
     std::vector<std::uint8_t> gp;
     if (vfs_.read("palettes\\GUIPAL.PAL", gp) && gp.size() >= 1024)
         for (std::size_t i = 0; i < 256; ++i) guipal_[i] = {gp[i * 4], gp[i * 4 + 1], gp[i * 4 + 2]};
@@ -113,9 +119,8 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
                 sound_index_[upper(s->name())] = static_cast<int>(content_.samples.size());
                 content_.samples.push_back(std::move(smp));
             }
-    // (computed from the palette when the files are missing, 0x42E260 / 0x42E1D0)
-    load_level_table(vfs_, "LHT", content_.light);
-    load_level_table(vfs_, "SHD", content_.shade);
+    content_.light = tables_.light;
+    content_.shade = tables_.shade;
     content_.click_sound = sound("SmallButton");
     content_.error_sound = sound("NOTOKTOBUILD");
     content_.cursor = sequence("anims\\CURSORS.GAF", "cursornormal");
@@ -188,11 +193,6 @@ bool MenuArt::load(const std::string& game_dir, std::string& error) {
                         return false;
                     }
             }
-    // Music: music\1.mp3, 2.mp3, ... next to the game.
-    for (int n = 1; n < 100; ++n) {
-        if (!std::filesystem::exists(std::filesystem::path(game_dir) / "music" / (std::to_string(n) + ".mp3"))) break;
-        music_tracks_ = n;
-    }
     return true;
 }
 
@@ -687,19 +687,20 @@ const render::Sprite8* MenuArt::map_preview(const std::string& map, int w, int h
     return raw;
 }
 
-std::shared_ptr<const client::Sample> MenuArt::music_track(int n) {
-    if (auto it = music_cache_.find(n); it != music_cache_.end()) return it->second;
+std::shared_ptr<const client::Sample> MenuArt::music_file(const std::string& rel) {
+    if (auto it = music_cache_.find(rel); it != music_cache_.end()) return it->second;
     auto s = std::make_shared<client::Sample>();
-    const std::string path = (std::filesystem::path(game_dir_) / "music" / (std::to_string(n) + ".mp3")).string();
+    const std::string path = (std::filesystem::path(game_dir_) / rel).string();
     std::shared_ptr<const client::Sample> out;
     if (client::decode_audio_file(path, *s)) {
+        s->name = rel;
         out = s;
-        std::printf("music: track %d (%.0f s)\n", n, static_cast<double>(s->pcm.size()) / std::max(1, s->channels) / std::max(1, s->rate));
+        std::printf("music: %s (%.0f s)\n", rel.c_str(), static_cast<double>(s->pcm.size()) / std::max(1, s->channels) / std::max(1, s->rate));
     }
     else std::printf("music: cannot decode %s\n", path.c_str());
-    // Keep the last few decoded tracks.
+    // Keep the last few decoded files.
     if (music_cache_.size() > 3) music_cache_.erase(music_cache_.begin());
-    music_cache_[n] = out;
+    music_cache_[rel] = out;
     return out;
 }
 

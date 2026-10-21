@@ -21,9 +21,6 @@ bool load_palette(Vfs& vfs, render::Palette& out);
 // palettes\PALETTE.ALP: the 256 x 256 half-and-half mixing table the game
 // builds (and caches) from the palette; used for shadows and translucent sprites.
 bool load_blend_table(Vfs& vfs, render::BlendTable& out);
-// palettes\PALETTE.<ext> ("SHD" shade, "LHT" light: 32 levels × 256), computed from the palette
-// when the file is missing (the original's start-up, 0x42E1D0 / 0x42E260).
-bool load_level_table(Vfs& vfs, const char* ext, std::vector<std::uint8_t>& out);
 
 // Decodes every frame of GAF sequence `seq` (layered frames are flattened:
 // layers drawn in order onto the union of their rectangles).

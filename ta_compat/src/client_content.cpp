@@ -311,6 +311,7 @@ bool ClientWorld::build_content(std::string& error) {
     const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
     c.picture_font = caption_font;
     c.console_font = font("COMIX");
+    c.small_font = font("smlfont");  // (GS+0x391FD, 0x42A320: the debug view's terrain marks)
     // The interface's second picture font (hattfont11: the Space-held game information panel).
     fonts_.push_back(picture_font(gaf("anims\\hattfont11.GAF")));
     c.small_picture_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
@@ -861,12 +862,11 @@ bool ClientWorld::build_content(std::string& error) {
     // Scene art.
     for (int k = 0; k < 3; ++k) glows_[static_cast<std::size_t>(k)] = render::glow_frames(k, 0xC0FFEEu + static_cast<std::uint32_t>(k));
     {
-        // (computed from the palette when the files are missing, 0x42E260 / 0x42E1D0)
-        std::vector<std::uint8_t> lht;
-        if (load_level_table(vfs_, "LHT", lht)) light_table_ = render::light_blend_table(lht);
-        if (lht.size() >= 32 * 256) c.light_levels.assign(lht.begin(), lht.begin() + 32 * 256);
+        const std::vector<std::uint8_t>& lht = tables_.light;
+        light_table_ = render::light_blend_table(lht);
+        c.light_levels = lht;
         // Unit looks: the shade table (lit structures) and the water tint (units seen under water).
-        if (!load_level_table(vfs_, "SHD", shade_table_) || shade_table_.size() < 32 * 256) shade_table_.clear();
+        shade_table_ = tables_.shade;
         c.shade_levels = shade_table_;  // (also a layout dimmed under the chat line)
         water_table_ = render::water_tint_table(palette_);
     }
@@ -919,7 +919,13 @@ bool ClientWorld::build_content(std::string& error) {
     }
     // Features' names and reclaim values (hover info), the victory and defeat signs.
     // The bottom bar shows a feature's description (the original's +0x80 text, also when empty).
-    for (const FeatureDefRecord& r : lb_->feature_defs.records()) c.features.push_back({r.description, 0, 0, r.flags});
+    for (const FeatureDefRecord& r : lb_->feature_defs.records()) {
+        // (the debug view shows the definition's own name, +0: 128 bytes copied without a
+        // terminator at 128 characters, so a name that long runs on into the description)
+        std::string internal = r.name;
+        if (internal.size() >= 128) internal = internal.substr(0, 128) + r.description;
+        c.features.push_back({r.description, 0, 0, r.flags, internal});
+    }
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };
