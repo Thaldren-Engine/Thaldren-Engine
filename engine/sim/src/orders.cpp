@@ -173,7 +173,8 @@ void clear_orders(OrderContext& c, Unit& unit, bool all) {
 
 void add_paralysis(OrderContext& c, Unit& unit, std::int32_t amount) {
     if (unit.orders && unit.orders->kind == mission::kParalyze) {
-        unit.orders->param0 += amount;
+        // 0x489E69: a 32-bit add that wraps.
+        unit.orders->param0 = static_cast<std::int32_t>(static_cast<std::uint32_t>(unit.orders->param0) + static_cast<std::uint32_t>(amount));
         return;
     }
     MissionOrder* o = c.systems.allocate_order();

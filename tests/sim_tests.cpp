@@ -688,6 +688,11 @@ void test_orders() {
     add_paralysis(c, units[2], 40);
     add_paralysis(c, units[2], 2);
     CHECK_EQ(units[2].orders->kind == mission::kParalyze && units[2].orders->param0 == 42 && !units[2].orders->next, true);
+    // The add is a plain 32-bit add (0x489E69): past INT32_MAX it wraps.
+    units[2].orders->param0 = 0x7FFFFFF0;
+    add_paralysis(c, units[2], 0x20);
+    CHECK_EQ(units[2].orders->param0, static_cast<std::int32_t>(0x80000010u));
+    units[2].orders->param0 = 42;
 
     // Secondary: the stale word is 15 after a random sleep and the order's address after it is destroyed.
     MissionOrder* s = sys.allocate_order();
