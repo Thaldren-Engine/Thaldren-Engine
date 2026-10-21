@@ -1,0 +1,34 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch SDL 3.4.18
+        run: git clone --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL.git ../SDL3
+
+      - name: Set up the MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: cmake -S . -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL3_SOURCE_DIR=../SDL3
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure -R "^(sim|net|compat)_tests$"
+
+      - name: Upload the client
+        uses: actions/upload-artifact@v4
+        with:
+          name: ta_play-windows-x64
+          path: build/client/ta_play.exe
