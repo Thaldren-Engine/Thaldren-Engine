@@ -65,6 +65,10 @@ struct ClientOptions {
     int sound_mode = 1;              // 0 off, 1 mono (world sounds centred), 2 3D (placed around the view's centre)
     int fx_volume = 27;              // effect volume 0..64 (0: no sounds start at all)
     bool sing = false;               // unit notices replaced by the two "sing" sounds (a command)
+    // The Windows wave-out sound path (-w / UseWindowsSound, 0x51E694): every sound starts
+    // without the effect volume, sound mode, map, sight and view rules (0x47F0C0, 0x47F300,
+    // 0x47FD70 take that path first).
+    bool wave_out = false;
     // Typed commands (chat lines starting with '+', docs/RE_MEMORY.md "Console commands").
     bool cheats = false;             // cheat commands allowed (skirmish; network games whose host allows them)
     bool debug_commands = false;     // the debug commands unlocked (by a command)

@@ -45,24 +45,28 @@ did not list and ranks what is still missing by what a player or a peer could se
 |---|---|---|---|---|---|
 | Client (battle UI, input, sound) | 380 | 243 | 105 | 32 | 0 |
 | Console commands | 128 | 110 | 18 | 0 | 0 |
-| Data files and formats | 19 | 11 | 1 | 6 | 1 |
-| Front end (menus, campaign, movies) | 462 | 188 | 239 | 33 | 2 |
+| Data files and formats | 19 | 12 | 1 | 6 | 0 |
+| Front end (menus, campaign, movies) | 462 | 190 | 239 | 33 | 0 |
 | Network | 326 | 166 | 107 | 53 | 0 |
-| Rendering | 114 | 68 | 41 | 3 | 2 |
+| Rendering | 114 | 70 | 41 | 3 | 0 |
 | Saves | 38 | 34 | 4 | 0 | 0 |
-| Simulation | 965 | 691 | 258 | 13 | 3 |
+| Simulation | 965 | 694 | 258 | 13 | 0 |
 | Library: Cavedog runtime (heap, crash log, perf dialogs, registry/window helpers) | 206 | 24 | 0 | 182 | 0 |
 | Library: HPI LZ77 (ported as ta_compat hpi) | 11 | 11 | 0 | 0 | 0 |
 | Library: MSVC C runtime | 417 | 2 | 0 | 415 | 0 |
 | Library: MSVC std::string | 15 | 0 | 0 | 15 | 0 |
 | Library: zlib 1.0.4 inflate (ported as ta_compat inflate) | 43 | 43 | 0 | 0 | 0 |
-| **Total** | 3124 | 1591 | 773 | 752 | 8 |
+| **Total** | 3124 | 1599 | 773 | 752 | 0 |
 
 (The "Data files" row is small because most format readers are cited from RE_MEMORY's format
-sections and land with the subsystem that uses them. The 8 not-ported functions are the two
-items ranked below; one of them, `0x4B5980`, is ported except for that part. The online-service
+sections and land with the subsystem that uses them. The 8 functions that were not ported were
+the two items of the ranked list, mouse trails and the palette tables, ported since (2026-10-21,
+"Ported in this sweep"); each row's not-ported count moved to its ported column. The online-service
 buttons, item 1 of the first version of this list (`0x444580`'s links, `0x44475D`, `0x45B490`,
-`0x45B250`), are ported: see below.)
+`0x45B250`), are ported: see below. The developer-mode / runtime-library round moved 27
+functions from N/A to ported: 24 of the Cavedog runtime, 2 of the client (`0x415FA0`, `0x467D70`)
+and 1 console command (`0x4177E0`); see "Ported: developer mode, the debug view and the runtime
+library".)
 
 ## Ported in this sweep
 
@@ -71,8 +75,14 @@ buttons, item 1 of the first version of this list (`0x444580`'s links, `0x44475D
 | Unit notices show the order behaviour's own text. `Unit_QueueSpeech` uses the table text only when the caller gives none; the behaviours pass 43 texts ("Unable to create any more units", "I can't reach the construction site", "Capture failed", "Landing aborted: all pads are occupied", "Ressurection failed" (sic) …) and the acknowledgements their mission word ("Guarding", "Repairing", "Loading unit" …). At the default unitchattext 5 a failed build showed "ARMCOM: Cannot Comply" where the original shows "ARMCOM: Unable to create any more units" | `0x47F780`, `0x438880`, strings `0x5010CC`..`0x501CFC` | `ta_compat/src/notice_texts.cpp` (`ta::speech_text`), `GameClient::on_speech(unit, id, text)`, `NoticeQueue::queue(…, text)`, `ta_compat/src/client_battle_setup.cpp` | compat_tests `test_notice_texts`; each string's push site checked in the disassembly (the two resurrection texts: `0x404DEF` / `0x404F6F`) |
 | The unit limit is the session value GS+0x37EEC: at start-up `[Preferences] UnitLimit` of `totala.ini` beside the program (default 250, more than 500 → 500, less than 20 → 20), replaced by a loaded save's `maxunits`; it is not a registry setting (the client read a `UnitLimit` setting). `NoDirectSound` from the same file starts without sound as `-s` does | `0x491200`, `0x49F5A0`, `0x432610` (from `0x497180`), readers `0x4971F1`, `0x449C3B`; `0x47ED40` | `ta_compat/src/preferences.cpp` (`ta::profile_int`, `preferences_unit_limit`, `preferences_int`), `FrontEnd::unit_limit()`, ta_play | compat_tests `test_preferences`: 42 cases of GetPrivateProfileIntA's parsing measured on Windows 11 (sections, keys, quotes, signs, hex, wrap-around) and the clamp |
 | The online-service buttons of the connection screen: "www.cavedog.com", "Unit Download" and one per service extension DLL beside the program (`ta*.dll` in the system's listing order, at most 10, the Mplayer one moved first), copies of the hidden SERVICEX 21 pixels apart, captions from each extension's probe ("Get Mplayer" / "Play on Mplayer", "Get HEAT", "Get Kali", "DWANGO", "Play Free on TEN", "Get Wireplay (UK)" …: registry keys in the 32-bit view, ta.mpi); a press plays BigButton and opens the web page or service program (then the program ends, as the original's exit(0)), or shows the installation-CD question / the failure text in a 320-wide box | `0x444580` → `0x45B490` (online.dll 3: `ONLGetLinkInfo` 0x10001BB0, scan 0x10001750), `0x44475D`; handler `0x4441A0` → `0x45B250` (`ONLProcessButtonCommand` 0x100011E0), `0x45B640`; the six extensions' `TotalAExtGetButtonText` / `TotalAExtAction` | `ta_compat/src/online_services.cpp` (`ta::OnlineServices`, `real_online_system`: the DLLs' answers as rules, nothing loaded), `SelProv::add_service_buttons` / `press_service` in `ta_compat/src/client_net_screens.cpp`, the client hook `FrontEndHooks::open_external` (ta_play: ShellExecuteA / CreateProcessA; `--open-log FILE` for tests, `--online-links`) | compat_tests `test_online_services` (35 checks: listing order, exclusions, the ten limit and the Mplayer move, every probe, every press outcome and message); gui_harness `links:… selprov:…` against ta_play `--net-screen selprov` on this machine (8 buttons): 0 differing pixels; the press of "Get Mplayer" by its quick key G (gui_harness `onlpress:1:TEXT press:g frame`, the call into online.dll answered with its CD text) against ta_play: 0 differing pixels in four frames |
+| Mouse trails off while the program runs: at start-up (before the archives are mounted) `SystemParametersInfoA(SPI_GETMOUSETRAILS 0x5E, 0, &saved, 1)` and `(SPI_SETMOUSETRAILS 0x5D, 0, NULL, 1)` (fWinIni = SPIF_UPDATEINIFILE only; a failed query saves 0); after the message loop ends (window closed, Exit to Windows, Alt+F4 in a movie) `(0x5D, saved, NULL, 1)`. The fatal errors (`0x4B6290` → exit(1)), the online-service start (exit(0)) and a failed window set-up never reach the restore: the trails stay off | `0x4B5980`, `0x4B6110` (only from WinMain `0x49ED6F`) | `client/include/client/mouse_trails.h` (`client::MouseTrails`, the system call injected), ta_play (`system_parameters()`; window runs only: off after the semaphore, back when `FrontEndSetup::loop_ended`; `FrontEnd::exit_at_once()` for the online-service start) | compat_tests `test_mouse_trails` (the call sequence, parameters and flags, a failed query); headless runs and tests never call the system |
+| Palette tables built when missing: `palettes\PALETTE.PAL` from `PALETTE.PCX`'s colour map (manufacturer 0x0A, version 5, the last 768 bytes) and cached, the loose ALP / LHT / SHD then deleted; `PALETTE.ALP` (alpha: the nearest entry to the channel halves), `.SHD` (32 levels, factor 0 + n × 0.06875) and `.LHT` (32 levels, 1 + n / 30) built over the palette sorted by channel sum (exchange sort, nearest within ±40) when the file is missing or empty, and written with fopen "wb" into the game folder (only when its `palettes` folder exists); a missing PCX is the fatal error with its path | `0x42A400`, `0x429330`, `0x4CB080`, `0x42E140`, `0x42E1D0`, `0x42E260`, `0x4BA920`, `0x4BA9D0`, `0x4BA750`, `0x4BADF0`, `0x4BABD0`, `0x4BC290`, `0x4BBC30` | `ta_compat/src/palette_tables.cpp` (`ta::load_palette_tables`, `build_alpha_table`, `build_shade_table`, `build_light_table`, `pcx_palette`), `MenuArt::load` (start-up, with the cache writes), `ClientWorld::load` | orig_harness `palette_harness`: the original's builders on the shipped palette, 4 generated and 240 random palettes = the port, 0 differing bytes; the port's (and the original's) tables of the shipped palette = the shipped files (65,536 + 8,192 + 8,192 bytes, 0 differ); compat_tests (the original's tables of 4 palettes by hash, the start-up sequence over a temporary folder); a mod-like headless ta_play over a copy of the install whose archives lack the three tables: tables built, written byte-identical to the shipped files when `palettes` exists, nothing written when not, menu and battle screenshots identical to the real install's |
+| CD audio music (was N/A: "the client plays the music tracks from files"). The original plays CD audio through `mciSendStringA` ("open / status / set / play / pause / stop cdaudio", the track-end notification, WM_DEVICECHANGE), the CD's aux volume, the 30-a-second tick timers for the mood change's fade (−volume / 18 every 2 ticks, then the pick, after 120 ticks for building), the disc's track types by volume serial (CDLISTS), the Windows CD player's window and question. The shipped program sends those commands to the replacement library beside it (`win32.dll`, the WINMM import renamed), which answers 0 with no reply, plays music/N.mp3 for "play cdaudio from N" on its own thread and ignores "stop" — the file-based music is the shipped program's, not an invention, but with its rules: a data track first (CD track N = file N + 1, 16 tracks by the 3.1 "17 tracks" patch), the music plays on in the menus, the fade is inaudible, the game menu holds and resumes at the position | `0x4CDA00`..`0x4CED40`, `0x4D00D0`, `0x4D0040`, `0x4CFF30`, `0x4B63F0` / `0x4B6370` / `0x4B64D0`, `0x490FE0`, `0x490F80`, `0x494E70`, `0x45D280` / `0x45D7C0` / `0x45C3F0` / `0x45D130` / `0x45D0C0`, `0x426200` / `0x426190`, `0x4CE030`, `0x49E830`'s activation; win32.dll `0x10002140`, `0x10001330` | `client/cd_audio.h` (`CdMusic`, `TickTimers`, `CdTrackLists`, `BattleMusicJudge`), `client/track_file_device.h`, `client/cd_audio_system.h` (system MCI, aux, drives, the window tap), the front end's call sites, the music page and the CD player question (`ta_compat/src/client_screens.cpp`), ta_play `--cd-audio tracks / system` | compat_tests `test_cd_music`, `test_cd_timers`, `test_cd_drives`, `test_cd_track_lists`, `test_track_file_device`, `test_battle_music_judge` (routines as read; the library's thread on a test clock); headless skirmish runs (music/14.mp3 after 1 s, held / resumed at its position); CLIENT 3.7–3.9 |
+| CD probes and prompts (was N/A: "the Steam flag answers at once"): re-read — the check is not patched out, the flag `0x50289C` (1, no writer) short-circuits `0x41D6A0` to '.', so every caller passes and no prompt (or CDCHECK.GUI) is reachable; the CD-ROM walk and the volume serial stay reachable (the music's disc key) | `0x41D6A0`, `0x4BB190`, `0x4BB260`, `0x41F680`, the callers listed in RE_MEMORY "CD checks" | `ta/cd_check.h` (`cd_probe` with the TOTALA.ID walk and -f, `cd_present`), `client::next_cdrom_drive` / `cd_volume_serial` | compat_tests `test_cd_check`, `test_cd_drives`; FRONTEND 3.5, 4.6, 5.13 |
+| The sound paths (was N/A: "one audio output"): -s / NoDirectSound (no effects, narration or movie sound — `SmackSoundOnOff(DirectSound ≠ 0)` — the music plays) and -w / UseWindowsSound (`0x49F610` always 1: PlaySoundA, one sound at a time at the file's level, RIFF only, no volume / mode / sight / view rules, the loop restarted at a pass with nothing playing). The effect volume (`waveOutSetVolume`, fxvol × 1024) is the program's whole session volume on today's Windows (measured), so it scales the music too | `0x47ED40`, `0x49EE30`, `0x47EFC0` / `0x47EFD0`, `0x47EFE0`, `0x47F0C0`, `0x47F300`, `0x47F750`, `0x47F680`, `0x49F620` / `0x49F640` / `0x49F680` / `0x49F6A0` / `0x49F6C0`, `0x4D0070` | `FrontOptions::sound_path`, `client::WaveOutChannel`, `ClientOptions::wave_out`, `AudioOut::set_fx_volume` | compat_tests `test_wave_out_channel`; headless `-W` run; CLIENT 3.10, 3.11, FRONTEND 9.2 |
+| Scores reporting (was N/A): the reachable path on TCP/IP and IPX games — the reporting flag set, `reporter.dll` not found (not shipped; a 64-bit program cannot load the 32-bit one), no services, REPORT.GUI not opened, nothing shown (serial / modem / no provider: not tried) | `0x4436E0`, `0x46BF30`, `0x46BCE0`, `0x46C190`, `0x46C620`, `0x4435A0` | `ta::start_scores_reporting` / `scores_reporting_shown` (`ta/cd_check.h`), run where the original runs it (`client_net_screens.cpp`, a joined and a hosted session) | compat_tests `test_scores_reporting` |
 
-After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 240 / 0, battle_menus_check ok (skirmish, net host, net join), game_flow all identical, whole-game replays g8 (3,000 steps), s2 (4,500), g9 (2,759) identical. After the online-service buttons (2026-10-21): sim_tests 5859 / 0, net_tests 514 / 0, compat_tests 284 / 0, battle_menus_check ok.
+After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 240 / 0, battle_menus_check ok (skirmish, net host, net join), game_flow all identical, whole-game replays g8 (3,000 steps), s2 (4,500), g9 (2,759) identical. After the online-service buttons (2026-10-21): sim_tests 5859 / 0, net_tests 514 / 0, compat_tests 284 / 0, battle_menus_check ok. After the audio paths (CD audio, CD checks, sound paths, scores reporting; 2026-10-21): sim_tests 5880 / 0, net_tests 522 / 0, compat_tests 436 / 0, battle_menus_check ok (skirmish, net host, net join), game_flow all identical (checksum cf546f1c, as before), replays g8 / s2 / g9 identical. The per-subsystem table above is the sweep's; the functions of the four N/A rows ported here (Client and Front end rows) now count as ported.
 
 ## Ported: developer mode, the debug view and the runtime library (2026-10-21)
 
@@ -105,26 +115,13 @@ conversions meet an invalid operation, which covers but is not proven equal to e
 
 ## Not ported, ranked by what a player or peer sees
 
-1. **Mouse trails switched off while the program runs** (platform; small). At start-up
-   (`0x4B5980`) the original saves the user's mouse-trail setting
-   (`SystemParametersInfoA(SPI_GETMOUSETRAILS)`) and sets it to 0 with `SPIF_UPDATEINIFILE`;
-   it restores the saved value at exit (`0x4B6110`). Seen only by users who have mouse trails
-   on (Windows' default is off), and the rewrite hides the system pointer over its window. A
-   Windows-only call pair at the window's creation and destruction would match it (the original
-   writes the user profile, so a crash leaves the trails off; the same would hold).
-2. **Palette tables built when the files are missing** (data; small to medium, invisible with
-   the shipped data). The original loads `palettes\PALETTE.ALP` / `.SHD` / `.LHT` and, when a
-   file is absent, computes the table (alpha `0x4BA750` — the rule is in RE_MEMORY — shade
-   `0x4BADF0`, light `0x4BABD0`) and writes it out (`0x4BC290`); `0x429330` likewise builds
-   `palettes\<name>.PAL` from `<name>.PCX`'s palette and caches it (`0x42E140`, `0x42E1D0`,
-   `0x42E260`). The 3.1 archives ship all four files, so only a mod that leaves them out sees a
-   difference (the rewrite then has no translucency / shading tables). *Implementation note:*
-   port the three builders (float formulas over the palette: keep the x87 rounding of the
-   `__ftol` calls) and use them when the read fails; the cache write is a side effect on the
-   game folder that has no player-visible consequence.
+Nothing left (2026-10-21): the two items of this list, the mouse trails (`0x4B5980` /
+`0x4B6110`) and the palette tables built when their files are missing (`0x429330`, `0x42E140`,
+`0x42E1D0`, `0x42E260`, `0x4BA750`, `0x4BADF0`, `0x4BABD0`, `0x4BC290`), are ported: see "Ported
+in this sweep".
 
 Related but already tracked by the parity documents (not repeated here): the movie states and
-CD prompts (FRONTEND), the lens shot and the music cross-fade (CLIENT), the network items
+CD prompts (FRONTEND; the prompts are unreachable on the shipped program), the lens shot (CLIENT; the music cross-fade is ported), the network items
 against two or more originals (NETWORK).
 
 ## N/A (with the reason)
@@ -132,13 +129,9 @@ against two or more originals (NETWORK).
 | What | Where | Why |
 |---|---|---|
 | DirectPlay wrapper "HAPINET" (33 functions; DPERR texts) | `0x4C9530`..`0x4CAA10` | rule: no DirectPlay; engine/net speaks its wire protocol itself (NETWORK §3) |
-| CD audio through MCI (`open/status/play cdaudio`, CD player window class) | `0x4CDA00`..`0x4CED40` (the parts not already cited by the music player) | the client plays the music tracks from files (CLIENT §3) |
-| Scores reporting (`reporter.dll`: `_RIInitializeEx` …, REPORT.GUI, "Unable to initialize scores reporting.") | `0x46BF30`, `0x46BCE0`, `0x46C2A0`, `0x46C620`, `0x4CAA20`, `0x4435A0` | reporter.dll is not shipped (Steam or CD): LoadLibrary fails and nothing is shown |
 | `-c` lobby file through online.dll (`ONLLoadConfigFile`) | `0x45B670` from `0x49EE30` | FRONTEND 9.1: lobby launches are N/A |
 | Code-segment checksum on every front-end state change | `0x4256D0`, `0x4257E0`, `0x425860`, `0x4259B0`, `0x425A90`, `0x428BC0` | the check is a stub returning 0 in 3.1 (FRONTEND 1.5) |
-| CD probes and prompts (TOTALA.ID, volume serial, "Please insert …", "Close Windows CD Player?") | `0x41D6A0`, `0x4BB260`, `0x41F680`, `0x426200` | the Steam flag answers at once (FRONTEND 4.6, 3.5) |
 | Smacker DirectDraw glue (pixel format, palette, paint) | `0x47C150`, `0x47C230`, `0x47C2A0` | the movie player is reimplemented (FRONTEND §2) |
-| Windows wave-out sound path (`-w`, UseWindowsSound) | `0x47EFE0`, `0x49F610` | one audio output (FRONTEND 9.2) |
 | Cavedog runtime library: the parts a user of the shipped game cannot meet — the hot-key thread with the performance and memory status dialogs (`-performancestatus`, `-memorystatus`, the performance counters, registry window positions), the guarded heap's layout (`-memfussy`, `-memfrontalign`, `-gonzo`: guard pages and alignment, no visible difference known), the switches nothing reads (`-dprinton` / `-dprintoff` / `-dprintfile`, `-saveresources`, `-enableimagehlplines` / `-disableimagehlplines`), IMAGEHLP's symbol lookup, registry and window helpers | `0x4D80D0`..`0x4E3A90` less the ported ones (below) | the thread is never started (WinMain passes flag 8 to `0x4DA1D0`; the only call without it, `0x4DA3E0`, has no reference); the rest changes no output (RE_MEMORY "Runtime library and crash log") |
 | Dead in 3.1: the Unit State / Builder Probe panels (Shift+F1 / Shift+F2 set their switches), the HapiBank audit dump ("<save>.cpa"), a display-releasing fatal handler | `0x467E50`, `0x4685A0`, `0x4B4D70`, `0x4CBAB0` | no call and no pointer (the probes); `HapiBank_WriteFile`'s only caller passes 0 for the dump; `0x4CBAB0` unreferenced. (`0x467D70`, listed before as the probe, is the battle start's interface art blit: ported) |
 | Dead: the file requester (FILEREQ.GUI; its opener `0x4AFA30` has no reference), an old AI-profile tokenizer ("parse error reading AI profile"), the ArmCamp / CoreCamp registry writers | `0x4AF5B0`, `0x4AF670`, `0x4BC2E0`..`0x4BC360`, `0x428CD0`, `0x428D10`, `0x432A80` | never called |
@@ -150,8 +143,8 @@ against two or more originals (NETWORK).
   memory-block tags of the Cavedog allocator ("UNIT MEMORY", "SORT INDICES", "PCX BODY" … about
   120), debug and trace texts (the packet pool's trace, netCondenser, Smacker statistics,
   "Unit Builder Probe" … about 110; the debug view's texts — FRATE, MODE / INFO, the bottom bar's numbers, pS= / pR= — and the runtime library's crash log, switches and out-of-memory texts are ported since 2026-10-21), DirectPlay error texts and HAPINET traces (about
-  70), the unit-notice texts (ported above), MCI command strings (14), the online.dll / reporter
-  names (reporter: N/A; online.dll's texts: ported), CD prompts and checksum messages (N/A), assertion file names
+  70), the unit-notice texts (ported above), MCI command strings (14; ported with the CD audio, below), the online.dll / reporter
+  names (reporter and online.dll's texts: ported), CD prompts (ported: unreachable on the shipped program) and checksum messages (N/A), assertion file names
   (`c:\cavedog\wargame\*.cpp`). No other player-visible text was found missing.
 - **Keys the readers ask for** (452). Not in the rewrite's text: the GUI slider fields `thick`,
   `knobpos`, `knobsize`, `itemheight`, `hotornot`, `nuttin`, `texturenumber`, `totalgadgets`
@@ -167,9 +160,9 @@ against two or more originals (NETWORK).
   `GetUserNameA` — the default network name (ported, `os_user_name`); clipboard — the paste keys
   (ported); `GetAsyncKeyState` / `GetKeyState` / `SetCursorPos` / `GetCursorPos` — input
   (CLIENT); `CreateSemaphoreA` — the single-instance check (FRONTEND 1.6); `GlobalMemoryStatus` —
-  the room's memory field (NETWORK); `SystemParametersInfoA` — mouse trails (item 1); `RegisterHotKey`,
+  the room's memory field (NETWORK); `SystemParametersInfoA` — mouse trails (ported); `RegisterHotKey`,
   `DeviceIoControl`, `VirtualAlloc` … — the Cavedog runtime (N/A); `PlaySoundA` / `aux*` /
-  `waveOut*Volume` — the Windows sound path and the 1998 mixer restore (N/A); `ShellExecuteA` —
+  `waveOut*Volume` — the Windows sound path, the CD's aux volume and the effect volume (ported below) and the 1998 mixer restore (N/A); `ShellExecuteA` —
   online.dll's links (ported: the client's `open_external` hook) and the runtime's help viewer; DirectDraw / DirectSound /
   DirectPlay / smackw32 — replaced by the rewrite's own platform, sound, network and movie code.
 - **Files.** Every pattern and name in the strings is read by the rewrite or listed N/A:

@@ -223,6 +223,7 @@ struct Sample {
     int channels = 1;
     std::vector<std::int16_t> pcm;
     std::string name;  // the sound's file name (logs)
+    bool riff = true;  // a RIFF WAVE file (the system's PlaySound plays only those)
 };
 
 // Shot looks by weapon index (the battle view draws shots through these).

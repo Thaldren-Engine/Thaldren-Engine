@@ -404,7 +404,7 @@ void GameClient::minimap_jump(int x, int y) {
 void GameClient::play_ui(int sample) {
     // An interface sound (0x47F0C0): centred, 5.85 dB down; nothing while the effect volume or
     // the sound mode is off.
-    if (sample < 0 || opt_.fx_volume == 0 || opt_.sound_mode == 0) return;
+    if (sample < 0 || (!opt_.wave_out && (opt_.fx_volume == 0 || opt_.sound_mode == 0))) return;
     SoundEvent e;
     e.sample = sample;
     sounds_.push_back(e);
@@ -420,6 +420,13 @@ void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos) {
     // A world sound (0x47F300; client/sound_rules.h): judged by the effect settings, the map,
     // the viewed player's sight and the view.
     if (sample == 0xFFFF || sample >= c_.samples.size()) return;
+    if (opt_.wave_out) {
+        // (the wave-out path plays it as an interface sound: no map, sight or view rules)
+        SoundEvent e;
+        e.sample = sample;
+        sounds_.push_back(e);
+        return;
+    }
     SoundView v;
     v.fx_volume = opt_.fx_volume;
     v.sound_mode = opt_.sound_mode;
@@ -459,7 +466,7 @@ struct GameClient::NoticeHost : NoticeQueue::Host {
         if (!l || pick < 0 || static_cast<std::size_t>(pick) >= l->size()) return;
         int sample = (*l)[static_cast<std::size_t>(pick)];
         if (c.opt_.sing) sample = ((c.b_.game_tick() / 30) & 7) == 0 ? c.c_.ui_sounds.honk : c.c_.ui_sounds.sing;
-        if (sample < 0 || c.opt_.fx_volume == 0 || c.opt_.sound_mode == 0) return;
+        if (sample < 0 || (!c.opt_.wave_out && (c.opt_.fx_volume == 0 || c.opt_.sound_mode == 0))) return;
         SoundEvent e;
         e.sample = sample;
         e.one_shot = true;

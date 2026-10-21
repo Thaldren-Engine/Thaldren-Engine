@@ -14,7 +14,8 @@ add_library(client STATIC
     src/minimap.cpp
     src/debug_view.cpp
     src/movie.cpp
-    src/music.cpp
+    src/cd_audio.cpp
+    src/cd_audio_system.cpp
     src/panels.cpp
     src/queued_orders.cpp
     src/screenshot.cpp
@@ -23,10 +24,11 @@ add_library(client STATIC
     src/sound_desk.cpp
     src/sound_mixer.cpp
     src/sound_rules.cpp
+    src/track_file_device.cpp
     src/wave_file.cpp
 )
 if(WIN32)
-    target_link_libraries(client PRIVATE mfplat mfreadwrite mfuuid ole32)
+    target_link_libraries(client PRIVATE mfplat mfreadwrite mfuuid ole32 winmm)
 endif()
 target_include_directories(client PUBLIC include)
 target_link_libraries(client PUBLIC render sim)
