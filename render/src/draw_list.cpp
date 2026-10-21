@@ -2,14 +2,86 @@
 #include "render/unit_look.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 namespace render {
 
+const std::vector<std::int16_t>& lens_offsets() {
+    static const std::vector<std::int16_t> table = [] {
+        // (The size and the strength 8 are the ones the battle's start asks for.)
+        constexpr int w = 22, h = 22, hx = w / 2, hy = h / 2, quarter = w / 4, strength = 8;
+        const double d = static_cast<double>(strength);
+        std::vector<std::int16_t> t(static_cast<std::size_t>(w * h));
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int dx = x - hx, dy = y - hy;
+                // x87 at 53 bits: the integer sum loaded, its square root, truncated.
+                const double r = std::sqrt(static_cast<double>(dx * dx + dy * dy));
+                std::int16_t e = 32000;
+                if (static_cast<int>(r) < quarter) {
+                    const double s = (static_cast<double>(hx) - r) / d;
+                    const int ey = static_cast<int>(static_cast<double>(dy) / s);
+                    const int ex = static_cast<int>(static_cast<double>(dx) / s);
+                    e = static_cast<std::int16_t>(ex + hx + (ey + hy) * w - (y * w + x));
+                }
+                t[static_cast<std::size_t>(y * w + x)] = e;
+            }
+        return t;
+    }();
+    return table;
+}
+
+void apply_lens(Image8& frame, int x, int y, std::uint8_t key, const ClipRect& clip) {
+    constexpr int w = 22, h = 22, n = w * h, hx = w / 2, hy = h / 2;
+    const std::vector<std::int16_t>& t = lens_offsets();
+    // The lens's memory: the table (2n bytes), the capture (n), the output (n).
+    std::uint8_t mem[4 * n];
+    for (int i = 0; i < n; ++i) {
+        const auto v = static_cast<std::uint16_t>(t[static_cast<std::size_t>(i)]);
+        mem[2 * i] = static_cast<std::uint8_t>(v);
+        mem[2 * i + 1] = static_cast<std::uint8_t>(v >> 8);
+    }
+    std::uint8_t* const capture = mem + 2 * n;
+    std::uint8_t* const output = capture + n;
+    // The capture: rows of the frame's memory (row pitch = width), unclipped. (Rows outside the
+    // frame are never reached from a point inside the view: 0.)
+    const long long size = static_cast<long long>(frame.width) * frame.height;
+    for (int r = 0; r < h; ++r)
+        for (int k = 0; k < w; ++k) {
+            const long long a = static_cast<long long>(y - hy + r) * frame.width + (x - hx + k);
+            capture[r * w + k] = a >= 0 && a < size ? frame.pixels[static_cast<std::size_t>(a)] : 0;
+        }
+    for (int i = 0; i < n; ++i) {
+        const int e = t[static_cast<std::size_t>(i)];
+        const int at = 2 * n + i + e;  // (in [0, 4n) for every entry of the table)
+        output[i] = e == 32000 ? key : at >= 0 && at < 4 * n ? mem[at] : key;
+    }
+    const int left = x - hx, top = y - hy;
+    const int x0 = std::max({clip.x0, left, 0}), x1 = std::min({clip.x1, left + w - 1, frame.width - 1});
+    const int y0 = std::max({clip.y0, top, 0}), y1 = std::min({clip.y1, top + h - 1, frame.height - 1});
+    for (int py = y0; py <= y1; ++py)
+        for (int px = x0; px <= x1; ++px) {
+            const std::uint8_t v = output[(py - top) * w + (px - left)];
+            if (v != key) frame.row(py)[px] = v;
+        }
+}
+
+bool needs_frame_reads(const DrawList& list) {
+    if (list.back) return true;
+    for (const DrawCmd& c : list.cmds)
+        if (c.op == DrawOp::Lens) return true;
+    return false;
+}
+
 Image8 execute(const DrawList& list, const BlendTable& blend) {
-    Image8 frame(list.width, list.height, list.clear_index);
+    Image8 frame = list.back && list.back->width == list.width && list.back->height == list.height ? *list.back
+                                                                                                    : Image8(list.width, list.height, list.clear_index);
     for (const DrawCmd& c : list.cmds) {
         switch (c.op) {
+        case DrawOp::Lens:
+            apply_lens(frame, c.x, c.y, c.colour, c.clip);
+            break;
         case DrawOp::Blit:
             if (c.sprite) blit(frame, c.clip, *c.sprite, c.x, c.y);
             break;

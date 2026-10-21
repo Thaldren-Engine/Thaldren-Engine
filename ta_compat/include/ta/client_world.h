@@ -159,6 +159,12 @@ public:
     // the step that filled it, before the texture cursors move on.
     std::array<std::int32_t, sim::kMaxShards> shard_frame_{};
     std::array<bool, sim::kMaxShards> shard_live_{};
+    // The lens frame's transparency index (+8 of the frame 0x4B91B0 allocates at the battle's
+    // start and never writes): whatever the C runtime heap block held. It differs from run to
+    // run of the original (seven skirmish starts on Windows 11: 150, 0, 176, 7, 8, 10, 120;
+    // RE_MEMORY "Rendering"); the first measured value is kept, settable like the original's
+    // heap addresses (sim::OriginalAddresses).
+    std::uint8_t lens_key_ = 150;
     void note_new_shards();
     struct WeaponModel {
         std::vector<std::uint8_t> file;

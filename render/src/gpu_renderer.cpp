@@ -221,6 +221,22 @@ struct GpuRenderer::Impl {
 
     // Records the draw list into `cb`; transient textures are returned for release after submission.
     bool record(SDL_GPUCommandBuffer* cb, const DrawList& list, std::vector<SDL_GPUTexture*>& transient) {
+        // A list that reads the frame outside what it draws (the lens, a back buffer) is
+        // executed by the CPU reference and drawn as one picture (rare: no GPU path for it).
+        if (needs_frame_reads(list)) {
+            DrawList flat;
+            flat.width = list.width;
+            flat.height = list.height;
+            flat.clear_index = list.clear_index;
+            const Image8 img = execute(list, blend);
+            Sprite8 s;
+            s.width = img.width;
+            s.height = img.height;
+            s.has_key = false;
+            s.pixels = img.pixels;
+            flat.blit(flat.keep(std::move(s)), 0, 0, img.bounds(), false);
+            return record(cb, flat, transient);
+        }
         // The light table (BlitLight) is a second mixing table.
         if (list.light && list.light->size() >= 65536 && list.light != light_uploaded) {
             if (!light_table) light_table = texture(256, 256, SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTUREUSAGE_SAMPLER);

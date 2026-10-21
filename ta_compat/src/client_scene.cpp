@@ -317,6 +317,7 @@ void ClientWorld::fill_scene(render::BattleScene& scene, int view, std::uint32_t
         pi.colour2 = content_.hud[wd.color2];
         pi.second_line = wd.color2 != 0;
         pi.ground = static_cast<std::uint16_t>(p.ground_height);
+        pi.lens_key = lens_key_;
         pi.blob = fx_shadow && !fx_shadow->empty() ? &fx_shadow->front() : nullptr;
         const std::uint32_t tick = b.game_tick();
         if (wd.render_type == 4) {

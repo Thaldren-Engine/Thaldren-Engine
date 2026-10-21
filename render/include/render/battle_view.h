@@ -131,6 +131,8 @@ struct ProjectileInstance {
     Node node, child;                    // types 1/3/6: the model's root; type 1: its first child
     std::array<std::int16_t, 3> angles{}, child_angles{};
     std::uint8_t team_colour = 0;
+    // Type 2: the lens frame's transparency index (a byte its set-up never writes).
+    std::uint8_t lens_key = 0;
 };
 
 // The viewed player's fog of war over the battle view (the original's 0x4843C0 and 0x4848E0;

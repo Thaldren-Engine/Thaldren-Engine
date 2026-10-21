@@ -416,7 +416,8 @@ bool draw_projectile_typed(const BattleScene& s, const ProjectileInstance& p, Dr
         break;
     case 2:
         if (x < clip.x0 || x > clip.x1 || y < clip.y0 || y > clip.y1) return false;
-        break;  // (the lens itself is not modelled yet)
+        out.lens(x, y, p.lens_key, clip);
+        break;
     case 4:
         if (p.frame) {
             blob();

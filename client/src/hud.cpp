@@ -317,6 +317,14 @@ render::DrawList GameClient::draw() {
         profile_mark(4);
     }
 
+    // A lens shot (render type 2) copies the frame around it as the original's buffer holds it
+    // then, its interface included: the original draws into one lasting buffer, where the top
+    // bar, the bottom bar and the minimap are already this frame's (drawn before the world),
+    // the rest is the last frame's with the pointer taken off (0x4C2470 puts back what lay
+    // under it). Kept as this frame's finished picture without the pointer (the same while the
+    // interface outside the view does not change from one frame to the next).
+    if (render::needs_frame_reads(list)) list.back = std::make_shared<const render::Image8>(render::execute(list, c_.blend));
+
     // The pointer: the look set by the last pass at the frame its animation reached (frame
     // times from the art, counted down by the wall clock; see advance_pointer).
     if (!cursor_set_) set_pointer(pointer_id());

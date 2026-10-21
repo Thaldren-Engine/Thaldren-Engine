@@ -95,7 +95,7 @@ After both: sim_tests 5848 checks / 0 failures, net_tests 514 / 0, compat_tests 
    game folder that has no player-visible consequence.
 
 Related but already tracked by the parity documents (not repeated here): the movie states and
-CD prompts (FRONTEND), the lens shot and the music cross-fade (CLIENT), the network items
+CD prompts (FRONTEND), the music cross-fade (CLIENT; the lens shot `0x4B9360` / `0x4B91B0` was built and compared *2026-10-21*, CLIENT 1.11), the network items
 against two or more originals (NETWORK).
 
 ## N/A (with the reason)

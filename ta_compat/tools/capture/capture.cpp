@@ -16,6 +16,12 @@
 // player, with the caller), the stale stack words the engine takes as inputs, and a digest of
 // the state after every step. --auto-skirmish presses the menus' quick keys (S, S, S) until a
 // skirmish with the last used settings starts.
+//
+// --lens-probe: the lens frame's memory as the allocator hands it to 0x4B91B0 at the battle's
+// start (the bytes its set-up never writes: +8, the frame's transparent index, and +0xC..+0xF),
+// logged at 0x4B91DF (EAX = the block), then the game is ended. The C runtime heap is the
+// system's (HeapAlloc): the child runs with _NO_DEBUG_HEAP=1 so that the debugger does not
+// turn on the system's debug heap (which fills new blocks with 0xBAADF00D), as in a normal run.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -86,6 +92,7 @@ constexpr DWORD kBpReclaimSites = 0x0047EA40;   // Map_PickReclaimSites: site y 
 constexpr DWORD kBpVtolRepairPatrol = 0x004152F0;  // Mission_VtolRepairPatrol: site record at [entry ESP - 0x2C]
 constexpr DWORD kBpHoverClock = 0x0048A66F;      // Unit_FitToSlope after its clock call (0x4B6340): eax = clock
 constexpr DWORD kBpExplTablesBegin = 0x00420620; // battle loading: the explosion tables are built (loading thread rand())
+constexpr DWORD kBpLensAlloc = 0x004B91DF;      // 0x4B91B0 after its allocation: eax = the block (0x7A8 bytes)
 constexpr DWORD kBpExplTablesEnd = 0x00419560;   // the next loading call after them
 constexpr DWORD kBpDxCheck = 0x004266A5;       // after the DirectX version check (0x4B5070): eax 0 shows a notice
 constexpr DWORD kBpSoundNotice = 0x00426721;   // after the sound driver check (0x4CFF20): eax != 0 shows a notice
@@ -109,6 +116,7 @@ struct Options {
     bool auto_skirmish = false;   // press the menus' quick keys until a skirmish starts
     std::uint32_t timeout_s = 900;  // the game is ended after this many seconds
     std::string script;           // the local player's scripted actions (see Script below)
+    bool lens_probe = false;      // log the lens frame's block at its allocation, then stop
 };
 
 struct Breakpoint {
@@ -1700,6 +1708,23 @@ bool on_breakpoint(const Options& opt, DWORD tid, CONTEXT& ctx) {
         on_bind(ctx);
         return false;
     }
+    if (addr == kBpLensAlloc && opt.lens_probe) {
+        static std::uint8_t blk[0x7A8];
+        std::memset(blk, 0, sizeof blk);
+        const bool ok = read_block(ctx.Eax, blk, sizeof blk);
+        int nonzero = 0;
+        std::string body;
+        char hx[4];
+        for (std::uint8_t v : blk) {
+            nonzero += v != 0;
+            std::snprintf(hx, sizeof hx, "%02X", v);
+            body += hx;
+        }
+        std::fprintf(g_out, "{\"ev\":\"lens_block\",\"ok\":%d,\"at\":%lu,\"byte8\":%u,\"nonzero\":%d,\"block\":\"%s\"}\n", ok ? 1 : 0, ctx.Eax,
+                     blk[8], nonzero, body.c_str());
+        std::fflush(g_out);
+        return true;
+    }
     if (addr == kBpNetSend && g_net_trace) {
         on_net_send(ctx);
         return false;
@@ -1953,6 +1978,7 @@ bool parse_args(int argc, char** argv, Options& opt) {
         else if (a == "--dump-defs" && (v = next())) opt.dump_defs = v;
         else if (a == "--game") opt.game = true;
         else if (a == "--auto-skirmish") opt.auto_skirmish = true;
+        else if (a == "--lens-probe") opt.lens_probe = true;
         else if (a == "--timeout" && (v = next())) opt.timeout_s = parse_u32(v);
         else if (a == "--script" && (v = next())) opt.script = v;
         else if (a == "--frames" && (v = next())) g_frames_dir = v;
@@ -2030,6 +2056,7 @@ int main(int argc, char** argv) {
     si.cb = sizeof(si);
     si.lpDesktop = desk_name;
     PROCESS_INFORMATION pi{};
+    if (opt.lens_probe) SetEnvironmentVariableA("_NO_DEBUG_HEAP", "1");
     std::string cmd = "\"" + opt.exe + "\" -d";  // -d: GDI drawing into memory, no DirectDraw
     if (!CreateProcessA(opt.exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, DEBUG_ONLY_THIS_PROCESS, nullptr,
                         opt.cwd.empty() ? nullptr : opt.cwd.c_str(), &si, &pi)) {
@@ -2094,6 +2121,7 @@ int main(int argc, char** argv) {
                     add_bp(kBpSoundNotice);
                     CreateThread(nullptr, 0, menu_script_driver, nullptr, 0, nullptr);
                 }
+                if (opt.lens_probe) add_bp(kBpLensAlloc);
                 if (g_net_trace) {
                     add_bp(kBpNetSend);
                     add_bp(kBpNetReceived);

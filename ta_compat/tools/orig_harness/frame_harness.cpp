@@ -13,6 +13,7 @@
 //
 // Usage: frame_harness <TotalA.exe> <game_dir> [scenes] [seed] [out_dir] [--map NAME]
 //                      [--res WxH] [--steps N] [--no-fog] [--no-mapping] [--dither] [--players N] [--verbose] [--hud]
+//                      [--shots N] [--lens N] (lens shots, render type 2, at the view, its edges and outside it)
 //   (--hud with FH_UNSEEN set: the pointer's unit is one the viewed player does not see, under
 //   radar or sonar: the bottom bar's "R: " / "S: " Unidentified object.)
 //   --hud also compares the interface the frame draws: the top bar (with random resource
@@ -59,7 +60,7 @@ constexpr u32 kGameStatePtr = 0x00511DE8, kDisplayPtr = 0x0051FBD0;
 constexpr u32 kDrawFrame = 0x00468CF0, kVisibleList = 0x0048BAE0, kMakeContext = 0x004B8A80;
 constexpr u32 kRelocate = 0x004CB4C0, kNegateXZ = 0x004CB590, kBuildState = 0x0045A950, kFeatureState = 0x0045A8D0;
 constexpr u32 kMalloc = 0x004D83B0, kGameAlloc = 0x004B4F10, kCacheAlloc = 0x00437A30;
-constexpr u32 kWaterTable = 0x004BAF30, kGrayTable = 0x004BAD30;
+constexpr u32 kWaterTable = 0x004BAF30, kGrayTable = 0x004BAD30, kLensFrame = 0x004B91B0;
 constexpr u32 kBottomBar = 0x0046A860, kGui = 0x004AB170, kConsole = 0x00464060, kKeyHeld = 0x004C1B80, kUnitVisible = 0x00465AC0;
 constexpr u32 kUnitSize = 0x118, kPlayerSize = 0x14B, kDefSize = 0x249, kCellSize = 13, kFeatureDefSize = 0x100, kSlotSize = 0x30;
 constexpr u32 kPieceSize = 54, kStateHeader = 0x22;
@@ -413,6 +414,7 @@ struct Options {
     // --shards N: each scene's world effects replaced by N shards of random units' textured
     // quads (no art, no glow, no debris), as 0x421700 leaves them, on both sides.
     int shards = 0;
+    int lens = 0;         // --lens N: up to N lens shots (render type 2) per scene
     bool fog = true;
     bool dither = false;  // --dither: the dithered fog option (visual option 0x40)
     bool mapping = true;  // --no-mapping: line of sight without the mapping option (everything explored)
@@ -463,6 +465,7 @@ int main(int argc, char** argv) {
         else if (a == "--no-mapping") opt.mapping = false;
         else if (a == "--shots" && k + 1 < argc) opt.shots = std::atoi(argv[++k]);
         else if (a == "--shards" && k + 1 < argc) opt.shards = std::atoi(argv[++k]);
+        else if (a == "--lens" && k + 1 < argc) opt.lens = std::atoi(argv[++k]);
         else if (a == "--verbose") opt.verbose = true;
         else if (a == "--hud") opt.hud = true;
         else if (a == "--minimap") opt.minimap = true;
@@ -649,6 +652,33 @@ int main(int argc, char** argv) {
         r.w32(gs + gViewH, static_cast<u32>(H - 64));
         r.w32(gs + gSchema, o.alloc(16));
         r.write(gs + gHud, world.content().hud.data(), 256);
+        // The lens frame (render type 2) as the battle's start makes it (0x420620: 0x4B91B0(22,
+        // 22, 8)), its transparency index (+8, never written there: heap contents) the engine's.
+        // Without it the lens draw read a null frame (the fault that kept lens shots out).
+        u32 lens_frame = 0;
+        if (o.call(kLensFrame, 0, {22, 22, 8}, &lens_frame) && lens_frame) {
+            r.write(lens_frame + 8, &world.lens_key_, 1);
+            r.w32(gs + 0x1AB9B, lens_frame);
+            // Its offset table against the engine's.
+            std::vector<std::int16_t> table(22 * 22);
+            r.read(lens_frame + 0x18, table.data(), table.size() * 2);
+            int bad = 0;
+            for (std::size_t i = 0; i < table.size(); ++i)
+                if (table[i] != render::lens_offsets()[i]) {
+                    if (bad++ < 8) std::printf("  lens table %zu: original %d, engine %d\n", i, table[i], render::lens_offsets()[i]);
+                }
+            u8 hdr[0x18] = {};
+            r.read(lens_frame, hdr, sizeof hdr);
+            if (std::getenv("FH_LENS_DUMP"))
+                for (int y = 6; y <= 16; ++y) {
+                    for (int x = 6; x <= 16; ++x) std::printf(" %6d/%6d", table[static_cast<std::size_t>(y * 22 + x)], render::lens_offsets()[static_cast<std::size_t>(y * 22 + x)]);
+                    std::printf("\n");
+                }
+            std::printf("lens frame %08X: %ux%u hotspot %d,%d, table entries differing: %d\n", lens_frame, hdr[0] | hdr[1] << 8, hdr[2] | hdr[3] << 8,
+                        static_cast<i16>(hdr[4] | hdr[5] << 8), static_cast<i16>(hdr[6] | hdr[7] << 8), bad);
+        } else {
+            std::printf("lens frame not made\n");
+        }
     }
 
     // Static map data: size, tiles, feature types, unit types (defs, models).
@@ -1284,6 +1314,7 @@ int main(int argc, char** argv) {
         }
     }
     long long mm_scenes = 0, mm_same = 0, mm_pixels = 0;
+    long long lens_drawn = 0, lens_outside = 0;
     long long mm_seq_frames = 0, mm_seq_same = 0, mm_seq_pixels = 0;
     Stats st;
     int written = 0;
@@ -1540,14 +1571,32 @@ int main(int argc, char** argv) {
         // battle's own table is put back after the scene.
         const sim::ProjectileTable saved_shots = b.projectiles;
         {
-            // (Render type 2, the lens (MINDGUN, no stock unit carries it), is left out: its frame
-            // GS+0x1AB9B is made by the battle-start routine 0x420620, which does not run here,
-            // and the engine does not draw it.)
-            std::vector<int> armed;
+            // Render type 2, the lens (MINDGUN, no stock unit carries it), comes only with --lens N
+            // (up to N lens shots before the others; its frame GS+0x1AB9B is made at set-up as
+            // the battle-start routine makes it). A lens shot outside the view ends the drawing
+            // of the shots after it, so the --shots pool keeps them out.
+            std::vector<int> armed, lens_slots;
             for (int slot = 0; slot < 256; ++slot)
-                if (!world.weapons_.slots[static_cast<std::size_t>(slot)].name.empty() && static_cast<std::size_t>(slot) < world.lb_->weapons.size() &&
-                    world.weapons_.slots[static_cast<std::size_t>(slot)].render_type != 2)
-                    armed.push_back(slot);
+                if (!world.weapons_.slots[static_cast<std::size_t>(slot)].name.empty() && static_cast<std::size_t>(slot) < world.lb_->weapons.size())
+                    (world.weapons_.slots[static_cast<std::size_t>(slot)].render_type == 2 ? lens_slots : armed).push_back(slot);
+            const int lenses = lens_slots.empty() ? 0 : rnd(0, opt.lens);
+            for (int k = 0; k < lenses && b.projectiles.count < sim::kMaxProjectiles; ++k) {
+                sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(b.projectiles.count++)];
+                p = sim::Projectile();
+                p.weapon = &world.lb_->weapons[static_cast<std::size_t>(lens_slots[static_cast<std::size_t>(rnd(0, static_cast<int>(lens_slots.size()) - 1))])];
+                // Mostly inside the view, its edges and corners (the copy reaches 11 pixels past
+                // them: the interface, the next row), now and then outside it (the end of the list).
+                int px = rnd(0, 9) == 0 ? rnd(100, W + 20) : rnd(0, 2) == 0 ? rnd(128, 140) : rnd(0, 1) ? rnd(W - 12, W - 1) : rnd(128, W - 1);
+                int py = rnd(0, 9) == 0 ? rnd(10, H) : rnd(0, 2) == 0 ? rnd(32, 44) : rnd(0, 1) ? rnd(H - 45, H - 33) : rnd(32, H - 33);
+                const int ph = rnd(0, 60);
+                const int wx = px - 128 + sx, wz = py - 32 + sy + (ph >> 1);
+                const int gh = std::max(0, world.hm_.sample(static_cast<std::int16_t>(wx), static_cast<std::int16_t>(wz)));
+                p.pos = {(wx << 16) | rnd(0, 0xFFFF), (ph << 16) | rnd(0, 0xFFFF), (wz << 16) | rnd(0, 0xFFFF)};
+                p.trail = p.pos;
+                p.spawn_tick = b.game_tick() - static_cast<std::uint32_t>(rnd(0, 40));
+                p.expire_tick = b.game_tick() + static_cast<std::uint32_t>(rnd(-5, 40));
+                p.ground_height = static_cast<std::int16_t>(gh);
+            }
             const int extra = armed.empty() ? 0 : rnd(0, opt.shots);
             for (int k = 0; k < extra && b.projectiles.count < sim::kMaxProjectiles; ++k) {
                 sim::Projectile& p = b.projectiles.slots[static_cast<std::size_t>(b.projectiles.count++)];
@@ -1645,7 +1694,7 @@ int main(int argc, char** argv) {
                 for (int x = 0; x < W; ++x) bgs.pixels[static_cast<std::size_t>(y * W + x)] = static_cast<u8>((x / 8 + y / 8) & 1 ? 0xC5 : 0x50);
             list.cmds.insert(list.cmds.begin(), render::DrawCmd{render::DrawOp::Blit, list.keep(std::move(bgs)), false, 0, 0, 0, 0, 0, {0, 0, W - 1, H - 1}});
         }
-        const render::Image8 mine = render::execute(list, world.blend_);
+        render::Image8 mine = render::execute(list, world.blend_);
 
         // ---- Original state ----
         r.w32(gs + gTick, b.game_tick());
@@ -2086,6 +2135,23 @@ int main(int argc, char** argv) {
         }
         std::vector<u8> theirs(static_cast<std::size_t>(W * H));
         r.read(o.frame, theirs.data(), theirs.size());
+        if (render::needs_frame_reads(list)) {
+            // Lens shots copy the frame around them, the interface outside the view included:
+            // the engine's frame starts from the same buffer as the original's at that point —
+            // the pattern, with the original's pixels outside the view (what its frame drew there
+            // before the world: the minimap, the top bar; nothing draws outside the view after it
+            // here).
+            auto back = std::make_shared<render::Image8>(W, H);
+            for (int y = 0; y < H; ++y)
+                for (int x = 0; x < W; ++x) {
+                    const std::size_t i = static_cast<std::size_t>(y * W + x);
+                    const bool in_view = x >= 128 && y >= 32 && y <= H - 33;
+                    back->pixels[i] = in_view ? static_cast<u8>((x / 8 + y / 8) & 1 ? 0xC5 : 0x50) : theirs[i];
+                }
+            list.cmds.erase(list.cmds.begin());  // (the pattern blit)
+            list.back = back;
+            mine = render::execute(list, world.blend_);
+        }
         const sim::ProjectileTable scene_shots = b.projectiles;  // (--minimap: the extra shots on the minimap too)
         b.projectiles = saved_shots;
 
@@ -2115,6 +2181,19 @@ int main(int argc, char** argv) {
         for (std::size_t i = 1; i < b.units.size(); ++i) nunits += b.ticks[i].type_index != 0;
         std::printf("scene %d: tick %u scroll %d,%d units %d visible %u shots %d: %lld of %lld view pixels differ\n", sc, b.game_tick(), sx, sy, nunits,
                     r.r32(gs + gVisibleCount), static_cast<int>(scene.projectiles.size()), diff, n);
+        {
+            // Lens shots drawn, and those whose copy reaches outside the view (the lens shows
+            // pixels up to 4 from its point: the panel, the bars, the next row past the right edge).
+            int drawn = 0, outside = 0;
+            for (const render::DrawCmd& c : list.cmds)
+                if (c.op == render::DrawOp::Lens) {
+                    ++drawn;
+                    outside += c.x - 4 < 128 || c.x + 4 > W - 1 || c.y - 4 < 32 || c.y + 4 > H - 33;
+                }
+            if (drawn) std::printf("  lens: %d drawn, %d reading outside the view\n", drawn, outside);
+            lens_drawn += drawn;
+            lens_outside += outside;
+        }
         if (opt.hud) {
             // The bottom bar: the client's whole frame against the original's, over the bar's rows
             // right of the side panel.
@@ -3004,6 +3083,7 @@ int main(int argc, char** argv) {
     }
     std::printf("scenes %d: identical %d, different %d (%lld pixels), failures %d\n", st.scenes, st.identical, st.scenes - st.identical, st.pixels,
                 st.failures);
+    if (lens_drawn) std::printf("lens shots: %lld drawn, %lld reading outside the view\n", lens_drawn, lens_outside);
     if (opt.minimap) std::printf("minimap: %lld scenes, %lld identical (pixels and scroll), %lld pixels differ\n", mm_scenes, mm_same, mm_pixels);
     if (opt.minimap_steps > 0)
         std::printf("minimap over time: %lld frames, %lld identical (pixels and scroll), %lld pixels differ\n", mm_seq_frames, mm_seq_same, mm_seq_pixels);

@@ -19,6 +19,7 @@ enum class DrawOp : std::uint8_t {
     BlitLight,  // lighten the frame under the sprite's non-key pixels through the light table
     BlitRemap,  // replace the frame under the sprite's non-key pixels through the remap table (fog)
     BlitTable,  // replace the frame under the sprite's non-key pixels through the command's own table
+    Lens,       // the 22 x 22 lens around (x, y): see apply_lens (colour = its transparency index)
 };
 
 struct DrawCmd {
@@ -36,6 +37,11 @@ struct DrawCmd {
 struct DrawList {
     int width = 0, height = 0;
     std::uint8_t clear_index = 0;
+    // The frame's contents before its first command (the game draws into one lasting buffer:
+    // what this frame has not drawn yet is still the last frame's). Without it the frame starts
+    // as clear_index. Only commands that read the frame outside what they draw (Lens) can see
+    // the difference where the frame is covered anyway.
+    std::shared_ptr<const Image8> back;
     // Light table for BlitLight, in the blend table's layout: entry [src * 256 + dst]
     // (see light_blend_table). Needed only when the list holds BlitLight commands.
     const BlendTable* light = nullptr;
@@ -70,7 +76,28 @@ struct DrawList {
     void line(int x0, int y0, int x1, int y1, std::uint8_t colour, const ClipRect& clip) {
         cmds.push_back({DrawOp::Line, nullptr, false, x0, y0, x1, y1, colour, clip});
     }
+    void lens(int x, int y, std::uint8_t key, const ClipRect& clip) {
+        cmds.push_back({DrawOp::Lens, nullptr, false, x, y, 0, 0, key, clip});
+    }
 };
+
+// The lens's offset table, w = h = 22, hotspot (11, 11), one entry per pixel row by row: for
+// a pixel at distance r = sqrt(dx² + dy²) from the hotspot with trunc(r) < w / 4, the
+// distance (as a 16-bit value) from the pixel's own index to the index it shows,
+// trunc(dx / s) + 11 + (trunc(dy / s) + 11) · w with s = (11 − r) / 8 (doubles; 8 is the
+// lens's strength); every other pixel holds 32000 (shows the transparency index). Every
+// entry shows a pixel at most 4 columns and rows from the hotspot (inside the capture).
+const std::vector<std::int16_t>& lens_offsets();
+// The lens drawn into `frame` around (x, y): the frame's 22 × 22 rectangle at (x − 11, y − 11)
+// read as rows of the frame's memory without clipping (a column past the right edge is the
+// next row's start), each pixel replaced through lens_offsets (the bytes laid out around the
+// capture — the table before it, the output after it — are modelled too, though the table
+// never reaches them), and the result drawn at (x − 11, y − 11) inside `clip`, pixels equal
+// to `key` left out.
+void apply_lens(Image8& frame, int x, int y, std::uint8_t key, const ClipRect& clip);
+// True when the list holds a command that reads the frame outside what it draws (Lens), or
+// starts from a back buffer: backends without such reads execute it on the CPU.
+bool needs_frame_reads(const DrawList& list);
 
 // CPU reference backend: executes the list into an 8-bit frame.
 Image8 execute(const DrawList& list, const BlendTable& blend);
