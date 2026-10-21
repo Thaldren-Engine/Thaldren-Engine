@@ -39,7 +39,7 @@
 //   quick key and text). sweep:KEYS:MODS re-opens the screen opened by the commands before it
 //   for each key (comma list or "all") and modifier set and prints one OUTCOME line per trial
 //   (the gadgets the layout's handler was called with, focus / field / text / stage changes, a
-//   screen change). Multiplayer screens: selprov[:..], tcp[:ADDR], serial, modem, selgame:FILE,
+//   screen change). Multiplayer screens: [links:NAME|..] selprov[:..], tcp[:ADDR], serial, modem, selgame:FILE,
 //   newmulti, msgbox:W:TEXT, lounge:FILE (also a live room's "focus NAME" / "keys 0" lines),
 //   loungeframe (one more room frame). The build restrictions: unitdefs (the original's unit
 //   enumeration, before lounge:), restrict (0x44C7E0 over the room), restrictframe (its frame
@@ -282,6 +282,7 @@ bool stub_copy(harness::DbgRemote& r, u32 at, const std::vector<std::uint8_t>& b
     return r.write(at, j, 5);
 }
 
+std::vector<std::string> online_links;  // links: (the connection screen's online links)
 std::string lounge_map;  // the room file's map (the host chooses it after the room opens)
 // The room file's focus (a live room's last pressed gadget: "focus NAME") and whether the chat
 // line still takes the keys ("keys 0": no field does).
@@ -972,6 +973,19 @@ int main(int argc, char** argv) {
             continue;
         } else if (s == "report") {
             gui_report(r, g.gui(), gs, "report");
+            continue;
+        } else if (s.rfind("onlpress:", 0) == 0) {
+            // onlpress:RESULT[:TEXT]: a service button's press (0x45B250, the call into online.dll,
+            // not run here) answered with RESULT and TEXT in its buffer ("\n" a line break); the
+            // connection screen's handler (0x4441A0) then does the rest.
+            const std::string t = s.substr(9);
+            const auto c = t.find(':');
+            const u32 result = static_cast<u32>(std::strtoul(t.c_str(), nullptr, 10));
+            std::string text = c == std::string::npos ? std::string() : t.substr(c + 1);
+            for (std::size_t p; (p = text.find("\\n")) != std::string::npos;) text.replace(p, 2, "\n");
+            std::vector<std::uint8_t> v(text.begin(), text.end());
+            v.push_back(0);
+            stub_copy(r, 0x0045B250, v, 2, -1, 0, result, 0xC);
             continue;
         }
         // The front end's state (GS+0x2BBE, its sub-state +0x2BBF and the requested one +0x2BC0) as
@@ -1794,9 +1808,33 @@ int main(int argc, char** argv) {
                     a = e + 1;
                 }
             r.stub(0x004C9B70, 0, 4);
-            r.stub(0x0045B490, 0, 4);
+            // The online links (0x45B490 fills the table 0x5127C8: entries of 0x24 bytes, the id
+            // and a 32-byte name; returns their number): the ones links: gave (online.dll and its
+            // extension DLLs are not run here), else none.
+            if (online_links.empty()) {
+                r.stub(0x0045B490, 0, 4);
+            } else {
+                std::vector<std::uint8_t> table(online_links.size() * 0x24, 0);
+                for (std::size_t k = 0; k < online_links.size(); ++k) {
+                    const u32 id = static_cast<u32>(k);
+                    std::memcpy(&table[k * 0x24], &id, 4);
+                    std::memcpy(&table[k * 0x24 + 4], online_links[k].data(), std::min<std::size_t>(online_links[k].size(), 31));
+                }
+                stub_copy(r, 0x0045B490, table, 1, -1, 0, static_cast<u32>(online_links.size()), 4);
+            }
             stub_copy(r, 0x004CA250, names, 4, 0x4E5, n, 1, 0x14);
             ok = r.call(0x00444580, 0, {});
+        } else if (s.rfind("links:", 0) == 0) {
+            // links:NAME|NAME...: the online links the next selprov gets (ids 0, 1, ... in that
+            // order; compare: ta_play --online-links).
+            online_links.clear();
+            for (std::size_t a = 6; a <= s.size();) {
+                std::size_t e = s.find('|', a);
+                if (e == std::string::npos) e = s.size();
+                online_links.push_back(s.substr(a, e - a));
+                a = e + 1;
+            }
+            continue;
         } else if (s.rfind("tcp", 0) == 0 && (s.size() == 3 || s[3] == ':')) {
             // tcp[:ADDRESS]: the TCP/IP address question (TCP.GUI, 0x4421F0) over the connection
             // screen, the registry's TCPADDR answered with ADDRESS (none: not there).

@@ -301,6 +301,10 @@ struct FrontEndHooks {
     // the first pass and at the first after a battle's data was loaded); the hook may show the
     // incompatible units message (system_message).
     std::function<void(FrontEnd&)> enumerate_units;
+    // Opens a web address with the system's handler (program false) or starts a program, its
+    // path as the command line (program true); returns whether it started. Unset: nothing is
+    // opened (a failure). Tests capture it instead of launching anything.
+    std::function<bool(const std::string& target, bool program)> open_external;
 };
 
 // ---------------------------------------------------------------- front end

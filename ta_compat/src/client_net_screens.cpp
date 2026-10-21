@@ -29,6 +29,7 @@
 #include "render/raster.h"
 #include "ta/client_world.h"
 #include "ta/net_setup.h"
+#include "ta/online_services.h"
 #include "ta/restrict_list.h"
 #include "ta/tdf.h"
 #include "ta/unitdefs.h"
@@ -644,6 +645,7 @@ public:
         if (ListState* L = list("DPLAY"))
             for (const Provider& p : providers()) L->items.push_back(p.name);
         fit_slider("DPLAY", "SLIDER");
+        add_service_buttons();
     }
     void enter(FrontEnd& fe) override {
         NetScreen::enter(fe);
@@ -670,8 +672,56 @@ protected:
     }
     void on_press(FrontEnd& fe, Widget& w) override;
     void choose(FrontEnd& fe, int row);
+    void add_service_buttons();
+    void press_service(FrontEnd& fe, const Widget& w);
     std::shared_ptr<NetPart> part_;
+    // The online services' links (0x45B490 into the table 0x5127C8) and what answers them.
+    std::unique_ptr<OnlineServices> services_;
+    std::vector<OnlineLink> links_;
 };
+
+// The online-service buttons (0x444580 after the screen opened: 0x45B490 then 0x44475D): for
+// each link a copy of the hidden template SERVICEX (its whole record) added after the screen's
+// gadgets, its caption set to the link's name (0x4A09C0: translated, a quick key from it), named
+// SERVICE<n> (n the link's index), at the template's y and then each one the template's height +
+// 1 lower, made active. No online.dll (or one older than version 3): no buttons.
+void SelProv::add_service_buttons() {
+    services_ = std::make_unique<OnlineServices>(real_online_system(), art_.game_dir());
+    links_ = services_->links([](const std::string& s) { return translate(s); });
+    const int t = index_of("SERVICEX");
+    if (t < 0 || links_.empty()) return;
+    int y = widgets_[static_cast<std::size_t>(t)].y;
+    for (std::size_t i = 0; i < links_.size(); ++i) {
+        const Widget tmpl = widgets_[static_cast<std::size_t>(t)];
+        widgets_.push_back(tmpl);
+        set_caption(widgets_.back(), links_[i].name);
+        Widget& w = widgets_.back();
+        w.name = "SERVICE" + std::to_string(i);
+        w.y = y;
+        w.active = true;
+        y += tmpl.h + 1;
+    }
+}
+
+// A service button pressed (0x4441A0: a gadget whose name starts with SERVICE): BigButton; the
+// link of the button's number to online.dll (0x45B250; the pointer shows the wait shape only
+// while the call runs, no frame is drawn in between). Started: online.dll is let go and the
+// program ends (exit(0), no further frame). Otherwise a 320-wide message box (fitted, with OK) of
+// the reason, translated (and again by the box): the installation CD question, online.dll's
+// reason, or without one "The <name> service failed or took ... file for more information.".
+void SelProv::press_service(FrontEnd& fe, const Widget& w) {
+    sfx(fe, art_, "BigButton");
+    const int n = std::atoi(w.name.c_str() + 7);
+    if (n < 0 || static_cast<std::size_t>(n) >= links_.size() || !services_) return;
+    std::string message;
+    const int r = services_->press(links_[static_cast<std::size_t>(n)].id, message, fe.hooks().open_external, [](const std::string& s) { return translate(s); });
+    if (r == 0) {
+        fe.quit();
+        return;
+    }
+    if (message.empty()) message = OnlineServices::failure_text(links_[static_cast<std::size_t>(n)].name);
+    show_net_message(fe, art_, translate(message), 320);
+}
 
 // ------------------------------------------------------------------ the address (TCP.GUI)
 // 0x4421F0 (handler 0x442050): opened with flags 0x800 over the connection screen (the screen
@@ -725,6 +775,8 @@ private:
 void SelProv::on_press(FrontEnd& fe, Widget& w) {
     if (is(w, "SELECT")) {
         if (ListState* L = list("DPLAY")) choose(fe, L->selected);
+    } else if (upper(w.name).compare(0, 7, "SERVICE") == 0) {
+        press_service(fe, w);
     } else if (is(w, "SETTINGS")) {
         sfx(fe, art_, "Options");
         fe.push(make_options_screen(art_));

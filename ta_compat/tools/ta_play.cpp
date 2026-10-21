@@ -42,6 +42,10 @@
 //                       --net-screen opens (a fresh front end per key; X,Y: a click there first,
 //                       TEXT: then typed),
 //                       one OUTCOME line each (compare: gui_harness sweep:KEYS:MODS)
+//   --open-log FILE     tests: the connection screen's online links write what they would open
+//                       ("url ADDRESS" / "program PATH") to FILE and count as started (nothing
+//                       is opened; the program then ends as the original does)
+//   --online-links      tests: prints this machine's online links ("link ID NAME") and exits
 //   --loading-test FILE tests: writes loading screen frames for the states in FILE and exits
 //                       (the format is described where it is read; compare: gui_harness loadframe:)
 //   --loading-trace     tests (with a direct battle): prints the loader's loading-screen reports
@@ -69,6 +73,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 #ifdef CLIENT_HAVE_SDL
@@ -86,6 +91,7 @@
 #include "ta/client_net_screens.h"
 #include "ta/console_commands.h"
 #include "ta/client_world.h"
+#include "ta/online_services.h"
 #include "ta/preferences.h"
 #include "ta/translate.h"
 
@@ -103,6 +109,31 @@ std::string own_folder(const char* argv0) {
 #endif
     const auto cut = s.find_last_of("\\/");
     return cut == std::string::npos ? std::string(".") : s.substr(0, cut);
+}
+
+// Opens a web address or starts a program as online.dll does: ShellExecuteA(no window, "open",
+// address, "", "", shown normal) succeeding above 32 (0x100015B0); CreateProcessA with the path
+// as its command line, creation flags 0x220, shown normal (0x10001660).
+bool open_external(const std::string& target, bool program) {
+#ifdef _WIN32
+    if (!program) return reinterpret_cast<INT_PTR>(ShellExecuteA(nullptr, "open", target.c_str(), "", "", SW_SHOWNORMAL)) > 32;
+    STARTUPINFOA si = {};
+    si.cb = sizeof si;
+    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_FORCEONFEEDBACK;
+    si.wShowWindow = SW_SHOWNORMAL;
+    PROCESS_INFORMATION pi = {};
+    std::string cmd = target.substr(0, 0x1FF);
+    if (!CreateProcessA(nullptr, cmd.empty() ? nullptr : cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_PROCESS_GROUP | NORMAL_PRIORITY_CLASS, nullptr,
+                        nullptr, &si, &pi))
+        return false;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+#else
+    (void)target;
+    (void)program;
+    return false;
+#endif
 }
 
 // Tests (--pointer-selftest): the window front ends' pointer rules driven through a sequence of
@@ -226,6 +257,8 @@ int main(int argc, char** argv) {
     int movies = -1;  // --movies / --no-movies (default: the window plays them, headless runs not)
     std::vector<std::string> net_screens;
     std::string key_sweep;  // --key-sweep KEYS:MODS
+    std::string open_log;   // --open-log FILE
+    bool online_links = false;
     // The original's network start-up switches (0x49EE30), single dash or slash, any case; a
     // value follows the letter or is the next word (taken whatever it is).
     int sw_timeout = 30, sw_send_error = 0, sw_rate = 0;
@@ -338,6 +371,12 @@ int main(int argc, char** argv) {
         } else if (a == "--key-sweep") {
             key_sweep = next();
             continue;
+        } else if (a == "--open-log") {
+            open_log = next();
+            continue;
+        } else if (a == "--online-links") {
+            online_links = true;
+            continue;
         }
         if (a == "--map") setup.map = next();
         else if (a == "--side") side = next() == "core" ? 1 : 0;
@@ -443,6 +482,14 @@ int main(int argc, char** argv) {
         // The translations for the language (0x4C54F0, right after the archives are mounted).
         ta::load_translations(art.vfs(), ta::Vfs::game_language());
         client::LayoutScreen::caption_translation() = [](const std::string& t) { return ta::translate(t); };
+        if (online_links) {
+            // Tests: the connection screen's online links as this machine gives them (0x45B490),
+            // one "link ID NAME" line each (the input of gui_harness's links:).
+            ta::OnlineServices services(ta::real_online_system(), game_dir);
+            for (const ta::OnlineLink& l : services.links([](const std::string& s) { return ta::translate(s); }))
+                std::printf("link %u %s\n", l.id, l.name.c_str());
+            return 0;
+        }
         client::MusicPlayer music([&art](int n) { return art.music_track(n); }, art.music_tracks());
         client::FrontEndSetup fes;
         fes.width = 640;  // the menus' screen; battles use the display mode chosen in the options
@@ -450,6 +497,17 @@ int main(int argc, char** argv) {
         fes.settings_path = settings_path;
         fes.unit_limit = ta::preferences_unit_limit(game_dir);  // totala.ini [Preferences] UnitLimit (0x491200)
         ta::make_front_end(art, &music, fes);
+        // The connection screen's online links open web pages and service programs (online.dll,
+        // 0x100015B0 / 0x10001660); --open-log FILE (tests): written there and taken as started,
+        // nothing is opened.
+        if (!open_log.empty()) {
+            fes.hooks.open_external = [open_log](const std::string& target, bool program) {
+                std::ofstream(open_log, std::ios::app) << (program ? "program " : "url ") << target << "\n";
+                return true;
+            };
+        } else {
+            fes.hooks.open_external = open_external;
+        }
         {
             client::Settings s;
             s.load(settings_path);
