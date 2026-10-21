@@ -401,9 +401,18 @@ void GameClient::minimap_jump(int x, int y) {
 
 // ---- sounds and messages ---------------------------------------------------------------------
 
-void GameClient::play_ui(int sample) {
+// Whether 0x47F0C0 / 0x47F300 send their packet 0x13 when asked: not the wave-out path (it plays
+// and returns first), the effect volume (GS+0x37F0C) and the sound mode (GS+0x37F19 & 7) on,
+// DirectSound present (0x51E690 clear); an id other than 0xFFFF.
+static bool echoes(const ClientOptions& o, int sample) {
+    return sample != 0xFFFF && !o.wave_out && o.fx_volume != 0 && (o.sound_mode & 7) != 0 && !o.no_direct_sound;
+}
+
+void GameClient::play_ui(int sample, bool echo) {
     // An interface sound (0x47F0C0): centred, 5.85 dB down; nothing while the effect volume or
-    // the sound mode is off.
+    // the sound mode is off. With `echo` (no caller of the shipped program sets it) packet 0x13
+    // goes to everybody first, with the stack's bytes after the id (zeros here: an input).
+    if (echo && echoes(opt_, sample) && network.send_sound) network.send_sound(sample, nullptr);
     if (sample < 0 || (!opt_.wave_out && (opt_.fx_volume == 0 || opt_.sound_mode == 0))) return;
     SoundEvent e;
     e.sample = sample;
@@ -416,9 +425,11 @@ std::vector<SoundEvent> GameClient::take_sounds() {
     return out;
 }
 
-void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos) {
+void GameClient::on_sound(std::uint16_t sample, const sim::Vec3i& pos, bool echo) {
     // A world sound (0x47F300; client/sound_rules.h): judged by the effect settings, the map,
-    // the viewed player's sight and the view.
+    // the viewed player's sight and the view. With `echo` packet 0x13 goes to everybody before
+    // the map and sight tests (whether or not it is heard here).
+    if (echo && echoes(opt_, sample) && network.send_sound) network.send_sound(sample, &pos);
     if (sample == 0xFFFF || sample >= c_.samples.size()) return;
     if (opt_.wave_out) {
         // (the wave-out path plays it as an interface sound: no map, sight or view rules)

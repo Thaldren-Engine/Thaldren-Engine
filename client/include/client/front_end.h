@@ -36,6 +36,7 @@
 
 #include "client/content.h"
 #include "client/game_client.h"
+#include "client/main_rand.h"
 #include "render/image.h"
 
 namespace sim {
@@ -383,6 +384,15 @@ public:
     virtual void stop_sounds() {}
     // The CD music player (null when there is no music; client/cd_audio.h).
     virtual CdMusic* music() = 0;
+    // The main thread's C runtime rand() (client/main_rand.h): the menus, the network room, the
+    // music and, while a battle runs, the battle's own stream are this one sequence.
+    virtual sim::Lcg15& crt_rand() = 0;
+    // The network session flag (GS+0x2A44 bit 0: set when this machine created or joined a game,
+    // 0x426E80 after 0x457710 / 0x450D80; cleared when the session closes, 0x450DD0 / 0x452370,
+    // and by the statistics after a network battle, 0x41EC50). While it is set the main loop
+    // keeps running with the window inactive (WinMain 0x49E830). The flag is set while the
+    // returned token lives (and the front end has not cleared it).
+    virtual std::shared_ptr<void> network_session() { return nullptr; }
     // The original's settings writer (0x430F00, the registry): what was saved last is what the
     // music library reads (saved_settings). Called where the original writes the registry
     // (the options menu's OK, a battle's start, the commands that save).
@@ -436,6 +446,9 @@ struct FrontEndSetup {
     std::function<void(AudioOut*)> music_output;  // the audio output once it is open (null: none)
     std::function<void(std::uint32_t)> music_clock;  // the main loop's clock (ms) at each pass, for the devices and timers
     void* native_window = nullptr;  // the program window's handle once it is open (HWND on Windows)
+    // The main thread's rand() (client/main_rand.h; null: the front end keeps its own, seeded 1).
+    // The music's picks draw from it too, so the program that owns the music gives it here.
+    MainRand* main_rand = nullptr;
     // The registry as the original last wrote it (FrontEnd::saved_settings): the music library
     // reads its "musicvol" and "cdmode" from here.
     Settings saved_settings;

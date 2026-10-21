@@ -34,6 +34,9 @@ public:
     void set_fx_volume(float volume);
     // The music stream's own volume, 0..256 (the music library's 0..1).
     void set_music_volume(int volume);
+    // The effect voices (sounds and narration) silent while the program's window is not active
+    // (the DirectSound focus rule); they go on playing, unheard. The music channel is not muted.
+    void set_effects_muted(bool muted);
     // Music channel: one stream at a time. Starts `track` at sample frame `frame` (repeating
     // from its start at the end when `repeat`).
     void music_start(std::shared_ptr<const Sample> track, std::uint64_t frame, bool repeat);

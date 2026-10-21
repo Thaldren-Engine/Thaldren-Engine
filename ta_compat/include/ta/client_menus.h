@@ -196,10 +196,6 @@ struct CampaignEnd {
 // Fills `out` when the battle is a campaign mission (and records the mission's result).
 bool campaign_end(MenuArt& art, client::BattleSession& session, client::BattleOutcome outcome, CampaignEnd& out);
 
-// The C runtime's rand() of the program's main thread as the menus draw from it (the main
-// menu's sparks, the briefing's wind); what is left of it seeds a battle's rand().
-sim::Lcg15& menus_rand();
-
 // Fills the front end set-up with the original's screens. `art` must outlive the run.
 void make_front_end(MenuArt& art, client::CdMusic* music, client::FrontEndSetup& setup);
 // The original's picture folder (registry "Image Output Directory"; by default the game's

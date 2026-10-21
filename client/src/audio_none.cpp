@@ -12,6 +12,7 @@ void AudioOut::run(const SoundCommand&) {}
 void AudioOut::forget(const std::vector<Sample>&) {}
 void AudioOut::set_fx_volume(float) {}
 void AudioOut::set_music_volume(int) {}
+void AudioOut::set_effects_muted(bool) {}
 void AudioOut::music_start(std::shared_ptr<const Sample>, std::uint64_t, bool) {}
 void AudioOut::music_halt() {}
 void AudioOut::music_set_repeat(bool) {}

@@ -117,6 +117,11 @@ bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std:
         } else if (ev == "leave") {
             e.type = InputEvent::Type::PointerLeave;
             out.push_back({frame, e});
+        } else if (ev == "deactivate" || ev == "activate") {
+            // The program window deactivated / activated (WM_ACTIVATE, Alt+Tab).
+            e.type = InputEvent::Type::Activate;
+            e.key = ev == "activate" ? 1 : 0;
+            out.push_back({frame, e});
         } else if (ev == "down" || ev == "up" || ev == "click") {
             e.x = num(2), e.y = num(3), e.button = w.size() > 4 ? num(4) : 1;
             InputEvent m = e;

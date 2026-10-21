@@ -59,6 +59,7 @@ public:
     }
     ~Runner() override {
         end_music();
+        mr().leave();
         // Screens go before the battle they may refer to.
         graveyard_.clear();
         while (!stack_.empty()) stack_.pop_back();
@@ -99,6 +100,7 @@ public:
         if (!session_ || ended_) return;
         ended_ = true;
         outcome_ = outcome;
+        net_token_.reset();  // (the statistics, 0x41EC50, clear GS+0x2A44 bit 0)
         if (s_.music) {
             // (0x499200 -> 0x491B60 at the end of a battle: stopped, the mood silent)
             s_.music->stop();
@@ -155,6 +157,19 @@ public:
     void stop_narration() override { menu_sounds_.push_back({-1, MenuSound::StopNarration}); }
     void stop_sounds() override { menu_sounds_.push_back({-1, MenuSound::StopAll}); }
     CdMusic* music() override { return s_.music; }
+    sim::Lcg15& crt_rand() override { return mr().stream(); }
+    std::shared_ptr<void> network_session() override {
+        std::shared_ptr<void> t = std::make_shared<int>(0);
+        net_token_ = t;
+        return t;
+    }
+    // GS+0x2A44 bit 0: a session open (a token alive), or a network battle running (its end
+    // clears it: the statistics, 0x41EC50).
+    bool network_flag() const { return !net_token_.expired() || (session_ && !ended_ && session_->network()); }
+    // WinMain's loop (0x49E830): the pass (0x499890) runs only while the window is active or the
+    // network flag is set; otherwise the loop waits in GetMessageA for the next message.
+    bool passes_run() const { return active_ || network_flag(); }
+    bool active() const { return active_; }
     const Settings& saved_settings() const override { return s_.saved_settings; }
     void write_registry() override {
         // (0x430F00 writes every setting; CDAudioVolume is the CD's aux volume, -1 without one)
@@ -176,6 +191,12 @@ public:
     // 0x49E830): the CD's track types kept, the mood kept and the CD closed; back: opened
     // again, its disc routine, the switch, the mode and the mood, the disc routine again.
     void app_active(bool on) {
+        active_ = on;
+        // DirectSound plays a program's buffers only while its cooperative window has the focus
+        // (the buffers are made without DSBCAPS_GLOBALFOCUS / STICKYFOCUS: 0x4CF230 flags 0x92,
+        // 0x4CF370 0x92, 0x4CF940 0x82): they go on playing, silently. The wave-out path
+        // (PlaySoundA) is not muted.
+        if (audio_ && sound_path_ == 0) audio_->set_effects_muted(!on);
         if (!s_.music) return;
         CdMusic& m = *s_.music;
         if (!on && m.is_open()) {
@@ -274,6 +295,10 @@ public:
     bool exited_at_once() const { return exited_at_once_; }
 
     void handle(const InputEvent& e) {
+        if (e.type == InputEvent::Type::Activate) {
+            app_active(e.key != 0);
+            return;
+        }
         if (e.type == InputEvent::Type::Quit) {
             if (session_ && !ended_ && !pending_ && s_.close_prompt)
                 if (std::unique_ptr<Screen> q = s_.close_prompt(*this, *session_)) {
@@ -371,6 +396,17 @@ public:
         std::printf("screenshot %s\n", path.empty() ? "(not written)" : path.c_str());
     }
 
+    // A turn of the loop without a pass (the window inactive outside network games: WinMain
+    // waits in GetMessageA). Nothing of the program runs: no input pass, no judge, no tick
+    // timers, no battle steps, no drawing, no sound sweep. Only the music library's own thread
+    // goes on (it is not the program's loop).
+    void idle(std::uint32_t now) {
+        if (s_.music_clock) s_.music_clock(now);
+        if (s_.music_pass) s_.music_pass();
+        ++idle_turns_;
+    }
+    std::uint64_t idle_turns_ = 0;
+
     void frame(std::uint32_t now) {
         now_ = now;
         if (s_.music_clock) s_.music_clock(now);
@@ -395,12 +431,22 @@ public:
         pointer_.step(s_.content->cursor_timing, ticks - pointer_ticks_);
         pointer_ticks_ = ticks;
         if (pending_) run_launcher();
+        // The pass (0x499890) in the original's order, which is also the order of the main
+        // thread's rand() draws (docs/RE_MEMORY.md, "One main-thread rand() stream"): the input
+        // (0x4A9FD0, the events above), the music's judge (0x494E70: a mood change, a pick), the
+        // sounds (0x47F680: the wave-out path's loop), the tick timers (0x4B6370: the music's
+        // fade and delay, a pick), then the state's routine (GS+0x391F5: the battle's steps and
+        // drawing, or the menu screen's pass).
         if (in_battle() && !ended_ && s_.music) {
             // The music's battle / peace judge (0x494E70, every pass of a running battle, before
             // the battle's own routine; menus over it and pauses do not stop it).
             const sim::Battle& b = session_->battle();
             judge_.update(ticks, b.players[static_cast<std::size_t>(b.settings.local_player)].alive_count, *s_.music);
         }
+        if (sound_path_ == 2) wave_.pass(now_);
+        if (s_.timers) s_.timers->pump();
+        // (the music library's own thread: its turn, not part of the original's pass)
+        if (s_.music_pass) s_.music_pass();
         if (in_battle()) {
             // The battle goes on under menus (the game menu pauses it outside network games).
             session_->frame(now);
@@ -438,12 +484,6 @@ public:
                 end_battle(o);
             }
         }
-        // The wave-out path's loop sound again when nothing plays (0x47F680 -> 0x49F620), the
-        // tick timers (0x4B6370: the music's fade and delay) and the music device's own turns,
-        // then the state's routine.
-        if (sound_path_ == 2) wave_.pass(now_);
-        if (s_.timers) s_.timers->pump();
-        if (s_.music_pass) s_.music_pass();
         // The top screen's pass (a screen it pushes or uncovers has its first pass next time; the
         // stack may change during the call).
         if (!stack_.empty() && stack_.back()) stack_.back()->frame(*this, now);
@@ -646,6 +686,7 @@ private:
         // A battle that ended and is still kept (the campaign's statistics screen, which stays
         // under the next mission's briefing) is left now, before the next one loads.
         if (session_ && ended_) {
+            mr().leave();  // (the main thread's rand() goes on from the battle's)
             std::unique_ptr<BattleSession> old = std::move(session_);
             ended_ = false;
             battle_base_ = 0;
@@ -694,6 +735,9 @@ private:
         ended_ = false;
         battle_base_ = stack_.size();
         judge_.reset();
+        // The battle's rand() is the main thread's (the loading thread's draws stay behind): from
+        // here every main-thread draw, the loading's end pick below first, is the battle's.
+        mr().enter(session_->battle().crt_rand);
         if (s_.music) {
             // (0x497F40 at the loading's end: the mood building, then the pick unless the CD
             // says it plays)
@@ -778,12 +822,15 @@ private:
         };
         session_->combat_activity = [this](int amount) { judge_.activity(amount); };
         session_->client().options_mut().wave_out = sound_path_ == 2;
+        session_->client().options_mut().no_direct_sound = sound_path_ != 0;  // (0x51E690)
         if (s_.apply_to_battle) s_.apply_to_battle(*this, *session_);
     }
 
     void finish_battle(bool ask_session = true) {
         if (!session_) return;
         units_due_ = true;  // (the battle's loading, GameData_LoadAll, set GS+0x14397)
+        mr().leave();
+        net_token_.reset();  // (0x41EC50 / the session's close: GS+0x2A44 bit 0 cleared)
         std::unique_ptr<BattleSession> s = std::move(session_);
         developer_ = s->client().options().debug_commands;  // (the password line's change stays)
         debug_view_ = s->client().debug_view();
@@ -877,6 +924,10 @@ private:
     bool reopen_music_ = false;     // the CD closed while switched away (0x509720)
     bool music_ended_ = false, music_started_ = false;
     WaveOutChannel wave_;           // the wave-out sound path
+    MainRand own_rand_;             // the main thread's rand() when the program gives none
+    MainRand& mr() { return s_.main_rand ? *s_.main_rand : own_rand_; }
+    std::weak_ptr<void> net_token_;  // GS+0x2A44 bit 0 while it lives (network_session())
+    bool active_ = true;             // the window is active (display +0xE0, WM_ACTIVATE)
 
 public:
     std::size_t sound_count_ = 0;
@@ -1118,6 +1169,11 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             const std::uint32_t now = static_cast<std::uint32_t>(static_cast<std::uint64_t>(f) * 1000u / 30u);
             if (o.realtime) std::this_thread::sleep_until(wall_start + std::chrono::milliseconds(now));
             feed_script(f, now);
+            if (!run.passes_run()) {
+                // (the window inactive outside a network game: no pass, nothing drawn or shown)
+                run.idle(now);
+                continue;
+            }
             run.frame(now);
             run.play_pending_sounds();
             const render::Palette* pal = nullptr;
@@ -1140,11 +1196,13 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
             run.shown(std::move(list), pal);
         }
         std::printf("front end (headless): %d frames, %zu interface sounds\n", f, run.sound_count_);
+        if (run.idle_turns_) std::printf("inactive: %llu frames without a pass\n", static_cast<unsigned long long>(run.idle_turns_));
         // (tests: whether a battle is still running at the end, and the screens open over it)
         if (run.session()) {
             std::printf("battle running, %zu screens over it\n", run.screens_over_battle());
             // (tests: each player record in use, its controller and its live units)
             const sim::Battle& b = run.session()->battle();
+            std::printf("battle step %u, main rand() state %08x\n", b.game_tick(), b.crt_rand.state());
             for (std::size_t k = 0; k < b.players.size() && k < 10; ++k)
                 if (b.players[k].active)
                     std::printf("player %zu: controller %d, %d units\n", k, static_cast<int>(b.players[k].controller),
@@ -1284,6 +1342,10 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
     };
     run.begin(audio.ok() ? &audio : nullptr);
     for (; (o.frames == 0 || frame_no < o.frames) && !run.done(); ++frame_no) {
+        // WinMain's loop (0x49E830): with the window inactive outside a network game it waits
+        // for the next message (GetMessageA) instead of running a pass (here: at most 250 ms, for
+        // the music library's thread, which the original runs on its own).
+        if (!run.passes_run()) SDL_WaitEventTimeout(nullptr, 250);
         const std::uint32_t now = static_cast<std::uint32_t>(SDL_GetTicks() - start);
         feed_script(frame_no, now);
         SDL_Event ev;
@@ -1331,6 +1393,11 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         {
             const SDL_Keymod mod = SDL_GetModState();
             run.poll_modifiers((mod & SDL_KMOD_SHIFT) != 0, (mod & SDL_KMOD_CTRL) != 0, (mod & SDL_KMOD_ALT) != 0);
+        }
+        if (!run.passes_run()) {
+            run.idle(now);
+            --frame_no;  // (no frame)
+            continue;
         }
         run.frame(now);
         run.play_pending_sounds();
