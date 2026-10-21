@@ -71,6 +71,9 @@ struct ClientOptions {
     // without the effect volume, sound mode, map, sight and view rules (0x47F0C0, 0x47F300,
     // 0x47FD70 take that path first).
     bool wave_out = false;
+    // No DirectSound (0x51E690: -s, NoDirectSound, and with the wave-out path): the sounds'
+    // packet 0x13 is never sent (0x47F0C0 / 0x47F300 test it).
+    bool no_direct_sound = false;
     // Typed commands (chat lines starting with '+', docs/RE_MEMORY.md "Console commands").
     bool cheats = false;             // cheat commands allowed (skirmish; network games whose host allows them)
     bool debug_commands = false;     // the debug commands unlocked (by a command)
@@ -133,6 +136,9 @@ public:
         std::function<void(std::uint8_t bit)> toggle_share_flag;
         // "+senderror n" (GS+0x37F35): the share of outgoing messages dropped.
         std::function<void(int percent)> set_send_error;
+        // Packet 0x13, the sound echo (net::NetBattle::send_sound): the sound's bank index and,
+        // for a world sound, its position.
+        std::function<void(std::int32_t sound, const sim::Vec3i* pos)> send_sound;
     };
     NetworkHooks network;
     // The chat line (Enter): a typed line goes here when Enter is pressed again.
@@ -211,7 +217,9 @@ public:
     void set_pointer_hidden(bool h) { pointer_hidden_ = h; }
 
     // Presentation events from the simulation (the battle's outside forwards them).
-    void on_sound(std::uint16_t sample, const sim::Vec3i& pos);
+    // `echo`: the original's third argument of 0x47F300 (packet 0x13 to the other machines; no
+    // caller in the shipped program sets it).
+    void on_sound(std::uint16_t sample, const sim::Vec3i& pos, bool echo = false);
     // An interface sound by sample index (centred; the simulation's cues such as a mission
     // goal met).
     void interface_sound(int sample) { play_ui(sample); }
@@ -413,7 +421,8 @@ private:
     void minimap_jump(int x, int y);
     bool on_minimap(int x, int y);
     sim::Vec3i minimap_world(int x, int y);
-    void play_ui(int sample);
+    // 0x47F0C0(sample, echo): `echo` sends packet 0x13 (no caller in the shipped program sets it).
+    void play_ui(int sample, bool echo = false);
     void speak(const sim::Unit& u, std::uint32_t id);
     // Unit notices: the original's speech queue (8 entries by priority, per-notice gaps).
     void select_category(const std::string& category, bool keep);

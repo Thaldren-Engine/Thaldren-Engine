@@ -605,13 +605,19 @@ struct EventTransport : net::Transport {
     }
 };
 
+// A battle outside that keeps the world sounds it is asked to play.
+struct SoundOutside : sim::QuietBattleOutside {
+    std::vector<std::pair<std::uint16_t, sim::Vec3i>> world;
+    void play_sound(std::uint16_t s, const sim::Vec3i& p) override { world.push_back({s, p}); }
+};
+
 // Two machines in a battle: A runs slot 0 (human, id 101, the host) and slot 1 (computer, 102),
 // B runs slot 2 (human, 201) and slot 3 (computer, 202). Packets go out at once (no frames).
 struct LeaveRig {
     net::LoopbackHub hub;
     EventTransport ta{hub.add_machine()}, tb{hub.add_machine()};
     sim::HeightMap hm{16, 16};
-    sim::QuietBattleOutside qa, qb;
+    SoundOutside qa, qb;
     sim::BattleRng ra, rb;
     sim::Battle a{qa, hm, ra}, b{qb, hm, rb};
     net::NetTiming timing() {
@@ -769,8 +775,69 @@ static void test_view_state_packet() {
     CHECK(r.nb.view_state(0).valid && r.nb.view_state(0).metal == 123.5f && r.nb.view_state(0).energy_storage == 2000.0f);
 }
 
+// Packet 0x13, the sound echo (0x47F0C0 / 0x47F300 send it when their caller asks; 0x453D40
+// case 0x11 plays it with the echo off): 18 bytes, byte 1 = 1 from both routines, so every echo
+// is an interface sound on the receiver; byte 1 = 0 (no sender in the shipped program) is the
+// world sound at the packet's position.
+static void test_sound_echo() {
+    LeaveRig r;
+    std::vector<std::int32_t> ui;
+    r.nb.on_interface_sound = [&](std::int32_t id) { ui.push_back(id); };
+    // A world sound's echo: id, then x, y, z; heard on B as an interface sound.
+    const sim::Vec3i pos{0x00123456, 0x00010000, -0x00200000};
+    r.na.send_sound(17, &pos);
+    CHECK(r.na.counters().by_type[0x13] == 1);
+    r.nb.poll();
+    CHECK(ui.size() == 1 && ui[0] == 17 && r.qb.world.empty());
+    // An interface sound's echo: bytes 6..17 are the sender's stack (an input), never read.
+    const std::uint8_t stale[12] = {0xCC, 0xCC, 0xCC, 0xCC, 1, 2, 3, 4, 5, 6, 7, 8};
+    r.na.send_sound(3, nullptr, stale);
+    r.nb.poll();
+    CHECK(ui.size() == 2 && ui[1] == 3);
+    // The packet as the original builds it, sent raw: byte 1 = 0 plays the world sound at the
+    // position (0x47F300 with the echo off); id 0xFFFF plays nothing either way.
+    std::vector<std::uint8_t> w(18, 0);
+    w[0] = 0x13;
+    w[2] = 9;
+    w[6] = 0x56, w[7] = 0x34, w[8] = 0x12;   // x 0x123456
+    w[12] = 1;                               // y 0x10000
+    w[16] = 0xE0, w[17] = 0xFF;              // z -0x200000
+    r.ta.send(101, 0, w);
+    r.nb.poll();
+    CHECK(r.qb.world.size() == 1 && r.qb.world[0].first == 9 && r.qb.world[0].second == pos && ui.size() == 2);
+    w[2] = 0xFF, w[3] = 0xFF;
+    r.ta.send(101, 0, w);
+    w[1] = 1;
+    r.ta.send(101, 0, w);
+    r.nb.poll();
+    CHECK(r.qb.world.size() == 1 && ui.size() == 2);
+    // Only a playing, present local player sends (Net_BroadcastGuaranteed): none, nothing goes.
+    r.a.players[0].controller = 0;
+    r.a.players[1].controller = 0;
+    const std::uint64_t sent = r.na.counters().packets_sent;
+    r.na.send_sound(5, nullptr);
+    CHECK(r.na.counters().packets_sent == sent);
+    // The room takes it in every phase: the interface kind only.
+    {
+        net::LoopbackHub hub;
+        net::Transport& th = hub.add_machine();
+        net::Transport& tj = hub.add_machine();
+        net::BattleRoom host(th, true, 0x100, "Host");
+        std::vector<std::int32_t> heard;
+        host.on_interface_sound = [&](std::int32_t id) { heard.push_back(id); };
+        std::vector<std::uint8_t> pk(18, 0);
+        pk[0] = 0x13, pk[1] = 1, pk[2] = 42;
+        tj.send(0x200, 0x100, pk);
+        pk[1] = 0;
+        tj.send(0x200, 0x100, pk);
+        for (std::uint32_t c = 10; c < 20; ++c) host.frame(c);
+        CHECK(heard.size() == 1 && heard[0] == 42);
+    }
+}
+
 int main() {
     test_dplay();
+    test_sound_echo();
     test_battle_leave_paths();
     test_view_state_packet();
     test_bitstream();

@@ -817,6 +817,13 @@ void BattleRoom::handle(std::int32_t from, std::int32_t to, const std::vector<st
             on_chat_line(fs, std::string(s, strnlen(s, 64)));
         }
         break;
+    case packet::kSound: {
+        // 0x453D40 case 0x11 in the room / loading: the interface kind (the world kind is not
+        // played here, lobby.h).
+        const std::int32_t id = static_cast<std::int32_t>(get32(p + 2));
+        if (p[1] != 0 && id != 0xFFFF && on_interface_sound) on_interface_sound(id);
+        break;
+    }
     case packet::kAlliance: {
         // 0x452960 heard: the sender's alliance with this machine's player.
         // The addressee (one of this machine's players) takes it in +0x113, and in +0x108 too

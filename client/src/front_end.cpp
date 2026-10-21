@@ -804,6 +804,7 @@ private:
         };
         session_->combat_activity = [this](int amount) { judge_.activity(amount); };
         session_->client().options_mut().wave_out = sound_path_ == 2;
+        session_->client().options_mut().no_direct_sound = sound_path_ != 0;  // (0x51E690)
         if (s_.apply_to_battle) s_.apply_to_battle(*this, *session_);
     }
 

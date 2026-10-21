@@ -49,7 +49,7 @@ requests, no comparison tool and no regression test).
 | 0x0E detonate | `0x49AF90` | BUILT+VERIFIED | projectile_harness |
 | 0x0F feature | case 0x0D | BUILT+VERIFIED | section 1 |
 | 0x10 script call, 0x11 activation, 0x12 finished | | BUILT+VERIFIED | with the original (dplay runs) |
-| 0x13 sound | | BUILT-UNVERIFIED | |
+| 0x13 sound | `0x47F0C0` / `0x47F300` (send), case 0x11 (receive) | BUILT-UNVERIFIED *2026-10-21* | RE_MEMORY "Sound echo, packet 0x13": 18 bytes, byte 1 = 1 from both senders, id dword, world position (the interface sound's bytes 6..17 stale stack, an input); sent only when the caller asks — no caller of TotalA.exe 3.1 does (every call passes 0), so it never goes out; -w / -s never send it. Receiving: byte 1 = 0 → world sound with the sight test, else interface sound (was: byte 1 ≠ 0 dropped). `NetBattle::send_sound` / `on_interface_sound`, `BattleRoom::on_interface_sound` (room and loading), `GameClient` echo arguments; net_tests `test_sound_echo` |
 | 0x14 ownership | `Unit_TransferOwnership` | BUILT-UNVERIFIED | |
 | 0x15 loaded (counted only after the own loading) | case 0x13 | BUILT+VERIFIED | with the original |
 | 0x16 share energy / metal / explored map | `0x456EE0` / `0x457050` / `0x4571C0` | BUILT-UNVERIFIED | economy harness covers the transfer routines |

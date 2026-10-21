@@ -3651,6 +3651,13 @@ std::unique_ptr<client::Screen> make_live_lounge(FrontEnd& fe, std::shared_ptr<v
     live->crt_rand = std::shared_ptr<sim::Lcg15>(std::shared_ptr<sim::Lcg15>(), &fe.crt_rand());
     // The session is open (GS+0x2A44 bit 0, 0x426E80): the main loop runs with the window inactive.
     live->network_flag = fe.network_session();
+    // A received sound echo (0x13) in the room: the interface sound by its bank index.
+    {
+        client::FrontEnd* f = &fe;
+        live->room->on_interface_sound = [f](std::int32_t id) {
+            if (id >= 0 && static_cast<std::size_t>(id) < f->menu_content().samples.size()) f->play_sound(id);
+        };
+    }
     // The start-up switches: -p packets a second (0x4619E0), -e the dropped share (it draws rand()).
     if (part->cfg.packet_rate_set) {
         net::NetTiming t = net::NetTiming::from_rate(part->cfg.packet_rate);

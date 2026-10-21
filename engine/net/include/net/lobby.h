@@ -248,6 +248,12 @@ public:
     bool refused() const { return refused_; }
     std::function<void(const std::string& line)> on_chat;
     std::function<void(int slot)> on_player_left;
+    // Packet 0x13 (the sound echo; accepted in every phase): byte 1 nonzero -> the interface sound
+    // `id` (0x47F0C0 with the echo off); zero -> the world sound routine (0x47F300), whose cell
+    // lookup and sight test read the map and sight tables of whatever battle the program last
+    // loaded (none at first: Map_GetCell finds no cell); not passed on here (nothing sends it).
+    // 0xFFFF is not passed on.
+    std::function<void(std::int32_t id)> on_interface_sound;
     std::string error() const { return error_; }
     FrameSender& sender() { return sender_; }
 
