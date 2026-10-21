@@ -34,7 +34,9 @@ struct InputEvent {
     // keyboard layout; KeyDown still comes for the key itself.
     // PointerLeave: the system pointer left the picture (only possible while the window does not
     // hold it): no pointer is drawn and none is at an edge until the next mouse event.
-    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text, PointerLeave } type = Type::MouseMove;
+    // Activate: the program window activated (key 1) or deactivated (key 0): WM_ACTIVATE's low
+    // word (0x4B5CC0 writes the display's +0xE0); only the front end takes it.
+    enum class Type : std::uint8_t { MouseMove, MouseDown, MouseUp, KeyDown, KeyUp, Quit, Text, PointerLeave, Activate } type = Type::MouseMove;
     int x = 0, y = 0;  // frame coordinates (mouse events)
     int button = 0;    // 1 left, 2 middle, 3 right
     int key = 0;       // keys:: or a character

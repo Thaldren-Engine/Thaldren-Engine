@@ -50,6 +50,7 @@ struct AudioOut::Impl {
     };
     std::vector<Voice> voices;
     float fx_volume = 1.0f;
+    bool effects_muted = false;  // the window inactive (the voices go on, unheard)
     int music_volume = 256;
     std::shared_ptr<const Sample> music;
     std::uint64_t music_pos = 0, music_step = 0;  // 32.32 frames
@@ -67,7 +68,8 @@ struct AudioOut::Impl {
             for (Voice& v : m.voices) {
                 if (!v.s) continue;
                 const std::size_t n = v.s->pcm.size() / static_cast<std::size_t>(std::max(1, v.s->channels));
-                const float lv = v.left * m.fx_volume, rv = v.right * m.fx_volume;
+                const float gain = m.effects_muted ? 0.0f : m.fx_volume;
+                const float lv = v.left * gain, rv = v.right * gain;
                 for (int f = 0; f < frames; ++f) {
                     std::size_t at = static_cast<std::size_t>(v.pos >> 32);
                     if (at >= n) {
@@ -178,6 +180,12 @@ void AudioOut::set_fx_volume(float v) {
     if (!impl_) return;
     std::lock_guard<std::mutex> g(impl_->lock);
     impl_->fx_volume = std::clamp(v, 0.0f, 1.0f);
+}
+
+void AudioOut::set_effects_muted(bool muted) {
+    if (!impl_) return;
+    std::lock_guard<std::mutex> g(impl_->lock);
+    impl_->effects_muted = muted;
 }
 
 void AudioOut::set_music_volume(int v) {

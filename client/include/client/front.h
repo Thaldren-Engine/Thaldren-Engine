@@ -106,6 +106,7 @@ inline bool is_screenshot_key(const InputEvent& e) { return e.type == InputEvent
 // key K | hold K (down until a keyup) | keyup K | type TEXT (the rest of the line typed key by key) |
 // wmove X Y W H [SCALE] (the system pointer at window pixel X, Y of a W x H window, possibly
 // outside it: pointer_motion) | leave (the system pointer left the window) |
+// deactivate | activate (the program window loses / gets the activation: WM_ACTIVATE) |
 // shift/ctrl/alt modifiers as a trailing "+shift" etc.
 // K is a character or one of left right up down pause escape enter f1..f12.
 bool parse_script(const std::string& text, std::vector<ScriptedInput>& out, std::string& error);

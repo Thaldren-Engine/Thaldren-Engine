@@ -376,6 +376,12 @@ public:
     // The main thread's C runtime rand() (client/main_rand.h): the menus, the network room, the
     // music and, while a battle runs, the battle's own stream are this one sequence.
     virtual sim::Lcg15& crt_rand() = 0;
+    // The network session flag (GS+0x2A44 bit 0: set when this machine created or joined a game,
+    // 0x426E80 after 0x457710 / 0x450D80; cleared when the session closes, 0x450DD0 / 0x452370,
+    // and by the statistics after a network battle, 0x41EC50). While it is set the main loop
+    // keeps running with the window inactive (WinMain 0x49E830). The flag is set while the
+    // returned token lives (and the front end has not cleared it).
+    virtual std::shared_ptr<void> network_session() { return nullptr; }
     // The original's settings writer (0x430F00, the registry): what was saved last is what the
     // music library reads (saved_settings). Called where the original writes the registry
     // (the options menu's OK, a battle's start, the commands that save).
