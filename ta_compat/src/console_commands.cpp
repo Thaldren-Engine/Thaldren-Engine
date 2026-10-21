@@ -233,10 +233,11 @@ void ConsoleCommands::Impl::build() {
     // ---- options (bit 1): always allowed ----
     add("NoShake", [this](const Words&) { b().settings.shake_disabled = !b().settings.shake_disabled; });
     add("Contour", [this](const Words& a) {
-        // (0x416DB0: ftol of atof of words 1 and 2, defaults 0 and 0.75: the interval and offset of
-        // the contour lines over the terrain, 0x418310)
-        st.contour[0] = sim::x87::ftol32(a.count() > 1 ? crt_atof(a.text(1)) : 0.0);
-        st.contour[1] = sim::x87::ftol32(a.count() > 2 ? crt_atof(a.text(2)) : static_cast<double>(0.75f));
+        // (0x416DB0: ftol of atof of words 1 and 2 (defaults 0 and 0.75f) times 256.0f, the
+        // interval and offset of the contour lines over the terrain in the x 256 heights of
+        // 0x418310)
+        st.contour[0] = sim::x87::ftol32((a.count() > 1 ? crt_atof(a.text(1)) : 0.0) * 256.0);
+        st.contour[1] = sim::x87::ftol32((a.count() > 2 ? crt_atof(a.text(2)) : static_cast<double>(0.75f)) * 256.0);
         c.options_mut().contour_interval = st.contour[0];
         c.options_mut().contour_offset = st.contour[1];
     });
@@ -625,10 +626,10 @@ void ConsoleCommands::Impl::build() {
     add("SeaLevel", [this](const Words& a) { b().settings.sea_level = static_cast<std::uint8_t>(a.number(1, 0)); });
     add("Search", [this](const Words& a) {
         // 0x416780: the route search's work divisor (+0x48) = word 1 when nonzero; with
-        // exactly three words its base estimate scale (+0x54) = ftol(atof(word 2)).
+        // exactly three words its base estimate scale (+0x54) = ftol(atof(word 2) x 65536.0), 16.16.
         sim::RouteSearch& rs = b().route_search;
         if (a.number(1, 0) != 0) rs.budget_divisor = a.number(1, 0);
-        if (a.count() == 3) rs.base_budget = sim::x87::ftol32(crt_atof(a.text(2)));
+        if (a.count() == 3) rs.base_budget = sim::x87::ftol32(crt_atof(a.text(2)) * 65536.0);
     });
     add("SelBoxes", [this](const Words&) { c.options_mut().selection_boxes = !c.options().selection_boxes; });
     add("Senderror", [this](const Words& a) {
