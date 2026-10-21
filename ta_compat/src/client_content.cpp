@@ -311,6 +311,7 @@ bool ClientWorld::build_content(std::string& error) {
     const client::Font* caption_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
     c.picture_font = caption_font;
     c.console_font = font("COMIX");
+    c.small_font = font("smlfont");  // (GS+0x391FD, 0x42A320: the debug view's terrain marks)
     // The interface's second picture font (hattfont11: the Space-held game information panel).
     fonts_.push_back(picture_font(gaf("anims\\hattfont11.GAF")));
     c.small_picture_font = fonts_.back().height > 0 ? &fonts_.back() : nullptr;
@@ -918,7 +919,13 @@ bool ClientWorld::build_content(std::string& error) {
     }
     // Features' names and reclaim values (hover info), the victory and defeat signs.
     // The bottom bar shows a feature's description (the original's +0x80 text, also when empty).
-    for (const FeatureDefRecord& r : lb_->feature_defs.records()) c.features.push_back({r.description, 0, 0, r.flags});
+    for (const FeatureDefRecord& r : lb_->feature_defs.records()) {
+        // (the debug view shows the definition's own name, +0: 128 bytes copied without a
+        // terminator at 128 characters, so a name that long runs on into the description)
+        std::string internal = r.name;
+        if (internal.size() >= 128) internal = internal.substr(0, 128) + r.description;
+        c.features.push_back({r.description, 0, 0, r.flags, internal});
+    }
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igvictory")) c.victory_sign = &q->front();
     if (const auto* q = sequence("anims\\IGTITLES.GAF", "igdefeat")) c.defeat_sign = &q->front();
     c.fill_scene = [this](render::BattleScene& scene, int view, std::uint32_t frame) { fill_scene(scene, view, frame); };

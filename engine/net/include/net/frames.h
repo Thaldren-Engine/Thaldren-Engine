@@ -50,6 +50,13 @@ public:
     void flush(std::uint32_t clock, bool force, const SendFn& send);
     std::uint64_t frames_sent() const { return frames_sent_; }
     std::uint64_t bytes_sent() const { return bytes_sent_; }
+    // The debug view's send counters (the original's 0x415EF0 / 0x415F40, direction 1): the
+    // packets' bytes as queued, the messages sent with their size before compression (+3, the
+    // envelope) and as they went out.
+    struct Stats {
+        std::uint32_t packet_bytes = 0, frames = 0, frame_bytes = 0, wire_bytes = 0;
+    };
+    const Stats& stats() const { return stats_; }
     // GS+0x37F35 (-e, +senderror): a share of the messages (0..100 %) is not sent: with it set,
     // every message draws the program's C runtime rand() and is dropped when rand() x 101 / 0x8000
     // is at most the share (still counted as sent; Condenser_WrapAndSend 0x44FC10).
@@ -76,6 +83,7 @@ private:
     Channel everybody_{kEverybody};
     std::vector<Channel> direct_;
     std::uint64_t frames_sent_ = 0, bytes_sent_ = 0;
+    Stats stats_;
     int send_error_ = 0;
     std::function<std::int32_t()> rand_;
 };

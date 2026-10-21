@@ -12,6 +12,7 @@ add_library(client STATIC
     src/hud.cpp
     src/menu.cpp
     src/minimap.cpp
+    src/debug_view.cpp
     src/movie.cpp
     src/music.cpp
     src/panels.cpp

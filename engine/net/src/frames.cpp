@@ -31,8 +31,12 @@ FrameSender::Channel& FrameSender::channel(std::int32_t to) {
 
 void FrameSender::queue(std::int32_t from, std::int32_t to, const std::uint8_t* packet, std::size_t size, std::uint32_t clock,
                         const SendFn& send) {
+    stats_.packet_bytes += static_cast<std::uint32_t>(size);
     if (!timing_.frame_timing) {
         bytes_sent_ += size;
+        // (0x451BC0 / 0x451EC0: the packet goes out as it is, counted as a message of its size)
+        ++stats_.frames;
+        stats_.frame_bytes += static_cast<std::uint32_t>(size);
         send(from, to, std::vector<std::uint8_t>(packet, packet + size));
         return;
     }
@@ -62,6 +66,10 @@ void FrameSender::send_channel(Channel& c, std::uint32_t clock, bool force, cons
         std::vector<std::uint8_t> msg = wrap(frame.data(), frame.size(), timing_.compression);
         ++frames_sent_;
         bytes_sent_ += msg.size();
+        // (0x44FD22: counted whether or not a send error drops it)
+        ++stats_.frames;
+        stats_.frame_bytes += static_cast<std::uint32_t>(frame.size() + 3);
+        stats_.wire_bytes += static_cast<std::uint32_t>(msg.size());
         bool dropped = false;
         if (send_error_ != 0 && rand_) {
             const std::int64_t r = rand_();

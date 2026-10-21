@@ -213,7 +213,7 @@ public:
             // Developer mode: the main loop's frame (0x499890) takes '~' off the key queue in
             // every state, before the screens and the battle see it, and switches the display
             // between the full screen and a window (0x4B5910).
-            if (toggle_display_) toggle_display_();
+            switch_display();
             return;
         }
         if (is_screenshot_key(e)) {
@@ -244,6 +244,10 @@ public:
                         }
                 }
                 else if (e.key == keys::kTab && session_->network() && s_.tab_menu) push(s_.tab_menu(*this, *session_));
+                // (0x495E90 cases 9 / 0xE3: with Shift held the key only sets the unit probe's
+                // switch, GS+0x391B9 — read by nothing in 3.1 — and opens no menu)
+                else if (e.shift && !(e.key == keys::kTab && session_->network())) {
+                }
                 else if (s_.game_menu) push(s_.game_menu(*this, *session_));
                 return;
             }
@@ -569,9 +573,9 @@ private:
         BattleSession* sess = session_.get();
         // Developer mode is one switch of the program's state: the battle takes it as it is.
         session_->client().options_mut().debug_commands = developer_;
-        session_->client().toggle_display = [this]() {
-            if (toggle_display_) toggle_display_();
-        };
+        session_->client().set_debug_view(debug_view_);  // (program-wide: what the last battle left)
+        session_->client().set_page_flip_possible(!display_windowed_);
+        session_->client().toggle_display = [this]() { switch_display(); };
         session_->client().on_chat = [sess](const std::string& text) { sess->send_chat(text); };
         // Settings the battle saves at once (the original writes the registry, 0x430F00).
         session_->client().save_setting = [this](const char* name, int value) {
@@ -658,6 +662,7 @@ private:
         units_due_ = true;  // (the battle's loading, GameData_LoadAll, set GS+0x14397)
         std::unique_ptr<BattleSession> s = std::move(session_);
         developer_ = s->client().options().debug_commands;  // (the password line's change stays)
+        debug_view_ = s->client().debug_view();
         const BattleOutcome o = ended_ ? outcome_ : BattleOutcome::Quit;
         ended_ = false;
         battle_base_ = 0;
@@ -691,6 +696,13 @@ public:
     render::Palette display_palette(const render::Palette& p) const { return display_gamma_ == 1.0f ? p : gamma_palette(p, display_gamma_); }
     std::function<void(int, int)> warp_;  // the window's pointer warp (frame pixels)
     std::function<void()> toggle_display_;  // developer mode's '~': full screen <-> window
+    bool display_windowed_ = false;         // the display's state (a window: no page flipping, +0x9C)
+    DebugViewState debug_view_;             // the debug view, kept from battle to battle
+    void switch_display() {
+        display_windowed_ = !display_windowed_;
+        if (toggle_display_) toggle_display_();
+        if (session_) session_->client().set_page_flip_possible(!display_windowed_);
+    }
 
 private:
     bool shot_pending_ = false;
@@ -950,14 +962,9 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         }
 #endif
         run.log_sounds_ = true;
-        {
-            // (tests: the display switch is logged)
-            auto windowed = std::make_shared<bool>(o.windowed_display);
-            run.toggle_display_ = [windowed]() {
-                *windowed = !*windowed;
-                std::printf("display: %s\n", *windowed ? "window" : "full screen");
-            };
-        }
+        // (tests: the display switch is logged)
+        run.display_windowed_ = o.windowed_display;
+        run.toggle_display_ = [&run]() { std::printf("display: %s\n", run.display_windowed_ ? "window" : "full screen"); };
         run.begin(nullptr);
         // The loading screen is shown once, half way, when screenshots are wanted.
         bool loading_shot = false;
@@ -1088,9 +1095,10 @@ int run_front_end(FrontEndSetup& setup, const FrontOptions& o) {
         confine_pointer(win, nullptr);
     };
     run.toggle_display_ = [&]() {
-        windowed = !windowed;
+        windowed = run.display_windowed_;
         place_window();
     };
+    run.display_windowed_ = o.windowed_display;
     auto present = [&]() -> bool {
         const render::Palette* pal = nullptr;
         render::DrawList list = run.draw(pal);

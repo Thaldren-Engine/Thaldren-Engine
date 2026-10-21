@@ -189,10 +189,12 @@ int run_headless(GameClient& client, Content& content, const FrontOptions& o) {
 #endif
     {
         auto windowed = std::make_shared<bool>(o.windowed_display);
-        client.toggle_display = [windowed]() {
+        client.toggle_display = [windowed, &client]() {
             *windowed = !*windowed;
+            client.set_page_flip_possible(!*windowed);
             std::printf("display: %s\n", *windowed ? "window" : "full screen");
         };
+        client.set_page_flip_possible(!o.windowed_display);
     }
     std::size_t next = 0;
     int total_steps = 0;
@@ -408,8 +410,9 @@ int run_window(GameClient& client, Content& content, const FrontOptions& o) {
     // Developer mode's '~': the stand-in for the full screen and a plain window at the desktop's
     // corner, in turn (see run_front_end).
     auto windowed = std::make_shared<bool>(false);
-    client.toggle_display = [win, scale, w, h, windowed]() {
+    client.toggle_display = [win, scale, w, h, windowed, &client]() {
         *windowed = !*windowed;
+        client.set_page_flip_possible(!*windowed);
         if (!*windowed) {
             SDL_SetWindowBordered(win, true);
             fit_window_to_frame(win, w, h, scale);

@@ -532,6 +532,7 @@ void NetBattle::network_input() {
         Message msg;
         if (!transport_.receive(msg)) return false;
         counters_.bytes_received += static_cast<std::uint32_t>(msg.bytes.size());
+        ++counters_.frames_received;
         f = msg.from;
         t = msg.to;
         m = std::move(msg.bytes);
@@ -540,6 +541,7 @@ void NetBattle::network_input() {
     Delivered d;
     while (receiver_.next(battle_->game_tick(), sender_.timing().frame_timing, read, d)) {
         if (d.packet.empty()) continue;
+        counters_.packet_bytes_received += static_cast<std::uint32_t>(d.packet.size());  // (0x415EF0, direction 0)
         const int from = slot_of(d.from);
         int to = slot_of(d.to);
         if (to == 10) to = slot_of(first_local_net_id());  // addressed to everybody
@@ -569,6 +571,7 @@ void NetBattle::network_input() {
         }
         last_heard_[static_cast<std::size_t>(from)] = clock_;
         ++counters_.packets_received;
+        ++counters_.packets_from[static_cast<std::size_t>(from)];  // (the sender record's +0x10, 0x453D40)
         if (type < counters_.by_type.size()) ++counters_.by_type[type];
         dispatch(from, to, d.packet);
         if (type == packet::kGameStart) break;

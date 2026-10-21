@@ -34,6 +34,11 @@ struct NetCounters {
     // Bytes of the messages handed to and taken from the transport (the original's 0x415F40
     // totals behind the +bps display).
     std::uint32_t bytes_sent = 0, bytes_received = 0;
+    // The debug view's counters (presentation only): messages taken from the transport
+    // (0x415F40 receive side), the bytes of the packets read out of them (0x415EF0, direction
+    // 0) and the packets each player's record counted (+0x10, 0x453D40).
+    std::uint32_t frames_received = 0, packet_bytes_received = 0;
+    std::array<std::uint32_t, 11> packets_from{};
 };
 
 class NetBattle final : public sim::BattleOutside {
