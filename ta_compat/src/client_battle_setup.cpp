@@ -12,6 +12,7 @@
 #include "ta/model3do.h"
 #include "ta/net_setup.h"
 #include "ta/notice_texts.h"
+#include "ta/runtime_library.h"
 #include "ta/tdf.h"
 
 namespace ta {
@@ -198,6 +199,20 @@ bool ClientWorld::setup_battle(std::string& error, const std::function<void(floa
     if (!models_loaded) row(1, 100);
 
     sim::Battle& b = *lb_->battle;
+    {
+        // The runtime library's -memset (0x4D8200 / 0x4D8260): every block its allocator hands out
+        // is filled with the set value (0xDEADBEEF unless given), so what the original reads of a
+        // block it never wrote is that value: here the fields of a remote unit's point goal the
+        // stream does not carry (0x44E080, docs/RE_MEMORY.md "Room, loading and delivery").
+        // The fill is word-wise from the block's start; the position (+0x26, +0x2A, +0x2E) and the
+        // offset (+0x32) start two bytes into a word, so each reads the value turned by 16 bits.
+        const runtime::Switches& sw = runtime::active_switches();
+        if (sw.setmemory) {
+            const auto v = static_cast<std::int32_t>((sw.setvalue >> 16) | (sw.setvalue << 16));
+            b.net_inputs.fresh_goal_pos = {v, v, v};
+            b.net_inputs.fresh_goal_offset = v;
+        }
+    }
     if (!models_loaded) load_models(*lb_);
     for (std::size_t k = 1; k < types_.size(); ++k)
         if (types_[k] && types_[k]->ok) model_of_pose_[&types_[k]->assets->pose_model] = &types_[k]->model;

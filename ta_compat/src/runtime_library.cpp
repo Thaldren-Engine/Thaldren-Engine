@@ -11,6 +11,8 @@
 #include <ctime>
 #include <new>
 
+#include "sim/x87.h"
+
 #ifdef _WIN32
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -104,6 +106,11 @@ Switches read_switches(std::string_view line) {
     }
     return s;
 }
+
+namespace {
+Switches g_switches;
+}
+const Switches& active_switches() { return g_switches; }
 
 // ---- the crash log ------------------------------------------------------------------------
 
@@ -473,6 +480,7 @@ void start(const std::string& command_line, const std::string& title) {
     g_title = title;
     if (quiet()) SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
     const Switches s = read_switches(command_line);
+    g_switches = s;
     if (s.debughelper) {
         // 0x4DA150 -> 0x4DA120: the library is not there (as shipped): the message, then the
         // program ends (0x4DA0C0: raise(SIGABRT), whose default ends it with exit code 3).
@@ -483,8 +491,12 @@ void start(const std::string& command_line, const std::string& title) {
     SetUnhandledExceptionFilter(global_filter);
     if (s.fpufussy) {
         // 0x4DF160: _controlfp(0, 0x18): the invalid-operation and divide-by-zero traps unmasked.
+        // Here: the floating-point unit's traps (SSE, where a 64-bit program computes) and the
+        // simulation's out-of-range conversions, which it makes in software (the x87's FISTP
+        // signals the invalid operation there).
         unsigned int cur = 0;
         _controlfp_s(&cur, 0, _EM_INVALID | _EM_ZERODIVIDE);
+        sim::x87::invalid_traps() = true;
     }
     std::set_new_handler(new_handler);
 }
@@ -517,7 +529,7 @@ void debug_break() {
 
 #else
 
-void start(const std::string&, const std::string&) {}
+void start(const std::string& command_line, const std::string&) { g_switches = read_switches(command_line); }
 void out_of_memory() {
     std::fputs(kOutOfMemory, stderr);
     std::_Exit(3);

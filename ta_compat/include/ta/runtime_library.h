@@ -43,6 +43,8 @@ struct Switches {
     bool imagehlp = true;        // -enableimagehlp / -disableimagehlp: the crash log's stack walk
 };
 Switches read_switches(std::string_view command_line);
+// The switches start() read (all defaults before it ran).
+const Switches& active_switches();
 
 // The -debughelper message (0x4DA150 when the DLL is absent, as shipped), box title "Cavedog".
 constexpr const char* kNoDebugHelper = "Couldn't find library 'debughelper.dll'\n";
