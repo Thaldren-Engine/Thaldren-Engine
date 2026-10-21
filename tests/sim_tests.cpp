@@ -693,6 +693,11 @@ void test_orders() {
     add_paralysis(c, units[2], 0x20);
     CHECK_EQ(units[2].orders->param0, static_cast<std::int32_t>(0x80000010u));
     units[2].orders->param0 = 42;
+    // The add is a plain 32-bit add (0x489E69): past INT32_MAX it wraps.
+    units[2].orders->param0 = 0x7FFFFFF0;
+    add_paralysis(c, units[2], 0x20);
+    CHECK_EQ(units[2].orders->param0, static_cast<std::int32_t>(0x80000010u));
+    units[2].orders->param0 = 42;
 
     // Secondary: the stale word is 15 after a random sleep and the order's address after it is destroyed.
     MissionOrder* s = sys.allocate_order();
@@ -1842,6 +1847,13 @@ void test_game_flow() {
         }
         CHECK_EQ(draws, 4);
         CHECK_EQ(s.shaking, false);
+        // The accumulators are 32-bit adds that wrap (0x41C6B2); the magnitude is a C halving.
+        sim::add_camera_shake(s, 0x7FFFFFFF, 0, 3, false);
+        sim::add_camera_shake(s, 2, -7, -5, false);
+        CHECK_EQ(s.accum_x, static_cast<std::int32_t>(0x80000001u));
+        CHECK_EQ(s.accum_y, -7);
+        CHECK_EQ(s.magnitude, -1);  // (-5 + 2) / 2 toward zero, not -2
+        CHECK_EQ(s.ticks_left, -1);
     }
     {
         sim::command::Command c;

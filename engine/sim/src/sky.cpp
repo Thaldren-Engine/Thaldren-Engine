@@ -10,6 +10,8 @@ namespace sim {
 namespace {
 // r * range / 0x8000 with a signed 64-bit product, truncating toward zero.
 std::int32_t scaled(std::int64_t r, std::int64_t range) { return static_cast<std::int32_t>(r * range / 0x8000); }
+std::int32_t wadd(std::int32_t a, std::int32_t b) { return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b)); }
+std::int32_t wsub(std::int32_t a, std::int32_t b) { return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b)); }
 }  // namespace
 
 void MeteorShower::configure(std::int32_t radius_units, float density, float duration_seconds, float interval_seconds) {
@@ -53,9 +55,9 @@ bool step_meteors(MeteorShower& m, std::uint32_t tick, std::int32_t map_width, s
         const auto heading = static_cast<Angle>(scaled(rand.next(), 0x10000));
         const std::int32_t s = trig::mul_sin(heading, mag);
         const std::int32_t c = trig::mul_cos(heading, mag);
-        pos[0] = static_cast<std::int32_t>(static_cast<std::uint32_t>(m.aim_x) << 20) - s;
+        pos[0] = wsub(static_cast<std::int32_t>(static_cast<std::uint32_t>(m.aim_x) << 20), s);
         pos[1] = vel[1] * -90;
-        pos[2] = static_cast<std::int32_t>(static_cast<std::uint32_t>(m.aim_z) << 20) - c;
+        pos[2] = wsub(static_cast<std::int32_t>(static_cast<std::uint32_t>(m.aim_z) << 20), c);
         drop = true;
     }
     if (m.end_tick <= tick) m.active = false;
@@ -68,10 +70,10 @@ void add_camera_shake(CameraShake& s, std::int32_t dx, std::int32_t dy, std::int
         s.accum_x = 0;
         s.accum_y = 0;
     }
-    s.magnitude = (magnitude + s.magnitude) / 2;
+    s.magnitude = wadd(magnitude, s.magnitude) / 2;  // C division (cdq; sub; sar)
     s.ticks_left = s.magnitude;
-    s.accum_x += dx;
-    s.accum_y += dy;
+    s.accum_x = wadd(s.accum_x, dx);  // 0x41C6B2: 32-bit adds that wrap
+    s.accum_y = wadd(s.accum_y, dy);
     if (s.magnitude > 0) s.shaking = true;
 }
 
@@ -87,8 +89,8 @@ void step_camera_shake(CameraShake& s, Lcg15& rand) {
     const std::int32_t ay = static_cast<std::int32_t>(static_cast<std::uint32_t>(s.accum_y) * static_cast<std::uint32_t>(s.ticks_left)) / s.magnitude;
     const std::int32_t rx = scaled(rand.next(), ax);
     const std::int32_t ry = scaled(rand.next(), ay);
-    s.offset_x = rx - ax / 2;
-    s.offset_y = ry - ay / 2;
+    s.offset_x = wsub(rx, ax / 2);
+    s.offset_y = wsub(ry, ay / 2);
     --s.ticks_left;
 }
 
