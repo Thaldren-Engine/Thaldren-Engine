@@ -93,6 +93,20 @@ ctest --test-dir build
 - `ta_compat/tools/orig_harness` holds 32-bit harnesses that load your own `TotalA.exe` and run
   its routines next to the engine's. They need a 32-bit build.
 
+## Making a release
+
+Releases are built by GitHub Actions (`.github/workflows/release.yml`):
+
+1. Optionally write the release text in `docs/releases/<tag>.md` (for example
+   `docs/releases/v0.2.0.md`) and push it. Without it, GitHub generates notes from the commits.
+2. Tag the commit and push the tag: `git tag -a v0.2.0 -m "Thaldren Engine v0.2.0"`, then
+   `git push origin v0.2.0`.
+
+The workflow builds the client, runs the tests, packages
+`thaldren-engine-<tag>-windows-x64.zip` with `tools/package_release.ps1` and publishes it with
+its SHA-256 as a GitHub Release. To build the release of a tag that already exists, run the
+workflow by hand (Actions → release → Run workflow) and enter the tag.
+
 ## Repository layout
 
 | Folder | Contents |

@@ -2,6 +2,7 @@ name: build
 
 on:
   push:
+    branches: ["**"]
   pull_request:
 
 jobs:
@@ -24,6 +25,17 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      - name: Check the client was built
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/client/ta_play.exe)) {
+            Write-Output "build/client/ta_play.exe is missing. Executables the build made:"
+            Get-ChildItem -Recurse -Filter *.exe build | ForEach-Object { $_.FullName }
+            Write-Output "Configure summary:"
+            Select-String -Path build/CMakeCache.txt -Pattern "SDL3_SOURCE_DIR|CMAKE_BUILD_TYPE|CMAKE_CXX_COMPILER:"
+            exit 1
+          }
+
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
@@ -32,3 +44,4 @@ jobs:
         with:
           name: ta_play-windows-x64
           path: build/client/ta_play.exe
+          if-no-files-found: error

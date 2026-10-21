@@ -1,0 +1,85 @@
+name: release
+
+# Pushing a version tag (v0.1.0, v0.2.0, ...) builds the client, runs the tests, packages the
+# Windows release with tools/package_release.ps1 and publishes it as a GitHub Release with the
+# zip and its SHA-256. The release text is docs/releases/<tag>.md when that file exists.
+# Run it by hand (Actions > release > Run workflow) to rebuild the release of an existing tag.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build the release for, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - name: Fetch SDL 3.4.18
+        run: git clone --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL.git ../SDL3
+
+      - name: Set up the MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        run: cmake -S . -B build -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=Release -DSDL3_SOURCE_DIR=../SDL3
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Check the client was built
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build/client/ta_play.exe)) {
+            Write-Output "build/client/ta_play.exe is missing. Executables the build made:"
+            Get-ChildItem -Recurse -Filter *.exe build | ForEach-Object { $_.FullName }
+            Write-Output "Configure summary:"
+            Select-String -Path build/CMakeCache.txt -Pattern "SDL3_SOURCE_DIR|CMAKE_BUILD_TYPE|CMAKE_CXX_COMPILER:"
+            exit 1
+          }
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        shell: pwsh
+        run: ./tools/package_release.ps1 -Version $env:TAG
+
+      - name: Publish the GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "dist/thaldren-engine-$env:TAG-windows-x64.zip"
+          # The release text: docs/releases/<tag>.md in the tagged tree, else on the default branch
+          # (for a tag made before its notes were written), else GitHub's generated notes.
+          $notes = "docs/releases/$env:TAG.md"
+          if (-not (Test-Path $notes)) {
+            git show "origin/${{ github.event.repository.default_branch }}:$notes" > release-notes.md 2> $null
+            if ($LASTEXITCODE -eq 0) { $notes = "release-notes.md" }
+          }
+          $notesArgs = if (Test-Path $notes) { @("--notes-file", $notes) } else { @("--generate-notes") }
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            # The release exists (a rerun): replace its files.
+            gh release upload $env:TAG $zip "$zip.sha256" --clobber
+          } else {
+            gh release create $env:TAG $zip "$zip.sha256" --title "Thaldren Engine $env:TAG" --verify-tag @notesArgs
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
