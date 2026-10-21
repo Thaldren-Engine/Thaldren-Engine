@@ -179,7 +179,7 @@ void kill_unit(Combat& c, Unit& u, i32 kind, u32& stale_word) {
         if (severity > 100) severity = 100;
         if (u.script) u.script->call_in_out(u.script->program().find_function("Killed"), &severity, &wreck, nullptr, nullptr);
     }
-    if (u.build_fraction_left != 0.0f) wreck = 0;
+    if (!x87::equal(u.build_fraction_left, 0.0)) wreck = 0;  // 0x4865D8: a NaN fraction counts as built
     stale_word = static_cast<u32>(wreck);
     KilledPacket p{};
     p[0] = 0x0C;
@@ -223,7 +223,7 @@ void apply_killed_packet(Combat& c, const KilledPacket& p, bool skip_script) {
 
     // Statistics.
     const u8 as = t.last_attacker_slot;
-    const bool built = u.build_fraction_left == 0.0f;
+    const bool built = x87::equal(u.build_fraction_left, 0.0);  // 0x4868D9
     bool counted = false;
     auto count_kill = [&] {
         ++owner.units_lost;

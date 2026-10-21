@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "sim/battle.h"
+#include "sim/x87.h"
 
 namespace sim::command {
 
@@ -16,7 +17,7 @@ namespace {
 bool selectable(Battle& b, int player, const Unit& u) {
     const UnitTickState& t = b.ticks[u.id];
     if (t.type_index == 0 || t.owner != player || !(u.flags & unit_flags::kAlive)) return false;
-    if (!(u.flags & unit_tick_flags::kSelectable) || u.build_fraction_left != 0.0f || t.transfer_holdoff != 0) return false;
+    if (!(u.flags & unit_tick_flags::kSelectable) || !x87::equal(u.build_fraction_left, 0.0) || t.transfer_holdoff != 0) return false;
     return !u.carrier || (u.carrier->flags & unit_tick_flags::kCarrierSelectable);
 }
 

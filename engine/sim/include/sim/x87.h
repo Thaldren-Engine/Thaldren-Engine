@@ -24,4 +24,11 @@ inline std::int32_t ftol32(double v) {
     return static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint64_t>(ftol64(v))));
 }
 
+// FCOM/FCOMP + FNSTSW conditions as the original tests them. An unordered (NaN)
+// compare sets C3, C2 and C0 together, so it counts as "equal" and as "less".
+// "test ah,40h" (C3): equal, or unordered.
+inline bool equal(double a, double b) { return !(a < b || a > b); }
+// "test ah,01h" (C0): a below b, or unordered.
+inline bool less(double a, double b) { return !(a >= b); }
+
 } // namespace sim::x87

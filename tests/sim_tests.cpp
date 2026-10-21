@@ -20,6 +20,7 @@
 #include "sim/battle_quiet.h"
 #include "sim/combat.h"
 #include "sim/motion.h"
+#include "sim/net_units.h"
 #include "sim/fixed.h"
 #include "sim/ground_settle.h"
 #include "sim/heightmap.h"
@@ -1356,6 +1357,45 @@ void test_victory_goals_switch() {
     CHECK_EQ(b.victory_met(), false);
 }
 
+// x87 compare conditions (docs/parity/NUMERICS_FLOAT.md): FCOM + "test ah,40h" treats an
+// unordered (NaN) operand as equal, "test ah,01h" as less. Sites that tested a float with
+// C++ ==, != or < took the other branch for NaN.
+void test_x87_compare_conditions() {
+    const double nan = std::nan("");
+    CHECK_EQ(x87::equal(0.0, 0.0), true);
+    CHECK_EQ(x87::equal(-0.0, 0.0), true);
+    CHECK_EQ(x87::equal(nan, 0.0), true);
+    CHECK_EQ(x87::equal(1e-45, 0.0), false);
+    CHECK_EQ(x87::equal(-INFINITY, 0.0), false);
+    CHECK_EQ(x87::less(1.0, 2.0), true);
+    CHECK_EQ(x87::less(2.0, 2.0), false);
+    CHECK_EQ(x87::less(nan, 2.0), true);
+    CHECK_EQ(x87::less(2.0, nan), true);
+    // 0x48B24C: a zero or NaN build fraction is sent as 0; others as 1 - ftol(f * -254).
+    CHECK_EQ(sim::encode_build_fraction(std::nanf("")), 0u);
+    CHECK_EQ(sim::encode_build_fraction(0.0f), 0u);
+    CHECK_EQ(sim::encode_build_fraction(-0.0f), 0u);
+    CHECK_EQ(sim::encode_build_fraction(1.0f), 255u);
+    CHECK_EQ(sim::encode_build_fraction(0.5f), 128u);
+    // 0x465F2E: a mission's stored amounts become the storage bonus through __ftol (low 32
+    // bits), not a saturating cast. 5e9 -> 705032704; 3e9 -> -1294967296, so the minimum 200.
+    sim::HeightMap hm(8, 8);
+    NullOutside outside;
+    sim::BattleRng rng;
+    sim::Battle b(outside, hm, rng);
+    sim::BattleStart s;
+    s.provider = 1;
+    s.players[0].kind = sim::PlayerKind::Local;
+    s.players[0].net_id = 1;
+    s.mission.energy[0] = 5e9f;
+    s.mission.metal[0] = 3e9f;
+    std::string error;
+    CHECK_EQ(sim::start_battle(b, s, error), true);
+    CHECK_EQ(b.player_economy[0].energy_storage_bonus, 705032704.0f);
+    CHECK_EQ(b.player_economy[0].metal_storage_bonus, 200.0f);
+    CHECK_EQ(b.players[0].energy_stored, 5e9f);
+}
+
 // Map features through the battle: a tree catches fire, burns out into its burnt
 // type, a wreck lands on dry ground and another sinks; a script blows a piece off
 // (battle RNG draws, the debris cache) and shatters another into a shard.
@@ -1970,6 +2010,7 @@ int main() {
     test_feature_damage_network_roles();
     test_units_drawn();
     test_victory_goals_switch();
+    test_x87_compare_conditions();
     test_economy();
     test_sight();
     test_ai();

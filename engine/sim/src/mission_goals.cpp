@@ -3,6 +3,7 @@
 #include "sim/mission_goals.h"
 
 #include "sim/battle.h"
+#include "sim/x87.h"
 
 namespace sim {
 
@@ -48,7 +49,7 @@ template <class F> void walk(Battle& b, int player, F&& f) {
 // A unit the player can use: selectable, finished, not just handed over, not carried (or
 // carried by a transport that leaves it selectable).
 bool usable(const Battle& b, const Unit& u) {
-    return (u.flags & unit_tick_flags::kSelectable) && u.build_fraction_left == 0.0f && b.ticks[u.id].transfer_holdoff == 0 &&
+    return (u.flags & unit_tick_flags::kSelectable) && x87::equal(u.build_fraction_left, 0.0) && b.ticks[u.id].transfer_holdoff == 0 &&
            (!u.carrier || (u.carrier->flags & unit_tick_flags::kCarrierSelectable));
 }
 
@@ -77,7 +78,7 @@ bool check_win(Battle& b, MissionGoal& g) {
         if (g.satisfied) return true;
         if (g.type == 0) g.type = type_by_name(b, g.type_name);
         walk(b, kPlayer, [&](Unit& u) {
-            if (b.ticks[u.id].type_index == g.type && u.build_fraction_left == 0.0f) met(b, g);
+            if (b.ticks[u.id].type_index == g.type && x87::equal(u.build_fraction_left, 0.0)) met(b, g);
             return !g.satisfied;
         });
         return g.satisfied;

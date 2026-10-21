@@ -28,7 +28,7 @@ int unit_type_bits(std::size_t type_count) {
 }
 
 std::uint32_t encode_build_fraction(float f) {
-    if (f == 0.0f) return 0;
+    if (x87::equal(f, 0.0)) return 0;  // 0x48B24C: zero or NaN sends 0
     return static_cast<u32>(1 - x87::ftol32(static_cast<double>(f) * -254.0)) & 0xFFu;
 }
 

@@ -106,7 +106,7 @@ i32 unit_get_value(Unit& self, UnitWorld& world, i32 id, i32 a, i32 b) {
         return static_cast<i32>(static_cast<u32>(h) << 16);
     }
     case UnitValue::BuildPercentLeft:
-        if (self.build_fraction_left == 0.0f) return 0;
+        if (x87::equal(self.build_fraction_left, 0.0)) return 0;  // 0x480A4A: NaN reads as built too
         // float * -99.0f is exact in double precision; truncated.
         return static_cast<i32>(1u - static_cast<u32>(x87::ftol32(static_cast<double>(self.build_fraction_left) * -99.0)));
     case UnitValue::YardOpen: return (self.script_flags >> 2) & 1;

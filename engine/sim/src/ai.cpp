@@ -380,7 +380,8 @@ void heap_adjust(std::vector<AiMetalSite>& v, i32 hole, i32 len, AiMetalSite val
     const i32 top = hole;
     i32 child = 2 * hole + 2;
     while (child < len) {
-        if (v[static_cast<std::size_t>(child)].score < v[static_cast<std::size_t>(child - 1)].score) --child;
+        // (0x40D68D: an unordered compare counts as "less" too.)
+        if (x87::less(v[static_cast<std::size_t>(child)].score, v[static_cast<std::size_t>(child - 1)].score)) --child;
         v[static_cast<std::size_t>(hole)] = v[static_cast<std::size_t>(child)];
         hole = child;
         child = 2 * child + 2;
@@ -390,7 +391,7 @@ void heap_adjust(std::vector<AiMetalSite>& v, i32 hole, i32 len, AiMetalSite val
         hole = child - 1;
     }
     i32 parent = (hole - 1) / 2;
-    while (hole > top && v[static_cast<std::size_t>(parent)].score < value.score) {
+    while (hole > top && x87::less(v[static_cast<std::size_t>(parent)].score, value.score)) {  // 0x40D761
         v[static_cast<std::size_t>(hole)] = v[static_cast<std::size_t>(parent)];
         hole = parent;
         parent = (hole - 1) / 2;

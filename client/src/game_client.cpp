@@ -15,6 +15,7 @@
 #include "sim/features.h"
 #include "sim/mission_goals.h"
 #include "sim/missions.h"
+#include "sim/x87.h"
 #include "sim/orders.h"
 #include "sim/targeting.h"
 #include "sim/unit_tick.h"
@@ -228,7 +229,7 @@ bool GameClient::own(const sim::Unit& u) const { return b_.ticks[u.id].owner == 
 
 bool GameClient::selectable(const sim::Unit& u) const {
     const sim::UnitTickState& t = b_.ticks[u.id];
-    return t.type_index != 0 && t.owner == opt_.player && (u.flags & kSelectable) && u.build_fraction_left == 0.0f &&
+    return t.type_index != 0 && t.owner == opt_.player && (u.flags & kSelectable) && sim::x87::equal(u.build_fraction_left, 0.0) &&
            t.transfer_holdoff == 0 && (!u.carrier || (u.carrier->flags & sim::unit_tick_flags::kCarrierSelectable));
 }
 
@@ -1765,7 +1766,7 @@ void GameClient::select_next_viewed_unit() {
     const int first = std::max(1, p.first_unit), last = p.last_unit;
     auto ok = [&](int i) {
         const sim::Unit& u = b_.units[static_cast<std::size_t>(i)];
-        return (u.flags & kSelectable) && u.build_fraction_left == 0.0f && b_.ticks[static_cast<std::size_t>(i)].transfer_holdoff == 0 &&
+        return (u.flags & kSelectable) && sim::x87::equal(u.build_fraction_left, 0.0) && b_.ticks[static_cast<std::size_t>(i)].transfer_holdoff == 0 &&
                (!u.carrier || (u.carrier->flags & 0x40000000u));
     };
     int first_ok = 0;

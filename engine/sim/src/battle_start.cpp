@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "sim/battle.h"
+#include "sim/x87.h"
 
 namespace sim {
 
@@ -66,7 +67,8 @@ void init_resources(Battle& b, const BattleStart& s) {
             // Missions: the schema's amounts per record (player 0 the human's, 1 the computer's),
             // also as the storage bonus (truncated, at least 200).
             const float e = s.mission.energy[static_cast<std::size_t>(k)], m = s.mission.metal[static_cast<std::size_t>(k)];
-            set_storage_bonus(p, b.player_economy[static_cast<std::size_t>(k)], static_cast<std::int32_t>(m), static_cast<std::int32_t>(e));
+            // (0x465F2E: __ftol, low 32 bits; a plain cast would saturate out of range.)
+            set_storage_bonus(p, b.player_economy[static_cast<std::size_t>(k)], x87::ftol32(m), x87::ftol32(e));
             p.energy_stored = e;
             p.metal_stored = m;
         }
