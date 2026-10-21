@@ -194,7 +194,8 @@ state: pointer record, feature table, selection).
 | ReloadAIProfiles | `0x4174D0` → `0x40A100`: for every active computer player (controller 2), `Ai_ResetProfile` `0x409470` on the table of its slot, then the battle's whole profile load `0x4648E0` | MISSING | BUILT (smoke) |
 | Kill (both forms) ends with `0x4904B0` on GS+0x391ED: the map's goals switched off | found in this audit | PARTIAL | BUILT (`MissionGoals::active = false`; *2026-10-20*: the skirmish / network victory and defeat checks now honour it too, see section 5) |
 | SeaLevel, TreeDeath, AI, Control, IWin, ILose, Move, default command (unit rows) | | VERIFIED / BUILT | unchanged |
-| Edge, Film, PrintWeights, Save, MemDump, Mem, DPrint, Assert, DebugBreak | | N/A (view, files, saves: other areas) | |
+| Edge, Film, PrintWeights, Save, MemDump, Mem, DPrint, Assert | | N/A (view, files, saves: other areas) | |
+| DebugBreak (`0x417A60`) | developer mode and the debug view on: 1 / 2 out of memory, 3 division by zero, 0 window then DebugBreak() | BUILT-UNVERIFIED *2026-10-21* | ends the program through the runtime library's crash log / out-of-memory handler (RE_MEMORY "Runtime library and crash log"); ta_play headless with RUNTIME_TEST_QUIET: ErrorLog.txt written, exit 3 for out of memory |
 
 ### 7.2 Unit table order with duplicate unit names
 `GameData_LoadAll` `0x42D2E0` compacts the compatible units (stable) and sorts records 1.. with the
@@ -224,7 +225,8 @@ that branch. *2026-10-20*: merged into master (2c7ce8a); NETWORK.md rates it BUI
 | Pose sync when a unit is drawn (`0x45AC20`: base angles more than 7 apart, transforms when dirty; the unit and its cargo without flag 0x20000; nothing for a carried unit) | PARTIAL | BUILT | `Battle::units_drawn(ids)`, fed by the client from `BattleScene::drawn_units` after drawing (feature stand-ins excluded). Debris and shards start from these transforms. sim_tests `test_units_drawn`. Which units are drawn is the renderer's (RENDERER area, 1:1 by its own checks) |
 | Lightning drawing's rand() draws (`0x49BE60`, three per segment of a visible lightning shot) | N/A (input) | BUILT | the renderer returns its copy's state (`BattleScene::crt_rand_after`), the client sets the battle's `crt_rand` to it after drawing |
 | Speech queue rand() | BUILT (client) | unchanged | `GameClient` speech model draws the battle's rand() |
-| CD audio sync rand() (`0x4CDB40`), debug overlay (`0x418310`) | N/A (input) | unchanged | music timing / debug display: wall clock and debug switches |
+| CD audio sync rand() (`0x4CDB40`), debug overlay (`0x418310`) | N/A (input) / BUILT | unchanged / *2026-10-21* | music timing: wall clock. The debug view's terrain mode 1 draws rand() once per route-search goal cell on screen (the "G" colour); the client draws it from the battle's stream before the shots and feeds the state back, as for lightning (frame_harness `--debug-view 1`: identical) |
+| Debug view keys '=' and ']' (`0x4956C0`) | storages filled / the unit under the pointer dying, on this machine only | BUILT-UNVERIFIED *2026-10-21* | developer mode only; in a network game nothing is sent (the original desyncs the same way) |
 
 ### 7.5 Remaining PARTIAL / inputs (by design)
 | Item | Status | Reason |
