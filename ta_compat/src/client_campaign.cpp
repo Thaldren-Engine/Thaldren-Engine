@@ -1202,6 +1202,29 @@ private:
         inputs.loading_rand_seed = static_cast<std::uint32_t>(std::time(nullptr));
         inputs.crt_rand_state = clock_value() * 2654435761u;
         inputs.unit_limit = static_cast<std::uint16_t>(std::clamp(fe.settings().get_int("UnitLimit", 250), 20, 500));
+        // The set-up table: read at start-up (0x42F9A0) when the skirmish menu has not been
+        // open yet (the rows below the count, as the skirmish screen reads them).
+        if (!art_.setup_read) {
+            client::Settings& st = fe.settings();
+            const int n = std::clamp(st.get_int("NumSkirmishPlayers", 4), 2, 10);
+            bool any = false;
+            for (int i = 0; i < n; ++i) {
+                art_.setup_kinds[static_cast<std::size_t>(i)] = st.get_int("Skirmish.Player" + std::to_string(i) + "Controller", 0);
+                any = any || art_.setup_kinds[static_cast<std::size_t>(i)] != 0;
+            }
+            if (!any) art_.setup_kinds[0] = 1, art_.setup_kinds[1] = 2;
+            art_.setup_read = true;
+        }
+        // A skirmish save's schema comes from that table (0x492360 -> 0x435A20 before the
+        // save's players are read; with no row filled 0x436860 takes GS+0x2A3C, the previous
+        // game's count: not kept, the save's own players stand in).
+        if (m.game_type == 2) inputs.setup_players = art_.setup_players(0);
+        // At the battle start every save's Player0..9 Controller (0 when missing) becomes the
+        // table's row kinds (0x497180 -> 0x465FB0), for later skirmish starts and loads.
+        for (int k = 0; k < 10; ++k) {
+            const BankSection* ps = save->bank.find("Player " + std::to_string(k));
+            art_.setup_kinds[static_cast<std::size_t>(k)] = ps ? ps->get_int("Controller", 0) : 0;
+        }
         fe.start_battle([&art, save, progress, options, dir, inputs](const client::LoadProgress& lp, std::string& error) -> std::unique_ptr<client::BattleSession> {
             auto view = std::make_shared<LoadedView>();
             BattleRequest req;

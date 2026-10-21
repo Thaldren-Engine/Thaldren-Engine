@@ -757,6 +757,7 @@ protected:
             rows_[0].kind = 1;
             rows_[1].kind = 2;
         }
+        sync_setup();
         commander_ends_ = s.get_int("SkirmishCommanderDeath", 1);
         mapping_ = s.get_int("SkirmishMapping", 1);
         los_ = s.get_int("SkirmishLineOfSight", 1);
@@ -776,7 +777,14 @@ protected:
         for (const auto& m : maps) found = found || upper(m) == upper(map_) || upper(map_file_name(art_.vfs(), m)) == file;
         if (!found) map_ = art_.first_skirmish_map();
     }
+    // The screen's rows are the set-up table's first rows (the original edits GS+0x29A0 in
+    // place); the rows past the shown count keep what they held (MenuArt::setup_kinds).
+    void sync_setup() {
+        for (std::size_t i = 0; i < rows_.size() && i < art_.setup_kinds.size(); ++i) art_.setup_kinds[i] = rows_[i].kind;
+        art_.setup_read = true;
+    }
     void save(client::Settings& s) {
+        sync_setup();
         s.set_int("NumSkirmishPlayers", static_cast<int>(rows_.size()));
         for (std::size_t i = 0; i < rows_.size(); ++i) {
             const std::string p = "Skirmish.Player" + std::to_string(i);
@@ -1058,16 +1066,21 @@ protected:
 
     void start(FrontEnd& fe) {
         // 0x47AE60 (Start): the player count GS+0x2A3C = computer players + 1, the map info loaded
-        // with it (0x435A20); then the refusals, each a 480-wide box (0x4ABD90 with 0x1E0, OK,
+        // (0x435A20, kind 2); then the refusals, each a 480-wide box (0x4ABD90 with 0x1E0, OK,
         // fitted; the text translated): no map info, no player or no computer player, more
         // players than the picked schema's start positions (0x437300 < GS+0x2A3C), one allied
-        // group (0x479760).
+        // group (0x479760). The schema is not picked with GS+0x2A3C: 0x436860 counts for kind 2
+        // the highest filled row of the whole set-up table + 1 (rows 0 and 3 filled: 4; rows
+        // past the shown count included), GS+0x2A3C only when no row is filled. The battle keeps
+        // that schema (the skirmish battle start 0x497180 does not load the map info again).
         int humans = 0, computers = 0;
         for (const Row& r : rows_) {
             humans += r.kind == 1;
             computers += r.kind == 2;
         }
-        const int start_positions = map_start_position_count(art_.vfs(), map_, computers + 1);
+        sync_setup();
+        int schema = -1;
+        const int start_positions = map_start_position_count(art_.vfs(), map_, art_.setup_players(computers + 1), &schema);
         if (start_positions < 0) {
             show_message(fe, art_, translate("The terrain for the selected map does not exist."), nullptr, 0x1E0);  // (0x47B0CB)
             return;
@@ -1101,6 +1114,7 @@ protected:
         // The battle request: rows are player slots.
         BattleRequest req;
         req.map = map_;
+        req.schema = schema;
         int human = 0;
         for (std::size_t i = 0; i < rows_.size() && i < 10; ++i) {
             const Row& r = rows_[i];

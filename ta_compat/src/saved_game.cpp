@@ -498,6 +498,8 @@ bool make_saved_game_request(Vfs& vfs, const SavedGame& save, const LoadInputs& 
             sp.name = start_player_name(ctl != 1, ps->get_int("Side", 0), true);
             if (ctl == 1) s.local_player = static_cast<std::uint8_t>(k);  // the last human slot (0x47A760)
         }
+        // The schema 0x436860 picks at the load with the session's set-up table (see LoadInputs).
+        if (in.setup_players > 0) map_start_position_count(vfs, req.map, in.setup_players, &req.schema);
     } else {
         error = "Invalid savegame file";
         return false;

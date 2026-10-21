@@ -165,6 +165,10 @@ struct LoadInputs {
     std::uint32_t crt_rand_state = 0;     // the simulation thread's rand() at the first step
     std::uint16_t unit_limit = 250;       // skirmish: the UnitLimit setting (the save's maxunits only
                                           // reaches GS+0x37EEC after the tables are made)
+    // A skirmish save's schema: the load (0x492360) loads the map info (0x435A20, kind 2) before
+    // the save's players reach the set-up table, so 0x436860 counts the table as the session
+    // left it (MenuArt::setup_players). 0: not given (the save's highest player slot + 1).
+    int setup_players = 0;
 };
 
 struct SavedGame {

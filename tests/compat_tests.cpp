@@ -5,8 +5,11 @@
 #include <string>
 #include <vector>
 
+#include <array>
+#include <filesystem>
 #include <fstream>
 
+#include "ta/battle_loader.h"
 #include "ta/crt_strtod.h"
 #include "ta/hpi.h"
 #include "ta/inflate.h"
@@ -214,6 +217,65 @@ void test_translations() {
     CHECK(ta::untranslate("KILLS").empty());
 }
 
+// The skirmish schema pick (0x436860, map info kind 2) counts the set-up table's highest filled
+// row + 1, not GS+0x2A3C (computers + 1): rows 0 (player) and 3 (computer) pick the 4-position
+// schema, where computers + 1 would pick the 2-position one.
+void test_skirmish_schema_rows() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "compat_tests_schema_rows";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir / "maps", ec);
+    {
+        std::ofstream f(dir / "maps" / "Rows.ota", std::ios::binary);
+        auto schema = [&](int n, const char* type, int positions) {
+            f << "[Schema " << n << "]\r\n{\r\nType=" << type << ";\r\n[specials]\r\n{\r\n";
+            for (int k = 0; k < positions; ++k)
+                f << "[special" << k << "]\r\n{\r\nspecialwhat=StartPos" << (k + 1) << ";\r\nXPos=" << (100 + 200 * k)
+                  << ";\r\nZPos=" << (300 + 10 * k) << ";\r\n}\r\n";
+            f << "}\r\n}\r\n";
+        };
+        f << "[GlobalHeader]\r\n{\r\n";
+        schema(0, "Network 1", 2);
+        schema(1, "Network 2", 4);
+        schema(2, "Network 3", 3);
+        f << "}\r\n";
+    }
+    ta::Vfs vfs;
+    vfs.set_cd_drives({});
+    vfs.mount_game_dir(dir);
+    // The table: row 0 a player, row 3 a computer (rows 1, 2 open).
+    std::array<int, 10> kinds{};
+    kinds[0] = 1;
+    kinds[3] = 2;
+    const int computers = 1;
+    CHECK(ta::setup_table_players(kinds, computers + 1) == 4);
+    int schema = -2;
+    CHECK(ta::map_start_position_count(vfs, "Rows", ta::setup_table_players(kinds, computers + 1), &schema) == 4);
+    CHECK(schema == 1);
+    // GS+0x2A3C (computers + 1 = 2) would have picked the 2-position schema.
+    CHECK(ta::map_start_position_count(vfs, "Rows", computers + 1, &schema) == 2);
+    CHECK(schema == 0);
+    // Contiguous rows 0..2: 3 players, the 3-position schema.
+    const std::array<int, 10> three{1, 2, 2};
+    CHECK(ta::setup_table_players(three, 9) == 3);
+    CHECK(ta::map_start_position_count(vfs, "Rows", 3, &schema) == 3);
+    CHECK(schema == 2);
+    // A row past the shown count (kept from a larger count) still counts: rows 0, 1 and 7.
+    std::array<int, 10> stale{1, 2};
+    stale[7] = 2;
+    CHECK(ta::setup_table_players(stale, 2) == 8);
+    // No schema has 8 positions: the largest count seen (4) is kept.
+    CHECK(ta::map_start_position_count(vfs, "Rows", 8, &schema) == 4);
+    CHECK(schema == 1);
+    // No row filled: GS+0x2A3C.
+    CHECK(ta::setup_table_players(std::array<int, 10>{}, 5) == 5);
+    // No map info: -1 ("The terrain for the selected map does not exist.").
+    CHECK(ta::map_start_position_count(vfs, "Missing", 4, &schema) == -1);
+    CHECK(schema == -1);
+    fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main() {
@@ -229,6 +291,7 @@ int main() {
     test_inflate();
     test_restrict_list();
     test_translations();
+    test_skirmish_schema_rows();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

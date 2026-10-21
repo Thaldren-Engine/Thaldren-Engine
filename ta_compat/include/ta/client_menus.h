@@ -8,6 +8,7 @@
 // they can build screens from the game's GUI files with MenuArt::layout() and
 // client::LayoutScreen, and start battles with SkirmishSession-like sessions.
 
+#include <array>
 #include <deque>
 #include <functional>
 #include <map>
@@ -63,6 +64,18 @@ public:
     const std::string& first_skirmish_map();
     // Side names from gamedata\sidedata.tdf (ARM, CORE, ...).
     const std::vector<std::string>& sides() const { return sides_; }
+
+    // The single-player set-up table (GS+0x29A0, allocated once at start-up, 0x4913F0): the
+    // kinds of its ten skirmish rows (0 open, 1 player, 2 computer). Only rows below
+    // NumSkirmishPlayers are read from the settings (start-up 0x42F9A0, entering the skirmish
+    // menu 0x4273E8, the row-count cheat 0x47BB52); the others keep what they held: rows of a
+    // larger count before the cheat lowered it, or a saved game's players (0x465FB0 copies every
+    // save's Player0..9 Controller here at its battle start). Rows never read are open.
+    std::array<int, 10> setup_kinds{};
+    bool setup_read = false;  // rows below the count read from the settings at least once
+    // 0x436860's player count for map info kind 2 (skirmish): the highest row with a nonzero
+    // kind + 1, else `fallback` (GS+0x2A3C).
+    int setup_players(int fallback) const { return setup_table_players(setup_kinds, fallback); }
 
     // Movies: Data\<name> beside the game (the original's 1-5.zrb, loose files; empty when
     // missing). The original plays them only on a full screen; the window front end stands for

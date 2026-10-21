@@ -104,9 +104,16 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& request
                                           const std::function<void(sim::Battle&)>& before_start = {});
 
 // The map info a skirmish start loads (0x435A20 -> 0x435DA0, map info kind 2) with `players` as
-// the player count GS+0x2A3C: the start positions of the schema it picks (0x436860 / 0x436C30:
-// the schema's specials named StartPos*, counted by 0x437300); -1 when the map's .ota does not
-// open (0x435A20 returns null: "The terrain for the selected map does not exist.").
-int map_start_position_count(Vfs& vfs, const std::string& map, int players);
+// 0x436860's player count (the highest filled row of the set-up table + 1, not GS+0x2A3C): the
+// start positions of the schema it picks (0x436860 / 0x436C30: the schema's specials named
+// StartPos*, counted by 0x437300); -1 when the map's .ota does not open (0x435A20 returns null:
+// "The terrain for the selected map does not exist."). `schema` (optional) gets the picked
+// schema's number (-1: none), the one the battle then uses (the map info object keeps it).
+int map_start_position_count(Vfs& vfs, const std::string& map, int players, int* schema = nullptr);
+
+// 0x436860's player count for map info kind 2 (skirmish): the highest of the set-up table's
+// ten rows (GS+0x29A0, kind at +0) with a nonzero kind, + 1; `fallback` (GS+0x2A3C) when no row
+// is filled. A start with rows 0 and 3 filled counts 4.
+int setup_table_players(const std::array<int, 10>& kinds, int fallback);
 
 }  // namespace ta

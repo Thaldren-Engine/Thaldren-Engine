@@ -44,7 +44,11 @@ std::string side_commander(const TdfSection* sides, const std::string& side) {
 // "Schema N" sections (N = 0, 1, ... until one is missing) of type "Network 1".."Network 4"
 // (types in that order), the one whose StartPos count equals the player count (the highest
 // filled slot + 1), else the largest count seen; later candidates replace earlier ones under
-// the same rule. Returns the schema number (-1: none).
+// the same rule. Returns the schema number (-1: none). The player count is 0x436860's own: for
+// a skirmish (map info kind 2) the highest row of the set-up table GS+0x29A0 (all ten rows,
+// whatever the shown row count) with a nonzero kind, + 1; for a network game (kind 3) the
+// highest slot of GS+0x2C28 (the host's per-slot ids, 0 for no controller, -1 for controller 4)
+// with an id, + 1; GS+0x2A3C only when no row / slot counts. Rows are player slots in both.
 int select_schema(const TdfSection& header, int players) {
     static const char* const kTypes[4] = {"Network 1", "Network 2", "Network 3", "Network 4"};
     int chosen = -1, best = 0;
@@ -319,13 +323,22 @@ std::unique_ptr<LoadedBattle> load_battle(Vfs& vfs, const BattleRequest& req, si
     return lb;
 }
 
-int map_start_position_count(Vfs& vfs, const std::string& map_name, int players) {
+int setup_table_players(const std::array<int, 10>& kinds, int fallback) {
+    int n = 0;
+    for (std::size_t i = 0; i < kinds.size(); ++i)
+        if (kinds[i] != 0) n = static_cast<int>(i) + 1;
+    return n ? n : fallback;
+}
+
+int map_start_position_count(Vfs& vfs, const std::string& map_name, int players, int* schema_out) {
+    if (schema_out) *schema_out = -1;
     std::vector<std::uint8_t> ota;
     if (!vfs.read(vfs.virtual_path("maps", map_file_name(vfs, map_name), "ota"), ota)) return -1;
     const std::unique_ptr<TdfSection> root = tdf_parse(std::string_view(reinterpret_cast<const char*>(ota.data()), ota.size())).root;
     const TdfSection* header = root ? root->child("GlobalHeader") : nullptr;
     if (!header) return 0;
     const int schema = select_schema(*header, players);
+    if (schema_out) *schema_out = schema;
     const TdfSection* s = schema >= 0 ? header->child("Schema " + std::to_string(schema)) : nullptr;
     std::vector<sim::StartRule> rules;
     if (s) read_start_rules(*s, rules);
