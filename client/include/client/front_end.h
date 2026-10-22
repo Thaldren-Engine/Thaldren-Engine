@@ -160,7 +160,7 @@ public:
     // The local player's outcome so far (None while the battle goes on).
     virtual BattleOutcome outcome() = 0;
     // A line typed into the in-game chat line (default: shown locally only).
-    virtual void send_chat(const std::string& text) { client().message(text); }
+    virtual void send_chat(const std::string& text) { client().post_own_chat(text); }
     // Network games' chat recipients (GS+0x2BF0: 0 everybody, 1 allies, 2 enemies, 3 the chosen
     // players of GS+0x2BF1) and TALK2's switch (GS+0x2BEE bit 0x100: the recipient panel shown
     // with the chat line; cleared when a line is sent).

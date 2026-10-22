@@ -235,6 +235,10 @@ public:
     std::function<void(std::uint16_t type)> on_unit_info;
     // Types a chat line as if entered (scripted runs and tests).
     void enter_chat_line(const std::string& text);
+    // A game without a network (0x493BF0 / 0x463E50): the line's receiver prefix taken off, the
+    // line made "<name->to> text" and shown; false when the prefix names a record of id 0 (the
+    // line is dropped).
+    bool post_own_chat(const std::string& text);
     // The pointer's map point (the original keeps it at GS+0x2CAA, 0x498DA0): the pointer
     // clamped to the battle view (or its minimap point) turned into a terrain point.
     sim::Vec3i cursor_world() const;

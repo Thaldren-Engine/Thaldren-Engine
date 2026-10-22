@@ -1262,7 +1262,35 @@ void GameClient::enter_chat_line(const std::string& typed) {
     }
     if (line.empty()) return;
     if (on_chat) on_chat(line);
-    else message(line, kChat);
+    else post_own_chat(line);
+}
+
+bool GameClient::post_own_chat(const std::string& line) {
+    // 0x493BF0: a second character of ',', ':' or ';' makes the first a receiver: a digit names
+    // that record (dropped when its id, +4, is 0: a game without a network gives each record its
+    // slot number, 0x464290, so slot 0 and unset records), 'a' / 'A' "Allies", 'e' / 'E'
+    // "Enemies"; the two characters go. Then 0x463E50: "<%s%s%s> %s" of the local record's short
+    // name (+0x49; "Player" in a skirmish), "->" and the receiver when there is one, and the
+    // line, as a console line of kind 4.
+    std::string text = line, to;
+    if (text.size() >= 2 && text[1] > ' ' && (text[1] == ',' || text[1] == ':' || text[1] == ';')) {
+        const char c = text[0];
+        if (c >= '0' && c <= '9') {
+            const int d = c - '0';
+            if (d == 0 || !b_.players[static_cast<std::size_t>(d)].active) return false;
+            to = c_.player_names[static_cast<std::size_t>(d)];
+            text = text.substr(2);
+        } else if (c == 'a' || c == 'A') {
+            to = "Allies";
+            text = text.substr(2);
+        } else if (c == 'e' || c == 'E') {
+            to = "Enemies";
+            text = text.substr(2);
+        }
+    }
+    const std::string& name = c_.player_names[static_cast<std::size_t>(std::clamp(opt_.player, 0, 9))];
+    message("<" + name + (to.empty() ? std::string() : "->" + to) + "> " + text, kChat);
+    return true;
 }
 
 sim::Vec3i GameClient::cursor_world() const {
