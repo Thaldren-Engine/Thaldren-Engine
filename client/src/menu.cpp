@@ -1124,16 +1124,6 @@ void LayoutScreen::reassign_quick_keys(const std::vector<Widget>& before) {
     }
 }
 
-std::function<std::string(const std::string&)>& text_translation() {
-    static std::function<std::string(const std::string&)> f;
-    return f;
-}
-
-std::string tr(const std::string& text) {
-    const auto& f = text_translation();
-    return f ? f(text) : text;
-}
-
 std::function<std::string(const std::string&)>& LayoutScreen::caption_translation() { return text_translation(); }
 
 void LayoutScreen::set_caption(Widget& w, const std::string& text_in) {

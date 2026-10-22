@@ -683,6 +683,7 @@ add_executable(bank_harness bank_harness.cpp
     ${ROOT}/ta_compat/src/sight_tables.cpp
     ${ROOT}/engine/net/src/codec.cpp
     ${ROOT}/ta_compat/src/tdf.cpp
+    ${ROOT}/ta_compat/src/translate.cpp
     ${ROOT}/ta_compat/src/tnt.cpp
     ${ROOT}/ta_compat/src/unitdefs.cpp
     ${ROOT}/ta_compat/src/weapondefs.cpp
@@ -798,6 +799,7 @@ target_compile_options(console_harness PRIVATE /W4 /permissive- /fp:precise)
 add_executable(sound_harness sound_harness.cpp
     ${ROOT}/client/src/sound_mixer.cpp
     ${ROOT}/client/src/sound_rules.cpp
+    ${ROOT}/client/src/translation.cpp
     ${ROOT}/engine/sim/src/rng.cpp
 )
 target_include_directories(sound_harness PRIVATE ${ROOT}/client/include ${ROOT}/render/include ${ROOT}/engine/sim/include)

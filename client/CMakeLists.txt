@@ -25,6 +25,7 @@ add_library(client STATIC
     src/sound_mixer.cpp
     src/sound_rules.cpp
     src/track_file_device.cpp
+    src/translation.cpp
     src/wave_file.cpp
 )
 if(WIN32)
