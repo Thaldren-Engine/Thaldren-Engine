@@ -269,7 +269,15 @@ render::DrawList GameClient::draw() {
 
     // Interface art: the side panel, the top and bottom bars (repeated across wider screens).
     if (side_) {
-        if (side_->panel_side) list.blit(side_->panel_side, side_->panel_side->x_offset, side_->panel_side->y_offset, screen, true);
+        // The side art (0x467D70) is put once into the interface surface at the battle's start
+        // and the view is drawn over it each frame: the art's last column (x 128) shows only
+        // above and below the view, never over the battle region.
+        if (const render::Sprite8* s = side_->panel_side) {
+            const render::ClipRect v = view_rect();
+            const render::ClipRect parts[3] = {{0, 0, v.x0 - 1, h - 1}, {v.x0, 0, w - 1, v.y0 - 1}, {v.x0, v.y1 + 1, w - 1, h - 1}};
+            for (const render::ClipRect& c : parts)
+                if (c.x0 <= c.x1 && c.y0 <= c.y1) list.blit(s, s->x_offset, s->y_offset, c, true);
+        }
         // (The top bar's art: drawn after the terrain, see scene.after_terrain.)
         for (int x = 129; side_->panel_bottom && x < w; x += std::max(1, side_->panel_bottom->width))
             list.blit(side_->panel_bottom, x + side_->panel_bottom->x_offset, h - 32 + side_->panel_bottom->y_offset, screen, true);
